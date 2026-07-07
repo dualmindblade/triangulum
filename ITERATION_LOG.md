@@ -684,3 +684,71 @@ A coordinate-stamped screenshot PAIR is worth more than any log: "works
 at 9 m, black at 6 m" pointed straight at the one quantity that changes
 that fast — the altitude-scaled near plane — and the fix (reversed-Z)
 retired a whole class of future depth bugs at once.
+
+## Geomorphing, and the pop that mostly wasn't (2026-07-07, Phase 7a)
+
+New workflow from the user: feature branches + merges for major features,
+push to the remote each session. This one happened on feature/geomorphing.
+Also from the user: the son is Andrew, the design credit is his.
+
+### The feature
+CDLOD-style geomorphing on the tile mesh. Every vertex carries two extras:
+the height its PARENT level renders at this spot (parent vertices sit on
+the child's even lattice, odd ones bilerp — heights are pure functions of
+(u, v, octave budget), so when budgets match the delta is exactly zero and
+the extra sampling pass is skipped), and the wetness the parent level
+paints (same sample, doubled spacing — the painted river thread is widened
+to the vertex spacing, so its width is level-dependent and pops at every
+split). The vertex shader slides position radially and lerps wetness over
+a distance band derived from the selection threshold tau:
+  tile of size S is selected while center dist is in [S/tau, 2S/tau);
+  morph must be complete at every vertex before any swap ->
+  end <= (2/tau - sqrt2)*S, and still absent where children hand off ->
+  start >= (1/tau + sqrt2/2)*S. With tau = 0.35: band [3.61, 4.26]*S.
+Cross-level tile edges agree for free (the finer neighbor is fully
+morphed exactly where the coarser one is unmorphed) — which is also why
+skirts stay sub-meter. Radial direction comes from a new planet-center
+global (camera-relative space has no origin for it otherwise).
+
+### The measurement (the interesting part)
+Built examples/popdiff: fly a fixed line, render every frame headless,
+report frame-to-frame pixel diffs (mean + p99.9), and — decisive — print
+which tiles the LOD selection swapped each frame. Findings, honestly:
+- At 6 km cruise, SWAP FRAMES ARE PIXEL-INDISTINGUISHABLE FROM QUIET
+  FRAMES even with morphing off (p99.9 ~30/255 both, identical medians).
+  The architecture pre-solved most of the problem: each level adds one
+  band-limited octave whose wavelength is 2.5x the vertex spacing, and the
+  SSE threshold swaps tiles exactly where that detail is ~1 px.
+- The visible artifact I chased across three instrumented flights (a
+  bright double line in the diff heatmaps) turned out to be the painted
+  river's edges under camera parallax, not a LOD event.
+- At 2 km, EVERYTHING drowns under voxel-patch churn (the chunk ring
+  recenters every frame) — p99.9 saturated at 82 in both modes. That, not
+  mesh LOD, is the real frame-to-frame noise at low altitude; queued as a
+  Phase 7 item.
+So geomorphing here is insurance, not rescue: it converts near-
+seamlessness into a guarantee, and it genuinely retires the river-paint
+width pop (the one swap artifact big enough to see: ~16 px -> 8 px lines).
+Verified correct by construction tests instead of pop hunting:
+TRI_FORCE_MORPH renders every tile as its parent geometry — the world
+stays coherent, no spikes, no cracks (sign/scale/direction proven);
+TRI_NO_MORPH gives the raw baseline. Golden tests green; live smoke green.
+
+### Patch boundary
+The voxel patch ended on a floating one-block cliff (blocks ride ~1.6 m
+proud of the mesh so it can't poke between block tops). Rim blocks now
+sink flush over the outer ~15% of the patch radius, in the vertex shader
+(the hole disc and lift are already in the globals; cached chunk meshes
+never rebuild for it). The patch edge reads as a feathered shoreline —
+gm-rim-sink.png vs fix-rz-valley.png shows the cliff gone.
+
+### Housekeeping
+Killed a stale viewer instance (running since 12:29 AM) to relink the
+binary — relaunch to pick up the branch. Vertex is now 60 bytes (+8).
+capture/popdiff share the renderer, so all evidence is same-code.
+
+### Lesson
+Measure the pop before building the anti-pop. The instrument (popdiff +
+swap logging) cost 100 lines and reframed the whole feature: the scary
+part was already solved by the octave-band design; the actual visible
+pops were in the PAINT, which no geometry morph would ever have fixed.

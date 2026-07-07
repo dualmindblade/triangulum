@@ -186,9 +186,33 @@ Scenic destinations (all `--exagg 1`):
 * Headless `--capture` now loads your saved edits, so screenshots show the
   same world you play in.
 
-## Phase 7 (next)
+## Phase 7a (geomorphing & the patch boundary, 2026-07-07)
 
-Patch-boundary blending and geomorphing, placeable torches/light sources,
-swimming polish, atmosphere from orbit (limb glow), stars at night, river
-polish (distant threads alias to one-vertex zigzags, confluences blob at
-coarse LOD, rapids/waterfalls where levels step).
+* **Geomorphing**: every mesh vertex carries the height and river-paint
+  wetness its PARENT level would give it; the vertex shader slides between
+  the two over a distance band derived from the tile-selection threshold,
+  so every LOD swap exchanges identical geometry and identical paint —
+  seamless by construction (including the level-dependent painted river
+  width, which used to halve in one frame at each split).
+* Honest measurement (`examples/popdiff`, a frame-diff pop meter with tile
+  -swap instrumentation): raw geometry pops were ALREADY sub-visible at
+  cruise altitude — the band-limited octave scheme means a swap only adds
+  detail that is ~1 px at its swap distance. The morph turns that
+  statistical near-seamlessness into a guarantee, and retires the river
+  pop. Costs: +1 sample pass per tile only where octave budgets differ,
+  +8 bytes/vertex.
+* **Patch boundary**: the voxel patch used to end on a floating one-block
+  cliff (blocks ride ~1.6 m proud of the mesh). Rim blocks now sink flush
+  with the mesh across the outer ~15% of the patch — the blocks end in a
+  feathered shoreline.
+* Dev switches: `TRI_NO_MORPH=1` (raw levels), `TRI_FORCE_MORPH=1` (render
+  every tile as its parent's geometry — a morph sign/scale bug shows as
+  spikes immediately).
+
+## Phase 7 (remaining)
+
+Placeable torches/light sources, swimming polish, atmosphere from orbit
+(limb glow), stars at night, river polish (distant threads alias to
+one-vertex zigzags, confluences blob at coarse LOD, rapids/waterfalls
+where levels step), voxel-patch recenter churn (chunk ring rebuilds
+dominate frame-to-frame change at low altitude).

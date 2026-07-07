@@ -705,6 +705,8 @@ pub fn build_chunk(planet: &Planet, edits: &Edits, key: ChunkKey, exaggeration: 
                 normal: [normal.x as f32, normal.y as f32, normal.z as f32],
                 color: cols[k],
                 water: [0.0, 0.0, 0.0, dim],
+                morph_dh: 0.0, // blocks don't geomorph (they rim-sink instead)
+                morph_wet: dim,
             });
         }
         indices.extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
