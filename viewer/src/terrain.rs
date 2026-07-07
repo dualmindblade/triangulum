@@ -39,6 +39,16 @@ pub struct Vertex {
     /// interpolated a, so painted water gets crisp per-pixel edges even on
     /// coarse tiles whose triangles span the whole river.
     pub water: [f32; 4],
+    /// Geomorphing: radial height delta (km, exaggerated) from this vertex
+    /// to the height the PARENT level would render here. The vertex shader
+    /// slides pos toward it as the vertex approaches the tile's merge
+    /// distance, so LOD swaps happen between identical geometries — no pop.
+    pub morph_dh: f32,
+    /// Geomorphing for the river paint: the wetness the PARENT level paints
+    /// here. The painted thread is widened to the vertex spacing, so a
+    /// split halves its width — the dominant visible LOD pop. Morphing the
+    /// wetness with the same factor retires it.
+    pub morph_wet: f32,
 }
 
 pub struct TileMesh {
@@ -378,6 +388,26 @@ pub fn sample_height(planet: &Planet, face: usize, u: f64, v: f64, octaves: u32)
     (s.render_h_km(), s.e_raw)
 }
 
+/// Painted wetness for a (non-deep) tile vertex: continuous feathered
+/// wetness, with the river thread widened to at least one vertex spacing so
+/// distant threads stay continuous instead of shattering. Level-dependent
+/// through `spacing_km` — which is why LOD swaps pop without wet morphing.
+fn tile_wet(s: &Sample, spacing_km: f64) -> f64 {
+    if s.sea || s.lake {
+        return 0.0;
+    }
+    let wide = if s.river_dist_km.is_finite() {
+        (1.0 - smoothstep(
+            s.river_hw_km,
+            s.river_hw_km.max(spacing_km * 0.9),
+            s.river_dist_km,
+        )) * s.river_wet
+    } else {
+        0.0
+    };
+    s.wet_soft.max(wide * 0.9)
+}
+
 /// Build the mesh for one tile. Positions are computed on a grid with one
 /// ghost ring so normals use central differences everywhere — one-sided
 /// normals at tile borders leave visible lighting seams between tiles.
@@ -403,6 +433,38 @@ pub fn build_tile(planet: &Planet, key: TileKey, exaggeration: f64) -> TileMesh 
         }
     }
 
+    // geomorph targets: what the PARENT level renders here. Parent vertices
+    // sit on this tile's even lattice (grids nest); odd vertices bilerp
+    // between them, exactly like the parent's triangles do. Height is a pure
+    // function of (u, v, octave budget), so when the budgets match (coarse
+    // levels where no detail octaves fit yet) the delta is identically zero
+    // and the sampling pass is skipped.
+    let parent_oct = if key.level == 0 {
+        octaves
+    } else {
+        octave_count(key.level - 1, radius)
+    };
+    let half = TILE_QUADS / 2 + 1; // 17 parent-lattice points per axis
+    let mut hp = vec![0.0f64; half * half];
+    if parent_oct != octaves {
+        for pj in 0..half {
+            for pi in 0..half {
+                let u = u0 + size * (2 * pi) as f64 / TILE_QUADS as f64;
+                let v = v0 + size * (2 * pj) as f64 / TILE_QUADS as f64;
+                hp[pj * half + pi] =
+                    sample(planet, face, u, v, parent_oct).render_h_km();
+            }
+        }
+    }
+    let parent_h = |i: usize, j: usize| -> f64 {
+        let (pi, fi) = (i / 2, (i % 2) as f64 * 0.5);
+        let (pj, fj) = (j / 2, (j % 2) as f64 * 0.5);
+        let (pi1, pj1) = ((pi + 1).min(half - 1), (pj + 1).min(half - 1));
+        let a = hp[pj * half + pi] * (1.0 - fi) + hp[pj * half + pi1] * fi;
+        let b = hp[pj1 * half + pi] * (1.0 - fi) + hp[pj1 * half + pi1] * fi;
+        a * (1.0 - fj) + b * fj
+    };
+
     let mut vertices = Vec::with_capacity(n * n + 4 * n);
     for j in 0..n {
         for i in 0..n {
@@ -425,25 +487,16 @@ pub fn build_tile(planet: &Planet, key: TileKey, exaggeration: f64) -> TileMesh 
             // sea carries NO wet paint: its geometry+ground color already
             // are the water, and paint only bleeds navy bands onto the
             // beach triangles next door.
-            let wet = if s.sea || s.lake {
-                0.0
-            } else if key.deep {
+            let spacing = key.size_km(radius) / TILE_QUADS as f64;
+            let wet = if key.deep && !(s.sea || s.lake) {
                 s.has_water() as u32 as f64
             } else {
-                // widen the painted river to at least one vertex spacing so
-                // distant threads stay continuous instead of shattering
-                let spacing = key.size_km(radius) / TILE_QUADS as f64;
-                let wide = if s.river_dist_km.is_finite() {
-                    (1.0 - smoothstep(
-                        s.river_hw_km,
-                        s.river_hw_km.max(spacing * 0.9),
-                        s.river_dist_km,
-                    )) * s.river_wet
-                } else {
-                    0.0
-                };
-                s.wet_soft.max(wide * 0.9)
+                tile_wet(s, spacing)
             };
+            // what the parent level paints here: same sample, doubled
+            // spacing (the width term is the level-dependent part; the
+            // octave-driven residue in the sample fields is sub-threshold)
+            let wet_parent = tile_wet(s, spacing * 2.0);
             // the sea is real geometry at its surface — its "ground" color
             // is the water color so the wetness blend is a no-op there and
             // it stays fully blue at every distance
@@ -452,11 +505,18 @@ pub fn build_tile(planet: &Planet, key: TileKey, exaggeration: f64) -> TileMesh 
             } else {
                 shade_ground(planet, face, uu, vv, s, slope)
             };
+            let dh = if parent_oct != octaves {
+                ((parent_h(i, j) - s.render_h_km()) * exaggeration) as f32
+            } else {
+                0.0
+            };
             vertices.push(Vertex {
                 pos: [p.x as f32, p.y as f32, p.z as f32],
                 normal: [nrm.x as f32, nrm.y as f32, nrm.z as f32],
                 color: ground,
                 water: [wc[0], wc[1], wc[2], wet as f32],
+                morph_dh: dh,
+                morph_wet: wet_parent as f32,
             });
         }
     }
@@ -487,6 +547,9 @@ pub fn build_tile(planet: &Planet, key: TileKey, exaggeration: f64) -> TileMesh 
             normal: v.normal,
             color: v.color,
             water: v.water,
+            // skirts morph with their border vertex so no gap opens
+            morph_dh: v.morph_dh,
+            morph_wet: v.morph_wet,
         });
     }
     let skirt_base = (n * n) as u32;

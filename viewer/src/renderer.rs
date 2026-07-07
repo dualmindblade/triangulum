@@ -12,6 +12,20 @@ use wgpu::util::DeviceExt;
 
 pub const VOXEL_MAX_ALT_KM: f64 = 2.5;
 
+/// Screen-space-error target for tile selection. The geomorph bands are
+/// derived from this: with tau = err_target, a tile of size S is selected
+/// while its center distance is in [S/tau, 2S/tau). Morphing must complete
+/// before any swap, at every vertex:
+///   - a child appearing/vanishing at parent-center dist 2S/tau has its
+///     nearest vertex at 2S/tau - sqrt(2)*S  ->  morph_end <= (2/tau - 1.41)*S
+///   - a tile must still be UNmorphed where its children hand off: farthest
+///     vertex at own-center dist S/tau is at S/tau + 0.71*S
+///     ->  morph_start >= (1/tau + 0.71)*S
+/// With tau = 0.35 that window is [3.57, 4.30]*S — we use [3.61, 4.26]*S.
+/// Cross-level tile edges agree for free: the finer neighbor is fully
+/// morphed (= parent geometry) exactly where the coarser one is unmorphed.
+const ERR_TARGET: f64 = 0.35;
+
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 enum DrawKey {
     Tile(TileKey),
@@ -37,6 +51,10 @@ struct Globals {
     // xyz = camera radial up, w = camera height above the nominal sphere
     // (km) — drives the sky gradient and how the atmosphere thins to space
     sky: [f32; 4],
+    // xyz = planet center relative to the camera (km) — the geomorph slide
+    // direction is radial, and camera-relative space has no planet center
+    // otherwise. w = the voxel patch lift (km) for the block rim-sink.
+    center: [f32; 4],
 }
 
 struct GpuTile {
@@ -101,7 +119,7 @@ impl Renderer {
                     ty: wgpu::BindingType::Buffer {
                         ty: wgpu::BufferBindingType::Uniform,
                         has_dynamic_offset: true,
-                        min_binding_size: wgpu::BufferSize::new(16),
+                        min_binding_size: wgpu::BufferSize::new(32),
                     },
                     count: None,
                 },
@@ -130,7 +148,7 @@ impl Renderer {
                     resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
                         buffer: &tiles_buf,
                         offset: 0,
-                        size: wgpu::BufferSize::new(16),
+                        size: wgpu::BufferSize::new(32),
                     }),
                 },
             ],
@@ -151,7 +169,7 @@ impl Renderer {
                 buffers: &[Some(wgpu::VertexBufferLayout {
                     array_stride: std::mem::size_of::<Vertex>() as u64,
                     step_mode: wgpu::VertexStepMode::Vertex,
-                    attributes: &wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3, 2 => Float32x3, 3 => Float32x4],
+                    attributes: &wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3, 2 => Float32x3, 3 => Float32x4, 4 => Float32, 5 => Float32],
                 })],
             },
             fragment: Some(wgpu::FragmentState {
@@ -281,7 +299,7 @@ impl Renderer {
         let voxel_radius_m = 200.0 + (VOXEL_MAX_ALT_KM - camera.altitude_km).max(0.0) * 120.0;
         let focus = (camera.altitude_km < VOXEL_MAX_ALT_KM)
             .then(|| (cam_pos.normalize(), voxel_radius_m / 1000.0 + 0.2));
-        let keys = select_tiles(cam_pos, planet.radius_km, 0.35, focus);
+        let keys = select_tiles(cam_pos, planet.radius_km, ERR_TARGET, focus);
 
         // upload globals (camera-relative view-projection, f64 -> f32 at the end)
         let vp = camera.view_proj(self.size.0 as f64 / self.size.1 as f64);
@@ -304,6 +322,7 @@ impl Renderer {
         let inv32 = Mat4::from_cols_array(&vp.inverse().to_cols_array().map(|x| x as f32));
         let up = cam_pos.normalize();
         let cam_h_km = (cam_pos.length() - planet.radius_km).max(0.0);
+        let lift = crate::voxel::lift_km(self.exaggeration);
         let globals = Globals {
             view_proj: vp32.to_cols_array_2d(),
             inv_view_proj: inv32.to_cols_array_2d(),
@@ -311,6 +330,12 @@ impl Renderer {
             hole,
             hole_up,
             sky: [up.x as f32, up.y as f32, up.z as f32, cam_h_km as f32],
+            center: [
+                (-cam_pos.x) as f32,
+                (-cam_pos.y) as f32,
+                (-cam_pos.z) as f32,
+                lift as f32,
+            ],
         };
         self.queue.write_buffer(&self.globals_buf, 0, bytemuck::bytes_of(&globals));
 
@@ -371,7 +396,35 @@ impl Renderer {
                 DrawKey::Tile(k) if k.deep => 2.0,
                 DrawKey::Tile(_) => 1.0,
             };
-            let data = [off.x as f32, off.y as f32, off.z as f32, flag];
+            // geomorph band (see ERR_TARGET) — zero for chunks (no morph).
+            // Dev switches for verification/tuning: TRI_NO_MORPH renders raw
+            // levels (pops back), TRI_FORCE_MORPH renders every tile as its
+            // parent's geometry (a sign/scale bug shows as spikes at once).
+            let morph = match key {
+                DrawKey::Tile(k)
+                    if k.level > 0 && std::env::var_os("TRI_NO_MORPH").is_none() =>
+                {
+                    if std::env::var_os("TRI_FORCE_MORPH").is_some() {
+                        [0.0001, 0.0002, 0.0, 0.0]
+                    } else {
+                        let s = k.size_km(planet.radius_km);
+                        let start = s * (1.0 / ERR_TARGET + 0.75);
+                        let end = s * (2.0 / ERR_TARGET - 1.45);
+                        [start as f32, end as f32, 0.0, 0.0]
+                    }
+                }
+                _ => [0.0f32; 4],
+            };
+            let data = [
+                off.x as f32,
+                off.y as f32,
+                off.z as f32,
+                flag,
+                morph[0],
+                morph[1],
+                morph[2],
+                morph[3],
+            ];
             self.queue.write_buffer(
                 &self.tiles_buf,
                 slot as u64 * TILE_UNIFORM_STRIDE,

@@ -12,12 +12,18 @@ struct Globals {
     hole_up: vec4<f32>,
     // xyz = camera radial up, w = camera height above the sphere (km)
     sky: vec4<f32>,
+    // xyz = planet center relative to the camera (km), w = voxel patch lift
+    center: vec4<f32>,
 };
 struct Tile {
     // xyz: tile origin minus camera position, in km (computed in f64 on the
     // CPU). w: 1 for heightfield tiles (subject to the hole cut), 0 for
     // voxel chunks.
     offset: vec4<f32>,
+    // x, y = geomorph band start/end distances (km); vertices slide toward
+    // the parent level's geometry across [x, y] so LOD swaps never pop.
+    // Zero for voxel chunks and level-0 tiles.
+    morph: vec4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> globals: Globals;
@@ -27,9 +33,14 @@ struct VsIn {
     @location(0) pos: vec3<f32>,
     @location(1) normal: vec3<f32>,
     @location(2) color: vec3<f32>,
-    // rgb = water color, a = wetness flag (mesh tiles paint inland water
-    // per-pixel; blocks pass 0)
+    // rgb = water color, a = wetness flag on mesh tiles / cave-darkness
+    // factor on voxel chunks
     @location(3) water: vec4<f32>,
+    // radial delta (km) to the parent LOD level's height here (geomorphing)
+    @location(4) morph_dh: f32,
+    // wetness the parent LOD level paints here (the river-thread width is
+    // level-dependent, so unmorphed paint pops at every tile split)
+    @location(5) morph_wet: f32,
 };
 struct VsOut {
     @builtin(position) clip: vec4<f32>,
@@ -44,13 +55,34 @@ struct VsOut {
 @vertex
 fn vs_main(in: VsIn) -> VsOut {
     var out: VsOut;
-    let rel = in.pos + tile.offset.xyz;
+    var rel = in.pos + tile.offset.xyz;
+    let d = length(rel);
+    var wet = in.water.a;
+    if (tile.morph.y > 0.0) {
+        // geomorphing: slide toward the parent level's geometry (and its
+        // river paint) as this vertex nears the tile's merge distance — the
+        // LOD swap then exchanges identical tiles and nothing pops
+        let m = clamp((d - tile.morph.x) / (tile.morph.y - tile.morph.x), 0.0, 1.0);
+        let radial = normalize(rel - globals.center.xyz);
+        rel += radial * (in.morph_dh * m);
+        wet = mix(in.water.a, in.morph_wet, m);
+    }
+    if (tile.offset.w < 0.5 && globals.hole.w > 0.0) {
+        // voxel chunks: past the guaranteed-covered disc the blocks sink
+        // from their lift down flush with the mesh, so the patch ends in a
+        // feathered shoreline instead of a floating one-block cliff
+        let q = rel - globals.hole.xyz;
+        let vert = dot(q, globals.hole_up.xyz);
+        let horiz = length(q - globals.hole_up.xyz * vert);
+        let sink = smoothstep(globals.hole.w * 1.02, globals.hole.w * 1.35, horiz);
+        rel -= globals.hole_up.xyz * (globals.center.w * 1.1 * sink);
+    }
     out.clip = globals.view_proj * vec4<f32>(rel, 1.0);
     out.normal = in.normal;
     out.color = in.color;
     out.dist_km = length(rel);
     out.rel_flag = vec4<f32>(rel, tile.offset.w);
-    out.water = in.water;
+    out.water = vec4<f32>(in.water.rgb, wet);
     return out;
 }
 
