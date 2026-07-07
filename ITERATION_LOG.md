@@ -1202,19 +1202,26 @@ All four found, all fixed, verified, merged:
   strata depth from the dug-down top, not the natural `ground0`, so the floor
   computed depth 0 → grass. Measure from `ground0` → dirt then stone.
 
-### The sharpest lesson: the harness screenshots show only the MESH
+### RETRACTED: "the harness screenshots show only the MESH" was WRONG
 
-Chasing R5-2 revealed that the play harness renders the **far mesh, not the
-voxel near-field** — voxel chunks stream in on background threads and a
-single-shot capture doesn't wait for un-edited ones (edited chunks DO rebuild
-and show, which is why R5-4's shaft was visible). So codex's *visual* hunts
-are effectively blind to voxel-specific rendering, and water surfaces read as
-flat mesh planes. Two consequences: (1) visual findings from the harness are
-really about the mesh — fix there (R5-2's `frost_color` is a mesh fix, with a
-matching voxel fix for real gameplay); (2) a real next lever is making `shot`
-pump the renderer until the near-field voxels have streamed in, which would
-unblind the harness for the game's dominant visual system. Logged as the top
-follow-up.
+An earlier draft of this log claimed the harness renders only the far mesh, not
+the voxel near-field. **That was a misread and is retracted.** `capture()`
+already blocks until `chunk_pending` drains, then redraws — it renders
+fully-built voxel chunks. Proof (2026-07-07): instrumenting the hole showed a
+level-view capture with r_km=0.4038 km (a 404 m hole), 468 chunks drawn, 0
+pending; a magenta-paint debug of every heightfield fragment lit up ONLY a far
+band past the hole — the entire foreground was voxel-chunk geometry.
+
+The actual trap: **flat-savanna voxel-chunk tops look smooth and mesh-like.**
+Each column's top is a single 1 m quad; coplanar neighbours read as a faceted
+sheet, so gentle biomes masquerade as the LOD mesh. This false "it's only mesh"
+read was reached twice (a straight-down look and a flat savanna) before the
+magenta diagnostic settled it. Lessons that survive: (1) the `frost_color`
+snow-dusting still needs both a mesh and a voxel path (the mesh shows past the
+patch); (2) before ever concluding "mesh, not voxels" from a harness shot, run
+the magenta paint (`if rel_flag.w>0.5 { return magenta }`) — the mesh is
+whatever turns magenta, everything else is voxels. There is no known mesh-only
+or steep-pitch rendering bug.
 
 ### Method notes that held up
 

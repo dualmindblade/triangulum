@@ -42,7 +42,7 @@ fn parse_args() -> Args {
         alt: 20000.0,
         yaw: 0.0,
         pitch: 999.0,
-        exaggeration: 10.0,
+        exaggeration: 1.0,
         size: (1600, 900),
         sun: None,
         day_len: 1200.0,

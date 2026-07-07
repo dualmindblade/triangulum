@@ -132,6 +132,11 @@ pub struct Renderer {
     /// racing the fresh one and winning — which left edited blocks/torches
     /// visually stale.
     chunk_pending: HashMap<ChunkKey, u64>,
+    /// Edited chunks whose cached mesh is now out of date but is kept on
+    /// screen until the rebuild lands — so a place/break never flashes the
+    /// heightfield (or a hole to the sky) where the block just changed. Draw
+    /// re-queues these; drain swaps the mesh in place and clears the flag.
+    chunk_stale: HashSet<ChunkKey>,
     /// Monotonic request counter: every queued chunk build carries the epoch
     /// it was requested at.
     chunk_epoch: u64,
@@ -303,6 +308,7 @@ impl Renderer {
             format,
             cache: HashMap::new(),
             chunk_cache: HashMap::new(),
+            chunk_stale: HashSet::new(),
             frame_counter: 0,
             exaggeration,
             sun_dir: None,
@@ -346,8 +352,16 @@ impl Renderer {
     /// the pending set makes their (stale) results get dropped on arrival.
     pub fn invalidate_chunks(&mut self, keys: &[ChunkKey]) {
         for k in keys {
-            self.chunk_cache.remove(k);
+            // cancel any in-flight build (its result is rejected by epoch),
+            // then either mark the cached mesh stale (keep drawing it until the
+            // rebuild lands — no flash) or, if we never had it, drop it so draw
+            // builds it fresh
             self.chunk_pending.remove(k);
+            if self.chunk_cache.contains_key(k) {
+                self.chunk_stale.insert(*k);
+            } else {
+                self.chunk_cache.remove(k);
+            }
         }
     }
 
@@ -473,17 +487,27 @@ impl Renderer {
             let center = cam_pos.normalize() * planet.radius_km;
             let nn = crate::voxel::COLUMNS_PER_FACE as f64;
             for k in &chunk_keys {
-                if self.chunk_cache.contains_key(k) {
-                    continue;
+                let cached = self.chunk_cache.contains_key(k);
+                let stale = self.chunk_stale.contains(k);
+                if cached && !stale {
+                    continue; // current mesh already on screen
                 }
-                let u = -1.0 + 2.0 * ((k.cx * crate::voxel::CHUNK + 16) as f64 + 0.5) / nn;
-                let v = -1.0 + 2.0 * ((k.cy * crate::voxel::CHUNK + 16) as f64 + 0.5) / nn;
-                let cdir = crate::planet::face_dir(k.face as usize, u, v);
-                unbuilt_min_km = unbuilt_min_km.min((cdir * planet.radius_km - center).length());
+                // a chunk with no built mesh yet: its area must stay heightfield
+                // (the hole is clamped to unbuilt_min_km). A stale chunk still
+                // has its old mesh drawn, so it does NOT count as unbuilt —
+                // coverage holds and there is no hole/flash while it rebuilds.
+                if !cached {
+                    let u = -1.0 + 2.0 * ((k.cx * crate::voxel::CHUNK + 16) as f64 + 0.5) / nn;
+                    let v = -1.0 + 2.0 * ((k.cy * crate::voxel::CHUNK + 16) as f64 + 0.5) / nn;
+                    let cdir = crate::planet::face_dir(k.face as usize, u, v);
+                    unbuilt_min_km =
+                        unbuilt_min_km.min((cdir * planet.radius_km - center).length());
+                }
                 if !self.chunk_pending.contains_key(k) {
                     let epoch = self.chunk_epoch;
                     self.chunk_epoch = self.chunk_epoch.wrapping_add(1);
                     self.chunk_pending.insert(*k, epoch);
+                    self.chunk_stale.remove(k); // rebuilt with the current edits
                     let tx = self.chunk_tx.clone();
                     let planet = Arc::clone(planet);
                     let edits = edits.clone();
