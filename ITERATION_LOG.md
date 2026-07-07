@@ -752,3 +752,20 @@ Measure the pop before building the anti-pop. The instrument (popdiff +
 swap logging) cost 100 lines and reframed the whole feature: the scary
 part was already solved by the octave-band design; the actual visible
 pops were in the PAINT, which no geometry morph would ever have fixed.
+
+## Night sky: stars and the limb (2026-07-07, Phase 7b)
+
+Two sky-pass additions on feature/night-sky:
+- Stars: view direction hashed into a sparse cube lattice of cells, each
+  holding one jittered star with hashed brightness and a cool-to-warm
+  tint. Purely directional (fixed to the sky), and they dim against the
+  sky's own luminance — so they own the night and open space, and
+  daylight hides them. No time uniform yet, so no twinkle; fine.
+- Limb glow: from orbit, rays grazing past the planet get an atmosphere
+  term by closest approach to the planet center (the camera-relative
+  center global from the geomorph work paid off immediately): a thin
+  blue shell hugging the surface radius, modulated by the sunlit side,
+  fading in only as the camera's own atmosphere fades out.
+Verified: ns-night-ground.png (starfield over the dark valley),
+ns-orbit-limb.png (blue rim on the lit limb, stars behind, dark side
+fades), ns-day-regress.png (no stars in daylight). Golden test green.
