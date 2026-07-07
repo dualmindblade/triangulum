@@ -916,3 +916,36 @@ binaries: the streaming machinery ran headless across 40-frame flights
 (the capture path drains the same channel), the bin passes cargo check,
 and nothing on either branch touches noise (golden test unaffected).
 Their next `cargo run --release` builds and launches the merged code.
+
+## The play harness (2026-07-07, Phase 8 begins: AI verification)
+
+Discussed with the user how weaker models can verify work end-to-end
+when stills are so much weaker than a human just playing. Decisions:
+sidecar state files beat burning coordinates into pixels (models read
+text perfectly, pixels expensively); a minimap is a v2 nicety, not the
+navigation mechanism; navigation is ABSOLUTE-first (teleport + look) —
+dead-reckoning is exactly where weak models lose the plot.
+
+Built: src/player.rs extracts the player simulation (walk/fly physics,
+jump/swim, teleport, block/torch edits) from the window app — one
+implementation, two drivers. examples/play.rs interprets .play scripts
+(teleport/look/mode/hold/tap/wait/shot/state/sun/log) at a fixed 60 Hz
+timestep, headless, in a clean world: every run leaves frames, JSON
+state sidecars (pose + physics + the terrain sample under your feet),
+and a transcript. Deterministic by construction.
+
+The harness earned its keep on its SECOND run: the valley-walk script
+built a 3-block tower and then could not move in ANY direction. Real
+bug (shipped in the trunk-collision work): the body-radius ring blocked
+every move once a wall stood inside 0.35 blocks — and placing blocks
+next to yourself creates that state instantly, then no move can ever
+increase clearance. Deadlock. Fix in player.rs: a violated probe only
+blocks movement TOWARD it (dot(heading, probe) > 0.1) — escape and
+wall-sliding work, the approach standoff holds. Andrew has almost
+certainly hit this in play; the harness found it in minutes.
+
+Also learned: transcripts need 6-decimal coordinates (at 4 decimals a
+5 m walk is invisible — the tool was gaslighting its own operator), and
+script files must survive Windows BOMs. Verified: valley-walk end to
+end (tower, torch, block-by-own-wall with state proof, escape), goldens
+green, physim exact, live smoke green after the physics extraction.

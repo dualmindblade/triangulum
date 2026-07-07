@@ -251,6 +251,31 @@ way. (Diagnosed while verifying: the *angular blue polygons* at coarse
 LOD are lake-cell footprints — geometry, not paint — a separate item
 below.)
 
+## The play harness (scripted, headless verification)
+
+`examples/play.rs` runs plain-text play scripts against the game's own
+player physics (`src/player.rs` — the window app drives the identical
+code) with a fixed 60 Hz timestep, no window needed:
+
+```
+cargo run --release --example play -- scripts/valley-walk.play
+```
+
+Commands: `teleport LAT LON [ALT]`, `look YAW PITCH`, `turn DY DP`,
+`mode walk|fly`, `hold w+shift 3.5`, `tap space|q|e|r`, `wait S`,
+`shot NAME`, `state NAME`, `sun LAT LON`, `log ...`. Each run leaves
+`interchange/runs/<name>/` with frames, per-shot JSON state sidecars
+(pose, physics, terrain under your feet), and a transcript. Scripts start
+in a clean world (no saved edits) and are deterministic — the tool that
+turns "an AI can only look at stills" into reproducible play sessions.
+Navigation is absolute-first by design: scripts teleport to coordinates;
+relative movement exists to exercise physics, not to find places.
+
+Found a real bug on its second-ever run: building a block wall next to
+yourself deadlocked the walker's body-radius collision (every direction
+read as blocked). Collision probes now only block movement *toward* a
+wall — you can escape and slide, and the trunk standoff still holds.
+
 ## Phase 7 (remaining)
 
 Swimming polish, rapids/waterfalls where river levels step, lake
