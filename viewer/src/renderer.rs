@@ -35,7 +35,11 @@ enum DrawKey {
 }
 
 const TILE_UNIFORM_STRIDE: u64 = 256; // min dynamic-offset alignment
-const MAX_TILES: usize = 4096;
+// Per-frame draw slots (tiles + voxel chunks share this pool). Sized well
+// above observed peaks (~3.7k draws at --patch 2.0, low altitude) so the
+// near-field chunks are never truncated away; the uniform buffer is
+// MAX_TILES * 256 B (2 MiB at 8192).
+const MAX_TILES: usize = 8192;
 
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
@@ -116,12 +120,19 @@ pub struct Renderer {
     /// 200–500 m disc, 2.0 = twice the radius (4x the chunks — streaming
     /// makes that affordable).
     pub patch_scale: f64,
-    /// Chunks being built on background threads right now. A chunk whose
-    /// key is removed from here (edit invalidation) has its late result
-    /// dropped on arrival and is rebuilt fresh.
-    chunk_pending: HashSet<ChunkKey>,
-    chunk_tx: mpsc::Sender<(ChunkKey, TileMesh)>,
-    chunk_rx: mpsc::Receiver<(ChunkKey, TileMesh)>,
+    /// Chunks being built on background threads right now, mapped to the
+    /// epoch of the request that spawned them. A build's result is accepted
+    /// only if its epoch still matches (see `chunk_epoch`): invalidation
+    /// removes the key, a fresh request re-inserts it with a NEW epoch, so a
+    /// stale in-flight build (older epoch) is dropped on arrival instead of
+    /// racing the fresh one and winning — which left edited blocks/torches
+    /// visually stale.
+    chunk_pending: HashMap<ChunkKey, u64>,
+    /// Monotonic request counter: every queued chunk build carries the epoch
+    /// it was requested at.
+    chunk_epoch: u64,
+    chunk_tx: mpsc::Sender<(ChunkKey, u64, TileMesh)>,
+    chunk_rx: mpsc::Receiver<(ChunkKey, u64, TileMesh)>,
 }
 
 impl Renderer {
@@ -297,7 +308,8 @@ impl Renderer {
             sun_ref_lon: 0.0,
             start: std::time::Instant::now(),
             patch_scale: 1.0,
-            chunk_pending: HashSet::new(),
+            chunk_pending: HashMap::new(),
+            chunk_epoch: 0,
             chunk_tx: tx,
             chunk_rx: rx,
         }
@@ -335,10 +347,14 @@ impl Renderer {
         }
     }
 
-    /// Collect finished background chunk builds (non-blocking).
+    /// Collect finished background chunk builds (non-blocking). A result is
+    /// accepted only if its epoch still matches the pending request: a build
+    /// left over from before an invalidation (stale edits) carries an older
+    /// epoch and is dropped, so the fresh rebuild is the one that lands.
     fn drain_chunks(&mut self) {
-        while let Ok((k, mesh)) = self.chunk_rx.try_recv() {
-            if self.chunk_pending.remove(&k) {
+        while let Ok((k, epoch, mesh)) = self.chunk_rx.try_recv() {
+            if self.chunk_pending.get(&k) == Some(&epoch) {
+                self.chunk_pending.remove(&k);
                 let gpu = self.upload(mesh);
                 self.chunk_cache.insert(k, gpu);
             }
@@ -450,7 +466,10 @@ impl Renderer {
                 let v = -1.0 + 2.0 * ((k.cy * crate::voxel::CHUNK + 16) as f64 + 0.5) / nn;
                 let cdir = crate::planet::face_dir(k.face as usize, u, v);
                 unbuilt_min_km = unbuilt_min_km.min((cdir * planet.radius_km - center).length());
-                if self.chunk_pending.insert(*k) {
+                if !self.chunk_pending.contains_key(k) {
+                    let epoch = self.chunk_epoch;
+                    self.chunk_epoch = self.chunk_epoch.wrapping_add(1);
+                    self.chunk_pending.insert(*k, epoch);
                     let tx = self.chunk_tx.clone();
                     let planet = Arc::clone(planet);
                     let edits = edits.clone();
@@ -458,7 +477,7 @@ impl Renderer {
                     let key = *k;
                     rayon::spawn(move || {
                         let mesh = build_chunk(&planet, &edits, &torches, key, exagg);
-                        let _ = tx.send((key, mesh));
+                        let _ = tx.send((key, epoch, mesh));
                     });
                 }
             }
@@ -510,10 +529,14 @@ impl Renderer {
         self.queue.write_buffer(&self.globals_buf, 0, bytemuck::bytes_of(&globals));
 
         let mut draws: Vec<(DrawKey, u32)> = Vec::new();
-        let all_keys = keys
+        // near-field voxel chunks FIRST: if the slot pool ever fills, the
+        // truncation victim must be a distant mesh tile, never a near chunk
+        // (a dropped chunk leaves a see-through hole where the heightfield
+        // was already cut away underneath it).
+        let all_keys = chunk_keys
             .iter()
-            .map(|k| DrawKey::Tile(*k))
-            .chain(chunk_keys.iter().map(|k| DrawKey::Chunk(*k)));
+            .map(|k| DrawKey::Chunk(*k))
+            .chain(keys.iter().map(|k| DrawKey::Tile(*k)));
         for (slot, key) in all_keys.enumerate().take(MAX_TILES) {
             let tile = match key {
                 DrawKey::Tile(k) => self.cache.get_mut(&k).unwrap(),
@@ -660,8 +683,12 @@ impl Renderer {
             by_age.sort_unstable_by(|a, b| b.0.cmp(&a.0)); // newest first
             let mut acc = 0u64;
             let mut keep = HashSet::new();
-            for (_, k, b) in by_age {
-                if acc + b <= CHUNK_VRAM_BUDGET {
+            for (used, k, b) in by_age {
+                // chunks used THIS frame are about to be drawn (the render
+                // pass indexes chunk_cache[k] unconditionally) — never evict
+                // them, even if the visible set alone exceeds the budget, or
+                // the draw call panics on a missing key.
+                if used == self.frame_counter || acc + b <= CHUNK_VRAM_BUDGET {
                     acc += b;
                     keep.insert(k);
                 }
@@ -699,8 +726,9 @@ impl Renderer {
                 break;
             }
             match self.chunk_rx.recv_timeout(std::time::Duration::from_secs(30)) {
-                Ok((k, mesh)) => {
-                    if self.chunk_pending.remove(&k) {
+                Ok((k, epoch, mesh)) => {
+                    if self.chunk_pending.get(&k) == Some(&epoch) {
+                        self.chunk_pending.remove(&k);
                         let gpu = self.upload(mesh);
                         self.chunk_cache.insert(k, gpu);
                     }
