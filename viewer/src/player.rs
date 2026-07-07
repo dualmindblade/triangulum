@@ -240,9 +240,15 @@ impl PlayerState {
                             }
                             let pdir = (pos + probe * r_km).normalize();
                             let s = support_below_km(planet, edits, pdir, head, exagg);
+                            // headroom is measured above where the body would
+                            // rest on THIS probe's support (its step-up level),
+                            // not above the current low feet — otherwise a
+                            // steppable 1-block ledge/rim reads as a zero-
+                            // headroom wall and traps you (e.g. a dug hole).
+                            let foot = new_feet.max(s);
                             if s > new_feet + step + 1e-9
-                                || ceiling_above_km(planet, edits, pdir, new_feet + 1e-6, exagg)
-                                    - new_feet
+                                || ceiling_above_km(planet, edits, pdir, foot + 1e-6, exagg)
+                                    - foot
                                     <= EYE_KM + 0.0004
                             {
                                 blocked = true;
