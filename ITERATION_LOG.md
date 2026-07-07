@@ -974,3 +974,84 @@ top cosmetic bug — soft lake shorelines just moved up the queue.
 Operational notes for repeat runs: launch codex via cmd (the Git Bash
 npm shim is broken), model id is gpt-5.5 on this account (not
 gpt-5.5-codex), missions in viewer/interchange/codex/.
+
+## Phase 8b — dual code review + play-harness discovery + delegated fixes (2026-07-07)
+
+A full pass: two independent code reviews (Claude + codex GPT-5.5 xhigh),
+a play-harness bug hunt, and a delegated fix round. Verified work committed
+to main and pushed as it landed.
+
+### The two code reviews (independent, converged)
+
+Claude (me) read the whole viewer; codex reviewed it cold via the harness's
+Start-Process launch (see the freeze note below). Consolidated findings I
+judged worth fixing:
+
+* **[codex, high] Stale in-flight chunk mesh wins the rebuild race.** A chunk
+  build carried only its ChunkKey. On a block/torch edit, invalidate removed
+  the pending key, the next frame re-queued a fresh build, and the OLD build's
+  result (stale edits) was accepted on arrival because the key was pending
+  again — dropping the correct rebuild. Edits could render stale until the
+  next invalidation. FIX (me, renderer.rs): per-request monotonic epoch;
+  drain/capture accept a result only if its epoch still matches.
+* **[codex, med] chunks_touching_column missed diagonal + cross-face
+  consumers.** build_chunk reads a TREE_MARGIN ghost ring and canopies reach
+  into it, so a corner edit must invalidate the diagonal chunk and a face-edge
+  edit the neighbor-face chunk. FIX (codex, voxel.rs): scan the ±TREE_MARGIN
+  neighborhood, map each column to its canonical owning chunk, dedup.
+* **[codex == my #3, med] Face-edge tree anchors hashed with wrapped
+  current-face indices** — canopies decided differently on the two sides of a
+  cube-face edge (and vs tree_here physics). Both reviews found this
+  independently. FIX (codex, voxel.rs): canonical_column() identity map; hash
+  anchors + tree_cells rnd with the canonical (face, ci, cj).
+* **[me, med] Near-field chunks starved by the MAX_TILES draw cap.** Tiles
+  were enumerated before chunks and truncated at 4096, so an over-cap frame
+  dropped the near CHUNKS (see-through hole under the already-cut heightfield).
+  Measured 3.7k draws at --patch 2.0 low altitude — real headroom risk. FIX
+  (me): draw chunks first, MAX_TILES 4096 -> 8192.
+* **[me, med] evict() could drop a chunk queued to draw this frame** (the pass
+  indexes chunk_cache[k] unconditionally) if the visible set alone exceeded
+  the 1.5 GB budget -> panic. FIX (me): never evict last_used == frame_counter.
+
+Divergence was as useful as convergence: codex owned the chunk-edit /
+threading bugs, I owned the draw-budget / runtime bugs and the play-harness
+find. Lower-priority items logged but deferred: near-unwalkable steep peaks
+(1-block step-up vs jagged ridges) and dead-flat 2 m coastal sand plains
+(h_floor clamp) — both arguably by-design; noted for a design decision.
+
+### Play-harness discovery: underwater patch-boundary water void (Claude)
+
+Sinking into the inland sea and sweeping the view revealed a near-black
+see-through slit at the water surface where the voxel patch meets the far
+mesh — the sky visible THROUGH filled water (obviously wrong, non-aesthetic).
+Isolated with the harness's determinism: world-locked (yaw 0/180 only), and
+GONE at --patch 2.0 (boundary pushed out) -> it's the patch boundary over
+water. Root cause: the heightfield hole cuts the far mesh's sea/lake WATER
+surface, but block water and mesh water are the same surface, so any perimeter
+crack (rim-sink, T-junction, quantization) shows sky. FIX (me): a per-vertex
+wflag marks sea/lake water-surface verts; fs_main skips the hole discard for
+them, so the mesh water plane backs the patch and any crack shows water, not
+void. Verified: void gone at all yaws, previously-clean views + river delta
+byte-identical (rivers wflag=0), above-water sea shows no z-fighting.
+
+### Delegation (the point of the exercise)
+
+* Me: the underwater void (rendering, interesting) + renderer safety (A/D/E,
+  incl. the high-severity threading race).
+* codex GPT-5.5 (worktree, isolated): the voxel.rs chunk-edit correctness
+  (B/C) — clean canonical_column() refactor, reviewed + compile-verified by me
+  before merge (codex didn't build).
+* Branches: fix/underwater-patch-water-void, fix/render-safety,
+  fix/chunk-edit-correctness — each verified, merged to main, pushed.
+
+### Operational: codex logging + freeze (IMPORTANT correction)
+
+The documented `cmd /c "codex exec ... > run.log 2>&1"` launch does NOT work
+from this agent harness — bash->cmd file redirection silently creates no file
+(a trivial `cmd /c "echo x > f"` also fails here), and the first attempt hit
+the known silent freeze (378 CPU-s then idle, zero output). ROBUST launch:
+PowerShell `Start-Process cmd.exe -RedirectStandardInput MISSION.md
+-RedirectStandardOutput run.log -RedirectStandardError run.err -NoNewWindow
+-PassThru`. codex streams reasoning to STDERR (run.err) and the final answer
+to stdout; watch run.err for liveness and sample process CPU (flat CPU + no
+new stderr = frozen) rather than log-file growth.
