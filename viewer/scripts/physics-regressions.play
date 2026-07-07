@@ -1,0 +1,57 @@
+# Physics regression suite: locks in four bugs found and fixed during the
+# codex/GPT-5.5 play-harness bug hunt (see interchange/hunt/). Each section
+# reproduces the exact repro coordinates from the hunt's scratch scripts and
+# asserts the invariant that must hold post-fix. Any failure makes the run
+# exit non-zero. Run:
+#   ./viewer/target/release/examples/play.exe viewer/scripts/physics-regressions.play
+
+# ---- R1: placing a block straight down in walk mode must not embed the
+# head (self-clip into the new block => ceiling reads non-none / player
+# falls into a starfield void). Placing twice in a row must stay clean.
+log R1 place-down must not self-clip (no ceiling, stays grounded)
+teleport 1.510 40.490 0.004
+look 0 -80
+mode walk
+wait 1
+tap e
+wait 0.2
+assert ceiling_above_km none
+assert grounded true
+shot r1_place1
+tap e
+wait 0.2
+assert ceiling_above_km none
+assert grounded true
+shot r1_place2
+
+# ---- R2: fly mode with the eye below a river water surface must read
+# underwater==true (was previously missing the immersion flag in fly mode).
+log R2 fly below river water -> underwater true
+mode fly
+teleport -0.490 -30.550 0.004
+assert underwater true
+shot r2_fly_river
+
+# ---- R3: a below-freezing lake is a solid ice sheet, not liquid — walking
+# onto it must be grounded (not swimming) and must not report water.
+log R3 frozen lake is walkable ice, not liquid
+teleport 73.486 -76.450 0.004
+mode walk
+wait 8
+assert grounded true
+assert underwater false
+assert has_water false
+shot r3_frozen_walk
+
+# ---- R4: after being underwater then teleporting above the lake surface in
+# fly mode, underwater must clear to false immediately (was previously
+# stale for a tick, leaving the underwater tint on above the surface).
+log R4 teleport above lake clears stale underwater
+teleport 20.633 127.615 0.05
+mode walk
+wait 14
+assert underwater true
+mode fly
+teleport 20.633 127.615 0.02
+assert underwater false
+shot r4_above_clear

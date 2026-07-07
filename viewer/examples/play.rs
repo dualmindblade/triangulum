@@ -153,7 +153,7 @@ fn main() -> anyhow::Result<()> {
         yaw: 0.0,
         pitch: 0.0,
     };
-    ps.teleport(&planet, &mut camera, 10.0, 30.0, Some(100.0), exagg);
+    ps.teleport(&planet, &edits, &mut camera, 10.0, 30.0, Some(100.0), exagg);
 
     let write_state = |name: &str,
                        camera: &Camera,
@@ -222,7 +222,7 @@ fn main() -> anyhow::Result<()> {
         };
         match toks[0].to_ascii_lowercase().as_str() {
             "teleport" => {
-                ps.teleport(&planet, &mut camera, f(1)?, f(2)?, f(3).ok(), exagg);
+                ps.teleport(&planet, &edits, &mut camera, f(1)?, f(2)?, f(3).ok(), exagg);
                 trace!("[{}] teleport -> lat {:.6} lon {:.6} alt {:.5} km",
                     ln + 1, f(1)?, f(2)?, camera.altitude_km);
             }
@@ -243,6 +243,9 @@ fn main() -> anyhow::Result<()> {
                     Some("fly") => ps.set_fly(&mut camera),
                     _ => anyhow::bail!("line {}: mode walk|fly", ln + 1),
                 }
+                // a mode switch is a pose change; keep underwater consistent
+                // for an immediate shot with no update tick in between
+                ps.refresh_underwater(&planet, &edits, &camera, exagg);
                 trace!("[{}] mode {}", ln + 1, toks[1]);
             }
             "hold" => {

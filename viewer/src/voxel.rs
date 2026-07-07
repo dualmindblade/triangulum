@@ -160,6 +160,18 @@ impl ColCtx {
     fn has_water(&self) -> bool {
         self.water != i64::MIN && self.water > self.top_solid()
     }
+
+    /// A below-freezing water column renders as a solid ICE sheet (Mat::Ice,
+    /// temp < -4 C — see build_chunk), so physics must treat its surface as
+    /// walkable ground, not liquid: without this the player sinks through a
+    /// visible ice sheet and swims. Returns the ice-surface block, or None.
+    fn frozen_ice(&self) -> Option<i64> {
+        if self.has_water() && self.temp < -4.0 {
+            Some(self.water)
+        } else {
+            None
+        }
+    }
 }
 
 /// Canonical face/column for an extended lattice index. In-range indices keep
@@ -468,6 +480,14 @@ fn column_of(u: f64, v: f64) -> (u64, u64) {
     (ci, cj)
 }
 
+/// The face/column the given direction points at — the column identity used
+/// by edits, chunk keys, and the "which column am I standing in" test.
+pub fn column_id(dir: DVec3) -> (u8, u64, u64) {
+    let (face, u, v) = crate::planet::face_from_dir(dir);
+    let (ci, cj) = column_of(u, v);
+    (face as u8, ci, cj)
+}
+
 /// Height of the *solid* walkable surface (km, exaggerated, incl. the patch
 /// lift) under a direction. Water is NOT walkable: you wade into ponds and
 /// sink through rivers to their floor. Mirrors build_chunk's shell()/lift
@@ -498,11 +518,22 @@ pub fn support_below_km(
     let trunk_top = tree_here(planet, edits, face, ci, cj)
         .filter(|(k, _)| *k != TreeKind::Shrub)
         .map(|(_, t)| c.ground + t);
-    let solid = |z: i64| c.filled(z) || trunk_top.is_some_and(|t| z > c.ground && z <= t);
+    // frozen water is a solid ice sheet you stand ON (at the water surface)
+    let ice = c.frozen_ice();
+    let solid = |z: i64| {
+        c.filled(z)
+            || trunk_top.is_some_and(|t| z > c.ground && z <= t)
+            || ice == Some(z)
+    };
     let scale = VOXEL_KM * exaggeration;
     let lift = lift_km(exaggeration);
     let mut z = (((at_km - lift) / scale) + 1e-7).floor() as i64;
-    z = z.min(trunk_top.unwrap_or(c.ground).max(c.ground));
+    z = z.min(
+        trunk_top
+            .unwrap_or(c.ground)
+            .max(c.ground)
+            .max(ice.unwrap_or(i64::MIN)),
+    );
     let z_min = c.ground - CAVE_DEPTH - 1;
     while z >= z_min {
         if solid(z) {
@@ -555,7 +586,9 @@ pub fn water_surface_km(
     let (face, u, v) = crate::planet::face_from_dir(dir);
     let (ci, cj) = column_of(u, v);
     let c = col_ctx(planet, edits, face, ci, cj);
-    if c.has_water() {
+    // frozen columns are solid ice (walkable, handled by support_below_km),
+    // NOT liquid — so wading/underwater physics must not see water here.
+    if c.has_water() && c.frozen_ice().is_none() {
         Some(c.water as f64 * VOXEL_KM * exaggeration + lift_km(exaggeration))
     } else {
         None
