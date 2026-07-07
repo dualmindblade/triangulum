@@ -146,6 +146,7 @@ fn main() -> Result<()> {
         teleport: None,
         title_timer: 0.0,
         edits: load_edits(planet_seed),
+        torches: load_torches(planet_seed),
         underwater: false,
     };
     event_loop.run_app(&mut app)?;
@@ -178,6 +179,7 @@ fn capture(planet: Planet, camera: Camera, args: Args, path: &str) -> Result<()>
     });
     // headless shots see the same edited world the game saves
     let edits = load_edits(planet.seed);
+    renderer.torches = load_torches(planet.seed);
     renderer.underwater = triangulum_viewer::voxel::water_surface_km(
         &planet,
         &edits,
@@ -228,6 +230,7 @@ struct App {
     teleport: Option<String>,
     title_timer: f64,
     edits: triangulum_viewer::voxel::Edits,
+    torches: triangulum_viewer::voxel::Torches,
     underwater: bool, // eye below a water surface (walk mode wading)
 }
 
@@ -246,6 +249,45 @@ fn interchange_dir() -> &'static str {
 /// Player block edits persist here, keyed by planet seed.
 fn edits_path(seed: i64) -> String {
     format!("{}/edits_seed{}.bin", assets_dir(), seed)
+}
+
+/// Player-placed torches persist here, keyed by planet seed.
+fn torches_path(seed: i64) -> String {
+    format!("{}/torches_seed{}.bin", assets_dir(), seed)
+}
+
+fn load_torches(seed: i64) -> triangulum_viewer::voxel::Torches {
+    let mut out = triangulum_viewer::voxel::Torches::default();
+    let Ok(raw) = std::fs::read(torches_path(seed)) else { return out };
+    if raw.len() < 8 || &raw[0..4] != b"TRC1" {
+        return out;
+    }
+    let n = u32::from_le_bytes(raw[4..8].try_into().unwrap()) as usize;
+    if raw.len() != 8 + n * 17 {
+        return out;
+    }
+    for k in 0..n {
+        let o = 8 + k * 17;
+        let face = raw[o];
+        let ci = u64::from_le_bytes(raw[o + 1..o + 9].try_into().unwrap());
+        let cj = u64::from_le_bytes(raw[o + 9..o + 17].try_into().unwrap());
+        out.insert((face, ci, cj));
+    }
+    out
+}
+
+fn save_torches(seed: i64, torches: &triangulum_viewer::voxel::Torches) {
+    let mut buf = Vec::with_capacity(8 + torches.len() * 17);
+    buf.extend_from_slice(b"TRC1");
+    buf.extend_from_slice(&(torches.len() as u32).to_le_bytes());
+    for &(face, ci, cj) in torches {
+        buf.push(face);
+        buf.extend_from_slice(&ci.to_le_bytes());
+        buf.extend_from_slice(&cj.to_le_bytes());
+    }
+    if let Err(e) = std::fs::write(torches_path(seed), buf) {
+        eprintln!("could not save torches: {e}");
+    }
 }
 
 fn load_edits(seed: i64) -> triangulum_viewer::voxel::Edits {
@@ -310,6 +352,31 @@ impl App {
                 gfx.renderer.invalidate_chunks(&dirty);
             }
             save_edits(self.planet.seed, &self.edits);
+        }
+    }
+
+    /// R: toggle a torch on the walkable top of the targeted column.
+    fn toggle_torch(&mut self) {
+        let eye = self.camera.position();
+        let look = self.camera.look_dir();
+        let reach_m = if self.mode == Mode::Walk { 8.0 } else { 60.0 };
+        if let Some(((face, ci, cj), _)) = triangulum_viewer::voxel::raycast_column(
+            &self.planet,
+            &self.edits,
+            eye,
+            look,
+            reach_m,
+            self.args.exaggeration,
+        ) {
+            if !self.torches.remove(&(face, ci, cj)) {
+                self.torches.insert((face, ci, cj));
+            }
+            let dirty = triangulum_viewer::voxel::chunks_touching_column(face, ci, cj);
+            if let Some(gfx) = self.gfx.as_mut() {
+                gfx.renderer.torches = self.torches.clone();
+                gfx.renderer.invalidate_chunks(&dirty);
+            }
+            save_torches(self.planet.seed, &self.torches);
         }
     }
 
@@ -664,6 +731,7 @@ impl ApplicationHandler for App {
             let (la, lo) = (la.to_radians(), lo.to_radians());
             glam::DVec3::new(la.cos() * lo.cos(), la.cos() * lo.sin(), la.sin())
         });
+        renderer.torches = self.torches.clone();
         self.gfx = Some(Gfx { window, surface, config, renderer });
     }
 
@@ -722,6 +790,7 @@ impl ApplicationHandler for App {
                                 }
                                 K::KeyQ => self.edit_block(-1),
                                 K::KeyE => self.edit_block(1),
+                                K::KeyR => self.toggle_torch(),
                                 K::KeyT => {
                                     self.teleport = Some(String::new());
                                     self.show_teleport_prompt();

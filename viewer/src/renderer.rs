@@ -4,7 +4,7 @@
 use crate::camera::Camera;
 use crate::planet::Planet;
 use crate::terrain::{build_tile, select_tiles, TileKey, TileMesh, Vertex};
-use crate::voxel::{build_chunk, select_chunks, ChunkKey, Edits};
+use crate::voxel::{build_chunk, select_chunks, ChunkKey, Edits, Torches};
 use anyhow::Result;
 use glam::{DVec3, Mat4};
 use std::collections::HashMap;
@@ -55,7 +55,14 @@ struct Globals {
     // direction is radial, and camera-relative space has no planet center
     // otherwise. w = the voxel patch lift (km) for the block rim-sink.
     center: [f32; 4],
+    // x = number of active torch lights; rest spare
+    misc: [f32; 4],
+    // placed-torch point lights: xyz camera-relative (km), w intensity
+    lights: [[f32; 4]; MAX_LIGHTS],
 }
+
+/// How many placed torches can light a frame at once (nearest win).
+pub const MAX_LIGHTS: usize = 16;
 
 struct GpuTile {
     origin_km: DVec3,
@@ -85,6 +92,9 @@ pub struct Renderer {
     pub sun_dir: Option<DVec3>,
     /// Eye below a water surface: the shader tints the whole view.
     pub underwater: bool,
+    /// Player-placed torches — meshed into their chunks, and the nearest
+    /// few become real point lights each frame. Kept in sync by the app.
+    pub torches: Torches,
 }
 
 impl Renderer {
@@ -254,6 +264,7 @@ impl Renderer {
             exaggeration,
             sun_dir: None,
             underwater: false,
+            torches: Torches::default(),
         }
     }
 
@@ -323,6 +334,33 @@ impl Renderer {
         let up = cam_pos.normalize();
         let cam_h_km = (cam_pos.length() - planet.radius_km).max(0.0);
         let lift = crate::voxel::lift_km(self.exaggeration);
+
+        // placed torches: the nearest MAX_LIGHTS become point lights. Their
+        // exact height needs a terrain sample, so rank cheaply by direction
+        // first and only sample the winners.
+        let mut lights = [[0.0f32; 4]; MAX_LIGHTS];
+        let mut n_lights = 0usize;
+        if camera.altitude_km < VOXEL_MAX_ALT_KM && !self.torches.is_empty() {
+            let nn = crate::voxel::COLUMNS_PER_FACE as f64;
+            let mut ranked: Vec<(f64, DVec3)> = self
+                .torches
+                .iter()
+                .map(|&(f, ci, cj)| {
+                    let u = -1.0 + 2.0 * (ci as f64 + 0.5) / nn;
+                    let v = -1.0 + 2.0 * (cj as f64 + 0.5) / nn;
+                    let dir = crate::planet::face_dir(f as usize, u, v);
+                    ((dir * cam_pos.length() - cam_pos).length_squared(), dir)
+                })
+                .collect();
+            ranked.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+            for &(_, dir) in ranked.iter().take(MAX_LIGHTS) {
+                let top = crate::voxel::surface_height_km(planet, edits, dir, self.exaggeration);
+                let pos = dir * (planet.radius_km + top + 0.55 * crate::voxel::VOXEL_KM * self.exaggeration)
+                    - cam_pos;
+                lights[n_lights] = [pos.x as f32, pos.y as f32, pos.z as f32, 1.0];
+                n_lights += 1;
+            }
+        }
         let globals = Globals {
             view_proj: vp32.to_cols_array_2d(),
             inv_view_proj: inv32.to_cols_array_2d(),
@@ -336,6 +374,8 @@ impl Renderer {
                 (-cam_pos.z) as f32,
                 lift as f32,
             ],
+            misc: [n_lights as f32, 0.0, 0.0, 0.0],
+            lights,
         };
         self.queue.write_buffer(&self.globals_buf, 0, bytemuck::bytes_of(&globals));
 
@@ -366,9 +406,10 @@ impl Renderer {
                 .collect();
             let built_c: Vec<(ChunkKey, TileMesh)> = {
                 use rayon::prelude::*;
+                let torches = &self.torches;
                 missing_c
                     .par_iter()
-                    .map(|k| (*k, build_chunk(planet, edits, *k, exagg)))
+                    .map(|k| (*k, build_chunk(planet, edits, torches, *k, exagg)))
                     .collect()
             };
             for (k, mesh) in built_c {

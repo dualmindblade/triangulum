@@ -34,6 +34,10 @@ const TREE_MARGIN: i64 = 4;
 /// place on top = +1 each). Sparse — only touched columns are stored.
 pub type Edits = HashMap<(u8, u64, u64), i64>;
 
+/// Player-placed torches: a torch stands on the walkable top of its column
+/// (it rides along if the column is edited). Persisted like edits.
+pub type Torches = std::collections::HashSet<(u8, u64, u64)>;
+
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct ChunkKey {
     pub face: u8,
@@ -661,8 +665,14 @@ pub fn select_chunks(cam_pos: DVec3, planet: &Planet, radius_m: f64) -> Vec<Chun
 // ---------------------------------------------------------------- meshing
 
 /// Mesh one chunk: solid columns (tops, cave ceilings/floors, strata sides),
-/// water surfaces, and trees.
-pub fn build_chunk(planet: &Planet, edits: &Edits, key: ChunkKey, exaggeration: f64) -> TileMesh {
+/// water surfaces, trees, and player-placed torches.
+pub fn build_chunk(
+    planet: &Planet,
+    edits: &Edits,
+    torches: &Torches,
+    key: ChunkKey,
+    exaggeration: f64,
+) -> TileMesh {
     let n = CHUNK as i64;
     let face = key.face as usize;
     let nn = COLUMNS_PER_FACE as f64;
@@ -958,6 +968,44 @@ pub fn build_chunk(planet: &Planet, edits: &Edits, key: ChunkKey, exaggeration: 
                 let (r0, r1) = (shell(tz - 1), shell(tz));
                 quad([da * r1, db * r1, db * r0, da * r0], n_side, [vary(col, 0.8); 4], 1.0);
             }
+        }
+    }
+
+    // ---- torches: a crossed pair of thin vertical quads standing on the
+    // column's walkable top, wood below, emissive flame above (dim = 2.0
+    // marks emissive for the shader). The actual LIGHT is a per-frame
+    // point light the renderer collects from the same torch set.
+    for &(tf, tci, tcj) in torches.iter() {
+        if tf != key.face {
+            continue;
+        }
+        let (ti, tj) = (tci as i64 - base_i, tcj as i64 - base_j);
+        if !(0..n).contains(&ti) || !(0..n).contains(&tj) {
+            continue;
+        }
+        let c = at(ti, tj);
+        let top = c.top_solid();
+        let (u0, u1) = (u_of(base_i + ti), u_of(base_i + ti + 1));
+        let (v0, v1) = (v_of(base_j + tj), v_of(base_j + tj + 1));
+        let d00 = face_dir(face, u0, v0);
+        let d10 = face_dir(face, u1, v0);
+        let d11 = face_dir(face, u1, v1);
+        let d01 = face_dir(face, u0, v1);
+        let up = origin_dir;
+        let wood = [0.25f32, 0.15, 0.06];
+        let flame = [1.0f32, 0.80, 0.42];
+        let r0 = shell(top);
+        let r1 = r0 + 0.62 * VOXEL_KM * exaggeration;
+        let lp = |a: DVec3, b: DVec3, t: f64| (a + (b - a) * t).normalize();
+        for (pa, pb) in [(d00, d11), (d10, d01)] {
+            let e0 = lp(pa, pb, 0.40);
+            let e1 = lp(pa, pb, 0.60);
+            quad(
+                [e0 * r0, e1 * r0, e1 * r1, e0 * r1],
+                up,
+                [wood, wood, flame, flame],
+                2.0,
+            );
         }
     }
 

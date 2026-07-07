@@ -30,7 +30,8 @@ cargo run --release -- --capture shot.png --lat 22 --lon 28 --alt 500 --pitch -3
 | scroll | altitude (fly mode; above 100 km the view auto-tilts with altitude, below that pitch is all yours). Descends to ~2.5 m — hover over the grass, sink into cave pits (roofs are solid) |
 | **G** | walk mode — real gravity: pressed in flight you skydive from there. Walls stop you, one-block ledges step up, cave ceilings bump your head, pits drop you in. Water: you sink slowly; hold Space to swim up |
 | **Space** | jump (walk mode, when standing) / swim up (in water) |
-| **Q / E** | break / place the top block of the column you're looking at (edits persist to `assets/edits_seed*.bin`) |
+| **Q / E** | break a block / place a block against the face you're aiming at (edits persist to `assets/edits_seed*.bin`) |
+| **R** | place/remove a torch on the block you're aiming at — real light at night and in caves (persists to `assets/torches_seed*.bin`) |
 | **F** | back to fly mode |
 | **T** | teleport: type `lat lon [alt km]` into the title bar, Enter to go |
 | **P** | screenshot to `interchange/shot_lat…_lon…_alt…km_….png` (coordinates in the filename) |
@@ -209,10 +210,22 @@ Scenic destinations (all `--exagg 1`):
   every tile as its parent's geometry — a morph sign/scale bug shows as
   spikes immediately).
 
+## Phase 7b (night sky & torches, 2026-07-07)
+
+* **Stars**: a hashed directional star field that owns the dark — night
+  ground and open space — and dims away under any sky light.
+* **Limb glow**: from orbit the planet wears a thin sunlit blue rim of
+  atmosphere (ray closest-approach against the surface radius).
+* **Placeable torches (R)**: toggle a torch on the block you aim at. The
+  torch is real geometry (crossed quads, emissive flame) and a real point
+  light — warm pools at night, pushed-back darkness in caves. The nearest
+  16 torches light each frame; they persist per seed and ride column
+  edits.
+
 ## Phase 7 (remaining)
 
-Placeable torches/light sources, swimming polish, atmosphere from orbit
-(limb glow), stars at night, river polish (distant threads alias to
-one-vertex zigzags, confluences blob at coarse LOD, rapids/waterfalls
-where levels step), voxel-patch recenter churn (chunk ring rebuilds
-dominate frame-to-frame change at low altitude).
+Swimming polish, river polish (distant threads alias to one-vertex
+zigzags, confluences blob at coarse LOD, rapids/waterfalls where levels
+step), voxel-patch recenter churn (chunk ring rebuilds dominate
+frame-to-frame change at low altitude), day/night cycle (sun currently
+static per launch), torch flame flicker (needs a time uniform).

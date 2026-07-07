@@ -14,6 +14,10 @@ struct Globals {
     sky: vec4<f32>,
     // xyz = planet center relative to the camera (km), w = voxel patch lift
     center: vec4<f32>,
+    // x = number of active torch lights
+    misc: vec4<f32>,
+    // placed-torch point lights: xyz camera-relative (km), w intensity
+    lights: array<vec4<f32>, 16>,
 };
 struct Tile {
     // xyz: tile origin minus camera position, in km (computed in f64 on the
@@ -115,6 +119,10 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     let light = max(dot(n, globals.sun_dir.xyz), 0.0);
     var c = base * (0.10 + 1.0 * light);
     if (in.rel_flag.w < 0.5) {
+        if (in.water.a > 1.5) {
+            // emissive block face (torch flames): full-bright, no sun, no dim
+            return vec4<f32>(in.color, 1.0);
+        }
         // cave darkness, applied here (not baked) so the player's torch can
         // push it back: a warm pool of light that reaches ~10 m and only
         // acts where the dark is — daylight terrain is untouched
@@ -122,6 +130,15 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         let reach = clamp(1.0 - in.dist_km / 0.010, 0.0, 1.0);
         let torch = reach * reach * (1.0 - dim);
         c = c * dim + base * vec3<f32>(1.0, 0.78, 0.48) * torch * 0.85;
+    }
+    // placed torches: warm point-light pools on blocks and mesh alike —
+    // they light the night and push back cave darkness around themselves
+    let n_lights = u32(globals.misc.x);
+    for (var i = 0u; i < n_lights; i = i + 1u) {
+        let lp = globals.lights[i];
+        let dist = distance(in.rel_flag.xyz, lp.xyz);
+        let a = clamp(1.0 - dist / 0.011, 0.0, 1.0);
+        c += base * vec3<f32>(1.0, 0.70, 0.36) * (a * a * lp.w);
     }
     // aerial perspective: distant terrain melts toward the same horizon
     // color the sky pass uses; the effect thins away with camera altitude
