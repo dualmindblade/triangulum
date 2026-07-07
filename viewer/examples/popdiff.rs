@@ -18,7 +18,7 @@ fn main() -> anyhow::Result<()> {
     } else {
         "assets"
     };
-    let planet = Planet::load(assets)?;
+    let planet = std::sync::Arc::new(Planet::load(assets)?);
     let instance =
         wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
     let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
@@ -39,6 +39,7 @@ fn main() -> anyhow::Result<()> {
     // optional: run the day/night cycle during the flight (0 = static sun)
     renderer.day_len_s = get(7, 0.0);
     renderer.sun_ref_lon = lon.to_radians();
+    renderer.patch_scale = get(8, 1.0);
 
     let mut camera = Camera {
         lon: lon.to_radians(),

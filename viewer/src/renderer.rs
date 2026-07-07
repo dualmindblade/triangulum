@@ -7,7 +7,9 @@ use crate::terrain::{build_tile, select_tiles, TileKey, TileMesh, Vertex};
 use crate::voxel::{build_chunk, select_chunks, ChunkKey, Edits, Torches};
 use anyhow::Result;
 use glam::{DVec3, Mat4};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::sync::mpsc;
+use std::sync::Arc;
 use wgpu::util::DeviceExt;
 
 pub const VOXEL_MAX_ALT_KM: f64 = 2.5;
@@ -70,7 +72,13 @@ struct GpuTile {
     index_buf: wgpu::Buffer,
     index_count: u32,
     last_used: u64,
+    bytes: u64,
 }
+
+/// VRAM ceiling for cached chunk meshes: past it, least-recently-used
+/// chunks are dropped regardless of age. Sized so --patch 2.0 fits with
+/// room for the rest of the frame on a 6 GB card.
+const CHUNK_VRAM_BUDGET: u64 = 1500 << 20;
 
 pub struct Renderer {
     pub device: wgpu::Device,
@@ -104,6 +112,16 @@ pub struct Renderer {
     /// Longitude (radians) that starts the cycle at mid-morning.
     pub sun_ref_lon: f64,
     start: std::time::Instant,
+    /// Voxel patch radius multiplier (--patch): 1.0 = the classic
+    /// 200–500 m disc, 2.0 = twice the radius (4x the chunks — streaming
+    /// makes that affordable).
+    pub patch_scale: f64,
+    /// Chunks being built on background threads right now. A chunk whose
+    /// key is removed from here (edit invalidation) has its late result
+    /// dropped on arrival and is rebuilt fresh.
+    chunk_pending: HashSet<ChunkKey>,
+    chunk_tx: mpsc::Sender<(ChunkKey, TileMesh)>,
+    chunk_rx: mpsc::Receiver<(ChunkKey, TileMesh)>,
 }
 
 impl Renderer {
@@ -256,6 +274,7 @@ impl Renderer {
         });
 
         let depth = Self::make_depth(&device, size);
+        let (tx, rx) = mpsc::channel();
         Self {
             device,
             queue,
@@ -277,6 +296,10 @@ impl Renderer {
             day_len_s: 0.0,
             sun_ref_lon: 0.0,
             start: std::time::Instant::now(),
+            patch_scale: 1.0,
+            chunk_pending: HashSet::new(),
+            chunk_tx: tx,
+            chunk_rx: rx,
         }
     }
 
@@ -303,9 +326,22 @@ impl Renderer {
     }
 
     /// Drop cached chunk meshes (after edits) so they rebuild next frame.
+    /// In-flight builds of these chunks are orphaned: removing the key from
+    /// the pending set makes their (stale) results get dropped on arrival.
     pub fn invalidate_chunks(&mut self, keys: &[ChunkKey]) {
         for k in keys {
             self.chunk_cache.remove(k);
+            self.chunk_pending.remove(k);
+        }
+    }
+
+    /// Collect finished background chunk builds (non-blocking).
+    fn drain_chunks(&mut self) {
+        while let Ok((k, mesh)) = self.chunk_rx.try_recv() {
+            if self.chunk_pending.remove(&k) {
+                let gpu = self.upload(mesh);
+                self.chunk_cache.insert(k, gpu);
+            }
         }
     }
 
@@ -313,13 +349,15 @@ impl Renderer {
     pub fn draw(
         &mut self,
         target: &wgpu::TextureView,
-        planet: &Planet,
+        planet: &Arc<Planet>,
         camera: &Camera,
         edits: &Edits,
     ) -> usize {
         self.frame_counter += 1;
         let cam_pos = camera.position();
-        let voxel_radius_m = 200.0 + (VOXEL_MAX_ALT_KM - camera.altitude_km).max(0.0) * 120.0;
+        let voxel_radius_m =
+            (200.0 + (VOXEL_MAX_ALT_KM - camera.altitude_km).max(0.0) * 120.0)
+                * self.patch_scale;
         let focus = (camera.altitude_km < VOXEL_MAX_ALT_KM)
             .then(|| (cam_pos.normalize(), voxel_radius_m / 1000.0 + 0.2));
         let keys = select_tiles(cam_pos, planet.radius_km, ERR_TARGET, focus);
@@ -341,20 +379,6 @@ impl Renderer {
                 cam_pos.normalize()
             }
         });
-        // where voxels are active, cut the heightfield away under them so the
-        // two systems never overlap (no mesh poking up between block tops)
-        let mut hole = [0.0f32; 4];
-        let mut hole_up = [0.0f32; 4];
-        if focus.is_some() {
-            let r_km = crate::voxel::safe_hole_radius_km(voxel_radius_m);
-            if r_km > 0.0 {
-                let up = cam_pos.normalize();
-                let hc = -up * camera.altitude_km; // camera ground point, camera-relative
-                hole = [hc.x as f32, hc.y as f32, hc.z as f32, r_km as f32];
-                hole_up = [up.x as f32, up.y as f32, up.z as f32, 0.0];
-            }
-        }
-        hole_up[3] = if self.underwater { 1.0 } else { 0.0 };
         let inv32 = Mat4::from_cols_array(&vp.inverse().to_cols_array().map(|x| x as f32));
         let up = cam_pos.normalize();
         let cam_h_km = (cam_pos.length() - planet.radius_km).max(0.0);
@@ -389,24 +413,6 @@ impl Renderer {
                 n_lights += 1;
             }
         }
-        let globals = Globals {
-            view_proj: vp32.to_cols_array_2d(),
-            inv_view_proj: inv32.to_cols_array_2d(),
-            sun_dir: [sun.x as f32, sun.y as f32, sun.z as f32, 0.0],
-            hole,
-            hole_up,
-            sky: [up.x as f32, up.y as f32, up.z as f32, cam_h_km as f32],
-            center: [
-                (-cam_pos.x) as f32,
-                (-cam_pos.y) as f32,
-                (-cam_pos.z) as f32,
-                lift as f32,
-            ],
-            misc: [n_lights as f32, (t_s % 3600.0) as f32, 0.0, 0.0],
-            lights,
-        };
-        self.queue.write_buffer(&self.globals_buf, 0, bytemuck::bytes_of(&globals));
-
         let exagg = self.exaggeration;
         // build missing tiles in parallel (rayon), then upload sequentially
         let missing: Vec<TileKey> = keys
@@ -423,28 +429,85 @@ impl Renderer {
             self.cache.insert(k, gpu);
         }
 
-        // near the ground, add true voxel chunks around the camera footprint
+        // near the ground, stream voxel chunks around the camera footprint:
+        // finished background builds land this frame, missing chunks are
+        // queued (nearest first — select_chunks sorts by distance), and the
+        // frame renders whatever is built RIGHT NOW. The heightfield hole
+        // below only opens over guaranteed coverage, so an unbuilt chunk
+        // shows mesh terrain, never a hole to the sky.
         let mut chunk_keys: Vec<ChunkKey> = Vec::new();
+        let mut unbuilt_min_km = f64::INFINITY;
         if camera.altitude_km < VOXEL_MAX_ALT_KM {
+            self.drain_chunks();
             chunk_keys = select_chunks(cam_pos, planet, voxel_radius_m);
-            let missing_c: Vec<ChunkKey> = chunk_keys
-                .iter()
-                .filter(|k| !self.chunk_cache.contains_key(k))
-                .copied()
-                .collect();
-            let built_c: Vec<(ChunkKey, TileMesh)> = {
-                use rayon::prelude::*;
-                let torches = &self.torches;
-                missing_c
-                    .par_iter()
-                    .map(|k| (*k, build_chunk(planet, edits, torches, *k, exagg)))
-                    .collect()
-            };
-            for (k, mesh) in built_c {
-                let gpu = self.upload(mesh);
-                self.chunk_cache.insert(k, gpu);
+            let center = cam_pos.normalize() * planet.radius_km;
+            let nn = crate::voxel::COLUMNS_PER_FACE as f64;
+            for k in &chunk_keys {
+                if self.chunk_cache.contains_key(k) {
+                    continue;
+                }
+                let u = -1.0 + 2.0 * ((k.cx * crate::voxel::CHUNK + 16) as f64 + 0.5) / nn;
+                let v = -1.0 + 2.0 * ((k.cy * crate::voxel::CHUNK + 16) as f64 + 0.5) / nn;
+                let cdir = crate::planet::face_dir(k.face as usize, u, v);
+                unbuilt_min_km = unbuilt_min_km.min((cdir * planet.radius_km - center).length());
+                if self.chunk_pending.insert(*k) {
+                    let tx = self.chunk_tx.clone();
+                    let planet = Arc::clone(planet);
+                    let edits = edits.clone();
+                    let torches = self.torches.clone();
+                    let key = *k;
+                    rayon::spawn(move || {
+                        let mesh = build_chunk(&planet, &edits, &torches, key, exagg);
+                        let _ = tx.send((key, mesh));
+                    });
+                }
             }
+            chunk_keys.retain(|k| self.chunk_cache.contains_key(k));
         }
+
+        // the heightfield hole: never larger than the classic safe radius,
+        // and never reaching past the nearest chunk that isn't built yet
+        // (minus a chunk's worth of margin). Fully built -> full hole;
+        // freshly teleported -> no hole, mesh shows while blocks stream in.
+        let mut hole = [0.0f32; 4];
+        let mut hole_up = [0.0f32; 4];
+        if focus.is_some() {
+            let r_km = crate::voxel::safe_hole_radius_km(voxel_radius_m)
+                .min((unbuilt_min_km - 0.096).max(0.0));
+            // center + up are set whenever the patch exists (the rim-sink
+            // needs them even while the hole itself is still closed)
+            let hup = cam_pos.normalize();
+            let hc = -hup * camera.altitude_km; // camera ground point, camera-relative
+            hole = [hc.x as f32, hc.y as f32, hc.z as f32, r_km.max(0.0) as f32];
+            hole_up = [hup.x as f32, hup.y as f32, hup.z as f32, 0.0];
+        }
+        hole_up[3] = if self.underwater { 1.0 } else { 0.0 };
+
+        let globals = Globals {
+            view_proj: vp32.to_cols_array_2d(),
+            inv_view_proj: inv32.to_cols_array_2d(),
+            sun_dir: [sun.x as f32, sun.y as f32, sun.z as f32, 0.0],
+            hole,
+            hole_up,
+            sky: [up.x as f32, up.y as f32, up.z as f32, cam_h_km as f32],
+            center: [
+                (-cam_pos.x) as f32,
+                (-cam_pos.y) as f32,
+                (-cam_pos.z) as f32,
+                lift as f32,
+            ],
+            misc: [
+                n_lights as f32,
+                (t_s % 3600.0) as f32,
+                // the rim-sink band follows the SELECTED patch radius, not
+                // the (coverage-dependent) hole, so the patch edge stays
+                // feathered even while chunks are still streaming in
+                (voxel_radius_m / 1000.0) as f32,
+                0.0,
+            ],
+            lights,
+        };
+        self.queue.write_buffer(&self.globals_buf, 0, bytemuck::bytes_of(&globals));
 
         let mut draws: Vec<(DrawKey, u32)> = Vec::new();
         let all_keys = keys
@@ -555,6 +618,8 @@ impl Renderer {
     }
 
     fn upload(&self, mesh: TileMesh) -> GpuTile {
+        let bytes = (mesh.vertices.len() * std::mem::size_of::<Vertex>()
+            + mesh.indices.len() * 4) as u64;
         GpuTile {
             origin_km: mesh.origin_km,
             vertex_buf: self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -569,6 +634,7 @@ impl Renderer {
             }),
             index_count: mesh.indices.len() as u32,
             last_used: self.frame_counter,
+            bytes,
         }
     }
 
@@ -577,15 +643,37 @@ impl Renderer {
         if self.cache.len() > 1500 {
             self.cache.retain(|_, t| t.last_used >= cutoff);
         }
-        if self.chunk_cache.len() > 2500 {
+        // sized for --patch 2.0 (a ~1 km disc is ~1600 chunks)
+        if self.chunk_cache.len() > 4000 {
             self.chunk_cache.retain(|_, t| t.last_used >= cutoff);
+        }
+        // hard VRAM budget: newest chunks win, the LRU tail is dropped —
+        // without this, fast flight at big patch sizes accumulates buffers
+        // faster than the age-based eviction can retire them (OOM)
+        let total: u64 = self.chunk_cache.values().map(|t| t.bytes).sum();
+        if total > CHUNK_VRAM_BUDGET {
+            let mut by_age: Vec<(u64, ChunkKey, u64)> = self
+                .chunk_cache
+                .iter()
+                .map(|(k, t)| (t.last_used, *k, t.bytes))
+                .collect();
+            by_age.sort_unstable_by(|a, b| b.0.cmp(&a.0)); // newest first
+            let mut acc = 0u64;
+            let mut keep = HashSet::new();
+            for (_, k, b) in by_age {
+                if acc + b <= CHUNK_VRAM_BUDGET {
+                    acc += b;
+                    keep.insert(k);
+                }
+            }
+            self.chunk_cache.retain(|k, _| keep.contains(k));
         }
     }
 
     /// Render one frame offscreen and save it as a PNG (no window required).
     pub fn capture(
         &mut self,
-        planet: &Planet,
+        planet: &Arc<Planet>,
         camera: &Camera,
         edits: &Edits,
         path: &str,
@@ -602,7 +690,28 @@ impl Renderer {
             view_formats: &[],
         });
         let view = texture.create_view(&Default::default());
-        let n_tiles = self.draw(&view, planet, camera, edits);
+        let mut n_tiles = self.draw(&view, planet, camera, edits);
+        // a screenshot is a complete frame: block (bounded) until every
+        // streamed chunk has landed, then draw again with full coverage
+        let mut waited = false;
+        for _ in 0..8192 {
+            if self.chunk_pending.is_empty() {
+                break;
+            }
+            match self.chunk_rx.recv_timeout(std::time::Duration::from_secs(30)) {
+                Ok((k, mesh)) => {
+                    if self.chunk_pending.remove(&k) {
+                        let gpu = self.upload(mesh);
+                        self.chunk_cache.insert(k, gpu);
+                    }
+                    waited = true;
+                }
+                Err(_) => break,
+            }
+        }
+        if waited {
+            n_tiles = self.draw(&view, planet, camera, edits);
+        }
 
         let bytes_per_row = (w * 4 + 255) / 256 * 256;
         let readback = self.device.create_buffer(&wgpu::BufferDescriptor {
