@@ -1,6 +1,6 @@
-# Physics regression suite: locks in four bugs found and fixed during the
-# codex/GPT-5.5 play-harness bug hunt (see interchange/hunt/). Each section
-# reproduces the exact repro coordinates from the hunt's scratch scripts and
+# Physics regression suite: locks in the state-assertable bugs found and fixed
+# during the codex/GPT-5.5 play-harness bug hunts (round set 1: R1-R4; round
+# set 5: R5-1, R5-3). Each section reproduces the exact repro coordinates and
 # asserts the invariant that must hold post-fix. Any failure makes the run
 # exit non-zero. Run:
 #   ./viewer/target/release/examples/play.exe viewer/scripts/physics-regressions.play
@@ -55,3 +55,38 @@ mode fly
 teleport 20.633 127.615 0.02
 assert underwater false
 shot r4_above_clear
+
+# ================= second hunt (codex round set 5) =================
+# R5-3 runs FIRST on the pristine savanna column (edits persist within a run,
+# so it must dig before R5-1 does): a one-block-deep dug hole must be escapable
+# — walking into the rim steps the player up onto the surrounding ground
+# (>= 0.548), not trapped at the 0.5476 floor.
+log R5-3 escape a dug one-block hole by stepping onto the rim
+teleport 1.510 40.490 0.004
+look 0 -80
+mode walk
+wait 1
+tap q
+wait 0.5
+look 0 -5
+hold w 3
+assert ground_km >= 0.548
+
+# R5-1: breaking the block underfoot must not leave the player grounded in
+# air — grounded must clear the instant the floor is removed, then re-settle
+# on the lower support after a tick. (Reuses the same column; R5-3 already left
+# a hole here and walked off, so this settles in it and digs one deeper — the
+# grounded toggle holds at any depth.)
+log R5-1 break underfoot -> grounded clears then re-settles
+teleport 1.510 40.490 0.004
+look 0 -80
+mode walk
+wait 1
+assert grounded true
+tap q
+assert grounded false
+wait 0.5
+assert grounded true
+
+# (R5-2 frozen-sea material and R5-4 dug-shaft-floor material are visual
+# render fixes with no state assertion — verified by screenshot in the hunt.)
