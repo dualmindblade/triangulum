@@ -126,6 +126,11 @@ class PlanetConfig:
     river_min_m3s: float = 350.0        # minimum discharge to count as a mapped river
     lake_evap_mm: float = 1100.0        # open-water evaporation at 20 C (scales with temperature)
 
+    # ---- performance ----
+    gpu: bool = False                   # run the climate stage on the GPU (CuPy, float32).
+                                        # CPU numpy stays the canonical bit-reproducible path;
+                                        # GPU output matches within float32 tolerance.
+
     # ---- simulation recording / debugging ----
     record: bool = False                # capture frames of the sims as they run -> simviz/player.html
     watch: bool = False                 # also open a live window during the run

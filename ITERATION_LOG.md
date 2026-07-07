@@ -813,3 +813,59 @@ sweeps (~1 deg/frame at cached-tile speed) — the lighting animates.
 dn-morning.png (soft morning over the river valley), dn-terminator.png
 (globe with day/night edge from 15,000 km), dn-legacy.png (old mode
 unchanged).
+
+## Planetgen gets fast (2026-07-07, feature/planetgen-speed)
+
+The question that started it: could player-generated planets be viable?
+Measured first (fresh res-6 run + cProfile): climate was 79% of the wall
+clock — thousands of advection/diffusion passes over the (n, 6) neighbor
+arrays, numpy-vectorized but CPU-bound — with render at 13% and the
+hydrology erosion loop at 6% (its priority-flood heap and downstream
+accumulation are pure Python).
+
+Two optional accelerators, auto-detected, with plain numpy as the
+always-working canonical path:
+
+- numba on the two hydrology loops. The compiled priority flood replays
+  heapq's (key, index) tie-breaking exactly, so both cores are
+  BIT-IDENTICAL to the Python fallbacks (asserted in tests/accel_test.py)
+  at 21x / 39x. Hydrology at res 6: 15.9 s -> 5.0 s.
+- CuPy for the whole climate stage (cfg.gpu / --gpu). The grid operators
+  now run on whichever device their input lives on (grid.arrays(gpu)
+  mirrors the constant arrays to the GPU as float32 — consumer cards run
+  fp64 at 1/32 rate). Arrays stay device-resident across the stage;
+  bincount-flavored helpers (zonal_mean, itcz binning, insolation) stay
+  on the host. Two classes of landmine found and fixed:
+  * numpy f64 SCALARS (np.radians(-58.0), _q_sat(30.0)) are "strong"
+    under NEP 50 and silently promote a float32 GPU pipeline to float64
+    — wrapped in float() at four sites;
+  * builtins.max() on a device scalar forces a GPU->CPU sync — the
+    profiler showed 5,891 of them (2.5 s); replaced with np.maximum,
+    and advect's host-side vmax branch became a device-side clamp
+    (exact for all real inputs, zero transport when the field is still).
+  First GPU run pays ~50 s of one-time kernel JIT (disk-cached forever).
+
+Numbers at res 6 (41k cells, seed 5, warm kernels, through biomes):
+  CPU 236 s -> GPU 40.6 s (climate1 115 -> 14.8 s, climate2 109 -> 13.5 s).
+The CPU path is byte-identical before/after the refactor (asserted on the
+stage pickle), and the GPU planet came out IDENTICAL where it counts:
+elevation corr 1.000000 (cm-scale drift), ocean mask 100%, rivers and
+lakes jaccard 1.000, koppen 100%. The float32 perturbations (~1e-4 degC)
+die in the contractive erosion loop instead of compounding. Still: CPU
+remains the documented same-seed-same-planet reference, since cross-
+hardware bit-identity on GPU is not guaranteed.
+
+Extrapolation to res 8 (16x cells, fixed iteration counts): climate
+~8 min -> well under a minute each pass; the RENDER stage (~10 min of
+matplotlib) becomes the biggest line item — irrelevant for in-game
+generation, which only needs planet_data.npz. Estimated full res-8 with
+maps: ~15 min vs ~90; without maps: single-digit minutes. The live res-8
+proof run (seed 7) was stopped externally mid-run — the user was playing
+the game on the same GPU, which is exactly the contention it warns
+about; rerun anytime: python -m planetgen --seed 7 --res 8 --gpu.
+--record works under --gpu (frames hop to the host); tests/accel_test.py
+guards both accelerators for future refactors.
+
+Strategic note stands: this makes ITERATION fast for us; shipping player
+generation still points at a Rust port (chronicle as loading screen),
+stage by stage with golden tests, climate first.

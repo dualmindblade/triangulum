@@ -66,7 +66,8 @@ def _band_convergence(lat_deg, m, cfg, radius_km, itcz_scale=1.0):
     cosp = np.cos(np.radians(lat_deg + d))
     cosm = np.cos(np.radians(lat_deg - d))
     cosl = np.maximum(np.cos(np.radians(lat_deg)), 0.05)
-    div = (vp * cosp - vm * cosm) / 1000.0 / (2 * np.radians(d)) / (radius_km * cosl)
+    # float() keeps the scalar "weak" so float32 GPU arrays stay float32
+    div = (vp * cosp - vm * cosm) / 1000.0 / (2 * float(np.radians(d))) / (radius_km * cosl)
     return -div   # positive = convergence
 
 
@@ -107,50 +108,81 @@ def _insolation(lat, tilt_deg, months):
 
 
 def simulate(grid, cfg, elev, is_ocean, lake_mask=None, rec=None, tag="climate"):
+    # ---- backend: numpy (canonical, bit-reproducible) or CuPy on the GPU.
+    # The stage is thousands of small gather/scatter passes over (n, 6)
+    # neighbor arrays — ideal GPU shape. Arrays stay device-resident for the
+    # whole stage (float32 there); everything returns as numpy.
+    use_gpu = bool(getattr(cfg, "gpu", False))
+    cp = None
+    if use_gpu:
+        try:
+            import cupy as cp
+        except ImportError:
+            print(f"[{tag}] gpu requested but cupy is missing — running on CPU",
+                  flush=True)
+            use_gpu = False
+    xp = cp if use_gpu else np
+    f32 = np.float32
+
+    def host(a):
+        return cp.asnumpy(a) if use_gpu else a
+
     N = grid.n
     months = cfg.months
-    lat_deg = np.degrees(grid.lat)
+    gv = grid.arrays(use_gpu)
+    # host-only helpers run before inputs move to the device
+    itcz_scale = _itcz_land_scale(grid, cfg, host(is_ocean))
+    Q = _insolation(grid.lat, cfg.axial_tilt_deg, months)
+    if rec is not None:
+        rec.set_coast(host(is_ocean))
+    if use_gpu:
+        elev = xp.asarray(elev, dtype=f32)
+        is_ocean = xp.asarray(is_ocean)
+        if lake_mask is not None:
+            lake_mask = xp.asarray(lake_mask)
+        itcz_scale = xp.asarray(itcz_scale, dtype=f32)
+        Q = xp.asarray(Q, dtype=f32)
+    lat_r = gv.lat
+    lat_deg = np.degrees(lat_r)
     water = is_ocean if lake_mask is None else (is_ocean | lake_mask)
     land_elev = np.maximum(elev, 0.0)
-    if rec is not None:
-        rec.set_coast(is_ocean)
 
     # ---- insolation and radiative temperature structure ----------------------
-    Q = _insolation(grid.lat, cfg.axial_tilt_deg, months)
     Q_ann = Q.mean(0)
     # annual structure: cos-power latitude profiles — insolation shape with the
     # flattening real meridional heat transport produces (Earth zonal fits).
     # The ocean gets its own, flatter curve: currents carry so much heat
     # poleward that open water hovers near freezing even at high latitude.
     t_land = cfg.solar_temp_pole_c + (cfg.solar_temp_eq_c - cfg.solar_temp_pole_c) \
-        * np.cos(grid.lat) ** 1.35
+        * np.cos(lat_r) ** 1.35
     t_sea = cfg.sst_pole_c + (cfg.solar_temp_eq_c - cfg.sst_pole_c) \
-        * np.cos(grid.lat) ** 1.3
+        * np.cos(lat_r) ** 1.3
     T_ann_sea = np.where(water, t_sea, t_land)
     dQ = Q - Q_ann[None, :]
-    swing = 46.0 * dQ / max(np.abs(dQ).max(), 1e-9)     # instant "continental" seasonal response, degC
+    # np.maximum instead of builtins.max on possibly-device scalars: max()
+    # forces a GPU->CPU sync per call, and some of these run per iteration
+    swing = 46.0 * dQ / np.maximum(np.abs(dQ).max(), 1e-9)  # instant "continental" seasonal response, degC
 
     # ---- seasonal circulation bands -------------------------------------------
-    itcz_scale = _itcz_land_scale(grid, cfg, is_ocean)
-    wind_e = np.zeros((months, N))
-    wind_n = np.zeros((months, N))
+    wind_e = xp.zeros((months, N), dtype=f32)
+    wind_n = xp.zeros((months, N), dtype=f32)
     for m in range(months):
         wind_e[m], wind_n[m] = _band_winds(lat_deg, m, cfg, itcz_scale)
 
     # ---- maritime influence, advected inland by annual winds -------------------
     base_ann = np.stack([wind_e.mean(0), wind_n.mean(0)], 1)
-    M = np.where(water, 1.0, 0.0)
+    M = water.astype(f32)
     spd = np.hypot(base_ann[:, 0], base_ann[:, 1]) + 1e-6
     # per-edge decay: shorter reach against the wind
-    to_me_e = -grid.dir_e  # direction j -> i expressed in i's frame (approx)
-    to_me_n = -grid.dir_n
-    align = (base_ann[grid.nbr_safe, 0] * to_me_e + base_ann[grid.nbr_safe, 1] * to_me_n) \
-        / spd[grid.nbr_safe]
+    to_me_e = -gv.dir_e  # direction j -> i expressed in i's frame (approx)
+    to_me_n = -gv.dir_n
+    align = (base_ann[gv.nbr_safe, 0] * to_me_e + base_ann[gv.nbr_safe, 1] * to_me_n) \
+        / spd[gv.nbr_safe]
     reach = cfg.maritime_range_km * (0.30 + 0.70 * np.clip(align, 0.0, 1.0))
-    decay = np.where(grid.nbr_ok, np.exp(-grid.edge_km / np.maximum(reach, 60.0)), 0.0)
+    decay = np.where(gv.nbr_ok, np.exp(-gv.edge_km / np.maximum(reach, 60.0)), 0.0)
     hops = int(3.5 * cfg.maritime_range_km / grid.mean_edge_km) + 10
     for _ in range(hops):
-        cand = M[grid.nbr_safe] * decay
+        cand = M[gv.nbr_safe] * decay
         best = cand.max(1)
         upd = ~water & (best > M)
         if not upd.any():
@@ -159,7 +191,7 @@ def simulate(grid, cfg, elev, is_ocean, lake_mask=None, rec=None, tag="climate")
 
     # ---- provisional temperatures (no ocean-current anomalies yet) -------------
     resp = cfg.ocean_seasonal_damp + (1.0 - M) * (cfg.continental_seasonal_boost - cfg.ocean_seasonal_damp)
-    T = np.zeros((months, N))
+    T = xp.zeros((months, N), dtype=f32)
     for m in range(months):
         sw_ocean = swing[(m - 1) % months]           # ocean lags a month
         sw = (1.0 - M) * swing[m] + M * sw_ocean
@@ -177,10 +209,10 @@ def simulate(grid, cfg, elev, is_ocean, lake_mask=None, rec=None, tag="climate")
         for _ in range(3):
             anom += 0.5 * grid.laplacian(anom)
         g = grid.gradient(anom)                       # points toward warm anomalies
-        ang = np.radians(-58.0) * np.sign(grid.lat)
+        ang = float(np.radians(-58.0)) * np.sign(lat_r)
         ge, gn = _rot2(g[:, 0], g[:, 1], ang)
         mag = np.hypot(ge, gn)
-        scale = cfg.thermal_wind_ms / max(np.percentile(mag, 92), 1e-9)
+        scale = cfg.thermal_wind_ms / np.maximum(np.percentile(mag, 92), 1e-9)
         cap = 2.0 * cfg.thermal_wind_ms
         norm = np.minimum(mag * scale, cap) / np.maximum(mag, 1e-12)
         wind_e[m] += ge * norm
@@ -191,24 +223,24 @@ def simulate(grid, cfg, elev, is_ocean, lake_mask=None, rec=None, tag="climate")
 
     # ---- ocean currents (annual) ----------------------------------------------------
     tau = np.stack([wind_e.mean(0), wind_n.mean(0)], 1)
-    ang0 = np.radians(-25.0) * np.sign(grid.lat)
+    ang0 = float(np.radians(-25.0)) * np.sign(lat_r)
     ce, cn = _rot2(tau[:, 0], tau[:, 1], ang0)
     cur = np.stack([ce, cn], 1) * 0.12 * cfg.current_speed
     cur[~is_ocean] = 0.0
     # coastal normal (points from ocean cell toward adjacent land)
-    landn = grid.nbr_ok & ~is_ocean[grid.nbr_safe]
-    cne = (grid.dir_e * landn).sum(1)
-    cnn = (grid.dir_n * landn).sum(1)
+    landn = gv.nbr_ok & ~is_ocean[gv.nbr_safe]
+    cne = (gv.dir_e * landn).sum(1)
+    cnn = (gv.dir_n * landn).sum(1)
     cmag = np.hypot(cne, cnn)
     coastal = is_ocean & (cmag > 1e-9)
     cne = np.where(coastal, cne / np.maximum(cmag, 1e-9), 0.0)
     cnn = np.where(coastal, cnn / np.maximum(cmag, 1e-9), 0.0)
-    ocean_nbr = grid.nbr_ok & is_ocean[grid.nbr_safe]
-    n_on = np.maximum(ocean_nbr.sum(1), 1)
+    ocean_nbr = gv.nbr_ok & is_ocean[gv.nbr_safe]
+    n_on = np.maximum(ocean_nbr.sum(1), 1).astype(f32)
     for it in range(cfg.current_iters):
         # smooth within the ocean, keep wind forcing, steer along coasts
-        avg_e = np.where(ocean_nbr, cur[grid.nbr_safe, 0], 0.0).sum(1) / n_on
-        avg_n = np.where(ocean_nbr, cur[grid.nbr_safe, 1], 0.0).sum(1) / n_on
+        avg_e = np.where(ocean_nbr, cur[gv.nbr_safe, 0], 0.0).sum(1) / n_on
+        avg_n = np.where(ocean_nbr, cur[gv.nbr_safe, 1], 0.0).sum(1) / n_on
         cur[:, 0] = 0.55 * cur[:, 0] + 0.45 * avg_e + 0.06 * cfg.current_speed * (ce - cur[:, 0])
         cur[:, 1] = 0.55 * cur[:, 1] + 0.45 * avg_n + 0.06 * cfg.current_speed * (cn - cur[:, 1])
         normal = cur[:, 0] * cne + cur[:, 1] * cnn
@@ -223,7 +255,8 @@ def simulate(grid, cfg, elev, is_ocean, lake_mask=None, rec=None, tag="climate")
             cur[:, 1] -= 900.0 * gd[:, 1]
         cur[~is_ocean] = 0.0
         if rec is not None and it % 5 == 0:
-            rec.frame(f"{tag}-currents", np.where(is_ocean, np.hypot(cur[:, 0], cur[:, 1]), 0.0),
+            rec.frame(f"{tag}-currents",
+                      host(np.where(is_ocean, np.hypot(cur[:, 0], cur[:, 1]), 0.0)),
                       label=f"{tag}: current relaxation step {it + 1}", vmin=0, vmax=9, cmap="magma")
     spd_c = np.hypot(cur[:, 0], cur[:, 1])
     cap_c = np.percentile(spd_c[is_ocean], 98)
@@ -231,7 +264,7 @@ def simulate(grid, cfg, elev, is_ocean, lake_mask=None, rec=None, tag="climate")
     cur[over] *= (cap_c / spd_c[over])[:, None]
 
     # ---- SST: radiative structure + current advection -------------------------------
-    sst = np.zeros((months, N))
+    sst = xp.zeros((months, N), dtype=f32)
     for m in range(months):
         s0 = T[m].copy()
         s = s0.copy()
@@ -241,27 +274,29 @@ def simulate(grid, cfg, elev, is_ocean, lake_mask=None, rec=None, tag="climate")
         sst[m] = np.where(is_ocean, s, np.nan)
 
     # ---- final temperature: coastal cells inherit advected SST anomalies -------------
-    V = np.zeros(N)
+    V = xp.zeros(N, dtype=f32)
+    rows = xp.arange(N)
     for m in range(months):
         # propagate SST inland along the same maritime decay, then blend by M
         V[:] = np.where(is_ocean, sst[m], 0.0)
-        Mv = np.where(water, 1.0, 0.0)
+        Mv = water.astype(f32)
         for _ in range(min(hops, 45)):
-            cand = Mv[grid.nbr_safe] * decay
+            cand = Mv[gv.nbr_safe] * decay
             slot = cand.argmax(1)
-            best = cand[np.arange(N), slot]
+            best = cand[rows, slot]
             upd = ~water & (best > Mv)
             if not upd.any():
                 break
             Mv[upd] = best[upd]
-            V[upd] = V[grid.nbr_safe[upd, slot[upd]]]
+            V[upd] = V[gv.nbr_safe[upd, slot[upd]]]
         blend = np.clip(M, 0.0, 1.0) * 0.82
         t_maritime = V - cfg.lapse_rate_c_km * land_elev
         T[m] = np.where(is_ocean, sst[m],
                         (1.0 - blend) * T[m] + blend * t_maritime)
         T[m] += 0.5 * grid.laplacian(T[m])
         if rec is not None:
-            rec.frame(f"{tag}-temperature", T[m], label=f"{tag}: temperature month {m + 1:02d}",
+            rec.frame(f"{tag}-temperature", host(T[m]),
+                      label=f"{tag}: temperature month {m + 1:02d}",
                       vmin=-45, vmax=45, cmap="RdYlBu_r")
 
     # ---- moisture and precipitation ------------------------------------------------
@@ -269,10 +304,10 @@ def simulate(grid, cfg, elev, is_ocean, lake_mask=None, rec=None, tag="climate")
     # (band winds are analytic, so they evaluate at fractional months) — a
     # rain belt parked at 12 discrete monthly positions would stripe the
     # annual precipitation map.
-    P = np.zeros((months, N))
-    clouds = np.zeros((months, N))
-    q = np.where(water, 0.4 * _q_sat(T[0]), 0.05)
-    wet = np.full(N, 0.5)
+    P = xp.zeros((months, N), dtype=f32)
+    clouds = xp.zeros((months, N), dtype=f32)
+    q = np.where(water, 0.4 * _q_sat(T[0]), f32(0.05))
+    wet = xp.full(N, 0.5, dtype=f32)
     lat_a = np.abs(lat_deg)
     front_band = np.exp(-(((lat_a - 48.0) / 20.0) ** 2))
     grad_land = grid.gradient(land_elev)               # orographic lift is a land effect
@@ -281,7 +316,7 @@ def simulate(grid, cfg, elev, is_ocean, lake_mask=None, rec=None, tag="climate")
     # the graph operator only ever touches this residual (units: 1/s)
     th_e = wind_e - base_e * damp[None, :]
     th_n = wind_n - base_n * damp[None, :]
-    div_t = np.zeros((months, N))
+    div_t = xp.zeros((months, N), dtype=f32)
     for m in range(months):
         d = grid.divergence(np.stack([th_e[m], th_n[m]], 1)) * 1e-3
         for _ in range(8):
@@ -293,8 +328,9 @@ def simulate(grid, cfg, elev, is_ocean, lake_mask=None, rec=None, tag="climate")
         them fixed within a month and jumping at boundaries pulses the rain."""
         qs_m = _q_sat(T[mi])
         sst_eff = np.where(is_ocean, sst[mi], T[mi])
-        E_m = np.where(water, cfg.evap_ocean * _q_sat(sst_eff) / _q_sat(30.0),
-                       cfg.evap_land_factor * wet * qs_m / _q_sat(30.0))
+        qs30 = float(_q_sat(30.0))
+        E_m = np.where(water, cfg.evap_ocean * _q_sat(sst_eff) / qs30,
+                       cfg.evap_land_factor * wet * qs_m / qs30)
         E_m = np.minimum(E_m, 3.0)
         E_m = np.where(water & (T[mi] < -2.0), E_m * 0.15, E_m)  # frozen seas evaporate little
         warm_m = np.clip((T[mi] - 8.0) / 22.0, 0.0, 1.0) ** 2
@@ -311,7 +347,7 @@ def simulate(grid, cfg, elev, is_ocean, lake_mask=None, rec=None, tag="climate")
         m2 = (m + 1) % months
         qs, E0, warm0, sstf0 = _month_fields(m)
         qs2, E1, warm1, sstf1 = _month_fields(m2)
-        p_sum = np.zeros(N)
+        p_sum = xp.zeros(N, dtype=f32)
         for i in range(cfg.moisture_iters):
             a = (i + 0.5) / cfg.moisture_iters
             qs_f = (1.0 - a) * qs + a * qs2
@@ -324,7 +360,7 @@ def simulate(grid, cfg, elev, is_ocean, lake_mask=None, rec=None, tag="climate")
             W2 = np.stack([we, wn], 1)
             conv = _band_convergence(lat_deg, m + a, cfg, grid.radius_km, itcz_scale) * damp \
                 - ((1.0 - a) * div_t[m] + a * div_t[m2])
-            conv_lift = np.clip(conv / max(np.percentile(np.abs(conv), 90), 1e-12), 0.0, 2.5)
+            conv_lift = np.clip(conv / np.maximum(np.percentile(np.abs(conv), 90), 1e-12), 0.0, 2.5)
             orog = np.clip(we * grad_land[:, 0] + wn * grad_land[:, 1], 0.0, None)
             orog = np.where(is_ocean, 0.0, orog)
             rate = (cfg.rain_convective * warm * (0.35 + conv_lift) * sstf
@@ -342,13 +378,14 @@ def simulate(grid, cfg, elev, is_ocean, lake_mask=None, rec=None, tag="climate")
             p_sum += p_now
             if rec is not None:
                 lbl = f"{tag}: month {m + 1:02d} step {i + 1:03d}"
-                rec.frame(f"{tag}-moisture", q, label=lbl + "  (column moisture)",
+                rec.frame(f"{tag}-moisture", host(q), label=lbl + "  (column moisture)",
                           vmin=0.0, vmax=4.5, cmap="YlGnBu", every=rec.every)
-                rec.frame(f"{tag}-rainfall", p_now, label=lbl + "  (rain rate)",
+                rec.frame(f"{tag}-rainfall", host(p_now), label=lbl + "  (rain rate)",
                           vmin=0.0, vmax=0.22, cmap="YlGnBu", every=rec.every)
         P[m] = p_sum / cfg.moisture_iters
         wet = np.clip(0.5 * wet + 0.5 * np.minimum(P[m] / np.percentile(P[m][~water], 75), 1.5), 0.1, 1.5)
-        cl = np.clip(0.10 + 0.55 * q / np.maximum(qs, 1e-9) + 0.5 * P[m] / max(P[m].mean() * 4, 1e-9), 0.0, 1.0)
+        cl = np.clip(0.10 + 0.55 * q / np.maximum(qs, 1e-9)
+                     + 0.5 * P[m] / np.maximum(P[m].mean() * 4, 1e-9), 0.0, 1.0)
         for _ in range(3):                             # cosmetic: hide grid seams
             cl += 0.5 * grid.laplacian(cl)
         clouds[m] = np.clip(cl, 0.0, 1.0)
@@ -356,16 +393,19 @@ def simulate(grid, cfg, elev, is_ocean, lake_mask=None, rec=None, tag="climate")
     # calibrate rainfall so land annual mean hits the target
     land = ~is_ocean
     ann_raw = P.sum(0)
-    factor = cfg.target_land_precip_mm / max((ann_raw[land] * grid.area_km2[land]).sum()
-                                             / grid.area_km2[land].sum(), 1e-9)
+    factor = cfg.target_land_precip_mm / max(float((ann_raw[land] * gv.area_km2[land]).sum()
+                                                   / gv.area_km2[land].sum()), 1e-9)
     P *= factor
     P = np.minimum(P, 1300.0)                          # winsorize pathological peaks (mm/month)
 
-    snow = np.where(T < 0.5, P, 0.0)
+    snow = np.where(T < 0.5, P, f32(0.0))
     seaice = is_ocean[None, :] & (np.nan_to_num(sst, nan=99.0) < -1.8)
 
-    return dict(
+    out = dict(
         T=T, P=P, wind_e=wind_e, wind_n=wind_n, clouds=clouds, snow=snow,
         sst=sst, seaice=seaice, cur_e=cur[:, 0], cur_n=cur[:, 1], maritime=M,
         T_ann=T.mean(0), P_ann=P.sum(0),
         pet_ann=np.sum(38.0 * np.exp(0.055 * np.maximum(T, -5.0)), axis=0))
+    if use_gpu:
+        out = {k: cp.asnumpy(v) for k, v in out.items()}
+    return out

@@ -35,6 +35,9 @@ def main():
                     help="open a live window while the simulations run (implies --record)")
     ap.add_argument("--video", action="store_true",
                     help="also assemble mp4 clips per sequence (requires ffmpeg)")
+    ap.add_argument("--gpu", action="store_true",
+                    help="run the climate stage on the GPU (requires cupy; "
+                         "float32 — results match CPU within tolerance)")
     args = ap.parse_args()
 
     cfg = PlanetConfig.load(args.config) if args.config else PlanetConfig()
@@ -47,6 +50,8 @@ def main():
         cfg.record = True
     if args.video:
         cfg.record_video = True
+    if args.gpu:
+        cfg.gpu = True
     cfg.apply_overrides(args.set)
 
     out = args.out or os.path.join("output", f"seed{cfg.seed}_r{cfg.subdivisions}")

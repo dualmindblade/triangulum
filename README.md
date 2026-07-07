@@ -62,6 +62,22 @@ Requires Python 3.11+ with `numpy`, `scipy`, `matplotlib`.
 python -m planetgen --seed 42 --res 6
 ```
 
+### Making it fast (optional accelerators)
+
+```
+pip install numba                  # ~20-40x on the erosion inner loops
+pip install "cupy-cuda12x[ctk]"    # NVIDIA GPUs: climate stage on the GPU
+python -m planetgen --seed 42 --res 8 --gpu
+```
+
+Both are optional and auto-detected; without them everything runs on plain
+numpy. numba results are **bit-identical** to the pure-Python path. `--gpu`
+runs the climate stage (≈80% of generation time) in float32 on the GPU —
+fields match the CPU within float32 tolerance, but the planet is not
+guaranteed bit-identical across machines, so treat CPU as the canonical
+same-seed-same-planet reference. The first `--gpu` run compiles GPU kernels
+(a one-time ~1 min cost, cached on disk).
+
 ~2.5 minutes later, look in `output/seed42_r6/`:
 
 | file | what |
