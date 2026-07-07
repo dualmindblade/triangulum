@@ -1,0 +1,37 @@
+# Smoke tour: walk the temperate river valley — movement, gravity, jumping,
+# block edits, a torch, wading. Run:
+#   cargo run --release --example play -- scripts/valley-walk.play
+log arriving above the river valley
+teleport 4.990 -29.403 0.3
+look 268 -25
+shot arrive
+
+log drop to the ground and walk toward the river
+teleport 4.9950 -29.3980 0.05
+mode walk
+wait 4              # fall to the ground, settle
+look 268 -5
+shot standing
+hold w+shift 4
+tap space
+hold w 1.5
+shot after-walk
+
+log build a small tower and place a torch on it
+look 268 -60
+tap e
+tap e
+tap e
+look 268 -30
+tap r
+hold s 1.5          # step back to see it
+shot tower-torch
+
+log prove the tower blocks: walk into it, then around it
+hold w 1.2
+state blocked       # lat/lon should match tower-torch (wall stops us)
+hold a 1.5
+hold w+shift 5
+look 268 -10
+shot near-water
+state final

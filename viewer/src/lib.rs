@@ -6,6 +6,7 @@ pub mod camera;
 pub mod noise;
 pub mod noise_grad;
 pub mod planet;
+pub mod player;
 pub mod renderer;
 pub mod rivers;
 pub mod terrain;

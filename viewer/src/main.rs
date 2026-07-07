@@ -154,16 +154,13 @@ fn main() -> Result<()> {
         dragging: false,
         last_cursor: (0.0, 0.0),
         keys: Default::default(),
-        mode: Mode::Fly,
+        player: PlayerState::default(),
         last_frame: std::time::Instant::now(),
-        vert_vel_mps: 0.0,
-        grounded: false,
         mouse_locked: false,
         teleport: None,
         title_timer: 0.0,
         edits: load_edits(planet_seed),
         torches: load_torches(planet_seed),
-        underwater: false,
     };
     event_loop.run_app(&mut app)?;
     Ok(())
@@ -226,11 +223,7 @@ struct Gfx {
     renderer: Renderer,
 }
 
-#[derive(PartialEq, Clone, Copy)]
-enum Mode {
-    Fly,
-    Walk,
-}
+use triangulum_viewer::player::{Mode, PlayerState};
 
 struct App {
     planet: Arc<Planet>,
@@ -240,21 +233,15 @@ struct App {
     dragging: bool,
     last_cursor: (f64, f64),
     keys: std::collections::HashSet<winit::keyboard::KeyCode>,
-    mode: Mode,
+    player: PlayerState,
     last_frame: std::time::Instant,
-    vert_vel_mps: f64, // vertical velocity in walk mode (gravity, jumps, swim)
-    grounded: bool,    // feet resting on a solid top last frame
     mouse_locked: bool, // pointer captured: raw-motion look, cursor hidden
     /// In-progress teleport entry ("lat lon [alt]"), typed into the title bar.
     teleport: Option<String>,
     title_timer: f64,
     edits: triangulum_viewer::voxel::Edits,
     torches: triangulum_viewer::voxel::Torches,
-    underwater: bool, // eye below a water surface (walk mode wading)
 }
-
-/// Player eye height above the feet, km.
-const EYE_KM: f64 = 0.0018;
 
 /// Where in-game screenshots land (matches the interchange workflow).
 fn interchange_dir() -> &'static str {
@@ -353,20 +340,14 @@ impl App {
     /// top face grows that column. Edits are per-column height deltas, so a
     /// placed block always lands on its column's top.
     fn edit_block(&mut self, dh: i64) {
-        let eye = self.camera.position();
-        let look = self.camera.look_dir();
-        let reach_m = if self.mode == Mode::Walk { 8.0 } else { 60.0 };
-        if let Some((hit, prev)) = triangulum_viewer::voxel::raycast_column(
+        if let Some(dirty) = triangulum_viewer::player::edit_block(
             &self.planet,
-            &self.edits,
-            eye,
-            look,
-            reach_m,
+            &mut self.edits,
+            &self.camera,
+            self.player.mode,
+            dh,
             self.args.exaggeration,
         ) {
-            let (face, ci, cj) = if dh > 0 { prev } else { hit };
-            *self.edits.entry((face, ci, cj)).or_insert(0) += dh;
-            let dirty = triangulum_viewer::voxel::chunks_touching_column(face, ci, cj);
             if let Some(gfx) = self.gfx.as_mut() {
                 gfx.renderer.invalidate_chunks(&dirty);
             }
@@ -376,21 +357,14 @@ impl App {
 
     /// R: toggle a torch on the walkable top of the targeted column.
     fn toggle_torch(&mut self) {
-        let eye = self.camera.position();
-        let look = self.camera.look_dir();
-        let reach_m = if self.mode == Mode::Walk { 8.0 } else { 60.0 };
-        if let Some(((face, ci, cj), _)) = triangulum_viewer::voxel::raycast_column(
+        if let Some(dirty) = triangulum_viewer::player::toggle_torch(
             &self.planet,
             &self.edits,
-            eye,
-            look,
-            reach_m,
+            &mut self.torches,
+            &self.camera,
+            self.player.mode,
             self.args.exaggeration,
         ) {
-            if !self.torches.remove(&(face, ci, cj)) {
-                self.torches.insert((face, ci, cj));
-            }
-            let dirty = triangulum_viewer::voxel::chunks_touching_column(face, ci, cj);
             if let Some(gfx) = self.gfx.as_mut() {
                 gfx.renderer.torches = self.torches.clone();
                 gfx.renderer.invalidate_chunks(&dirty);
@@ -452,19 +426,12 @@ impl App {
             }
             return;
         }
-        self.camera.lat = nums[0].to_radians();
-        self.camera.lon = nums[1].to_radians();
-        if let Some(&alt) = nums.get(2) {
-            self.camera.altitude_km = alt.clamp(0.0025, 80000.0);
-        } else {
-            self.camera.altitude_km = self.camera.altitude_km.max(0.05);
-        }
-        self.mode = Mode::Fly;
-        self.vert_vel_mps = 0.0;
-        self.grounded = false;
-        self.camera.ground_km = triangulum_viewer::terrain::ground_height_km(
+        self.player.teleport(
             &self.planet,
-            self.camera.position().normalize(),
+            &mut self.camera,
+            nums[0],
+            nums[1],
+            nums.get(2).copied(),
             self.args.exaggeration,
         );
     }
@@ -527,7 +494,9 @@ impl App {
 }
 
 impl App {
-    /// Per-frame simulation: movement, ground following, jump physics.
+    /// Per-frame simulation: resolve held keys into a player Input and run
+    /// the shared player physics (player.rs — same code the play harness
+    /// scripts drive).
     fn update(&mut self) {
         use winit::keyboard::KeyCode as K;
         let dt = {
@@ -536,135 +505,27 @@ impl App {
             self.last_frame = now;
             dt.min(0.1)
         };
-        let fwd = (self.keys.contains(&K::KeyW) as i32 - self.keys.contains(&K::KeyS) as i32) as f64;
-        let strafe = (self.keys.contains(&K::KeyD) as i32 - self.keys.contains(&K::KeyA) as i32) as f64;
-
-        use triangulum_viewer::voxel::{ceiling_above_km, support_below_km, water_surface_km};
-        let planet = &self.planet;
-        let edits = &self.edits;
-        let exagg = self.args.exaggeration;
-        let voxels_live = self.camera.altitude_km
-            < triangulum_viewer::renderer::VOXEL_MAX_ALT_KM;
-
-        match self.mode {
-            Mode::Fly => {
-                self.underwater = false;
-                if (fwd != 0.0 || strafe != 0.0) && self.teleport.is_none() {
-                    // speed scales with altitude: cruise in orbit, glide low
-                    let speed_kms = (self.camera.altitude_km * 0.5).clamp(0.02, 600.0);
-                    let sprint = if self.keys.contains(&K::ShiftLeft) { 4.0 } else { 1.0 };
-                    let h = self.camera.heading(strafe, fwd);
-                    self.camera.translate(h, speed_kms * sprint * dt);
-                }
-                let dir2 = self.camera.position().normalize();
-                if voxels_live {
-                    // near the ground, absolute height is preserved when the
-                    // ground re-samples, so a cave pit passing underneath no
-                    // longer yanks the camera: descend deliberately and drop
-                    // in. The reference is the voxel *support* under the
-                    // camera (cave floors count) and roofs are solid.
-                    let cur = self.camera.ground_km + self.camera.altitude_km;
-                    let ground = support_below_km(planet, edits, dir2, cur - 1e-9, exagg);
-                    let ceil = ceiling_above_km(planet, edits, dir2, ground + 1e-6, exagg);
-                    let height = cur
-                        .max(ground + 0.0025)
-                        .min(ceil - 0.0008)
-                        .max(ground + 0.0012);
-                    self.camera.ground_km = ground;
-                    self.camera.altitude_km = height - ground;
-                } else {
-                    // cruising: classic terrain-following at constant AGL
-                    self.camera.ground_km = triangulum_viewer::terrain::ground_height_km(
-                        planet, dir2, exagg,
-                    );
-                }
+        // an open teleport prompt owns the keyboard: no movement input
+        let input = if self.teleport.is_some() {
+            triangulum_viewer::player::Input::default()
+        } else {
+            triangulum_viewer::player::Input {
+                fwd: (self.keys.contains(&K::KeyW) as i32
+                    - self.keys.contains(&K::KeyS) as i32) as f64,
+                strafe: (self.keys.contains(&K::KeyD) as i32
+                    - self.keys.contains(&K::KeyA) as i32) as f64,
+                sprint: self.keys.contains(&K::ShiftLeft),
+                swim_up: self.keys.contains(&K::Space),
             }
-            Mode::Walk => {
-                let mut feet = self.camera.ground_km;
-                // -- horizontal, with side collision and 1-block step-up
-                if (fwd != 0.0 || strafe != 0.0) && self.teleport.is_none() {
-                    let sprint = if self.keys.contains(&K::ShiftLeft) { 2.2 } else { 1.0 };
-                    let h = self.camera.heading(strafe, fwd);
-                    let saved = (self.camera.lat, self.camera.lon, self.camera.yaw);
-                    self.camera.translate(h, 0.0043 * sprint * dt); // 4.3 m/s
-                    let ndir = self.camera.position().normalize();
-                    let block = triangulum_viewer::voxel::VOXEL_KM * exagg;
-                    let step = if self.grounded { 1.05 * block } else { 0.05 * block };
-                    let head = feet + EYE_KM + 0.0003;
-                    // highest solid under the head in the target column: at or
-                    // below the feet it's floor (walk on / fall past), within a
-                    // step it's a stair, above that it's a wall
-                    let s_head = support_below_km(planet, edits, ndir, head, exagg);
-                    let new_feet = feet.max(s_head);
-                    let headroom = ceiling_above_km(planet, edits, ndir, new_feet + 1e-6, exagg)
-                        - new_feet
-                        > EYE_KM + 0.0004;
-                    let mut blocked = s_head > feet + step + 1e-9 || !headroom;
-                    // body radius: the eye stays ~0.35 blocks away from any
-                    // wall, so the near plane can never poke inside a block
-                    // (walking face-first into a tree trunk showed its
-                    // hollow interior). Probes ring the new position; walls
-                    // above step height or tight ceilings reject the move.
-                    if !blocked {
-                        let r_km = 0.35 * block;
-                        let pos = self.camera.position();
-                        let (_, north, east) = self.camera.frame();
-                        for k in 0..8 {
-                            let a = k as f64 * std::f64::consts::FRAC_PI_4;
-                            let pdir =
-                                (pos + (north * a.cos() + east * a.sin()) * r_km).normalize();
-                            let s = support_below_km(planet, edits, pdir, head, exagg);
-                            if s > new_feet + step + 1e-9
-                                || ceiling_above_km(planet, edits, pdir, new_feet + 1e-6, exagg)
-                                    - new_feet
-                                    <= EYE_KM + 0.0004
-                            {
-                                blocked = true;
-                                break;
-                            }
-                        }
-                    }
-                    if blocked {
-                        (self.camera.lat, self.camera.lon, self.camera.yaw) = saved;
-                    } else {
-                        feet = new_feet;
-                        if s_head > self.camera.ground_km {
-                            self.vert_vel_mps = self.vert_vel_mps.max(0.0);
-                        }
-                    }
-                }
-                let dir2 = self.camera.position().normalize();
-                // -- vertical: gravity (or buoyancy), landing, head bump
-                let water = water_surface_km(planet, edits, dir2, exagg);
-                let in_water = water.is_some_and(|w| feet + 0.0009 < w);
-                if in_water {
-                    // sink slowly; hold Space to swim up
-                    let target = if self.keys.contains(&K::Space) { 3.0 } else { -1.4 };
-                    let blend = (6.0 * dt).min(1.0);
-                    self.vert_vel_mps += (target - self.vert_vel_mps) * blend;
-                } else {
-                    self.vert_vel_mps = (self.vert_vel_mps - 9.81 * dt).max(-80.0);
-                }
-                let mut new_feet = feet + self.vert_vel_mps * dt / 1000.0;
-                let support = support_below_km(planet, edits, dir2, feet + 1e-7, exagg);
-                self.grounded = false;
-                if new_feet <= support {
-                    new_feet = support;
-                    self.vert_vel_mps = 0.0;
-                    self.grounded = true;
-                } else if self.vert_vel_mps > 0.0 {
-                    let ceil = ceiling_above_km(planet, edits, dir2, feet + EYE_KM, exagg);
-                    if new_feet + EYE_KM + 0.0004 > ceil {
-                        new_feet = (ceil - EYE_KM - 0.0004).max(support);
-                        self.vert_vel_mps = 0.0;
-                    }
-                }
-                self.camera.ground_km = new_feet;
-                self.camera.altitude_km = EYE_KM;
-                self.underwater =
-                    water.is_some_and(|w| new_feet + EYE_KM < w - 0.0003);
-            }
-        }
+        };
+        self.player.update(
+            &self.planet,
+            &self.edits,
+            &mut self.camera,
+            &input,
+            self.args.exaggeration,
+            dt,
+        );
 
         // window title as a tiny HUD, twice a second (the teleport prompt
         // owns the title while it's open)
@@ -672,7 +533,7 @@ impl App {
         if self.title_timer > 0.5 && self.teleport.is_none() {
             self.title_timer = 0.0;
             if let Some(gfx) = &self.gfx {
-                let mode = match self.mode {
+                let mode = match self.player.mode {
                     Mode::Fly => "fly (click captures mouse, G walk, T teleport, P shot)",
                     Mode::Walk => "walk (F fly, space jump, T teleport, P shot)",
                 };
@@ -787,29 +648,9 @@ impl ApplicationHandler for App {
                         ElementState::Pressed => {
                             self.keys.insert(code);
                             match code {
-                                K::KeyG => {
-                                    // walk starts wherever the camera is:
-                                    // pressed in flight, you fall from there
-                                    let feet = self.camera.ground_km
-                                        + self.camera.altitude_km
-                                        - EYE_KM;
-                                    self.mode = Mode::Walk;
-                                    self.camera.ground_km = feet;
-                                    self.camera.altitude_km = EYE_KM;
-                                    self.vert_vel_mps = 0.0;
-                                    self.grounded = false;
-                                }
-                                K::KeyF => {
-                                    self.mode = Mode::Fly;
-                                    self.camera.altitude_km =
-                                        self.camera.altitude_km.max(0.004);
-                                }
-                                K::Space => {
-                                    if self.mode == Mode::Walk && self.grounded {
-                                        self.vert_vel_mps = 5.2;
-                                        self.grounded = false;
-                                    }
-                                }
+                                K::KeyG => self.player.set_walk(&mut self.camera),
+                                K::KeyF => self.player.set_fly(&mut self.camera),
+                                K::Space => self.player.jump(),
                                 K::KeyQ => self.edit_block(-1),
                                 K::KeyE => self.edit_block(1),
                                 K::KeyR => self.toggle_torch(),
@@ -855,7 +696,7 @@ impl ApplicationHandler for App {
                 }
             }
             WindowEvent::MouseWheel { delta, .. } => {
-                if self.mode == Mode::Fly {
+                if self.player.mode == Mode::Fly {
                     let amount = match delta {
                         MouseScrollDelta::LineDelta(_, y) => y as f64,
                         MouseScrollDelta::PixelDelta(p) => p.y / 60.0,
@@ -894,7 +735,7 @@ impl ApplicationHandler for App {
                     }
                 };
                 let view = frame.texture.create_view(&Default::default());
-                gfx.renderer.underwater = self.underwater;
+                gfx.renderer.underwater = self.player.underwater;
                 gfx.renderer.draw(&view, &self.planet, &self.camera, &self.edits);
                 gfx.renderer.queue.present(frame);
                 gfx.window.request_redraw();
