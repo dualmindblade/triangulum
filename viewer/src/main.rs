@@ -25,7 +25,10 @@ struct Args {
     pitch: f64, // degrees, 0 = horizon (999 = auto by altitude)
     exaggeration: f64,
     size: (u32, u32),
-    sun: Option<(f64, f64)>, // (lat, lon) degrees; None = sun follows camera
+    sun: Option<(f64, f64)>, // (lat, lon) degrees; None = day/night cycle
+    /// Seconds per full day/night cycle (0 = no cycle, sun follows the
+    /// camera — the legacy always-noon mode).
+    day_len: f64,
 }
 
 fn parse_args() -> Args {
@@ -39,6 +42,7 @@ fn parse_args() -> Args {
         exaggeration: 10.0,
         size: (1600, 900),
         sun: None,
+        day_len: 1200.0,
     };
     let argv: Vec<String> = std::env::args().collect();
     let mut i = 1;
@@ -81,6 +85,10 @@ fn parse_args() -> Args {
             "--sun-lon" => {
                 let v: f64 = next(i).parse().unwrap_or(30.0);
                 a.sun = Some((a.sun.map_or(30.0, |s| s.0), v));
+                i += 1;
+            }
+            "--day-len" => {
+                a.day_len = next(i).parse().unwrap_or(a.day_len);
                 i += 1;
             }
             other => eprintln!("unknown arg: {other}"),
@@ -177,6 +185,8 @@ fn capture(planet: Planet, camera: Camera, args: Args, path: &str) -> Result<()>
         let (la, lo) = (la.to_radians(), lo.to_radians());
         glam::DVec3::new(la.cos() * lo.cos(), la.cos() * lo.sin(), la.sin())
     });
+    renderer.day_len_s = args.day_len;
+    renderer.sun_ref_lon = args.lon.to_radians();
     // headless shots see the same edited world the game saves
     let edits = load_edits(planet.seed);
     renderer.torches = load_torches(planet.seed);
@@ -731,6 +741,8 @@ impl ApplicationHandler for App {
             let (la, lo) = (la.to_radians(), lo.to_radians());
             glam::DVec3::new(la.cos() * lo.cos(), la.cos() * lo.sin(), la.sin())
         });
+        renderer.day_len_s = self.args.day_len;
+        renderer.sun_ref_lon = self.args.lon.to_radians();
         renderer.torches = self.torches.clone();
         self.gfx = Some(Gfx { window, surface, config, renderer });
     }

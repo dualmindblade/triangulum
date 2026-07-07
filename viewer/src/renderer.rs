@@ -95,6 +95,15 @@ pub struct Renderer {
     /// Player-placed torches — meshed into their chunks, and the nearest
     /// few become real point lights each frame. Kept in sync by the app.
     pub torches: Torches,
+    /// Day/night cycle: seconds per full day. 0 disables the cycle (the
+    /// sun follows the camera — always noon where you are). A pinned
+    /// `sun_dir` always wins. The sun stands still in space while the
+    /// planet turns, so local time depends on longitude and the
+    /// terminator is visible from orbit.
+    pub day_len_s: f64,
+    /// Longitude (radians) that starts the cycle at mid-morning.
+    pub sun_ref_lon: f64,
+    start: std::time::Instant,
 }
 
 impl Renderer {
@@ -265,6 +274,9 @@ impl Renderer {
             sun_dir: None,
             underwater: false,
             torches: Torches::default(),
+            day_len_s: 0.0,
+            sun_ref_lon: 0.0,
+            start: std::time::Instant::now(),
         }
     }
 
@@ -315,7 +327,20 @@ impl Renderer {
         // upload globals (camera-relative view-projection, f64 -> f32 at the end)
         let vp = camera.view_proj(self.size.0 as f64 / self.size.1 as f64);
         let vp32 = Mat4::from_cols_array(&vp.to_cols_array().map(|x| x as f32));
-        let sun = self.sun_dir.unwrap_or_else(|| cam_pos.normalize());
+        let t_s = self.start.elapsed().as_secs_f64();
+        let sun = self.sun_dir.unwrap_or_else(|| {
+            if self.day_len_s > 0.0 {
+                // the sun hangs in space and the planet turns under it:
+                // start ~mid-morning at the reference longitude, sweep
+                // westward, gentle 10 deg declination for softer noons
+                let lon = self.sun_ref_lon + 0.7
+                    - t_s / self.day_len_s * std::f64::consts::TAU;
+                let lat = 10f64.to_radians();
+                DVec3::new(lat.cos() * lon.cos(), lat.cos() * lon.sin(), lat.sin())
+            } else {
+                cam_pos.normalize()
+            }
+        });
         // where voxels are active, cut the heightfield away under them so the
         // two systems never overlap (no mesh poking up between block tops)
         let mut hole = [0.0f32; 4];
@@ -357,7 +382,10 @@ impl Renderer {
                 let top = crate::voxel::surface_height_km(planet, edits, dir, self.exaggeration);
                 let pos = dir * (planet.radius_km + top + 0.55 * crate::voxel::VOXEL_KM * self.exaggeration)
                     - cam_pos;
-                lights[n_lights] = [pos.x as f32, pos.y as f32, pos.z as f32, 1.0];
+                // each flame breathes on its own phase
+                let flicker =
+                    (0.88 + 0.18 * (t_s * 9.0 + n_lights as f64 * 2.4).sin()) as f32;
+                lights[n_lights] = [pos.x as f32, pos.y as f32, pos.z as f32, flicker];
                 n_lights += 1;
             }
         }
@@ -374,7 +402,7 @@ impl Renderer {
                 (-cam_pos.z) as f32,
                 lift as f32,
             ],
-            misc: [n_lights as f32, 0.0, 0.0, 0.0],
+            misc: [n_lights as f32, (t_s % 3600.0) as f32, 0.0, 0.0],
             lights,
         };
         self.queue.write_buffer(&self.globals_buf, 0, bytemuck::bytes_of(&globals));

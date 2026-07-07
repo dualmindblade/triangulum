@@ -792,3 +792,24 @@ first cozy screenshot) and torch-day.png (subtle posts, faint glow).
 Test file removed afterwards; live smoke green. Next candy on the
 Phase 7 list: day/night cycle, flame flicker (needs a time uniform),
 river aliasing, chunk-churn.
+
+## The planet turns (2026-07-07, Phase 7d)
+
+Day/night cycle on feature/day-night. The model is the physical one: the
+sun is fixed in space and the planet rotates about its axis, so local
+time depends on your longitude, flying east fast-forwards the day, and
+from orbit the terminator wraps the globe. Default 20-minute day
+(--day-len N seconds; 0 = the old sun-follows-camera mode; --sun-lat/lon
+still pins exactly, so every repro command in the README stays valid).
+The cycle starts at mid-morning at the spawn longitude — captures
+without sun args now get pleasant angled light instead of noon-overhead.
+A time uniform (misc.y) rode along and bought torch flame flicker: the
+emissive quads breathe on a position-hashed phase and the point-light
+intensities pulse per torch on the CPU.
+Verification note for future me: a headless --capture draws ONE frame at
+t~0.2s, so stills cannot show the cycle; popdiff grew a DAY_LEN arg and a
+static-camera run at --day-len 60 shows every frame differing as the sun
+sweeps (~1 deg/frame at cached-tile speed) — the lighting animates.
+dn-morning.png (soft morning over the river valley), dn-terminator.png
+(globe with day/night edge from 15,000 km), dn-legacy.png (old mode
+unchanged).

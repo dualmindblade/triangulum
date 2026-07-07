@@ -2,7 +2,7 @@
 //! frame-to-frame pixel differences. Smooth camera motion gives a low, even
 //! diff baseline; a tile LOD swap that changes geometry shows as a spike.
 //! Run twice to compare:  TRI_NO_MORPH=1  vs  normal (geomorphing on).
-//! Usage: cargo run --release --example popdiff -- [LAT LON ALT_KM YAW N STEP_DEG]
+//! Usage: cargo run --release --example popdiff -- [LAT LON ALT_KM YAW N STEP_DEG DAY_LEN_S]
 use triangulum_viewer::camera::Camera;
 use triangulum_viewer::planet::Planet;
 use triangulum_viewer::renderer::Renderer;
@@ -36,6 +36,9 @@ fn main() -> anyhow::Result<()> {
         (800, 450),
         1.0,
     );
+    // optional: run the day/night cycle during the flight (0 = static sun)
+    renderer.day_len_s = get(7, 0.0);
+    renderer.sun_ref_lon = lon.to_radians();
 
     let mut camera = Camera {
         lon: lon.to_radians(),
