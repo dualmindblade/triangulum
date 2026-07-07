@@ -769,3 +769,26 @@ Two sky-pass additions on feature/night-sky:
 Verified: ns-night-ground.png (starfield over the dark valley),
 ns-orbit-limb.png (blue rim on the lit limb, stars behind, dark side
 fades), ns-day-regress.png (no stars in daylight). Golden test green.
+
+## Torches you can leave behind (2026-07-07, Phase 7c)
+
+R toggles a torch on the block you aim at (same face-aware raycast as
+E). A torch is two things sharing one persisted set (TRC1 file, 17-byte
+entries, per seed):
+- geometry: crossed thin quads on the column's walkable top, wood below,
+  flame above. The flame rides a new emissive convention — chunk vertices
+  with dim > 1.5 skip sun and cave darkness entirely in the shader.
+- light: the renderer ranks all torches by distance each frame (cheap
+  direction math first, terrain samples only for the winners) and ships
+  the nearest 16 as camera-relative point lights in the globals. The
+  fragment shader adds a warm quadratic pool (reach ~11 m) on blocks and
+  mesh tiles alike, scaled by base albedo so it restores true colors in
+  cave darkness rather than washing gray.
+Torches ride column edits automatically (their height is re-derived from
+top_solid at mesh time), and headless captures load them like edits.
+Verified with three injected torches at the tower-test spot:
+torch-night.png (overlapping warm pools under a star field — the game's
+first cozy screenshot) and torch-day.png (subtle posts, faint glow).
+Test file removed afterwards; live smoke green. Next candy on the
+Phase 7 list: day/night cycle, flame flicker (needs a time uniform),
+river aliasing, chunk-churn.
