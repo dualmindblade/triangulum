@@ -14,7 +14,7 @@ struct Globals {
     sky: vec4<f32>,
     // xyz = planet center relative to the camera (km), w = voxel patch lift
     center: vec4<f32>,
-    // x = number of active torch lights
+    // x = number of active torch lights, y = time (s, wraps hourly)
     misc: vec4<f32>,
     // placed-torch point lights: xyz camera-relative (km), w intensity
     lights: array<vec4<f32>, 16>,
@@ -120,8 +120,11 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     var c = base * (0.10 + 1.0 * light);
     if (in.rel_flag.w < 0.5) {
         if (in.water.a > 1.5) {
-            // emissive block face (torch flames): full-bright, no sun, no dim
-            return vec4<f32>(in.color, 1.0);
+            // emissive block face (torch flames): full-bright, no sun, no
+            // dim — breathing a little on a position-hashed phase
+            let fl = 0.86 + 0.22 * sin(globals.misc.y * 9.0
+                + dot(in.rel_flag.xyz, vec3<f32>(310.0, 470.0, 130.0)));
+            return vec4<f32>(in.color * fl, 1.0);
         }
         // cave darkness, applied here (not baked) so the player's torch can
         // push it back: a warm pool of light that reaches ~10 m and only

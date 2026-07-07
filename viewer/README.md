@@ -40,11 +40,13 @@ cargo run --release -- --capture shot.png --lat 22 --lon 28 --alt 500 --pitch -3
 Scenic destination: the planet's highest peak (8.58 km) is at
 `--lat 69 --lon 122`.
 
-The window title shows mode + coordinates. The sun follows the camera by
-default (always day where you are); pin it with `--sun-lat/--sun-lon` for
-real day/night. `--exagg N` scales terrain height (default 10; walk mode is
-best at `--exagg 1`). Walking is ground-following (steps up/down any ledge);
-side collision comes with block editing.
+The window title shows mode + coordinates. A **day/night cycle** runs by
+default: the sun hangs in space while the planet turns (20-minute day,
+`--day-len N` seconds to change it), starting mid-morning where you spawn.
+Sunset brings out the stars; torches matter after dark. `--day-len 0`
+restores the old always-noon-where-you-are mode, and `--sun-lat/--sun-lon`
+pins the sun exactly (screenshots stay reproducible). `--exagg N` scales
+terrain height (default 10; walk mode is best at `--exagg 1`).
 
 ## What's here (and what it proves)
 
@@ -222,10 +224,18 @@ Scenic destinations (all `--exagg 1`):
   16 torches light each frame; they persist per seed and ride column
   edits.
 
+## Phase 7c (day & night, 2026-07-07)
+
+* **Day/night cycle**: the sun stands still and the planet turns — local
+  time depends on longitude, the terminator crosses the planet from
+  orbit, sunsets happen to you instead of being launch options. Default
+  20-minute day (`--day-len`, 0 = legacy always-noon).
+* **Torch flames flicker** (a time uniform breathes both the emissive
+  quads and the point-light intensities, each on its own phase).
+
 ## Phase 7 (remaining)
 
 Swimming polish, river polish (distant threads alias to one-vertex
 zigzags, confluences blob at coarse LOD, rapids/waterfalls where levels
 step), voxel-patch recenter churn (chunk ring rebuilds dominate
-frame-to-frame change at low altitude), day/night cycle (sun currently
-static per launch), torch flame flicker (needs a time uniform).
+frame-to-frame change at low altitude), a moon and night ambient lift.
