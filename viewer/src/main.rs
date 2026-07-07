@@ -428,6 +428,7 @@ impl App {
         }
         self.player.teleport(
             &self.planet,
+            &self.edits,
             &mut self.camera,
             nums[0],
             nums[1],

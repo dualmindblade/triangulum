@@ -261,15 +261,52 @@ code) with a fixed 60 Hz timestep, no window needed:
 cargo run --release --example play -- scripts/valley-walk.play
 ```
 
+**Build gotcha:** `cargo build --release` does *not* build examples. After
+editing physics in `src/`, rebuild the harness explicitly —
+`cargo build --release --example play` — or you will verify a *stale*
+binary and misread working fixes as broken (this cost real time once).
+
 Commands: `teleport LAT LON [ALT]`, `look YAW PITCH`, `turn DY DP`,
 `mode walk|fly`, `hold w+shift 3.5`, `tap space|q|e|r`, `wait S`,
-`shot NAME`, `state NAME`, `sun LAT LON`, `log ...`. Each run leaves
-`interchange/runs/<name>/` with frames, per-shot JSON state sidecars
-(pose, physics, terrain under your feet), and a transcript. Scripts start
-in a clean world (no saved edits) and are deterministic — the tool that
-turns "an AI can only look at stills" into reproducible play sessions.
-Navigation is absolute-first by design: scripts teleport to coordinates;
-relative movement exists to exercise physics, not to find places.
+`shot NAME`, `state NAME`, `sun LAT LON`, `log ...`, and `assert FIELD
+[OP] VALUE`. Each run leaves `interchange/runs/<name>/` with frames,
+per-shot JSON state sidecars (pose, physics, terrain under your feet),
+and a transcript. Scripts start in a clean world (no saved edits) and are
+deterministic — the tool that turns "an AI can only look at stills" into
+reproducible play sessions. Navigation is absolute-first by design:
+scripts teleport to coordinates; relative movement exists to exercise
+physics, not to find places.
+
+**`assert`** makes runs self-checking: `assert grounded true`,
+`assert underwater == false`, `assert water_surface_km > 0.1`,
+`assert ceiling_above_km none`, `assert vert_vel_mps ~ 0 0.1` (tolerance).
+Any failure exits the run non-zero, so a survey *fails loudly* with no
+human reading frames. Fields: `grounded`, `underwater`, `mode`,
+`has_water`, `alt_km`, `ground_km`, `vert_vel_mps`, `support_below_km`,
+`water_surface_km`, `ceiling_above_km`. Every fixed bug should leave an
+asserting script behind.
+
+### Survey suites (automated discovery)
+
+* `scripts/invariant-survey.play` — hand-picked biomes, asserts the
+  physics invariants that must hold everywhere (lands grounded, rests at
+  eye height, water immerses, fly stays above ground).
+* `scripts/physics-regressions.play` — locks in the four bugs the codex
+  GPT-5.5 play-hunt found (place-down self-clip, fly-underwater over
+  rivers, frozen lakes as walkable ice, stale-underwater on teleport).
+* `scripts/gen_survey.py` -> `scripts/auto-survey.play` — the front line:
+  the generator samples *many* real feature cells straight from
+  `planet_data.npz` (inland land, peaks, frozen lakes, sea ice, open
+  water) and emits one asserting probe each, generalizing every
+  single-point find into a whole-class gate. Regenerate + run:
+  ```
+  python viewer/scripts/gen_survey.py --per 16
+  cargo build --release --example play
+  ./viewer/target/release/examples/play.exe viewer/scripts/auto-survey.play
+  ```
+  A failing probe is a candidate bug (or a feature-edge false alarm to
+  tighten). It found that the frozen-water fix correctly covers polar
+  *sea ice*, not just lakes.
 
 Found a real bug on its second-ever run: building a block wall next to
 yourself deadlocked the walker's body-radius collision (every direction

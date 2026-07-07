@@ -7,8 +7,8 @@
 use crate::camera::Camera;
 use crate::planet::Planet;
 use crate::voxel::{
-    ceiling_above_km, chunks_touching_column, raycast_column, support_below_km,
-    water_surface_km, ChunkKey, Edits, Torches, VOXEL_KM,
+    ceiling_above_km, chunks_touching_column, column_id, raycast_column, support_below_km,
+    surface_height_km, water_surface_km, ChunkKey, Edits, Torches, VOXEL_KM,
 };
 
 /// Player eye height above the feet, km.
@@ -72,6 +72,7 @@ impl PlayerState {
     pub fn teleport(
         &mut self,
         planet: &Planet,
+        edits: &Edits,
         camera: &mut Camera,
         lat_deg: f64,
         lon_deg: f64,
@@ -93,6 +94,27 @@ impl PlayerState {
             camera.position().normalize(),
             exaggeration,
         );
+        // refresh the flag now: a teleport is a pose change with no update
+        // tick before the next frame/shot, so a stale `underwater` would show.
+        self.refresh_underwater(planet, edits, camera, exaggeration);
+    }
+
+    /// Recompute `underwater` from the eye position vs the local water
+    /// surface. Must run after ANY pose/mode change (an update tick, a
+    /// teleport, a mode switch) so the flag never goes stale: fly mode used to
+    /// hard-code it false (so flying below water never tinted), and a teleport
+    /// above water left a stale `true` until the next tick.
+    pub fn refresh_underwater(
+        &mut self,
+        planet: &Planet,
+        edits: &Edits,
+        camera: &Camera,
+        exaggeration: f64,
+    ) {
+        let dir = camera.position().normalize();
+        let eye = camera.ground_km + camera.altitude_km;
+        self.underwater = water_surface_km(planet, edits, dir, exaggeration)
+            .is_some_and(|w| eye < w - 0.0003);
     }
 
     /// One simulation tick: movement, ground following, gravity, collision.
@@ -111,7 +133,6 @@ impl PlayerState {
 
         match self.mode {
             Mode::Fly => {
-                self.underwater = false;
                 if fwd != 0.0 || strafe != 0.0 {
                     // speed scales with altitude: cruise in orbit, glide low
                     let speed_kms = (camera.altitude_km * 0.5).clamp(0.02, 600.0);
@@ -231,9 +252,10 @@ impl PlayerState {
                 }
                 camera.ground_km = new_feet;
                 camera.altitude_km = EYE_KM;
-                self.underwater = water.is_some_and(|w| new_feet + EYE_KM < w - 0.0003);
             }
         }
+        // one place decides `underwater`, for both modes, from the final pose
+        self.refresh_underwater(planet, edits, camera, exagg);
     }
 }
 
@@ -260,6 +282,23 @@ pub fn edit_block(
         exaggeration,
     )?;
     let (face, ci, cj) = if dh > 0 { prev } else { hit };
+    // You can't place a block into your own body. Looking straight down while
+    // walking, the placement column IS the column you stand in, and the new
+    // block lands at your feet — without this it embeds the head in solid rock
+    // and renders the block interior (a starfield void). Fly mode is noclip, so
+    // this only guards the walking body.
+    if dh > 0 && mode == Mode::Walk && (face, ci, cj) == column_id(camera.position().normalize()) {
+        let surf_top = surface_height_km(planet, edits, camera.position().normalize(), exaggeration);
+        let block = VOXEL_KM * exaggeration;
+        let feet = camera.ground_km;
+        let head = feet + EYE_KM;
+        // reject when the new block [surf_top, surf_top+block] would overlap the
+        // body [feet, head]; a pillar-jump (feet already above surf_top+block)
+        // still places, so you can build up under yourself while airborne.
+        if surf_top < head + 0.0004 && surf_top + block > feet + 1e-6 {
+            return None;
+        }
+    }
     *edits.entry((face, ci, cj)).or_insert(0) += dh;
     Some(chunks_touching_column(face, ci, cj))
 }
