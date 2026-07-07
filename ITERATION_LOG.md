@@ -1055,3 +1055,104 @@ PowerShell `Start-Process cmd.exe -RedirectStandardInput MISSION.md
 -PassThru`. codex streams reasoning to STDERR (run.err) and the final answer
 to stdout; watch run.err for liveness and sample process CPU (flat CPU + no
 new stderr = frozen) rather than log-file growth.
+
+## Phase 8c — codex 4-round play-hunt, fixes, and making discovery systematic (2026-07-07)
+
+The mandate: run the play harness as a bug factory (me + codex), fix what it
+finds, and — the real task — **critique the verification method and change it
+so automated discovery finds more**. This entry is that critique, backed by
+what the session actually produced.
+
+### The harness is a genuine bug factory
+
+Across two independent AI operators, focused play runs surfaced real,
+reproducible, NON-aesthetic bugs at a high hit rate. codex's four rounds:
+* **R1** placing a block while looking straight down (walk mode) embedded the
+  head in the placed block — a black starfield void through solid rock.
+* **R2** fly mode never set `underwater`, so flying below a river surface
+  rendered as an above-water view.
+* **R3** frozen lakes render as a pale ice sheet but used liquid swim physics
+  — the player sank through visible ice and swam.
+* **R4** the underwater tint stuck `true` after teleporting above a lake until
+  the next fly tick.
+
+The common thread — and the single most important design choice in the
+harness — is that **every find was confirmed by the state JSON, not by "looks
+weird."** `ceiling_above_km` below the eye; `underwater` disagreeing with
+`water_surface_km`; feet ≠ support. The sidecar turns a suspicion into a
+provable inconsistency a weak model can assert on. Weak models read text
+perfectly and pixels expensively — betting the harness on machine-checkable
+ground truth is why it works.
+
+### The fixes (all verified, one merge to main)
+
+* **R1** — `edit_block` now rejects a placement that would intersect the
+  player's own body (own column + new block span overlapping [feet, head]).
+  The consistent voxel rule: you can't place a block inside yourself.
+  Pillar-jumping (feet already above the new block) still places.
+* **R2+R4** collapsed to one root cause: `underwater` was set ad-hoc per
+  branch (fly hard-coded it false; teleport left it stale). Now
+  `refresh_underwater()` derives it from eye-vs-water in ONE place, called
+  after every pose/mode change.
+* **R3** — `ColCtx::frozen_ice()`: a below-freezing water column is a solid
+  ice sheet in `support_below_km`, and `water_surface_km` hides it from
+  wading physics. Delegated pattern check to myself; verified on the exact
+  codex coordinate.
+
+Delegation this round: an easy, well-specified task (consolidate the four
+repros into `scripts/physics-regressions.play`, run it green) went to Sonnet
+— which cleanly handled it AND caught a real subtlety (the combined script
+needs an explicit `mode fly` before R2 because R1 leaves it in walk).
+
+### Where the method was weak, and what I SHIPPED
+
+1. **Runs were passive** — every run "succeeded"; a human had to eyeball each
+   frame + JSON. SHIPPED earlier this session: the `assert FIELD OP VALUE`
+   command (fail = non-zero exit) and `invariant-survey.play`. This is the
+   biggest lever: it converts discovery into a growing regression suite, and
+   every fixed bug now leaves an asserting script behind
+   (`physics-regressions.play`).
+2. **Discovery was hand-authored** — both operators had to *think of* where to
+   look, and gravitated to water/coasts. SHIPPED the real upgrade:
+   `scripts/gen_survey.py`. It samples MANY real feature cells straight from
+   `planet_data.npz` (interior cells only, so a point feature can't miss its
+   edge after the icosphere→cube resample) and emits one asserting probe per
+   cell, per class: inland land + peaks must be walkable (grounded), frozen
+   lakes + sea ice must be solid dry ice, open water must immerse. This
+   **generalizes every single-point find into a whole-class gate** — R3 is no
+   longer "one frozen lake"; it's "every frozen lake." 45 probes, deterministic
+   and diffable, run in seconds.
+3. **The sweep already paid for itself.** On its first run it flagged an
+   "ocean" cell at 84°N reading as dry — not a bug: my frozen-water fix
+   correctly treats a −15 °C polar sea as **sea ice** you walk on. The sweep
+   validated that R3's fix generalizes beyond lakes, and I split sea ice into
+   its own gated class. That is discovery finding more with zero human
+   authoring of the probe.
+4. **A build trap cost real time.** `cargo build --release` does NOT build
+   examples, so I verified R2/R3/R4 against a STALE `play.exe` and briefly
+   misread three working fixes as broken. Rebuilt with
+   `--example play` and all passed. Now documented loudly in the harness
+   README — this is exactly the kind of silent failure that makes automated
+   verification lie.
+
+### On the overall process (reviews + hunt + delegated fixes)
+
+* Two INDEPENDENT reviews earned their cost: convergence (both found the
+  face-edge tree-identity bug) raised confidence; divergence widened coverage.
+* Delegation works with clear scope + a verification gate the delegate must
+  hit (Sonnet: run it green; codex earlier: fix in a worktree, I compile-check
+  before merge — the delegate didn't run the compiler).
+* The division of labor is right: the harness owns OBJECTIVE consistency
+  (physics/geometry/rendering contradictions), humans own TASTE (is the flat
+  2 m coast a bug or a style choice?). The harness deliberately can't and
+  shouldn't adjudicate aesthetics.
+
+### Net change to the method
+
+The front line of discovery is now a **generated, self-checking survey** that
+fails loudly, seeded from the source planet data — not a human flying around
+looking at stills. Next levers (recommended, not yet built): fold the survey
+into a session-start gate; add a `nearest <feature>` probe or a shipped
+feature-coordinate manifest (scripts still can't branch on state); and widen
+classes to cube-face edges and cave interiors, the two places both operators
+under-visited.
