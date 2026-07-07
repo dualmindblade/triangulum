@@ -292,6 +292,8 @@ fn main() -> anyhow::Result<()> {
                             player::edit_block(&planet, &mut edits, &camera, ps.mode, dh, exagg)
                         {
                             renderer.invalidate_chunks(&dirty);
+                            // the ground under the player may have moved
+                            ps.refresh_after_edit(&planet, &edits, &camera, exagg);
                         } else {
                             trace!("[{}] tap {} hit nothing in reach", ln + 1, toks[1]);
                         }

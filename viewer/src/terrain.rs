@@ -520,7 +520,13 @@ pub fn build_tile(planet: &Planet, key: TileKey, exaggeration: f64) -> TileMesh 
             // is the water color so the wetness blend is a no-op there and
             // it stays fully blue at every distance
             let ground = if s.sea || s.lake {
-                wc
+                // a frozen sheet is solid walkable ice — give it a snow-dusted,
+                // LOD-stable surface so it reads as ground, not a flat plane
+                if s.temp_c < -4.0 {
+                    frost_color(world[gj * np2 + gi])
+                } else {
+                    wc
+                }
             } else {
                 shade_ground(planet, face, uu, vv, s, slope)
             };
@@ -594,6 +600,25 @@ fn mix3(a: [f32; 3], b: [f32; 3], t: f32) -> [f32; 3] {
 
 /// Water color by depth: true ocean depth for the sea, carved depth for
 /// rivers and ponds.
+/// Surface color for a FROZEN sea/lake vertex — a solid, walkable ice sheet.
+/// A single flat color read as empty sky or liquid; this dusts it snow-white
+/// with a smooth drift so it reads as ground. The drift is a function of world
+/// position only (not tile level), so it is identical for a point at every LOD
+/// and morphs without shimmer. Height morphing shifts `p` by sub-meter amounts
+/// against km-scale arguments, so the pattern is effectively frozen in place.
+fn frost_color(p: glam::DVec3) -> [f32; 3] {
+    let d = ((p.x * 47.0).sin() * (p.y * 43.0).sin() * (p.z * 41.0).sin()
+        + 0.5 * (p.x * 131.0 + p.y * 109.0).sin()) as f32;
+    let t = (0.5 + 0.35 * d).clamp(0.0, 1.0);
+    let ice = [0.60, 0.70, 0.82];
+    let snow = [0.85, 0.88, 0.92];
+    [
+        ice[0] + (snow[0] - ice[0]) * t,
+        ice[1] + (snow[1] - ice[1]) * t,
+        ice[2] + (snow[2] - ice[2]) * t,
+    ]
+}
+
 fn water_color(s: &Sample) -> [f32; 3] {
     if s.temp_c < -4.0 {
         return [0.60, 0.72, 0.85]; // frozen — matches Mat::Ice on the blocks

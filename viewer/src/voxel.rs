@@ -311,7 +311,11 @@ fn mat_at(c: &ColCtx, z: i64, surface: Mat) -> Mat {
     if z > c.ground0 {
         return if z >= c.ground { surface } else { sub_mat(surface) };
     }
-    let d = c.ground.min(c.ground0) - z;
+    // depth below the NATURAL surface — strata always measure from ground0,
+    // never from a dug-down top. Using the lowered top made a mined shaft
+    // floor (z == c.ground) compute depth 0 and render as living grass several
+    // meters underground; from ground0 it correctly reads dirt then stone.
+    let d = c.ground0 - z;
     if d <= 0 {
         surface
     } else if d <= 3 {
@@ -872,6 +876,20 @@ pub fn build_chunk(
                 let frozen = c.temp < -4.0;
                 let wmat = if frozen { Mat::Ice } else { Mat::Water };
                 let mut wcol = wmat.color(tint);
+                if frozen {
+                    // a frozen sheet is flat and one color, so its top used to
+                    // read as a featureless plane — indistinguishable from sky
+                    // or liquid. Dust it with patchy snow per column so the
+                    // solid surface reads as ground (brightness varied below).
+                    let snow = Mat::Snow.color(tint);
+                    let f = hash01(face as u8, ci, cj, 0x1CE) as f32;
+                    let s = f * f * 0.6;
+                    wcol = [
+                        wcol[0] + (snow[0] - wcol[0]) * s,
+                        wcol[1] + (snow[1] - wcol[1]) * s,
+                        wcol[2] + (snow[2] - wcol[2]) * s,
+                    ];
+                }
                 if !frozen {
                     // same depth scale as the mesh's water_color, so the
                     // patch boundary doesn't jump shade: true ocean depth
@@ -910,7 +928,10 @@ pub fn build_chunk(
                     }
                 }
                 let r = shell(w);
-                quad([d00 * r, d10 * r, d11 * r, d01 * r], up, [wcol; 4], 1.0);
+                // frozen tops take the same per-column brightness checker as
+                // land so the flat sheet reads as tiled ground, not a plane
+                let wtop = if frozen { vary(wcol, bright(w)) } else { wcol };
+                quad([d00 * r, d10 * r, d11 * r, d01 * r], up, [wtop; 4], 1.0);
                 for (nbi, da, db) in sides {
                     let nb = nbs[nbi];
                     let nb_surf = nb.top_solid().max(if nb.water == i64::MIN {

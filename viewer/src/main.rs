@@ -351,6 +351,12 @@ impl App {
             if let Some(gfx) = self.gfx.as_mut() {
                 gfx.renderer.invalidate_chunks(&dirty);
             }
+            self.player.refresh_after_edit(
+                &self.planet,
+                &self.edits,
+                &self.camera,
+                self.args.exaggeration,
+            );
             save_edits(self.planet.seed, &self.edits);
         }
     }
