@@ -1,0 +1,76 @@
+# Invariant survey: settle the player in walk mode across many biomes and
+# assert the physics/water invariants that must hold everywhere. Any failure
+# makes the run exit non-zero — so this doubles as a regression test AND an
+# automated discovery tool (a broken location fails loudly instead of needing
+# a human to eyeball every frame). Run:
+#   ./viewer/target/release/examples/play.exe viewer/scripts/invariant-survey.play
+# (default --exagg 1, which is what walk-mode physics is tuned for)
+
+# ---- solid-ground invariants: after settling in walk mode the player must be
+# grounded, at rest, and at eye height (never falling through, never floating).
+log temperate river valley
+teleport 4.990 -29.403 0.05
+mode walk
+wait 6
+assert grounded true
+assert vert_vel_mps ~ 0 0.05
+assert alt_km ~ 0.0018 0.0003
+state valley
+
+log taiga + cave country
+teleport 51.18 85.83 0.05
+mode walk
+wait 6
+assert grounded true
+assert vert_vel_mps ~ 0 0.05
+state taiga
+
+log savanna acacias
+teleport 1.51 40.49 0.05
+mode walk
+wait 6
+assert grounded true
+assert vert_vel_mps ~ 0 0.05
+state savanna
+
+log desert river
+teleport 0.87 -89.80 0.05
+mode walk
+wait 6
+assert grounded true
+assert vert_vel_mps ~ 0 0.05
+state desert
+
+log temperate groves
+teleport 3.96 -32.56 0.05
+mode walk
+wait 6
+assert grounded true
+assert vert_vel_mps ~ 0 0.05
+state groves
+
+log highest peak (steep — must still support the player)
+teleport 69.0 122.0 0.05
+mode walk
+wait 8
+assert grounded true
+state peak
+
+# ---- water invariants: a lake column must report water, and sinking into it
+# must put the eye underwater.
+log inland sea: water present + immersion
+teleport 20.633 127.615 0.05
+mode walk
+assert has_water true
+wait 10
+assert underwater true
+state lake
+
+# ---- fly-mode ground-follow: descending toward terrain must keep the camera
+# above the surface (positive altitude), never clipping below it.
+log fly ground-follow stays above surface
+teleport 4.990 -29.403 0.5
+mode fly
+wait 2
+assert alt_km > 0.0
+state fly_follow

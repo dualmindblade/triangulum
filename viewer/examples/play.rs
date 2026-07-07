@@ -22,7 +22,19 @@
 //!   shot NAME                     render a frame (waits for streaming) +
 //!                                 write NAME.json state sidecar
 //!   state NAME                    state sidecar only, no frame
-//!   sun LAT LON                   pin the sun (otherwise: always day here)
+//!   assert FIELD OP VALUE         check a state value; any failure makes the
+//!                                 run exit non-zero (self-checking scripts).
+//!                                 FIELD: grounded, underwater, mode, has_water,
+//!                                 alt_km, ground_km, support_below_km,
+//!                                 water_surface_km, ceiling_above_km,
+//!                                 vert_vel_mps, lat_deg, lon_deg, yaw_deg,
+//!                                 pitch_deg. OP: == != < <= > >= or ~ (approx,
+//!                                 optional 4th token = tolerance). VALUE: a
+//!                                 number, true/false, walk/fly, or `none`.
+//!   sun LAT LON                   pin the sun. WARNING: this is a GLOBAL sun
+//!                                 direction — far-longitude teleports then
+//!                                 render at NIGHT. OMIT sun for surveys: the
+//!                                 default lights every location at local noon.
 //!   log TEXT...                   annotate the transcript
 //!
 //! Navigation is deliberately absolute-first: scripts teleport to
@@ -194,6 +206,9 @@ fn main() -> anyhow::Result<()> {
         Ok(())
     };
 
+    // assertions that failed: a run with any failure exits non-zero, so a
+    // .play script doubles as a self-checking regression/discovery test.
+    let mut assert_fails: u32 = 0;
     for (ln, raw) in script.lines().enumerate() {
         let line = raw.split('#').next().unwrap_or("").trim();
         if line.is_empty() {
@@ -318,8 +333,124 @@ fn main() -> anyhow::Result<()> {
             "log" => {
                 trace!("[{}] # {}", ln + 1, toks[1..].join(" "));
             }
+            // assert FIELD OP VALUE  — check a state value; a failure is
+            // recorded and makes the whole run exit non-zero. FIELD is any
+            // state key (grounded, underwater, mode, alt_km, ground_km,
+            // support_below_km, water_surface_km, ceiling_above_km, has_water,
+            // vert_vel_mps, lat_deg, lon_deg, yaw_deg, pitch_deg). OP is one of
+            // == != < <= > >= or ~ (approx; optional 4th token = tolerance).
+            // VALUE is a number, true/false, a mode string, or `none`.
+            "assert" => {
+                enum V {
+                    B(bool),
+                    N(f64),
+                    S(&'static str),
+                    None,
+                }
+                let field = toks.get(1).map(|s| s.to_ascii_lowercase()).unwrap_or_default();
+                // two forms: `assert FIELD VALUE` (implicit ==) and
+                // `assert FIELD OP VALUE` (+ optional tolerance token for `~`)
+                let (op, want) = if toks.len() == 3 {
+                    ("==", toks[2])
+                } else {
+                    (toks.get(2).copied().unwrap_or("=="), toks.get(3).copied().unwrap_or(""))
+                };
+                let dir = camera.position().normalize();
+                let feet = camera.ground_km;
+                let actual = match field.as_str() {
+                    "grounded" => V::B(ps.grounded),
+                    "underwater" => V::B(ps.underwater),
+                    "has_water" => {
+                        V::B(water_surface_km(&planet, &edits, dir, exagg).is_some())
+                    }
+                    "mode" => V::S(if ps.mode == Mode::Walk { "walk" } else { "fly" }),
+                    "alt_km" => V::N(camera.altitude_km),
+                    "ground_km" => V::N(camera.ground_km),
+                    "vert_vel_mps" => V::N(ps.vert_vel_mps),
+                    "lat_deg" => V::N(camera.lat.to_degrees()),
+                    "lon_deg" => V::N(camera.lon.to_degrees()),
+                    "yaw_deg" => V::N(camera.yaw.to_degrees()),
+                    "pitch_deg" => V::N(camera.pitch.to_degrees()),
+                    "support_below_km" => {
+                        V::N(support_below_km(&planet, &edits, dir, feet + 1e-7, exagg))
+                    }
+                    "water_surface_km" => match water_surface_km(&planet, &edits, dir, exagg) {
+                        Some(w) => V::N(w),
+                        None => V::None,
+                    },
+                    "ceiling_above_km" => {
+                        let c = ceiling_above_km(
+                            &planet, &edits, dir, feet + player::EYE_KM, exagg,
+                        );
+                        if c.is_finite() { V::N(c) } else { V::None }
+                    }
+                    _ => anyhow::bail!("line {}: assert: unknown field `{field}`", ln + 1),
+                };
+                let (pass, shown) = match &actual {
+                    V::B(b) => {
+                        let w = want.eq_ignore_ascii_case("true") || want == "1";
+                        let p = match op {
+                            "==" => *b == w,
+                            "!=" => *b != w,
+                            _ => anyhow::bail!("line {}: assert bool needs == or !=", ln + 1),
+                        };
+                        (p, b.to_string())
+                    }
+                    V::S(s) => {
+                        let p = match op {
+                            "==" => s.eq_ignore_ascii_case(want),
+                            "!=" => !s.eq_ignore_ascii_case(want),
+                            _ => anyhow::bail!("line {}: assert string needs == or !=", ln + 1),
+                        };
+                        (p, s.to_string())
+                    }
+                    V::None => {
+                        let is_none = want.eq_ignore_ascii_case("none");
+                        let p = match op {
+                            "==" => is_none,
+                            "!=" => !is_none,
+                            _ => false,
+                        };
+                        (p, "none".to_string())
+                    }
+                    V::N(n) => {
+                        if want.eq_ignore_ascii_case("none") {
+                            (op == "!=", format!("{n:.6}"))
+                        } else {
+                            let w: f64 = want.parse().map_err(|_| {
+                                anyhow::anyhow!("line {}: assert: bad number `{want}`", ln + 1)
+                            })?;
+                            let tol = toks.get(4).and_then(|s| s.parse().ok()).unwrap_or(0.01);
+                            let p = match op {
+                                "==" => (n - w).abs() <= 1e-6 + w.abs() * 1e-4,
+                                "~" => (n - w).abs() <= tol,
+                                "!=" => (n - w).abs() > 1e-9,
+                                "<" => *n < w,
+                                "<=" => *n <= w,
+                                ">" => *n > w,
+                                ">=" => *n >= w,
+                                _ => anyhow::bail!("line {}: assert: bad op `{op}`", ln + 1),
+                            };
+                            (p, format!("{n:.6}"))
+                        }
+                    }
+                };
+                if pass {
+                    trace!("[{}] assert OK: {field} {op} {want} (actual {shown})", ln + 1);
+                } else {
+                    assert_fails += 1;
+                    trace!(
+                        "[{}] ASSERT FAIL: {field} {op} {want} (actual {shown})",
+                        ln + 1
+                    );
+                }
+            }
             other => anyhow::bail!("line {}: unknown command `{other}`", ln + 1),
         }
+    }
+    if assert_fails > 0 {
+        trace!("run FAILED: {assert_fails} assertion(s) did not hold -> {dir}");
+        anyhow::bail!("{assert_fails} assertion(s) failed");
     }
     trace!("run complete -> {dir}");
     Ok(())
