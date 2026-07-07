@@ -117,6 +117,41 @@ impl PlayerState {
             .is_some_and(|w| eye < w - 0.0003);
     }
 
+    /// Recompute `grounded` after the world changed under the player (a block
+    /// edit). Breaking the block underfoot drops the support a block down;
+    /// without this the player reads `grounded=true` while hovering above the
+    /// new support until the next tick. Walk mode only (fly never grounds).
+    pub fn refresh_grounded(
+        &mut self,
+        planet: &Planet,
+        edits: &Edits,
+        camera: &Camera,
+        exaggeration: f64,
+    ) {
+        if self.mode != Mode::Walk {
+            return;
+        }
+        let dir = camera.position().normalize();
+        let feet = camera.ground_km;
+        let support = support_below_km(planet, edits, dir, feet + 1e-7, exaggeration);
+        // grounded only while the feet are essentially resting on the support
+        self.grounded = feet - support <= 1e-6;
+    }
+
+    /// Resync derived state after a block edit moved the world under the
+    /// player — both the support (grounded) and the water column (underwater)
+    /// can change. Paired so a caller can't refresh one and forget the other.
+    pub fn refresh_after_edit(
+        &mut self,
+        planet: &Planet,
+        edits: &Edits,
+        camera: &Camera,
+        exaggeration: f64,
+    ) {
+        self.refresh_grounded(planet, edits, camera, exaggeration);
+        self.refresh_underwater(planet, edits, camera, exaggeration);
+    }
+
     /// One simulation tick: movement, ground following, gravity, collision.
     pub fn update(
         &mut self,
