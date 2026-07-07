@@ -312,3 +312,100 @@ mode walk
 wait 12
 assert has_water == true
 assert underwater == true
+
+# ===== face-edge: 16 land seams (of 39 found) =====
+# face-edge near cell 336338 elev=1.074km
+teleport -1.6201 -45.0000 0.05
+mode walk
+wait 8
+assert grounded == true
+
+# face-edge near cell 230072 elev=0.494km
+teleport 17.2823 -45.0000 0.05
+mode walk
+wait 8
+assert grounded == true
+
+# face-edge near cell 185301 elev=0.054km
+teleport 25.6798 -45.0000 0.05
+mode walk
+wait 8
+assert grounded == true
+
+# face-edge near cell 101616 elev=0.583km
+teleport 43.6041 17.7447 0.05
+mode walk
+wait 8
+assert grounded == true
+
+# face-edge near cell 111795 elev=1.121km
+teleport 41.1049 29.2488 0.05
+mode walk
+wait 8
+assert grounded == true
+
+# face-edge near cell 336643 elev=5.644km
+teleport -1.6201 135.0000 0.05
+mode walk
+wait 8
+assert grounded == true
+
+# face-edge near cell 230377 elev=0.374km
+teleport 17.2823 135.0000 0.05
+mode walk
+wait 8
+assert grounded == true
+
+# face-edge near cell 149574 elev=0.566km
+teleport 33.0455 135.0000 0.05
+mode walk
+wait 8
+assert grounded == true
+
+# face-edge near cell 123522 elev=0.291km
+teleport 38.5255 142.7652 0.05
+mode walk
+wait 8
+assert grounded == true
+
+# face-edge near cell 440666 elev=2.827km
+teleport -20.1882 -135.0000 0.05
+mode walk
+wait 8
+assert grounded == true
+
+# face-edge near cell 97514 elev=0.041km
+teleport 44.6379 80.9097 0.05
+mode walk
+wait 8
+assert grounded == true
+
+# face-edge near cell 112136 elev=0.821km
+teleport 41.1049 119.2488 0.05
+mode walk
+wait 8
+assert grounded == true
+
+# face-edge near cell 126208 elev=1.435km
+teleport 37.9852 128.6598 0.05
+mode walk
+wait 8
+assert grounded == true
+
+# face-edge near cell 550566 elev=2.729km
+teleport -42.8760 -111.8014 0.05
+mode walk
+wait 8
+assert grounded == true
+
+# face-edge near cell 97209 elev=1.084km
+teleport 44.6379 -99.0903 0.05
+mode walk
+wait 8
+assert grounded == true
+
+# face-edge near cell 95743 elev=1.681km
+teleport 44.9086 -85.4261 0.05
+mode walk
+wait 8
+assert grounded == true

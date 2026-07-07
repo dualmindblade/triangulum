@@ -297,16 +297,22 @@ asserting script behind.
 * `scripts/gen_survey.py` -> `scripts/auto-survey.play` — the front line:
   the generator samples *many* real feature cells straight from
   `planet_data.npz` (inland land, peaks, frozen lakes, sea ice, open
-  water) and emits one asserting probe each, generalizing every
-  single-point find into a whole-class gate. Regenerate + run:
-  ```
-  python viewer/scripts/gen_survey.py --per 16
-  cargo build --release --example play
-  ./viewer/target/release/examples/play.exe viewer/scripts/auto-survey.play
-  ```
+  water, and dry-land cube-face **seams**) and emits one asserting probe
+  each, generalizing every single-point find into a whole-class gate.
   A failing probe is a candidate bug (or a feature-edge false alarm to
   tighten). It found that the frozen-water fix correctly covers polar
   *sea ice*, not just lakes.
+* `scripts/verify.sh` — the **session gate**: rebuilds the harness,
+  regenerates the sweep, and runs all three suites, exiting non-zero on
+  any failure. Run it after touching physics/geometry.
+  ```
+  bash viewer/scripts/verify.sh        # SKIP_BUILD=1 to reuse the binary
+  ```
+* `scripts/where.py` — feature-coordinate query so scripts/missions reach
+  a feature without guessing (play scripts can't branch on state).
+  `where.py` lists classes; `where.py river --near 20 120` gives the
+  nearest; `where.py --manifest` writes `scripts/feature-coords.md`. The
+  class definitions are shared with the sweep, so they can't drift.
 
 Found a real bug on its second-ever run: building a block wall next to
 yourself deadlocked the walker's body-radius collision (every direction
