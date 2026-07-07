@@ -869,3 +869,50 @@ guards both accelerators for future refactors.
 Strategic note stands: this makes ITERATION fast for us; shipping player
 generation still points at a Rust port (chronicle as loading screen),
 stage by stage with golden tests, climate first.
+
+## The patch grows, the rivers thin (2026-07-07, Phase 7d/e)
+
+Two branches from the user's asks: kill the recenter churn, make the
+block disc bigger ("configurable or something — I think it would improve
+the look and feel quite a bit"), and fix the confluence blobs.
+
+### Patch streaming (feature/patch-streaming)
+Chunk builds left the frame loop: missing chunks spawn onto background
+rayon tasks (nearest first) and land whenever they finish; every frame
+renders whatever is built. The heightfield hole now opens only over
+ACTUALLY BUILT coverage — teleport somewhere fresh and you see mesh
+terrain with blocks streaming outward through it, never a hole to the
+sky. The rim-sink follows the selected radius (a new misc slot), so the
+patch edge stays a feathered shoreline even mid-stream. Planet rides an
+Arc into the workers; in-flight builds orphaned by an edit are dropped
+via the pending-set guard and rebuilt fresh. --patch N (0.3-2.0) scales
+the disc; the difference at 2.0 is dramatic (ps-patch1 vs ps-patch2:
+stepped-bank lakes and shrub texture out to the middle distance where
+there was flat paint). Found the hard way (wgpu OOM mid-verification,
+with the user's own game holding half the card): fast flight at big
+patches accumulates chunk buffers faster than age-based eviction retires
+them — the chunk cache now has a hard 1.5 GB VRAM budget with
+newest-first retention. Headless captures block until streaming settles,
+so screenshots stay complete frames.
+
+### River LOD paint (feature/river-lod-paint)
+The painted river corridor is widened to one vertex spacing so distant
+threads stay continuous — and was painted at FULL strength no matter how
+little of that corridor the real channel fills. That's the confluence
+blob: two full-opacity corridors meeting at an acute angle fill the
+wedge. Paint now carries sqrt(hw / painted_width) coverage: a 30 m
+tributary across an 800 m corridor is a faint thread, the great river
+keeps its weight, and thin rivers fade with distance instead of
+shattering (rv-delta before/after). Ponds' feathered wetness fades past
+its 0.28 km feather scale by the same rule. Verification surprise: the
+angular blue polygons in the valley views did not change AT ALL —
+pixel-identical — because they are LAKE-CELL FOOTPRINTS (geometry, not
+paint). New Phase 7 item: lakes need a soft distance-to-shore signal.
+
+### Verification note
+The user was playing the whole session (their viewer holds the exe lock
+and half the VRAM), so everything was verified through the example
+binaries: the streaming machinery ran headless across 40-frame flights
+(the capture path drains the same channel), the bin passes cargo check,
+and nothing on either branch touches noise (golden test unaffected).
+Their next `cargo run --release` builds and launches the merged code.

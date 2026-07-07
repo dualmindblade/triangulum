@@ -40,6 +40,12 @@ cargo run --release -- --capture shot.png --lat 22 --lon 28 --alt 500 --pitch -3
 Scenic destination: the planet's highest peak (8.58 km) is at
 `--lat 69 --lon 122`.
 
+**`--patch N`** (0.3–2.0, default 1) scales the voxel-patch disc — at 2 the
+blocky world reaches ~1 km around you. Chunks stream in on background
+threads (mesh terrain shows until they land, then blocks rise through the
+feathered rim), so bigger patches cost VRAM (~1.5 GB budget, LRU-evicted)
+and build throughput, not frame hitches.
+
 The window title shows mode + coordinates. A **day/night cycle** runs by
 default: the sun hangs in space while the planet turns (20-minute day,
 `--day-len N` seconds to change it), starting mid-morning where you spawn.
