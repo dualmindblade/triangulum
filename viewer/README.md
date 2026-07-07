@@ -323,6 +323,18 @@ wall — you can escape and slide, and the trunk standoff still holds.
 
 Swimming polish, rapids/waterfalls where river levels step, lake
 footprints alias to angular vertex polygons at coarse LOD (needs a soft
-distance-to-shore signal from the lake index), a moon and night ambient
-lift, river ribbons as real geometry at coarse LOD (the endgame for
-distant rivers).
+distance-to-shore signal from the lake index), river ribbons as real
+geometry at coarse LOD (the endgame for distant rivers).
+
+## Phase 7f (the moon & moonlit nights, 2026-07-07)
+
+* **A moon** rides opposite the sun (rises at sunset, near-full), a
+  phase-lit sphere — a ray within its disc reconstructs the sphere normal
+  and lights it by the sun for a real terminator, with faint earthshine on
+  the dark side, surface mottling, and a tight halo. It fades out in
+  daylight and below the horizon, and is tied to the sun so a pinned sun
+  keeps captures reproducible.
+* **Night ambient lift**: a cool directional moonlight plus a faint floor
+  so night terrain reads as moonlit — silhouetted trees, water catching
+  the light — instead of near-black. Present only at night and only while
+  the moon is up; daytime terrain is untouched.

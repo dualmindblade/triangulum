@@ -49,6 +49,10 @@ struct Globals {
     // world-space view rays (camera-relative space, so the eye is origin)
     inv_view_proj: [[f32; 4]; 4],
     sun_dir: [f32; 4],
+    // xyz = unit direction to the moon (deterministic anti-solar + tilt, so
+    // screenshots stay reproducible); w spare. Drives the night moon disc and
+    // the cool moonlight lift on night terrain.
+    moon_dir: [f32; 4],
     // disc cut out of the heightfield where voxel chunks own the ground:
     // xyz = disc center relative to the camera (km), w = radius (0 = off)
     hole: [f32; 4],
@@ -395,6 +399,16 @@ impl Renderer {
                 cam_pos.normalize()
             }
         });
+        // the moon rides opposite the sun (rises at sunset, near-full), tilted
+        // ~18 deg off the solar path about the world X axis so it isn't a
+        // mirror image of the sun and clears the horizon on its own arc. Tied
+        // to the sun, so a pinned sun pins the moon (reproducible captures).
+        let moon = {
+            let a: f64 = 18f64.to_radians();
+            let (s, c) = (a.sin(), a.cos());
+            let m = -sun;
+            DVec3::new(m.x, m.y * c - m.z * s, m.y * s + m.z * c).normalize()
+        };
         let inv32 = Mat4::from_cols_array(&vp.inverse().to_cols_array().map(|x| x as f32));
         let up = cam_pos.normalize();
         let cam_h_km = (cam_pos.length() - planet.radius_km).max(0.0);
@@ -506,6 +520,7 @@ impl Renderer {
             view_proj: vp32.to_cols_array_2d(),
             inv_view_proj: inv32.to_cols_array_2d(),
             sun_dir: [sun.x as f32, sun.y as f32, sun.z as f32, 0.0],
+            moon_dir: [moon.x as f32, moon.y as f32, moon.z as f32, 0.0],
             hole,
             hole_up,
             sky: [up.x as f32, up.y as f32, up.z as f32, cam_h_km as f32],
