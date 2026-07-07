@@ -1,0 +1,12 @@
+# generated planet data (rebuild: python -m planetgen, then the bake scripts)
+output/
+viewer/assets/*.bin
+viewer/assets/meta.json
+
+# screenshots and visual-feedback exchange (session-local, often large)
+viewer/interchange/
+
+# build artifacts
+__pycache__/
+*.pyc
+viewer/target/

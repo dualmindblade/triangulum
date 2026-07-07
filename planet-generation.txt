@@ -1,0 +1,27 @@
+Wanted simulation dynamics:
+
+Initialization
+A spherical planet as earthlike as possible
+
+Step 1
+Generate plate geometry and direction/motion with subdivided subplates and historical plate boundaries
+Use this information with noise to generate a rough map of the terrain.
+
+
+Step 2
+Weather (Atmosphere and ocean currents)
+Some kind of simulation of these dynamics over the terrain map
+Collect seasonal information: rainfall, temperature, atmospheric currents, ocean currents, cloud cover, etc.
+
+
+Step 3
+Hydraulics (rivers, erosion, deposition)
+Using the precipitation data from above, simulate erosion and river/lake formation and sediment deposition
+
+Step 4
+Refine weather simulation using the new elevation data (possibly just re-run the original simulation)
+
+Step 4
+Biome formation
+Use information collected to calculate Koppen climate types over the land
+

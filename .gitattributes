@@ -1,0 +1,4 @@
+# normalize line endings across the family's machines
+* text=auto
+*.png binary
+*.bin binary

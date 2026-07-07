@@ -1,0 +1,12 @@
+//! triangulum-viewer library: cube-sphere LOD rendering over the planetgen
+//! dataset. The binary in main.rs is a thin shell over these modules; tests
+//! (notably the Python-parity noise goldens) link against the library.
+
+pub mod camera;
+pub mod noise;
+pub mod noise_grad;
+pub mod planet;
+pub mod renderer;
+pub mod rivers;
+pub mod terrain;
+pub mod voxel;
