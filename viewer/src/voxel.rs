@@ -18,7 +18,7 @@
 use crate::planet::{face_dir, ground_tint, Planet};
 use crate::terrain::{sample, TileMesh, Vertex, VOXEL_OCTAVES};
 use glam::DVec3;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 pub const COLUMNS_PER_FACE: u64 = 10_000_000; // 1 m columns on a 10,000 km face
 pub const CHUNK: u64 = 32;
@@ -162,6 +162,22 @@ impl ColCtx {
     }
 }
 
+/// Canonical face/column for an extended lattice index. In-range indices keep
+/// their identity; out-of-range indices follow the cube-face direction map.
+fn canonical_column(face: usize, i_ext: i64, j_ext: i64) -> (u8, u64, u64) {
+    let max = COLUMNS_PER_FACE as i64;
+    if (0..max).contains(&i_ext) && (0..max).contains(&j_ext) {
+        (face as u8, i_ext as u64, j_ext as u64)
+    } else {
+        let nn = COLUMNS_PER_FACE as f64;
+        let u = -1.0 + 2.0 * (i_ext as f64 + 0.5) / nn;
+        let v = -1.0 + 2.0 * (j_ext as f64 + 0.5) / nn;
+        let (f2, u2, v2) = crate::planet::face_from_dir(face_dir(face, u, v));
+        let (ci, cj) = column_of(u2, v2);
+        (f2 as u8, ci, cj)
+    }
+}
+
 /// Column context by extended lattice index: indices past the face edge
 /// resolve onto the neighbor face (cube-face lattices coincide along shared
 /// edges). Shared by chunk meshing and the tree/physics queries so both
@@ -173,17 +189,8 @@ pub fn col_ctx_ext(
     i_ext: i64,
     j_ext: i64,
 ) -> ColCtx {
-    let max = COLUMNS_PER_FACE as i64;
-    if (0..max).contains(&i_ext) && (0..max).contains(&j_ext) {
-        col_ctx(planet, edits, face, i_ext as u64, j_ext as u64)
-    } else {
-        let nn = COLUMNS_PER_FACE as f64;
-        let u = -1.0 + 2.0 * (i_ext as f64 + 0.5) / nn;
-        let v = -1.0 + 2.0 * (j_ext as f64 + 0.5) / nn;
-        let (f2, u2, v2) = crate::planet::face_from_dir(face_dir(face, u, v));
-        let (ci, cj) = column_of(u2, v2);
-        col_ctx(planet, edits, f2, ci, cj)
-    }
+    let (canon_face, ci, cj) = canonical_column(face, i_ext, j_ext);
+    col_ctx(planet, edits, canon_face as usize, ci, cj)
 }
 
 /// Generate one column from scratch: terrain sample, water, caves.
@@ -588,23 +595,27 @@ pub fn raycast_column(
     None
 }
 
-/// The chunk containing a column, plus neighbors if the column sits on the
-/// chunk border (their ghost rings see it) — all need remeshing on edit.
+/// Chunks whose ghost/tree context can observe a column need remeshing on edit.
 pub fn chunks_touching_column(face: u8, ci: u64, cj: u64) -> Vec<ChunkKey> {
-    let (cx, cy) = (ci / CHUNK, cj / CHUNK);
-    let mut out = vec![ChunkKey { face, cx, cy }];
-    let max_c = COLUMNS_PER_FACE / CHUNK - 1;
-    if ci % CHUNK == 0 && cx > 0 {
-        out.push(ChunkKey { face, cx: cx - 1, cy });
-    }
-    if ci % CHUNK == CHUNK - 1 && cx < max_c {
-        out.push(ChunkKey { face, cx: cx + 1, cy });
-    }
-    if cj % CHUNK == 0 && cy > 0 {
-        out.push(ChunkKey { face, cx, cy: cy - 1 });
-    }
-    if cj % CHUNK == CHUNK - 1 && cy < max_c {
-        out.push(ChunkKey { face, cx, cy: cy + 1 });
+    let mut seen = HashSet::new();
+    let mut out = Vec::new();
+    let (i, j) = (ci as i64, cj as i64);
+    let mut push_key = |face, ci, cj| {
+        let key = ChunkKey {
+            face,
+            cx: ci / CHUNK,
+            cy: cj / CHUNK,
+        };
+        if seen.insert(key) {
+            out.push(key);
+        }
+    };
+    push_key(face, ci, cj);
+    for dj in -TREE_MARGIN..=TREE_MARGIN {
+        for di in -TREE_MARGIN..=TREE_MARGIN {
+            let (canon_face, ci, cj) = canonical_column(face as usize, i + di, j + dj);
+            push_key(canon_face, ci, cj);
+        }
     }
     out
 }
@@ -898,8 +909,7 @@ pub fn build_chunk(
     for aj in (-m + 2)..(n + m - 2) {
         for ai in (-m + 2)..(n + m - 2) {
             let c = at(ai, aj);
-            let aci = (base_i + ai) as u64;
-            let acj = (base_j + aj) as u64;
+            let (aface, aci, acj) = canonical_column(face, base_i + ai, base_j + aj);
             // relief across the whole canopy footprint: a tree planted on a
             // slope gets its crown buried and renders as floating shards.
             // Carved ground (river/pond gullies) anywhere under the canopy
@@ -918,8 +928,8 @@ pub fn build_chunk(
             if relief > 2 || carved_near || c.top_solid() != c.ground {
                 continue; // no trees on slopes, gullies, or cave mouths
             }
-            if let Some((kind, trunk)) = tree_at(c, key.face, aci, acj, planet.seed) {
-                let rnd = hash_u64(key.face, aci, acj, 0xF0F0);
+            if let Some((kind, trunk)) = tree_at(c, aface, aci, acj, planet.seed) {
+                let rnd = hash_u64(aface, aci, acj, 0xF0F0);
                 for (dx, dy, dz, mat) in tree_cells(kind, trunk, rnd) {
                     occ.insert((ai + dx, aj + dy, c.ground + dz), mat);
                 }
