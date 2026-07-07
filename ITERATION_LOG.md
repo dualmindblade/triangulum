@@ -949,3 +949,28 @@ Also learned: transcripts need 6-decimal coordinates (at 4 decimals a
 script files must survive Windows BOMs. Verified: valley-walk end to
 end (tower, torch, block-by-own-wall with state proof, escape), goldens
 green, physim exact, live smoke green after the physics extraction.
+
+### The codex experiment (same session)
+
+Handed the harness to an outside model cold: codex CLI (GPT-5.5,
+reasoning xhigh, workspace-write sandbox) with a one-page mission — "find
+something obviously wrong, here's the harness doc, deliver FINDINGS.md
+with a repro". It authored its own probe script (shoreline scans of the
+lake archipelago and the inland sea, sun pinned for controlled lighting,
+eight aimed shots), read the state sidecars, cross-checked the planet
+dataset (looked up the nearest cells in planet_data.npz to confirm
+lake_id 526/413, not ocean), and filed a correct, reproducible finding:
+LAKE FOOTPRINTS RENDER AS GRID-ALIGNED POLYGON CELLS at coarse LOD —
+independently converging on the exact artifact diagnosed earlier today
+during the river-paint work (already on the Phase 7 list). It also
+correctly reported what it checked that was NOT wrong (no ocean-mask
+misclassification, no patch-seam issue at low altitude). ~15 minutes,
+no source modifications, and the freeze the user remembered never
+happened (a log-staleness watchdog was armed regardless).
+
+Verdict: end-to-end AI verification through the harness WORKS. Two
+independent AI investigations through different tools now agree on the
+top cosmetic bug — soft lake shorelines just moved up the queue.
+Operational notes for repeat runs: launch codex via cmd (the Git Bash
+npm shim is broken), model id is gpt-5.5 on this account (not
+gpt-5.5-codex), missions in viewer/interchange/codex/.
