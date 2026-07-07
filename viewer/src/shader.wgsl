@@ -144,6 +144,34 @@ struct SkyOut {
     @location(0) ndc: vec2<f32>,
 };
 
+fn hash31(p: vec3<f32>) -> f32 {
+    var q = fract(p * vec3<f32>(443.897, 441.423, 437.195));
+    q += dot(q, q.yzx + 19.19);
+    return fract((q.x + q.y) * q.z);
+}
+
+// procedural star field: hash the view direction into cells on a cube
+// lattice; a sparse subset of cells hold one star each, rendered as a tiny
+// smooth disc with hashed brightness/temperature. Purely directional, so
+// the stars are fixed to the sky.
+fn stars(dir: vec3<f32>) -> vec3<f32> {
+    let sp = dir * 220.0;
+    let cell = floor(sp);
+    let h = hash31(cell);
+    if (h < 0.92) {
+        return vec3<f32>(0.0);
+    }
+    // star position jittered inside the cell; distance to it in cell units
+    let jitter = vec3<f32>(hash31(cell + 7.1), hash31(cell + 13.7), hash31(cell + 29.3));
+    let d = length(fract(sp) - clamp(jitter, vec3<f32>(0.15), vec3<f32>(0.85)));
+    let bright = (h - 0.92) / 0.08; // 0..1, few bright ones
+    let disc = smoothstep(0.10 + 0.08 * bright, 0.0, d);
+    // temperature tint: cool white to warm white
+    let warm = hash31(cell + 3.3);
+    let tint = mix(vec3<f32>(0.75, 0.82, 1.0), vec3<f32>(1.0, 0.92, 0.78), warm);
+    return tint * disc * (0.25 + 1.6 * bright * bright);
+}
+
 @vertex
 fn vs_sky(@builtin(vertex_index) vi: u32) -> SkyOut {
     var out: SkyOut;
@@ -185,7 +213,30 @@ fn fs_sky(in: SkyOut) -> @location(0) vec4<f32> {
     // below the horizon line, fade toward space-dark
     c *= smoothstep(-0.10, 0.03, h);
     // the atmosphere thins away with altitude: space is black
-    c *= exp(-max(globals.sky.w, 0.0) / 45.0);
+    let atm = exp(-max(globals.sky.w, 0.0) / 45.0);
+    c *= atm;
+    // limb glow: from orbit, rays that graze past the planet pass through
+    // its atmosphere shell — a thin lit rim hugging the dark disc. The ray
+    // is measured by its closest approach to the planet center; the glow
+    // hugs the surface radius and shows only on the sunlit side.
+    if (atm < 0.85) {
+        let ctr = globals.center.xyz;
+        let along = dot(ctr, dir);
+        if (along > 0.0) {
+            let r_planet = length(ctr) - max(globals.sky.w, 0.0);
+            let cp = dir * along; // closest point on the ray to the center
+            let b = length(cp - ctr); // miss distance from planet center
+            let n = normalize(cp - ctr);
+            let lit = smoothstep(-0.15, 0.35, dot(n, sun));
+            let shell = exp(-max(b - r_planet, 0.0) / 20.0)
+                * smoothstep(r_planet * 0.6, r_planet, b);
+            c += vec3<f32>(0.30, 0.50, 0.90) * shell * lit * (1.0 - atm) * 0.8;
+        }
+    }
+    // stars own the dark: night ground and open space alike. They dim away
+    // wherever the sky itself has light, so daylight hides them.
+    let sky_lum = dot(c, vec3<f32>(0.35, 0.45, 0.20));
+    c += stars(dir) * (1.0 - smoothstep(0.01, 0.18, sky_lum));
     if (globals.hole_up.w > 0.5) {
         c = mix(c, vec3<f32>(0.02, 0.07, 0.16), 0.6);
     }
