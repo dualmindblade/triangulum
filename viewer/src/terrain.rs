@@ -397,15 +397,27 @@ fn tile_wet(s: &Sample, spacing_km: f64) -> f64 {
         return 0.0;
     }
     let wide = if s.river_dist_km.is_finite() {
-        (1.0 - smoothstep(
-            s.river_hw_km,
-            s.river_hw_km.max(spacing_km * 0.9),
-            s.river_dist_km,
-        )) * s.river_wet
+        let paint_w = s.river_hw_km.max(spacing_km * 0.9);
+        // coverage-correct opacity: the corridor is widened to the vertex
+        // spacing for continuity, so paint it only as strongly as the real
+        // channel fills it (sqrt for perceptual balance). A 30 m stream
+        // across an 800 m corridor becomes a faint thread instead of a
+        // full-strength band — which is what made every confluence bloom
+        // into a blob: the union of two full-opacity widened corridors.
+        // Big rivers (hw ~ spacing) still paint at full strength, and the
+        // geomorph wet-lerp fades threads smoothly across LOD switches.
+        let coverage = (s.river_hw_km / paint_w).min(1.0).sqrt();
+        (1.0 - smoothstep(s.river_hw_km, paint_w, s.river_dist_km))
+            * s.river_wet
+            * coverage
     } else {
         0.0
     };
-    s.wet_soft.max(wide * 0.9)
+    // ponds get the same treatment: their feather scale is ~0.28 km, so on
+    // tiles whose vertices are further apart than that, lone vertices catch
+    // a pond and paint whole angular triangles — fade them by coverage too
+    let pond_cov = (0.28 / spacing_km).min(1.0).sqrt();
+    (s.wet_soft * pond_cov).max(wide * 0.9)
 }
 
 /// Build the mesh for one tile. Positions are computed on a grid with one

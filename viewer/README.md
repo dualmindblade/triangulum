@@ -233,9 +233,22 @@ Scenic destinations (all `--exagg 1`):
 * **Torch flames flicker** (a time uniform breathes both the emissive
   quads and the point-light intensities, each on its own phase).
 
+## Phase 7d (river LOD paint, 2026-07-07)
+
+Distant rivers now paint at **coverage-correct opacity**: the corridor is
+still widened to one vertex spacing for continuity, but tinted only as
+strongly as the real channel fills it. Sub-vertex tributaries fade into
+faint threads instead of full-strength bands — which is what made every
+confluence bloom into a blob — while great rivers keep their weight and
+fade naturally with distance. Ponds' feathered wetness fades the same
+way. (Diagnosed while verifying: the *angular blue polygons* at coarse
+LOD are lake-cell footprints — geometry, not paint — a separate item
+below.)
+
 ## Phase 7 (remaining)
 
-Swimming polish, river polish (distant threads alias to one-vertex
-zigzags, confluences blob at coarse LOD, rapids/waterfalls where levels
-step), voxel-patch recenter churn (chunk ring rebuilds dominate
-frame-to-frame change at low altitude), a moon and night ambient lift.
+Swimming polish, rapids/waterfalls where river levels step, lake
+footprints alias to angular vertex polygons at coarse LOD (needs a soft
+distance-to-shore signal from the lake index), a moon and night ambient
+lift, river ribbons as real geometry at coarse LOD (the endgame for
+distant rivers).
