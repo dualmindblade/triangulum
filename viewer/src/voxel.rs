@@ -311,7 +311,11 @@ fn mat_at(c: &ColCtx, z: i64, surface: Mat) -> Mat {
     if z > c.ground0 {
         return if z >= c.ground { surface } else { sub_mat(surface) };
     }
-    let d = c.ground.min(c.ground0) - z;
+    // depth below the NATURAL surface — strata always measure from ground0,
+    // never from a dug-down top. Using the lowered top made a mined shaft
+    // floor (z == c.ground) compute depth 0 and render as living grass several
+    // meters underground; from ground0 it correctly reads dirt then stone.
+    let d = c.ground0 - z;
     if d <= 0 {
         surface
     } else if d <= 3 {
