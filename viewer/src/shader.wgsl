@@ -71,14 +71,16 @@ fn vs_main(in: VsIn) -> VsOut {
         rel += radial * (in.morph_dh * m);
         wet = mix(in.water.a, in.morph_wet, m);
     }
-    if (tile.offset.w < 0.5 && globals.hole.w > 0.0) {
-        // voxel chunks: past the guaranteed-covered disc the blocks sink
-        // from their lift down flush with the mesh, so the patch ends in a
-        // feathered shoreline instead of a floating one-block cliff
+    if (tile.offset.w < 0.5 && globals.misc.z > 0.0) {
+        // voxel chunks: toward the SELECTED patch radius (misc.z) the
+        // blocks sink from their lift down flush with the mesh, so the
+        // patch ends in a feathered shoreline instead of a floating
+        // one-block cliff. Tied to the selected radius, not the hole —
+        // the hole tracks built coverage and may lag while streaming.
         let q = rel - globals.hole.xyz;
         let vert = dot(q, globals.hole_up.xyz);
         let horiz = length(q - globals.hole_up.xyz * vert);
-        let sink = smoothstep(globals.hole.w * 1.02, globals.hole.w * 1.35, horiz);
+        let sink = smoothstep(globals.misc.z * 0.85, globals.misc.z * 1.06, horiz);
         rel -= globals.hole_up.xyz * (globals.center.w * 1.1 * sink);
     }
     out.clip = globals.view_proj * vec4<f32>(rel, 1.0);

@@ -29,6 +29,9 @@ struct Args {
     /// Seconds per full day/night cycle (0 = no cycle, sun follows the
     /// camera — the legacy always-noon mode).
     day_len: f64,
+    /// Voxel patch radius multiplier (chunks stream in asynchronously,
+    /// so bigger discs cost memory and build throughput, not frame hitches).
+    patch: f64,
 }
 
 fn parse_args() -> Args {
@@ -43,6 +46,7 @@ fn parse_args() -> Args {
         size: (1600, 900),
         sun: None,
         day_len: 1200.0,
+        patch: 1.0,
     };
     let argv: Vec<String> = std::env::args().collect();
     let mut i = 1;
@@ -91,6 +95,10 @@ fn parse_args() -> Args {
                 a.day_len = next(i).parse().unwrap_or(a.day_len);
                 i += 1;
             }
+            "--patch" => {
+                a.patch = next(i).parse::<f64>().unwrap_or(a.patch).clamp(0.3, 2.0);
+                i += 1;
+            }
             other => eprintln!("unknown arg: {other}"),
         }
         i += 1;
@@ -109,7 +117,7 @@ fn assets_dir() -> String {
 
 fn main() -> Result<()> {
     let args = parse_args();
-    let planet = Planet::load(&assets_dir())?;
+    let planet = Arc::new(Planet::load(&assets_dir())?);
     // default pitch: look at the planet from orbit, at the horizon when low
     let auto_pitch = if args.pitch > 360.0 {
         let t = (args.alt / 8000.0).clamp(0.0, 1.0);
@@ -163,7 +171,7 @@ fn main() -> Result<()> {
 
 // ---------------------------------------------------------------- capture
 
-fn capture(planet: Planet, camera: Camera, args: Args, path: &str) -> Result<()> {
+fn capture(planet: Arc<Planet>, camera: Camera, args: Args, path: &str) -> Result<()> {
     let instance =
         wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
     let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
@@ -187,6 +195,7 @@ fn capture(planet: Planet, camera: Camera, args: Args, path: &str) -> Result<()>
     });
     renderer.day_len_s = args.day_len;
     renderer.sun_ref_lon = args.lon.to_radians();
+    renderer.patch_scale = args.patch;
     // headless shots see the same edited world the game saves
     let edits = load_edits(planet.seed);
     renderer.torches = load_torches(planet.seed);
@@ -224,7 +233,7 @@ enum Mode {
 }
 
 struct App {
-    planet: Planet,
+    planet: Arc<Planet>,
     camera: Camera,
     args: Args,
     gfx: Option<Gfx>,
@@ -743,6 +752,7 @@ impl ApplicationHandler for App {
         });
         renderer.day_len_s = self.args.day_len;
         renderer.sun_ref_lon = self.args.lon.to_radians();
+        renderer.patch_scale = self.args.patch;
         renderer.torches = self.torches.clone();
         self.gfx = Some(Gfx { window, surface, config, renderer });
     }
