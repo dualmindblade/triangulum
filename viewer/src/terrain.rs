@@ -49,6 +49,13 @@ pub struct Vertex {
     /// split halves its width — the dominant visible LOD pop. Morphing the
     /// wetness with the same factor retires it.
     pub morph_wet: f32,
+    /// 1.0 on a sea/lake water *surface* vertex, else 0.0. The heightfield
+    /// hole (which lets voxel blocks own the near disc) must NOT cut the
+    /// mesh water plane: block water and mesh water are the same surface, so
+    /// cutting it opens a see-through crack at the patch boundary that shows
+    /// the sky (a black void underwater). Keeping the water plane under the
+    /// patch backs any perimeter crack with water instead of void.
+    pub wflag: f32,
 }
 
 pub struct TileMesh {
@@ -529,6 +536,7 @@ pub fn build_tile(planet: &Planet, key: TileKey, exaggeration: f64) -> TileMesh 
                 water: [wc[0], wc[1], wc[2], wet as f32],
                 morph_dh: dh,
                 morph_wet: wet_parent as f32,
+                wflag: if s.sea || s.lake { 1.0 } else { 0.0 },
             });
         }
     }
@@ -562,6 +570,7 @@ pub fn build_tile(planet: &Planet, key: TileKey, exaggeration: f64) -> TileMesh 
             // skirts morph with their border vertex so no gap opens
             morph_dh: v.morph_dh,
             morph_wet: v.morph_wet,
+            wflag: v.wflag,
         });
     }
     let skirt_base = (n * n) as u32;

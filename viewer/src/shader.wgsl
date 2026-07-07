@@ -45,6 +45,10 @@ struct VsIn {
     // wetness the parent LOD level paints here (the river-thread width is
     // level-dependent, so unmorphed paint pops at every tile split)
     @location(5) morph_wet: f32,
+    // 1.0 on a sea/lake water-surface vertex: the heightfield hole does NOT
+    // cut these, so the mesh water plane stays under the voxel patch and
+    // backs any perimeter crack with water instead of the (void) sky.
+    @location(6) wflag: f32,
 };
 struct VsOut {
     @builtin(position) clip: vec4<f32>,
@@ -54,6 +58,7 @@ struct VsOut {
     // camera-relative position (xyz, km) + the tile/chunk flag (w)
     @location(3) rel_flag: vec4<f32>,
     @location(4) water: vec4<f32>,
+    @location(5) wflag: f32,
 };
 
 @vertex
@@ -89,6 +94,7 @@ fn vs_main(in: VsIn) -> VsOut {
     out.dist_km = length(rel);
     out.rel_flag = vec4<f32>(rel, tile.offset.w);
     out.water = vec4<f32>(in.water.rgb, wet);
+    out.wflag = in.wflag;
     return out;
 }
 
@@ -97,7 +103,12 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     // cut the heightfield away inside the voxel patch: every pixel belongs
     // to exactly one system (blocks own the near disc, the mesh the rest).
     // The vertical slab test keeps far-side geometry out of the cylinder.
-    if (in.rel_flag.w > 0.5 && globals.hole.w > 0.0) {
+    // EXCEPTION: sea/lake water surfaces (wflag) are NOT cut — block water
+    // and mesh water are the same surface, so cutting the mesh water opens a
+    // see-through crack at the patch boundary (a black void underwater).
+    // Leaving the water plane under the patch backs any crack with water;
+    // the opaque blocks still draw over it, so nothing double-shows.
+    if (in.rel_flag.w > 0.5 && globals.hole.w > 0.0 && in.wflag < 0.5) {
         let q = in.rel_flag.xyz - globals.hole.xyz;
         let vert = dot(q, globals.hole_up.xyz);
         let horiz = q - globals.hole_up.xyz * vert;
