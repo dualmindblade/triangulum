@@ -374,10 +374,17 @@ pub fn sample(planet: &Planet, face: usize, u: f64, v: f64, octaves: u32) -> Sam
         let pn = fbm_band(dir, 0, 2, 16000.0, seed.wrapping_add(9241));
         if pn < -0.50 {
             let pd = (-0.50 - pn) * 0.030;
-            let h0 = h;
             h -= pd;
             out.carve_km += pd;
-            let wl = h0 - 0.0018;
+            // FLAT surface: the pool level is the coarse (detail-free) land
+            // elevation, not this column's own detailed ground — a pond is a
+            // level water table, so its top must be constant across the basin.
+            // Tying it to per-column `h` made the surface step down the fine
+            // terracing (and any slope), which real ponds never do. The `pn`
+            // mask still confines the water to the depression; e_raw removes
+            // only the sub-pond wobble, leaving fine dips flooded and bumps as
+            // tiny shore.
+            let wl = e_raw - 0.0018;
             if wl > h {
                 out.water_km = out.water_km.max(wl);
                 out.wet_soft = out.wet_soft.max(smoothstep(0.0, 0.004, pd));

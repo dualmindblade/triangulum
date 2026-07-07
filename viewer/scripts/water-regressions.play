@@ -1,0 +1,22 @@
+# Water-surface invariants. Locks fixes so they can't silently regress.
+#
+# FLAT NOISE POND (fix 2026-07-07): a noise pond is a level water table, so
+# every submerged column in one pond shares ONE surface height. Before the
+# fix the level was per-column (h0 - 1.8 m) and stepped down the terrain;
+# now it is the coarse elevation (e_raw - 1.8 m), constant across the basin.
+# These four columns are all inside the same pond at lat 12.34-12.36 /
+# lon 32.36-32.375; each must report the same surface (~0.2046 km) to <0.3 m.
+mode fly
+teleport 12.340 32.360 0.05
+assert water_surface_km != none
+assert water_surface_km > 0.2043
+assert water_surface_km < 0.2049
+teleport 12.350 32.360 0.05
+assert water_surface_km > 0.2043
+assert water_surface_km < 0.2049
+teleport 12.360 32.360 0.05
+assert water_surface_km > 0.2043
+assert water_surface_km < 0.2049
+teleport 12.340 32.375 0.05
+assert water_surface_km > 0.2043
+assert water_surface_km < 0.2049
