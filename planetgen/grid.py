@@ -22,6 +22,13 @@ from __future__ import annotations
 import numpy as np
 from scipy.spatial import ConvexHull, cKDTree
 
+# optional GPU backend: the graph operators run on CuPy arrays when handed
+# CuPy inputs (cfg.gpu routes the climate stage through them). CPU numpy
+# stays the canonical, bit-reproducible path. CuPy is imported lazily on
+# the first arrays(gpu=True) call so CPU runs never pay for (or warn
+# about) it.
+_cp = None
+
 PHI = (1.0 + np.sqrt(5.0)) / 2.0
 
 
@@ -104,6 +111,7 @@ class Grid:
         self._build_geometry()
         self._kdtree = None
         self._eq_cache = {}
+        self._gpu_ns = None
 
     # ------------------------------------------------------------------
     def _build_adjacency(self):
@@ -171,27 +179,64 @@ class Grid:
         self.edge_harm_area = np.where(self.nbr_ok, 2.0 / (1.0 / area[:, None] + 1.0 / a_j), 0.0)
 
     # ------------------------------------------------------------------
+    # memory spaces: the operators below run on whichever device their
+    # input lives on. arrays(True) is the grid's constant arrays mirrored
+    # to the GPU (float32 — consumer GPUs run fp64 at 1/32 rate).
+    def arrays(self, gpu=False):
+        if not gpu:
+            return self
+        global _cp
+        if _cp is None:
+            try:
+                import cupy as _cp_mod
+            except ImportError as e:
+                raise RuntimeError("cfg.gpu set but cupy is not installed "
+                                   "(pip install cupy-cuda12x[ctk])") from e
+            _cp = _cp_mod
+        if self._gpu_ns is None:
+            from types import SimpleNamespace
+            ns = SimpleNamespace()
+            ns.nbr_safe = _cp.asarray(self.nbr_safe)
+            ns.nbr_ok = _cp.asarray(self.nbr_ok)
+            ns.recip_slot = _cp.asarray(self.recip_slot)
+            for name in ("dir_e", "dir_n", "edge_km", "edge_harm_area",
+                         "area_km2", "deg", "lat", "lon"):
+                ns.__dict__[name] = _cp.asarray(
+                    getattr(self, name).astype(np.float32))
+            ns.mean_edge_km = self.mean_edge_km
+            ns.radius_km = self.radius_km
+            ns.n = self.n
+            self._gpu_ns = ns
+        return self._gpu_ns
+
+    def _space(self, f):
+        """Constant arrays in the same memory space as field f."""
+        return self.arrays(_cp is not None and isinstance(f, _cp.ndarray))
+
     # differential operators (all fields are (n,) or (n, 2) as east/north)
     def gradient(self, f):
         """Least-squares-ish gradient, returns (n, 2) in units of f per km."""
-        df = np.where(self.nbr_ok, f[self.nbr_safe] - f[:, None], 0.0)
-        slope = np.where(self.nbr_ok, df / self.edge_km, 0.0)
-        ge = (slope * self.dir_e).sum(1) * (2.0 / self.deg)
-        gn = (slope * self.dir_n).sum(1) * (2.0 / self.deg)
+        g = self._space(f)
+        df = np.where(g.nbr_ok, f[g.nbr_safe] - f[:, None], 0.0)
+        slope = np.where(g.nbr_ok, df / g.edge_km, 0.0)
+        ge = (slope * g.dir_e).sum(1) * (2.0 / g.deg)
+        gn = (slope * g.dir_n).sum(1) * (2.0 / g.deg)
         return np.stack([ge, gn], 1)
 
     def laplacian(self, f):
         """Neighborhood mean minus self (dimensionless smoothing operator)."""
-        s = np.where(self.nbr_ok, f[self.nbr_safe], 0.0).sum(1)
-        return s / self.deg - f
+        g = self._space(f)
+        s = np.where(g.nbr_ok, f[g.nbr_safe], 0.0).sum(1)
+        return s / g.deg - f
 
     def divergence(self, v):
         """Divergence of a tangent field v (n, 2), per km."""
+        g = self._space(v)
         ve, vn = v[:, 0], v[:, 1]
-        fe = 0.5 * (ve[:, None] + ve[self.nbr_safe])
-        fn = 0.5 * (vn[:, None] + vn[self.nbr_safe])
-        flux = np.where(self.nbr_ok, (fe * self.dir_e + fn * self.dir_n) / self.edge_km, 0.0)
-        return flux.sum(1) * (2.0 / self.deg)
+        fe = 0.5 * (ve[:, None] + ve[g.nbr_safe])
+        fn = 0.5 * (vn[:, None] + vn[g.nbr_safe])
+        flux = np.where(g.nbr_ok, (fe * g.dir_e + fn * g.dir_n) / g.edge_km, 0.0)
+        return flux.sum(1) * (2.0 / g.deg)
 
     def advect(self, q, v, frac=0.3):
         """One conservative upwind advection step of scalar q by tangent field v.
@@ -200,22 +245,25 @@ class Grid:
         field's maximum speed (CFL-like stability control). Mass (q * area)
         is conserved to rounding because edge fluxes are antisymmetric.
         """
+        g = self._space(q)
         ve, vn = v[:, 0], v[:, 1]
-        fe = 0.5 * (ve[:, None] + ve[self.nbr_safe])
-        fn = 0.5 * (vn[:, None] + vn[self.nbr_safe])
-        vel = fe * self.dir_e + fn * self.dir_n            # (n, 6), >0 = outflow i->j
-        vel = np.where(self.nbr_ok, vel, 0.0)
+        fe = 0.5 * (ve[:, None] + ve[g.nbr_safe])
+        fn = 0.5 * (vn[:, None] + vn[g.nbr_safe])
+        vel = fe * g.dir_e + fn * g.dir_n                  # (n, 6), >0 = outflow i->j
+        vel = np.where(g.nbr_ok, vel, 0.0)
         # symmetrize against the neighbor's view of the same edge so that
         # flux(i->j) == -flux(j->i) exactly
-        vel = 0.5 * (vel - vel[self.nbr_safe, self.recip_slot])
-        vmax = np.abs(vel).max()
-        if vmax < 1e-12:
-            return q
-        dt = frac * self.mean_edge_km / vmax / 3.0         # /3: several outflow edges
-        w = np.where(self.nbr_ok, vel / self.edge_km, 0.0)
-        q_j = q[self.nbr_safe]
-        mass = dt * (np.maximum(w, 0.0) * q[:, None] + np.minimum(w, 0.0) * q_j) * self.edge_harm_area
-        return np.maximum(q - mass.sum(1) / self.area_km2, 0.0)
+        vel = 0.5 * (vel - vel[g.nbr_safe, g.recip_slot])
+        # dt stays in q's memory space: a host-side `if vmax < tiny` branch
+        # would synchronize the GPU on every call. vel/vmax <= 1 by
+        # construction, so the clamped form is exact for vmax > tiny and
+        # yields zero transport when the field is (numerically) still.
+        vmax = np.maximum(np.abs(vel).max(), 1e-12)
+        dt = frac * g.mean_edge_km / vmax / 3.0            # /3: several outflow edges
+        w = np.where(g.nbr_ok, vel / g.edge_km, 0.0)
+        q_j = q[g.nbr_safe]
+        mass = dt * (np.maximum(w, 0.0) * q[:, None] + np.minimum(w, 0.0) * q_j) * g.edge_harm_area
+        return np.maximum(q - mass.sum(1) / g.area_km2, 0.0)
 
     def advect_interp(self, q, v, frac=0.3):
         """Bounded (max-principle) upwind advection step — a weighted average
@@ -223,16 +271,15 @@ class Grid:
         that must never overshoot (conservative advection piles mass into
         flow-convergence zones, which is wrong for SST)."""
         ve, vn = v[:, 0], v[:, 1]
-        fe = 0.5 * (ve[:, None] + ve[self.nbr_safe])
-        fn = 0.5 * (vn[:, None] + vn[self.nbr_safe])
-        vel = fe * self.dir_e + fn * self.dir_n
-        vel = np.where(self.nbr_ok, vel, 0.0)
-        vmax = np.abs(vel).max()
-        if vmax < 1e-12:
-            return q
-        dt = frac * self.mean_edge_km / vmax
-        w_in = dt * np.maximum(-vel, 0.0) / self.edge_km
-        num = q + (w_in * q[self.nbr_safe]).sum(1)
+        g = self._space(q)
+        fe = 0.5 * (ve[:, None] + ve[g.nbr_safe])
+        fn = 0.5 * (vn[:, None] + vn[g.nbr_safe])
+        vel = fe * g.dir_e + fn * g.dir_n
+        vel = np.where(g.nbr_ok, vel, 0.0)
+        vmax = np.maximum(np.abs(vel).max(), 1e-12)  # no host sync (see advect)
+        dt = frac * g.mean_edge_km / vmax
+        w_in = dt * np.maximum(-vel, 0.0) / g.edge_km
+        num = q + (w_in * q[g.nbr_safe]).sum(1)
         return num / (1.0 + w_in.sum(1))
 
     # ------------------------------------------------------------------
@@ -342,6 +389,12 @@ class Grid:
         creates a 2-degree staircase whose steps ring through any gradient
         taken of the result (visible as parallel bands in downstream fields).
         """
+        if _cp is not None and isinstance(f, _cp.ndarray):
+            # bincount/digitize path stays on the host: the field is tiny
+            # and this runs a few dozen times per stage, not thousands
+            return _cp.asarray(
+                self.zonal_mean(_cp.asnumpy(f).astype(np.float64), n_bins, smooth)
+                .astype(np.float32))
         edges = np.linspace(-np.pi / 2, np.pi / 2, n_bins + 1)
         centers = 0.5 * (edges[:-1] + edges[1:])
         which = np.clip(np.digitize(self.lat, edges) - 1, 0, n_bins - 1)

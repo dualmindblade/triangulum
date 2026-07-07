@@ -26,20 +26,32 @@ from scipy.sparse.csgraph import connected_components
 
 from . import noise
 
+# numba compiles the two per-iteration passes that are plain Python loops
+# (the priority-flood heap and the downstream accumulation). The compiled
+# versions replicate the Python semantics exactly — including heapq's
+# (key, index) tie-breaking — so results are bit-identical; pure Python
+# remains as the fallback when numba isn't installed.
+try:
+    from numba import njit as _njit
+except ImportError:  # pragma: no cover - numba is an optional accelerator
+    _njit = None
+
 MM_YR_KM2_TO_M3S = 3.171e-5
 
 
 def _priority_flood(grid, elev, is_ocean):
     """Depression-filled surface: every land cell can reach the ocean along a
     monotonically descending path on the returned surface."""
+    coastal = np.flatnonzero(is_ocean & (grid.nbr_ok & ~is_ocean[grid.nbr_safe]).any(1))
+    if _njit is not None:
+        return _pf_core(elev, is_ocean, grid.nbr, coastal)
     fill = elev.copy()
     closed = is_ocean.copy()
     heap = []
-    coastal = np.flatnonzero(is_ocean & (grid.nbr_ok & ~is_ocean[grid.nbr_safe]).any(1))
     for i in coastal:
         heap.append((elev[i], i))
     heapq.heapify(heap)
-    nbr, ok = grid.nbr, grid.nbr_ok
+    nbr = grid.nbr
     max_deg = nbr.shape[1]
     eps = 1e-6
     while heap:
@@ -52,6 +64,84 @@ def _priority_flood(grid, elev, is_ocean):
             fill[j] = max(elev[j], f + eps)
             heapq.heappush(heap, (fill[j], j))
     return fill
+
+
+if _njit is not None:
+
+    @_njit(cache=True)
+    def _pf_core(elev, is_ocean, nbr, coastal):
+        n = elev.shape[0]
+        fill = elev.copy()
+        closed = is_ocean.copy()
+        # binary min-heap over (key, index), ordered exactly like heapq's
+        # (float, int) tuples so the pop sequence — and therefore every
+        # fill value — matches the Python implementation bit for bit
+        cap = n + coastal.shape[0] + 1
+        hk = np.empty(cap, np.float64)
+        hi = np.empty(cap, np.int64)
+        size = 0
+        for c in range(coastal.shape[0]):
+            i = coastal[c]
+            k = elev[i]
+            # push
+            p = size
+            hk[p] = k
+            hi[p] = i
+            size += 1
+            while p > 0:
+                q = (p - 1) >> 1
+                if hk[p] < hk[q] or (hk[p] == hk[q] and hi[p] < hi[q]):
+                    hk[p], hk[q] = hk[q], hk[p]
+                    hi[p], hi[q] = hi[q], hi[p]
+                    p = q
+                else:
+                    break
+        max_deg = nbr.shape[1]
+        eps = 1e-6
+        while size > 0:
+            f = hk[0]
+            i = hi[0]
+            size -= 1
+            hk[0] = hk[size]
+            hi[0] = hi[size]
+            # sift down
+            p = 0
+            while True:
+                l = 2 * p + 1
+                r = l + 1
+                m = p
+                if l < size and (hk[l] < hk[m] or (hk[l] == hk[m] and hi[l] < hi[m])):
+                    m = l
+                if r < size and (hk[r] < hk[m] or (hk[r] == hk[m] and hi[r] < hi[m])):
+                    m = r
+                if m == p:
+                    break
+                hk[p], hk[m] = hk[m], hk[p]
+                hi[p], hi[m] = hi[m], hi[p]
+                p = m
+            for s in range(max_deg):
+                j = nbr[i, s]
+                if j < 0 or closed[j]:
+                    continue
+                closed[j] = True
+                fj = elev[j]
+                if fj < f + eps:
+                    fj = f + eps
+                fill[j] = fj
+                # push
+                p = size
+                hk[p] = fj
+                hi[p] = j
+                size += 1
+                while p > 0:
+                    q = (p - 1) >> 1
+                    if hk[p] < hk[q] or (hk[p] == hk[q] and hi[p] < hi[q]):
+                        hk[p], hk[q] = hk[q], hk[p]
+                        hi[p], hi[q] = hi[q], hi[p]
+                        p = q
+                    else:
+                        break
+        return fill
 
 
 def _receivers(grid, fill, is_ocean, acc=None, capture=0.0, meander_w=None):
@@ -90,6 +180,12 @@ def _accumulate(order, rcv, runoff_m3s, eroded_vol=None, capacity=None, deposit_
     Returns (acc, deposit_vol, ocean_flux) — deposit per cell and the sediment
     volume delivered to each cell's receiver when that receiver is a sink.
     """
+    if _njit is not None:
+        with_flux = eroded_vol is not None
+        ev = eroded_vol if with_flux else np.zeros(1)
+        cap = capacity if with_flux else np.zeros(1)
+        return _acc_core(order, rcv, runoff_m3s, ev, cap,
+                         float(deposit_fraction), with_flux)
     acc = runoff_m3s.copy()
     n = len(acc)
     dep = np.zeros(n)
@@ -110,6 +206,33 @@ def _accumulate(order, rcv, runoff_m3s, eroded_vol=None, capacity=None, deposit_
                 f -= d
             flux[r] += f
     return acc, dep, sink_flux
+
+
+if _njit is not None:
+
+    @_njit(cache=True)
+    def _acc_core(order, rcv, runoff, eroded_vol, capacity, deposit_fraction, with_flux):
+        acc = runoff.copy()
+        n = acc.shape[0]
+        dep = np.zeros(n)
+        sink_flux = np.zeros(n)
+        flux = eroded_vol.copy() if with_flux else np.zeros(1)
+        for k in range(order.shape[0]):
+            i = order[k]
+            r = rcv[i]
+            if r == i:
+                if with_flux:
+                    sink_flux[i] += flux[i]
+                continue
+            acc[r] += acc[i]
+            if with_flux:
+                f = flux[i]
+                if f > capacity[i]:
+                    d = (f - capacity[i]) * deposit_fraction
+                    dep[i] += d
+                    f -= d
+                flux[r] += f
+        return acc, dep, sink_flux
 
 
 def simulate(grid, cfg, elev_in, climate_out, tect, rng=None, rec=None):
