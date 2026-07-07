@@ -6,6 +6,8 @@ struct Globals {
     // unprojected far-plane point IS the view ray)
     inv_view_proj: mat4x4<f32>,
     sun_dir: vec4<f32>,
+    // xyz = unit direction to the moon; drives the night moon disc + moonlight
+    moon_dir: vec4<f32>,
     // disc cut out of the heightfield where voxel chunks own the ground:
     // xyz = center relative to camera (km), w = radius in km (0 = off)
     hole: vec4<f32>,
@@ -160,6 +162,14 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     // color the sky pass uses; the effect thins away with camera altitude
     let atm = exp(-max(globals.sky.w, 0.0) / 45.0);
     let day = smoothstep(-0.08, 0.15, dot(globals.sun_dir.xyz, globals.sky.xyz));
+    // moonlight: a cool directional lift plus a faint ambient floor so night
+    // terrain reads as moonlit rather than flat black. Present only at night
+    // (fades as the sun rises) and only while the moon is above the horizon.
+    let moon = globals.moon_dir.xyz;
+    let moon_up = smoothstep(0.0, 0.15, dot(moon, globals.sky.xyz));
+    let moonlit = max(dot(n, moon), 0.0);
+    c += base * vec3<f32>(0.40, 0.50, 0.72)
+        * (moonlit * 0.13 + 0.03) * (1.0 - day) * moon_up;
     let fog = (1.0 - exp(-in.dist_km * 0.0035)) * atm * 0.7;
     c = mix(c, vec3<f32>(0.55, 0.70, 0.88) * (0.15 + 0.85 * day), fog);
     // wading with your eyes under the surface: everything goes water-blue
@@ -265,6 +275,31 @@ fn fs_sky(in: SkyOut) -> @location(0) vec4<f32> {
                 * smoothstep(r_planet * 0.6, r_planet, b);
             c += vec3<f32>(0.30, 0.50, 0.90) * shell * lit * (1.0 - atm) * 0.8;
         }
+    }
+    // the moon: a phase-lit sphere opposite the sun. A ray within the moon's
+    // angular radius reconstructs the sphere normal (center faces us, limb is
+    // tangential) and lights it by the sun for a real terminator; the dark
+    // side keeps a faint earthshine. It fades out in daylight and below the
+    // horizon, and a soft halo rings it.
+    let moon = globals.moon_dir.xyz;
+    let moon_vis = (1.0 - 0.9 * day) * smoothstep(-0.06, 0.06, dot(moon, up));
+    if (moon_vis > 0.001) {
+        let dm = dot(dir, moon);
+        let ang = acos(clamp(dm, -1.0, 1.0));
+        let R = 0.021; // angular radius (rad, ~1.2 deg — reads as a moon)
+        if (ang < R) {
+            let off = normalize(dir - moon * dm);
+            let t = ang / R; // 0 at center, 1 at the limb
+            let nrm = normalize(moon * cos(t * 1.5707963) + off * sin(t * 1.5707963));
+            let lit = max(dot(nrm, sun), 0.0);
+            // faint surface mottling (maria) so it isn't a flat disc
+            let mott = 0.86 + 0.14 * hash31(floor(off * 70.0));
+            let disc = smoothstep(1.0, 0.90, t);
+            c += vec3<f32>(0.86, 0.89, 0.97) * mott * disc
+                * (0.05 + 0.95 * lit) * moon_vis;
+        }
+        // tight halo hugging the disc (not a broad blob)
+        c += vec3<f32>(0.55, 0.62, 0.80) * pow(max(dm, 0.0), 2600.0) * 0.30 * moon_vis;
     }
     // stars own the dark: night ground and open space alike. They dim away
     // wherever the sky itself has light, so daylight hides them.
