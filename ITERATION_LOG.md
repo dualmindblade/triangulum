@@ -1156,3 +1156,73 @@ into a session-start gate; add a `nearest <feature>` probe or a shipped
 feature-coordinate manifest (scripts still can't branch on state); and widen
 classes to cube-face edges and cave interiors, the two places both operators
 under-visited.
+
+## Phase 8d — recommendations shipped, the moon, and a second codex hunt (2026-07-07)
+
+Acting on Phase 8c's own recommendations, then running the loop again.
+
+### The three recommendations, shipped
+
+* **Cube-face-edge sweep coverage** — `gen_survey.py` now derives seam
+  coordinates from the cube geometry (mirrored `FACES`), maps each to its
+  nearest dry-land cell, and asserts grounded. 61 probes / 7 classes. The
+  ±45°/±135° meridian seams all hold — the `canonical_column` cross-face work
+  is solid.
+* **Session gate** — `verify.sh` rebuilds the harness (examples included!),
+  regenerates the sweep, and runs all three suites, non-zero on any failure.
+* **Feature-coordinate query** — `where.py` (nearest-feature lookup +
+  `feature-coords.md` manifest); class defs extracted to a shared
+  `feature_masks()` so the query and the sweep can't drift.
+
+### Roadmap: the moon & moonlit nights (Phase 7f)
+
+A phase-lit moon opposite the sun (real terminator reconstructed from the disc
+normal, earthshine, tight halo), tied to the sun so pinned-sun captures stay
+reproducible; plus a cool directional moonlight lift so night terrain reads as
+moonlit instead of near-black. Daytime untouched (gated by `1-day`). QA'd
+across night ground, twilight, and orbit.
+
+### codex round-5 hunt (4 rounds) + fixes
+
+Ran codex again on the improved harness, with its OWN copy of the play binary
+so my parallel renderer rebuilds (the moon) couldn't corrupt its runs, and a
+mission steered at what the assert-sweep can't see (visual/cave/edit/night).
+All four found, all fixed, verified, merged:
+
+* **R5-1** breaking the block underfoot left `grounded=true` hovering above
+  the new support (derived state not resynced after an edit — the R4 class).
+  `refresh_after_edit` (grounded + underwater) after every break/place.
+* **R5-2** solid sea ice rendered as a featureless flat plane. `frost_color`
+  snow-dusts frozen sea/lake with an LOD-stable position drift (mesh + voxel).
+* **R5-3** couldn't step out of a dug 1-block hole: the body-radius probe
+  measured headroom above the LOW feet, so a steppable rim's own step block
+  read as a zero-headroom wall. Measure headroom at the probe's step-up level
+  instead — also repairs 1-block *ledge* step-up generally.
+* **R5-4** dug shaft floors rendered as grass underground: `mat_at` measured
+  strata depth from the dug-down top, not the natural `ground0`, so the floor
+  computed depth 0 → grass. Measure from `ground0` → dirt then stone.
+
+### The sharpest lesson: the harness screenshots show only the MESH
+
+Chasing R5-2 revealed that the play harness renders the **far mesh, not the
+voxel near-field** — voxel chunks stream in on background threads and a
+single-shot capture doesn't wait for un-edited ones (edited chunks DO rebuild
+and show, which is why R5-4's shaft was visible). So codex's *visual* hunts
+are effectively blind to voxel-specific rendering, and water surfaces read as
+flat mesh planes. Two consequences: (1) visual findings from the harness are
+really about the mesh — fix there (R5-2's `frost_color` is a mesh fix, with a
+matching voxel fix for real gameplay); (2) a real next lever is making `shot`
+pump the renderer until the near-field voxels have streamed in, which would
+unblind the harness for the game's dominant visual system. Logged as the top
+follow-up.
+
+### Method notes that held up
+
+* Binary isolation for a delegated agent working *while* you edit shared code:
+  give it a built copy, tell it not to rebuild. codex stayed on its snapshot
+  through all my renderer churn.
+* Instrument, don't theorize: R5-3's block resisted static analysis through
+  many passes; one `TRI_DBG` eprintln in the collision path named the exact
+  failing probe (`ceil=0.0`) in one run.
+* Edits persist within a play run — two digging regressions at the same column
+  contaminate each other; order them or separate the columns.
