@@ -9,7 +9,7 @@
 use anyhow::Result;
 use triangulum_viewer::camera::Camera;
 use triangulum_viewer::planet::Planet;
-use triangulum_viewer::renderer::Renderer;
+use triangulum_viewer::renderer::{Renderer, SunState};
 use std::sync::Arc;
 use winit::application::ApplicationHandler;
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
@@ -203,7 +203,9 @@ fn capture(planet: Arc<Planet>, camera: Camera, args: Args, path: &str) -> Resul
         args.exaggeration,
     )
     .is_some_and(|w| camera.ground_km + camera.altitude_km < w - 0.0003);
-    let n = renderer.capture(&planet, &camera, &edits, path)?;
+    let (n, sun, sun_pinned, day_len_s) =
+        capture_with_recorded_sun(&mut renderer, &planet, &camera, &edits, path)?;
+    write_shot_sidecar(path, &planet, &camera, &args, "fly", sun, sun_pinned, day_len_s)?;
     println!(
         "captured {path} ({} tiles, lat {:.1} lon {:.1} alt {:.0} km)",
         n,
@@ -211,6 +213,75 @@ fn capture(planet: Arc<Planet>, camera: Camera, args: Args, path: &str) -> Resul
         camera.lon.to_degrees(),
         camera.altitude_km
     );
+    Ok(())
+}
+
+fn capture_with_recorded_sun(
+    renderer: &mut Renderer,
+    planet: &Arc<Planet>,
+    camera: &Camera,
+    edits: &triangulum_viewer::voxel::Edits,
+    path: &str,
+) -> Result<(usize, SunState, bool, f64)> {
+    let sun_pinned = renderer.sun_dir.is_some();
+    let day_len_s = renderer.day_len_s;
+    let sun = renderer.sun_state(camera.position());
+    let old_sun = renderer.sun_dir;
+    renderer.sun_dir = Some(sun.dir);
+    let result = renderer.capture(planet, camera, edits, path);
+    renderer.sun_dir = old_sun;
+    result.map(|n| (n, sun, sun_pinned, day_len_s))
+}
+
+fn world_source() -> String {
+    let meta_path = format!("{}/meta.json", assets_dir());
+    std::fs::read_to_string(&meta_path)
+        .ok()
+        .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
+        .and_then(|meta| meta["source"].as_str().map(str::to_owned))
+        .unwrap_or_else(|| assets_dir())
+}
+
+fn sun_lat_lon(sun: SunState) -> (f64, f64) {
+    let dir = sun.dir.normalize();
+    (dir.z.asin().to_degrees(), dir.y.atan2(dir.x).to_degrees())
+}
+
+fn write_shot_sidecar(
+    path: &str,
+    planet: &Arc<Planet>,
+    camera: &Camera,
+    args: &Args,
+    mode: &str,
+    sun: SunState,
+    sun_pinned: bool,
+    day_len_s: f64,
+) -> Result<()> {
+    let (sun_lat, sun_lon) = sun_lat_lon(sun);
+    let js = serde_json::json!({
+        "lat_deg": camera.lat.to_degrees(),
+        "lon_deg": camera.lon.to_degrees(),
+        "alt_km": camera.altitude_km,
+        "yaw_deg": camera.yaw.to_degrees(),
+        "pitch_deg": camera.pitch.to_degrees(),
+        "sun_lat_deg": sun_lat,
+        "sun_lon_deg": sun_lon,
+        "sun_dir": {
+            "x": sun.dir.x,
+            "y": sun.dir.y,
+            "z": sun.dir.z,
+        },
+        "sun_pinned": sun_pinned,
+        "day_cycle_time_s": sun.day_time_s,
+        "day_len_s": day_len_s,
+        "exaggeration": args.exaggeration,
+        "seed": planet.seed,
+        "world": world_source(),
+        "mode": mode,
+    });
+    let mut sidecar = std::path::PathBuf::from(path);
+    sidecar.set_extension("json");
+    std::fs::write(sidecar, serde_json::to_string_pretty(&js)?)?;
     Ok(())
 }
 
@@ -399,8 +470,27 @@ impl App {
             n += 1;
         }
         let Some(gfx) = self.gfx.as_mut() else { return };
-        let msg = match gfx.renderer.capture(&self.planet, &self.camera, &self.edits, &path) {
-            Ok(_) => format!("saved {path}"),
+        let mode = if self.player.mode == Mode::Walk { "walk" } else { "fly" };
+        let msg = match capture_with_recorded_sun(
+            &mut gfx.renderer,
+            &self.planet,
+            &self.camera,
+            &self.edits,
+            &path,
+        ) {
+            Ok((_, sun, sun_pinned, day_len_s)) => match write_shot_sidecar(
+                &path,
+                &self.planet,
+                &self.camera,
+                &self.args,
+                mode,
+                sun,
+                sun_pinned,
+                day_len_s,
+            ) {
+                Ok(()) => format!("saved {path}"),
+                Err(e) => format!("saved {path}; sidecar failed: {e}"),
+            },
             Err(e) => format!("screenshot failed: {e}"),
         };
         println!("{msg}");
