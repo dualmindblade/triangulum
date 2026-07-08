@@ -11,13 +11,13 @@ whole-class gate:
   * frozen lake  -> must be walkable ice (grounded, not underwater, dry)   [R3]
   * inland land  -> must be walkable (grounded)                            [fall-through-world]
   * high peak    -> must still support the player (grounded)
-  * liquid lake  -> must read as water (has_water)
+  * liquid lake  -> must read as water and immerse the player
   * ocean        -> must submerge a settling player (has_water, underwater)[R2/immersion]
 
-Only INTERIOR cells are sampled (every valid neighbour shares the class) so a
-point feature can't land just off its edge after the icosphere->cube-face
-resample and fail spuriously. Sampling is deterministic (sorted indices, even
-stride) so the emitted survey is reproducible and diffable.
+Interior cells are sampled where a neighbour ring is needed to avoid edge
+false alarms; liquid lakes use the lake cell itself because many real lakes are
+too small for an all-neighbour interior ring. Sampling is deterministic (sorted
+indices, even stride) so the emitted survey is reproducible and diffable.
 
 Usage:
   python viewer/scripts/gen_survey.py [--world output/seed42_r8]
@@ -94,8 +94,10 @@ def feature_masks(d):
     """Per-cell boolean masks for each feature class — THE shared definition,
     used by both the survey generator and the where.py feature query so their
     thresholds never drift. Interior-only where a point feature could miss its
-    edge after the icosphere->cube resample. Below-freezing water (lake OR sea)
-    renders as a solid ice sheet, so it is split out from open water."""
+    edge after the icosphere->cube resample; liquid lakes are intentionally
+    sampled at their own cell centers because most are too small for a full
+    neighbour ring. Below-freezing water (lake OR sea) renders as a solid ice
+    sheet, so it is split out from open water."""
     tmean = d["temp_c_monthly"].mean(axis=0)
     elev = d["elevation_km"]
     nb = d["neighbors"]
@@ -109,7 +111,7 @@ def feature_masks(d):
         "high-peak":   interior(dry_land & hi, nb),
         "frozen-lake": interior(lake & (tmean < -6.0), nb),
         "sea-ice":     interior(ocean & (tmean < -6.0), nb),
-        "liquid-lake": interior(lake & (tmean > 6.0), nb),
+        "liquid-lake": lake & (tmean > -4.0),
         "ocean":       interior(ocean & (tmean > 2.0), nb),
         "river":       river & (~ocean),
     }
@@ -157,7 +159,8 @@ def main():
         ("frozen-lake", m["frozen-lake"], P,             ice, 8),
         ("sea-ice",     m["sea-ice"],     max(8, P // 2), ice, 8),
         ("liquid-lake", m["liquid-lake"], max(8, P // 2),
-                                          [("has_water", "==", "true")], 10),
+                                          [("has_water", "==", "true"),
+                                           ("underwater", "==", "true")], 10),
         ("ocean",       m["ocean"],       max(6, P // 2),
                                           [("has_water", "==", "true"),
                                            ("underwater", "==", "true")], 12),
@@ -173,8 +176,8 @@ def main():
     total = 0
     for label, mask, count, asserts, settle in classes:
         idx = sample(np.flatnonzero(mask), count)
-        lines.append(f"# ===== {label}: {len(idx)} cells "
-                     f"(of {int(mask.sum())} interior) =====")
+        lines.append(f"# ===== {label}: {len(idx)} probes "
+                     f"(of {int(mask.sum())} class cells) =====")
         for i in idx:
             total += 1
             lines.append(f"# {label} @ cell {int(i)} tmean={tmean[i]:.1f}C "
