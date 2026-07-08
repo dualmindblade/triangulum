@@ -118,6 +118,11 @@ pub struct ColCtx {
     /// and tree decisions anchor here so a player tower stays the material
     /// it was built on instead of turning into a stone cliff.
     pub ground0: i64,
+    /// Continuous terrain height (km), pre-quantization — the same surface the
+    /// far-LOD mesh shades with (ground0 = floor(h_km * 1000)). Block tops
+    /// take their sun-shading normal from this smooth field so gentle slopes
+    /// don't band into terrace-edge rings the way quantized heights do.
+    pub h_km: f32,
     pub water: i64,     // water surface block; i64::MIN = dry column
     pub cave_bits: u32, // bit k set = block at z = ground0 - k carved out
     pub koppen: u8,
@@ -250,6 +255,7 @@ pub fn col_ctx(planet: &Planet, edits: &Edits, face: usize, ci: u64, cj: u64) ->
     ColCtx {
         ground,
         ground0,
+        h_km: s.h_km as f32,
         water,
         cave_bits,
         koppen: planet.koppen(face, u, v),
@@ -786,20 +792,46 @@ pub fn build_chunk(
             let up = origin_dir;
             let tint = ground_tint(c.koppen);
 
-            // Per-column surface normal from neighbour top heights. Without it
-            // every block top carries the flat radial normal, so sloped terrain
-            // gets no sun self-shading and the only relief cue is the baked-dark
-            // terrace risers — which alias into fall-line light/dark stripes on
-            // any smooth slope. Central differences of top_solid, scaled to
-            // world (a block is VOXEL_KM*exaggeration tall radially, matching
-            // shell()). Flat ground gives dz=0 -> radial normal, unchanged.
+            // Per-column surface normal for the block top. Without slope
+            // self-shading the only relief cue is the baked-dark terrace risers,
+            // which alias into fall-line light/dark stripes on any smooth slope.
+            //
+            // The gradient is taken from the CONTINUOUS terrain height (h_km) —
+            // the same surface the far-LOD mesh shades with — not the quantized
+            // block heights. Quantized central differences jump a whole block
+            // across each 1-block terrace edge: on a GENTLE slope that one-column
+            // ring tilts ~27 deg (at exagg 1) while the flat terrace tops between
+            // stay radial-bright, reading as dark concentric contour rings. The
+            // continuous gradient is smooth and small there (no rings) yet stays
+            // large on steep ground (slope self-shading — the stripe fix — kept).
+            // h_km is already in km, so its vertical scale drops the VOXEL_KM the
+            // block-count path needs; both match shell()'s radial lift.
+            //
+            // h_km knows nothing of player edits or surface cave breaches, so any
+            // column whose 4-neighbourhood is edited or carved-at-surface
+            // (top_solid != ground0) falls back to the quantized difference —
+            // towers, holes and pit rims still shade from real geometry.
+            // Flat ground gives dz=0 -> radial normal.
             let top_n = {
                 let r_top = shell(c.top_solid());
                 let ei = (d10 - d00) * r_top; // +i horizontal world edge
                 let ej = (d01 - d00) * r_top; // +j horizontal world edge
-                let sc = 0.5 * VOXEL_KM * exaggeration;
-                let dzi = (at(i + 1, j).top_solid() - at(i - 1, j).top_solid()) as f64 * sc;
-                let dzj = (at(i, j + 1).top_solid() - at(i, j - 1).top_solid()) as f64 * sc;
+                let warped = [c, at(i + 1, j), at(i - 1, j), at(i, j + 1), at(i, j - 1)]
+                    .iter()
+                    .any(|k| k.top_solid() != k.ground0);
+                let (dzi, dzj) = if warped {
+                    let sc = 0.5 * VOXEL_KM * exaggeration; // block counts -> km
+                    (
+                        (at(i + 1, j).top_solid() - at(i - 1, j).top_solid()) as f64 * sc,
+                        (at(i, j + 1).top_solid() - at(i, j - 1).top_solid()) as f64 * sc,
+                    )
+                } else {
+                    let sc = 0.5 * exaggeration; // h_km is already km
+                    (
+                        (at(i + 1, j).h_km - at(i - 1, j).h_km) as f64 * sc,
+                        (at(i, j + 1).h_km - at(i, j - 1).h_km) as f64 * sc,
+                    )
+                };
                 let mut nrm = (ei + up * dzi).cross(ej + up * dzj);
                 if nrm.dot(up) < 0.0 {
                     nrm = -nrm;

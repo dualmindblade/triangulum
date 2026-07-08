@@ -1,0 +1,41 @@
+# Terrace-ring shading verification. Suns are pinned per site so baseline and
+# after are lit identically. Each site gets a near-overhead shot (as the task
+# specifies) plus a GRAZING shot — low sun rakes the slope and is the most
+# sensitive test both for revealing the ring/stripe artifacts and for catching
+# any unwanted shading change on flat ground.
+#
+# Sites:
+#  1 gentle terrace rings  (rings must vanish / clearly reduce)
+#  2 steep fall-line site  (no return of vertical fall-line stripes)
+#  3 flat savanna          (top faces must stay uniform/pixel-stable)
+#  4 snow peak             (unchanged)
+
+# --- 1) terrace rings on a gentle grassy hill ---
+teleport 4.992 -29.403 0.018
+look -10 -36
+sun 5 -29
+shot site1_rings_overhead
+sun 15 -90
+shot site1_rings_grazing
+
+# --- 2) steep fall-line stripe regression site ---
+teleport -4.498 -12.694 0.089
+look -173 -19
+sun -4 -13
+shot site2_stripes_local
+sun 15 -55
+shot site2_stripes_grazing
+
+# --- 3) flat savanna: top faces must stay uniform ---
+teleport 1.51 40.49 0.05
+look 0 -20
+sun 1 40
+shot site3_savanna_overhead
+sun 20 100
+shot site3_savanna_grazing
+
+# --- 4) snow peak ---
+teleport 69 122 1.0
+look 90 -25
+sun 45 122
+shot site4_snowpeak
