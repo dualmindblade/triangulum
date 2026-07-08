@@ -9,7 +9,8 @@ are `teleport LAT LON [ALT_KM]` viewer args at `--exagg 1` unless noted.
 
 ## OPEN
 
-### S-2 Banded lighting: cube lee faces collapse to near-black (land + trees)
+### FIXED 2026-07-08 (94506c6, codex): moved to F-8 below
+### S-2-archived Banded lighting: cube lee faces collapse to near-black (land + trees)
 Reported 2026-07-08 PM (shots at 8.097 -35.673 and the night shot at
 4.990 -29.401): terrace risers and tree/canopy side faces band light/dark
 harshly, and Mat::Shrub [0.10,0.16,0.06] is so dark an isolated shrub block
