@@ -9,6 +9,8 @@ repository = "https://github.com/dualmindblade/triangulum"
 [dependencies]
 anyhow = "1.0.103"
 bytemuck = { version = "1.25.0", features = ["derive"] }
+egui = "0.35.0"
+egui-winit = "0.35.0"
 glam = "0.33.2"
 png = "0.18.1"
 pollster = "0.4.0"

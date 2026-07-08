@@ -163,7 +163,10 @@ fn main() -> Result<()> {
         player: PlayerState::default(),
         last_frame: std::time::Instant::now(),
         mouse_locked: false,
-        teleport: None,
+        photo_map: triangulum_viewer::ui::PhotoMap::new(interchange_dir().into()),
+        egui_ctx: egui::Context::default(),
+        egui_state: None,
+        egui_paint: None,
         title_timer: 0.0,
         edits: load_edits(planet_seed),
         torches: load_torches(planet_seed),
@@ -313,8 +316,12 @@ struct App {
     player: PlayerState,
     last_frame: std::time::Instant,
     mouse_locked: bool, // pointer captured: raw-motion look, cursor hidden
-    /// In-progress teleport entry ("lat lon [alt]"), typed into the title bar.
-    teleport: Option<String>,
+    /// T opens the photo-map popup (ui.rs): teleport by map, photo, or
+    /// typed coordinates; browse/delete the screenshot roll.
+    photo_map: triangulum_viewer::ui::PhotoMap,
+    egui_ctx: egui::Context,
+    egui_state: Option<egui_winit::State>,
+    egui_paint: Option<triangulum_viewer::ui::EguiPaint>,
     title_timer: f64,
     edits: triangulum_viewer::voxel::Edits,
     torches: triangulum_viewer::voxel::Torches,
@@ -504,39 +511,30 @@ impl App {
         self.title_timer = -2.0; // let the message linger
     }
 
-    /// Refresh the title-bar teleport prompt.
-    fn show_teleport_prompt(&self) {
-        if let (Some(input), Some(gfx)) = (&self.teleport, &self.gfx) {
-            gfx.window.set_title(&format!(
-                "Neisor — teleport> {input}_   (lat lon [alt km] — Enter go, Esc cancel)"
-            ));
-        }
-    }
-
-    /// Enter: parse "lat lon [alt]" and go (fly mode at the destination).
-    fn teleport_go(&mut self) {
-        let Some(input) = self.teleport.take() else { return };
-        let nums: Vec<f64> = input
-            .split(|c: char| c.is_whitespace() || c == ',')
-            .filter(|s| !s.is_empty())
-            .filter_map(|s| s.parse().ok())
-            .collect();
-        if nums.len() < 2 || nums[0].abs() > 90.0 {
-            if let Some(gfx) = &self.gfx {
-                gfx.window.set_title("Neisor — teleport: need `lat lon [alt km]`");
-                self.title_timer = -2.0;
-            }
+    /// Commit a destination chosen in the photo map: position, then the
+    /// photo's view if it carried one, then (opt-in) its time of day.
+    fn apply_teleport(&mut self, act: triangulum_viewer::ui::TeleportAction) {
+        if act.lat.abs() > 90.0 {
             return;
         }
         self.player.teleport(
             &self.planet,
             &self.edits,
             &mut self.camera,
-            nums[0],
-            nums[1],
-            nums.get(2).copied(),
+            act.lat,
+            act.lon,
+            act.alt_km,
             self.args.exaggeration,
         );
+        if let Some(y) = act.yaw_deg {
+            self.camera.yaw = y.to_radians();
+        }
+        if let Some(p) = act.pitch_deg {
+            self.camera.pitch = p.to_radians().clamp(-1.50, 1.50);
+        }
+        if let (Some(t), Some(gfx)) = (act.day_time_s, self.gfx.as_mut()) {
+            gfx.renderer.set_day_time_s(t);
+        }
     }
 
     /// Capture or release the cursor for raw mouse-look.
@@ -560,40 +558,6 @@ impl App {
         }
     }
 
-    /// Keystrokes while the teleport prompt is open. Returns true if consumed.
-    fn teleport_key(&mut self, key: &winit::keyboard::Key) -> bool {
-        use winit::keyboard::{Key, NamedKey};
-        if self.teleport.is_none() {
-            return false;
-        }
-        match key {
-            Key::Named(NamedKey::Enter) => self.teleport_go(),
-            Key::Named(NamedKey::Escape) => {
-                self.teleport = None;
-                self.title_timer = 1.0; // restore the HUD title promptly
-            }
-            Key::Named(NamedKey::Backspace) => {
-                if let Some(t) = self.teleport.as_mut() {
-                    t.pop();
-                }
-                self.show_teleport_prompt();
-            }
-            Key::Named(NamedKey::Space) => {
-                if let Some(t) = self.teleport.as_mut() {
-                    t.push(' ');
-                }
-                self.show_teleport_prompt();
-            }
-            Key::Character(s) => {
-                if let Some(t) = self.teleport.as_mut() {
-                    t.extend(s.chars().filter(|c| "0123456789.,+- ".contains(*c)));
-                }
-                self.show_teleport_prompt();
-            }
-            _ => {}
-        }
-        true
-    }
 }
 
 impl App {
@@ -608,8 +572,8 @@ impl App {
             self.last_frame = now;
             dt.min(0.1)
         };
-        // an open teleport prompt owns the keyboard: no movement input
-        let input = if self.teleport.is_some() {
+        // an open photo map owns the keyboard: no movement input
+        let input = if self.photo_map.open {
             triangulum_viewer::player::Input::default()
         } else {
             triangulum_viewer::player::Input {
@@ -633,7 +597,7 @@ impl App {
         // window title as a tiny HUD, twice a second (the teleport prompt
         // owns the title while it's open)
         self.title_timer += dt;
-        if self.title_timer > 0.5 && self.teleport.is_none() {
+        if self.title_timer > 0.5 && !self.photo_map.open {
             self.title_timer = 0.0;
             if let Some(gfx) = &self.gfx {
                 let mode = match self.player.mode {
@@ -661,7 +625,7 @@ impl ApplicationHandler for App {
     ) {
         // raw mouse motion drives the view while the pointer is captured
         if let winit::event::DeviceEvent::MouseMotion { delta: (dx, dy) } = event {
-            if self.mouse_locked && self.teleport.is_none() {
+            if self.mouse_locked && !self.photo_map.open {
                 self.camera.yaw += dx * 0.0022;
                 self.camera.pitch = (self.camera.pitch - dy * 0.0022).clamp(-1.50, 1.50);
             }
@@ -718,6 +682,16 @@ impl ApplicationHandler for App {
         renderer.sun_ref_lon = self.args.lon.to_radians();
         renderer.patch_scale = self.args.patch;
         renderer.torches = self.torches.clone();
+        self.egui_state = Some(egui_winit::State::new(
+            self.egui_ctx.clone(),
+            egui::ViewportId::ROOT,
+            &window,
+            Some(window.scale_factor() as f32),
+            None,
+            None,
+        ));
+        self.egui_paint =
+            Some(triangulum_viewer::ui::EguiPaint::new(&renderer.device, format));
         self.gfx = Some(Gfx { window, surface, config, renderer });
     }
 
@@ -725,16 +699,35 @@ impl ApplicationHandler for App {
         if self.gfx.is_none() {
             return;
         }
+        // an open photo map owns the pointer and keyboard: events go to egui,
+        // not the game (Esc closes the popup; frame/window events pass on)
+        if self.photo_map.open
+            && !matches!(
+                event,
+                WindowEvent::CloseRequested
+                    | WindowEvent::Resized(_)
+                    | WindowEvent::RedrawRequested
+            )
+        {
+            if let WindowEvent::KeyboardInput { event: ke, .. } = &event
+                && ke.state == ElementState::Pressed
+                && ke.logical_key
+                    == winit::keyboard::Key::Named(winit::keyboard::NamedKey::Escape)
+            {
+                self.photo_map.open = false;
+                self.title_timer = 1.0;
+                return;
+            }
+            if let (Some(st), Some(gfx)) = (self.egui_state.as_mut(), self.gfx.as_ref()) {
+                let _ = st.on_window_event(&gfx.window, &event);
+                gfx.window.request_redraw();
+            }
+            return;
+        }
         match event {
             WindowEvent::CloseRequested => event_loop.exit(),
             WindowEvent::KeyboardInput { event, .. } => {
                 use winit::keyboard::{KeyCode as K, PhysicalKey};
-                // an open teleport prompt owns the keyboard
-                if event.state == ElementState::Pressed
-                    && self.teleport_key(&event.logical_key)
-                {
-                    return;
-                }
                 if event.logical_key
                     == winit::keyboard::Key::Named(winit::keyboard::NamedKey::Escape)
                     && event.state == ElementState::Pressed
@@ -758,8 +751,11 @@ impl ApplicationHandler for App {
                                 K::KeyE => self.edit_block(1),
                                 K::KeyR => self.toggle_torch(),
                                 K::KeyT => {
-                                    self.teleport = Some(String::new());
-                                    self.show_teleport_prompt();
+                                    // the photo map owns input while open, so
+                                    // release the pointer and stop movement
+                                    self.set_mouse_lock(false);
+                                    self.keys.clear();
+                                    self.photo_map.toggle();
                                 }
                                 K::KeyP => self.save_screenshot(),
                                 _ => {}
@@ -828,6 +824,26 @@ impl ApplicationHandler for App {
             }
             WindowEvent::RedrawRequested => {
                 self.update();
+                // photo map: build this frame's UI before borrowing gfx for
+                // the draw (split borrows via locals)
+                let mut ui_frame = None;
+                let mut action = None;
+                if self.photo_map.open
+                    && let (Some(st), Some(gfx)) =
+                        (self.egui_state.as_mut(), self.gfx.as_ref())
+                {
+                    let raw = st.take_egui_input(&gfx.window);
+                    let pm = &mut self.photo_map;
+                    let planet = &self.planet;
+                    let full = self.egui_ctx.run_ui(raw, |ctx| {
+                        action = pm.ui(ctx, planet);
+                    });
+                    st.handle_platform_output(&gfx.window, full.platform_output);
+                    let prims = self
+                        .egui_ctx
+                        .tessellate(full.shapes, full.pixels_per_point);
+                    ui_frame = Some((prims, full.textures_delta, full.pixels_per_point));
+                }
                 let gfx = self.gfx.as_mut().unwrap();
                 use wgpu::CurrentSurfaceTexture as Cst;
                 let frame = match gfx.surface.get_current_texture() {
@@ -841,8 +857,24 @@ impl ApplicationHandler for App {
                 let view = frame.texture.create_view(&Default::default());
                 gfx.renderer.underwater = self.player.underwater;
                 gfx.renderer.draw(&view, &self.planet, &self.camera, &self.edits);
+                if let (Some((prims, deltas, ppp)), Some(paint)) =
+                    (ui_frame, self.egui_paint.as_mut())
+                {
+                    paint.paint(
+                        &gfx.renderer.device,
+                        &gfx.renderer.queue,
+                        &view,
+                        (gfx.config.width, gfx.config.height),
+                        ppp,
+                        &prims,
+                        &deltas,
+                    );
+                }
                 gfx.renderer.queue.present(frame);
                 gfx.window.request_redraw();
+                if let Some(act) = action {
+                    self.apply_teleport(act);
+                }
             }
             _ => {}
         }

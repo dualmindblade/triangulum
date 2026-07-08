@@ -10,4 +10,5 @@ pub mod player;
 pub mod renderer;
 pub mod rivers;
 pub mod terrain;
+pub mod ui;
 pub mod voxel;

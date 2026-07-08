@@ -378,6 +378,20 @@ impl Renderer {
         }
     }
 
+    /// Jump the day/night cycle so the CURRENT moment sits `t_s` seconds
+    /// into the day — the photo map's optional "restore time of day".
+    /// No-op when the sun is pinned or the cycle is off.
+    pub fn set_day_time_s(&mut self, t_s: f64) {
+        if self.day_len_s > 0.0 && self.sun_dir.is_none() {
+            let t = t_s.rem_euclid(self.day_len_s);
+            if let Some(start) =
+                std::time::Instant::now().checked_sub(std::time::Duration::from_secs_f64(t))
+            {
+                self.start = start;
+            }
+        }
+    }
+
     /// Drop cached chunk meshes (after edits) so they rebuild next frame.
     /// In-flight builds of these chunks are orphaned: removing the key from
     /// the pending set makes their (stale) results get dropped on arrival.
