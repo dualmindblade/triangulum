@@ -46,19 +46,29 @@ nb = d["neighbors"].astype(np.int64)
 n = len(elev)
 ids = np.arange(n)
 
-# ---- water levels: bed elevation, relaxed so no receiver is ever higher
-# than its source (depression-filled routes cross ridges: raw elevation
-# ascends up to ~650 m along some receiver links)
+# ---- water levels: the HYDRAULIC FILL SURFACE, not the bed. Each level is
+# max(own elevation, receiver's level), propagated up from the terminals —
+# monotonic downstream BY CONSTRUCTION, and a depression-filled route holds
+# at each pit's spill height instead of bed-diving. The old min-relaxation
+# anchored levels to the deepest bed along the path, so a river routed
+# through a dry below-sea basin (or exported into ocean bathymetry) carried
+# kilometre-negative levels and the viewer dug bottomless slot gorges next
+# to sea-level terrain (BUGS.md W-1 family; census families B/C).
+# Where fill > bed the viewer's perch guard renders a dry wash / lets the
+# lake flood own the water — both correct for a pit.
 level = elev.copy()
-valid = (rcv >= 0) & (rcv != ids)
+# an OCEAN cell's water level is the sea surface, not its bathymetry; ocean
+# sources are excluded so nothing ever inherits bathymetry.
+level[ocean] = 0.0
+valid = (rcv >= 0) & (rcv != ids) & ~ocean
 src = ids[valid]
 dst = rcv[valid]
-for it in range(10000):
-    before = level[dst].copy()
-    np.minimum.at(level, dst, level[src])
-    if np.array_equal(before, level[dst]):
+for it in range(100000):
+    nl = np.maximum(level[src], level[dst])  # source never below receiver
+    if np.array_equal(nl, level[src]):
         break
-print(f"level relaxation converged after {it + 1} passes")
+    level[src] = nl
+print(f"fill-surface construction converged after {it + 1} passes")
 
 # ---- river segments: planetgen flags rivers at ~350 m3/s; extend down to
 # 120 so headwaters taper in rather than popping out of nothing
@@ -92,17 +102,20 @@ for _ in range(2):
     sxyz, slevel = nxyz, nlevel
 sxyz /= np.linalg.norm(sxyz, axis=1, keepdims=True)
 # smoothing moved nodes off their source cells (up to ~7 km): re-anchor
-# each level to the terrain under the NEW position — otherwise the level
-# can sit above the local ground and the viewer's perch guard dries the
-# whole reach — then restore downstream monotonicity
+# each level to the FILL SURFACE under the NEW position — otherwise the
+# level can sit above the local water table and the viewer's perch guard
+# dries the whole reach. Anchoring to raw elev would re-dive every pit to
+# its bed, undoing the fill construction.
 kd = cKDTree(xyz)
 _, near3 = kd.query(sxyz[touched], k=3, workers=-1)
-slevel[touched] = np.minimum(slevel[touched], elev[near3].min(1))
+slevel[touched] = np.minimum(slevel[touched], level[near3].min(1))
+slevel[ocean] = 0.0  # re-anchoring must not resurrect bathymetry levels
 for _ in range(10000):
     before = slevel[dst].copy()
     np.minimum.at(slevel, dst, slevel[src])
     if np.array_equal(before, slevel[dst]):
         break
+slevel[ocean] = 0.0
 
 # ---- lakes: level = spill point (lowest non-lake neighbor of the lake),
 # capped just above the highest lake-cell bed
@@ -117,6 +130,29 @@ for lid in lake_ids:
     rim = elev[outside].min() if len(outside) else beds.max()
     lake_level[lid] = min(rim, beds.max() + 0.005)
 lc = ids[lake >= 0]
+
+# ---- river nodes inside a lake carry the lake SURFACE level, not their
+# bed: the outlet river otherwise leaves the lake tens of metres below its
+# own surface (the bed re-anchor above pulled in-lake nodes down to bed
+# elevation), and the lake-flood edge stood as a water cliff over the
+# sunken corridor (BUGS.md W-1, the lon-68 "pie slice"). Raising only —
+# a node already above the fill keeps its level. Downstream monotonicity
+# is then restored WITHOUT links into lake cells (a bed-anchored tributary
+# entering a lake must not drag the fill back down; its last reach is
+# drowned by the flood anyway).
+for lid in lake_ids:
+    cells = ids[lake == lid]
+    slevel[cells] = np.maximum(slevel[cells], lake_level[lid])
+open_dst = valid & (lake[rcv] < 0)
+src2 = ids[open_dst]
+dst2 = rcv[open_dst]
+for _ in range(10000):
+    before = slevel[dst2].copy()
+    np.minimum.at(slevel, dst2, slevel[src2])
+    if np.array_equal(before, slevel[dst2]):
+        break
+slevel[ocean] = 0.0
+
 # rim cells: non-lake neighbors of any lake cell (Voronoi competitors)
 rim_set = np.zeros(n, dtype=bool)
 nbs_of_lakes = nb[lc].ravel()

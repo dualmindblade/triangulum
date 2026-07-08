@@ -39,6 +39,24 @@ pub struct RiverHit {
     pub flow: f64, // m3/s at the segment
 }
 
+/// Lake candidate at a query point — everything the terrain sampler needs to
+/// decide whether this column floods. The decision itself lives in
+/// terrain::sample (it needs the planet rasters); this is pure geometry.
+pub struct LakeHit {
+    pub level_km: f64,
+    pub salt: bool,
+    /// nearest true lake cell: distance, center, radius
+    pub d_lake_km: f64,
+    pub lake_center: DVec3,
+    pub radius_km: f64,
+    /// whether the nearest cell overall (lake AND rim competing) is a lake
+    /// cell — i.e. the query is inside the lake's own Voronoi territory
+    pub in_lake_voronoi: bool,
+    /// how far past the lake/rim Voronoi boundary the query sits (0 inside
+    /// lake territory; grows toward the rim cell's far side)
+    pub past_boundary_km: f64,
+}
+
 const GRID: usize = 128;
 /// Influence radius (km) a query may care about: channel half-width (<=0.4)
 /// + floodplain damping (<=2.5) + meander (<=0.3), rounded up.
@@ -173,7 +191,17 @@ impl RiverIndex {
         !self.seg_buckets[bucket_of(face, u, v)].is_empty()
     }
 
-    /// Nearest river segment within SEG_INFLUENCE_KM of `dir`.
+    /// Nearest river segment within SEG_INFLUENCE_KM of `dir` — geometry
+    /// (distance, flow) from the winner, but the water LEVEL blended across
+    /// every in-influence segment by inverse closeness. Winner-take-all
+    /// levels are discontinuous along the Voronoi bisector between two
+    /// reaches (a hairpin bend's arms, a tributary beside the main stem),
+    /// which rendered as a staircase water CLIFF running mid-channel
+    /// (BUGS.md W-2). Levels along one course are continuous by export, so
+    /// blending only acts where independent reaches meet — the cliff
+    /// becomes a smooth ramp confined to the overlap zone, reading as
+    /// rapids. Weights peak inside a channel (w -> 1 at dist 0) and die at
+    /// the influence edge, so a lone segment's level is exactly its own.
     pub fn river_near(&self, face: usize, u: f64, v: f64, dir: DVec3) -> Option<RiverHit> {
         let ids = &self.seg_buckets[bucket_of(face, u, v)];
         if ids.is_empty() {
@@ -181,62 +209,83 @@ impl RiverIndex {
         }
         let p = dir * self.radius_km;
         let mut best: Option<RiverHit> = None;
+        let mut wsum = 0.0f64;
+        let mut lsum = 0.0f64;
         for &id in ids {
             let s = &self.segments[id as usize];
             let a = s.a * self.radius_km;
             let ab = s.b * self.radius_km - a;
             let t = ((p - a).dot(ab) / ab.length_squared()).clamp(0.0, 1.0);
             let d = (p - (a + ab * t)).length();
-            if d < SEG_INFLUENCE_KM && best.as_ref().is_none_or(|b| d < b.dist_km) {
+            if d >= SEG_INFLUENCE_KM {
+                continue;
+            }
+            let level = s.level_a_km as f64 + (s.level_b_km - s.level_a_km) as f64 * t;
+            // closeness^2 so the owning channel dominates its own water
+            // level, but a lower neighbouring reach still bends the surface
+            // down before the bisector instead of cliffing at it
+            let w = ((1.0 - d / SEG_INFLUENCE_KM) * (1.0 - d / SEG_INFLUENCE_KM)).max(1e-6);
+            wsum += w;
+            lsum += w * level;
+            if best.as_ref().is_none_or(|b| d < b.dist_km) {
                 best = Some(RiverHit {
                     dist_km: d,
-                    level_km: s.level_a_km as f64 + (s.level_b_km - s.level_a_km) as f64 * t,
+                    level_km: level,
                     flow: 10f64.powf(s.flow_log as f64) - 1.0,
                 });
             }
         }
-        best
+        best.map(|mut b| {
+            b.level_km = lsum / wsum;
+            b
+        })
     }
 
-    /// Lake candidate at `dir`: the nearest lake cell's `(level_km, salt,
-    /// dist_km, radius_km)` when the query is inside the lake's Voronoi
-    /// footprint OR within a short SHORE_MARGIN past it. The caller floods
-    /// only where this level actually exceeds the terrain, so returning the
-    /// level a little past the hard Voronoi boundary lets the shoreline follow
-    /// the real terrain=level contour instead of the cell-midpoint boundary —
-    /// which is what stopped the water surface standing as a vertical wall
-    /// above the below-level rim terrain the coarse footprint left dry.
-    /// `dist_km` (to the nearest lake-cell center) lets the caller flatten the
-    /// bed near the lake so fine noise can't spike it into islands.
-    pub fn lake_at(&self, face: usize, u: f64, v: f64, dir: DVec3) -> Option<(f64, bool)> {
+    /// Lake candidate at `dir`. Pure geometry: the nearest lake cell (its
+    /// level/salt/center/radius) plus where the query sits relative to the
+    /// lake's Voronoi territory and its RIM ring (the sim's dry cells around
+    /// the lake — by construction of the spill level, every rim cell's
+    /// elevation is >= the lake level, so the rim is the dam).
+    ///
+    /// The flood decision belongs to terrain::sample, which combines this
+    /// with the planet rasters. History, because this geometry has been
+    /// wrong in two opposite ways: the original hard rule (flood only inside
+    /// lake-cell Voronoi) left below-level noise dips just outside the
+    /// footprint dry — vertical water walls at the shore (lake 414). The
+    /// 586a828 fix flooded the whole 3-radius disc regardless of the rim,
+    /// which let a +70 m coastal lake spill across its dam and stand against
+    /// the open sea (BUGS.md W-1). The truth needs both distances, so both
+    /// are returned.
+    pub fn lake_at(&self, face: usize, u: f64, v: f64, dir: DVec3) -> Option<LakeHit> {
         let ids = &self.lake_buckets[bucket_of(face, u, v)];
         if ids.is_empty() {
             return None;
         }
         let p = dir * self.radius_km;
-        let mut best_lake: Option<(f64, &LakeCell)> = None; // (dist_km, cell)
+        let mut best_lake: Option<(f64, &LakeCell)> = None; // nearest true lake cell
+        let mut d_any = f64::INFINITY; // nearest cell of either kind
+        let mut any_is_lake = false;
         for &id in ids {
             let l = &self.lakes[id as usize];
-            if l.rim {
-                continue; // rim cells only shaped the old hard footprint
-            }
             let d = (p - l.center * self.radius_km).length();
-            if best_lake.as_ref().is_none_or(|b| d < b.0) {
+            if d < d_any {
+                d_any = d;
+                any_is_lake = !l.rim;
+            }
+            if !l.rim && best_lake.as_ref().is_none_or(|b| d < b.0) {
                 best_lake = Some((d, l));
             }
         }
         match best_lake {
-            // Flood anywhere within a lake cell's influence disc; the CALLER
-            // clips to `terrain < level`, which is the physically correct
-            // shoreline. The old rim/Voronoi test additionally required the
-            // nearest cell to be a lake cell, which left below-level rim
-            // terrain and the drowned rings around embedded islands DRY —
-            // vertical walls of water standing over dry land. Dropping it lets
-            // the terrain=level contour be the shore; noise is damped near the
-            // lake (see terrain::sample) so the disc can't bleed into flats.
-            Some((d, l)) if d < l.radius_km as f64 * 3.0 => {
-                Some((l.level_km as f64, l.salt))
-            }
+            Some((d, l)) if d < l.radius_km as f64 * 3.0 => Some(LakeHit {
+                level_km: l.level_km as f64,
+                salt: l.salt,
+                d_lake_km: d,
+                lake_center: l.center,
+                radius_km: l.radius_km as f64,
+                in_lake_voronoi: any_is_lake,
+                past_boundary_km: if any_is_lake { 0.0 } else { (d - d_any).max(0.0) },
+            }),
             _ => None,
         }
     }

@@ -304,6 +304,25 @@ pub fn sample(planet: &Planet, face: usize, u: f64, v: f64, octaves: u32) -> Sam
     // dry islands through the surface and digs pockets the flat fill drowns
     // into walls.
     let lake = planet.rivers.lake_at(face, u, v, dir);
+    // Flood eligibility. The sim's rim ring is the dam (every rim cell's
+    // elevation >= the spill level by construction), so the flood covers the
+    // lake's own Voronoi territory plus a bounded shore band into rim
+    // territory — the band is where fine noise dips below the level and the
+    // shoreline legitimately wanders past the coarse footprint (the lake-414
+    // walls). It must NOT extend to the raw 3-radius disc: that let a lake
+    // pour over its dam wherever any distant terrain sat below its level —
+    // e.g. a sunken outlet-river corridor 40 km out (BUGS.md W-1).
+    let lake_flood = lake.as_ref().and_then(|hit| {
+        // rim-cell TERRITORY is everything within ~half a cell spacing
+        // (cells sit ~2.2 radii apart) of the rim's center: flood-through
+        // there covers the below-level shore dips and drowned island rings
+        // the sim's coarse footprint leaves out (lake 414's dry pit), while
+        // anything past the rim ring — e.g. a below-level outlet corridor
+        // 40 km on — stays governed by its own hydrology.
+        let d_any = hit.d_lake_km - hit.past_boundary_km;
+        (hit.in_lake_voronoi || d_any < hit.radius_km * 1.15)
+            .then_some((hit.level_km, hit.salt))
+    });
 
     // the roughness raster spikes wherever a land cell borders deep ocean
     // (continental slope) — damp it near sea level so coasts get beaches,
@@ -327,7 +346,9 @@ pub fn sample(planet: &Planet, face: usize, u: f64, v: f64, octaves: u32) -> Sam
         // fill can't spike islands or dig wall-making pockets), full relief on
         // dry land at/above the level — a lake can't flatten unrelated higher
         // ground that merely falls inside its cell-search disc (e.g. a pond).
-        if let Some((lvl, _)) = lake {
+        // Keyed to flood ELIGIBILITY: terrain outside the dam keeps its full
+        // relief even when it happens to sit below some lake's level.
+        if let Some((lvl, _)) = lake_flood {
             let submerge = smoothstep(-0.005, 0.012, lvl - e_raw);
             env *= 1.0 - 0.88 * submerge;
         }
@@ -374,8 +395,19 @@ pub fn sample(planet: &Planet, face: usize, u: f64, v: f64, octaves: u32) -> Sam
 
     // lakes: fill to the spill level from the drainage graph. The bed is
     // the natural terrain — noise poking above the level makes islands.
-    if let Some((lvl, salt)) = lake {
-        if lvl > h + 0.0005 {
+    if let Some((lvl, salt)) = lake_flood {
+        // the OUTLET channel owns its own water: past the spill the river's
+        // fill level descends with the terrain, and letting the flood lay a
+        // tongue of lake-level water in that descending channel would end in
+        // a water step at the flood boundary. In-lake reaches carry the lake
+        // level (bake pins them), so this only exempts genuinely downstream
+        // water.
+        // 8 m margin: export smoothing/re-anchoring wobbles outlet levels a
+        // few metres below the fill just short of the dam; a channel merely
+        // metres under the lake level is SUBMERGED, not downstream — only a
+        // clearly-descended reach owns its water.
+        let river_owns = hw > 0.0 && riv_d < hw * 1.5 && wl.is_finite() && wl < lvl - 0.008;
+        if lvl > h + 0.0005 && !river_owns {
             out.water_km = out.water_km.max(lvl);
             out.lake = true;
             out.salt = salt;
@@ -385,8 +417,12 @@ pub fn sample(planet: &Planet, face: usize, u: f64, v: f64, octaves: u32) -> Sam
 
     // ponds: noise depressions in wet, calm lowlands fill to just below
     // the original ground line. Near-field only — coarse tiles can't
-    // resolve them and would smear water across the landscape.
-    if octaves >= 8 && precip > 550.0 && rough_r < 0.45 && e_raw > 0.03 {
+    // resolve them and would smear water across the landscape. NOT inside a
+    // river's floodplain: the pond level rides e_raw (the 30 km raster),
+    // but valley-flattened/carved ground follows the river's own level —
+    // a pond blob overlapping the valley hung its flat surface up to ~20 m
+    // above the valley floor as a standing wall (census, 4.993 -29.392).
+    if octaves >= 8 && precip > 550.0 && rough_r < 0.45 && e_raw > 0.03 && valley >= 0.999 {
         let pn = fbm_band(dir, 0, 2, 16000.0, seed.wrapping_add(9241));
         if pn < -0.50 {
             let pd = (-0.50 - pn) * 0.030;
