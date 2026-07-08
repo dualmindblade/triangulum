@@ -786,6 +786,32 @@ pub fn build_chunk(
             let up = origin_dir;
             let tint = ground_tint(c.koppen);
 
+            // Per-column surface normal from neighbour top heights. Without it
+            // every block top carries the flat radial normal, so sloped terrain
+            // gets no sun self-shading and the only relief cue is the baked-dark
+            // terrace risers — which alias into fall-line light/dark stripes on
+            // any smooth slope. Central differences of top_solid, scaled to
+            // world (a block is VOXEL_KM*exaggeration tall radially, matching
+            // shell()). Flat ground gives dz=0 -> radial normal, unchanged.
+            let top_n = {
+                let r_top = shell(c.top_solid());
+                let ei = (d10 - d00) * r_top; // +i horizontal world edge
+                let ej = (d01 - d00) * r_top; // +j horizontal world edge
+                let sc = 0.5 * VOXEL_KM * exaggeration;
+                let dzi = (at(i + 1, j).top_solid() - at(i - 1, j).top_solid()) as f64 * sc;
+                let dzj = (at(i, j + 1).top_solid() - at(i, j - 1).top_solid()) as f64 * sc;
+                let mut nrm = (ei + up * dzi).cross(ej + up * dzj);
+                if nrm.dot(up) < 0.0 {
+                    nrm = -nrm;
+                }
+                let nrm = nrm.normalize_or_zero();
+                if nrm.length_squared() > 0.5 {
+                    nrm
+                } else {
+                    up
+                }
+            };
+
             let nbs = [at(i + 1, j), at(i - 1, j), at(i, j + 1), at(i, j - 1)];
             // natural steepness: player towers are not cliffs
             let steep = nbs
@@ -829,7 +855,10 @@ pub fn build_chunk(
                         let lvl = if sx + sy == 2 { 3 } else { sx + sy + dd };
                         cols[k] = vary(col, 1.0 - 0.15 * lvl as f32);
                     }
-                    quad([d00 * r, d10 * r, d11 * r, d01 * r], up, cols, cave);
+                    // slope-lit only on the real surface top; buried exposed-up
+                    // faces (cave floors) keep the radial normal
+                    let n_top = if z == c.top_solid() { top_n } else { up };
+                    quad([d00 * r, d10 * r, d11 * r, d01 * r], n_top, cols, cave);
                 }
                 if z > z_lo && !c.filled(z - 1) {
                     let r = shell(z - 1);
