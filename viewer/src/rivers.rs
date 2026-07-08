@@ -198,24 +198,43 @@ impl RiverIndex {
         best
     }
 
-    /// Lake water level at `dir`: inside the lake's Voronoi footprint (the
-    /// nearest map cell is a lake cell, not a rim cell).
+    /// Lake candidate at `dir`: the nearest lake cell's `(level_km, salt,
+    /// dist_km, radius_km)` when the query is inside the lake's Voronoi
+    /// footprint OR within a short SHORE_MARGIN past it. The caller floods
+    /// only where this level actually exceeds the terrain, so returning the
+    /// level a little past the hard Voronoi boundary lets the shoreline follow
+    /// the real terrain=level contour instead of the cell-midpoint boundary —
+    /// which is what stopped the water surface standing as a vertical wall
+    /// above the below-level rim terrain the coarse footprint left dry.
+    /// `dist_km` (to the nearest lake-cell center) lets the caller flatten the
+    /// bed near the lake so fine noise can't spike it into islands.
     pub fn lake_at(&self, face: usize, u: f64, v: f64, dir: DVec3) -> Option<(f64, bool)> {
         let ids = &self.lake_buckets[bucket_of(face, u, v)];
         if ids.is_empty() {
             return None;
         }
         let p = dir * self.radius_km;
-        let mut best: Option<(f64, &LakeCell)> = None;
+        let mut best_lake: Option<(f64, &LakeCell)> = None; // (dist_km, cell)
         for &id in ids {
             let l = &self.lakes[id as usize];
-            let d = (p - l.center * self.radius_km).length_squared();
-            if best.as_ref().is_none_or(|b| d < b.0) {
-                best = Some((d, l));
+            if l.rim {
+                continue; // rim cells only shaped the old hard footprint
+            }
+            let d = (p - l.center * self.radius_km).length();
+            if best_lake.as_ref().is_none_or(|b| d < b.0) {
+                best_lake = Some((d, l));
             }
         }
-        match best {
-            Some((d2, l)) if !l.rim && d2.sqrt() < l.radius_km as f64 * 3.0 => {
+        match best_lake {
+            // Flood anywhere within a lake cell's influence disc; the CALLER
+            // clips to `terrain < level`, which is the physically correct
+            // shoreline. The old rim/Voronoi test additionally required the
+            // nearest cell to be a lake cell, which left below-level rim
+            // terrain and the drowned rings around embedded islands DRY —
+            // vertical walls of water standing over dry land. Dropping it lets
+            // the terrain=level contour be the shore; noise is damped near the
+            // lake (see terrain::sample) so the disc can't bleed into flats.
+            Some((d, l)) if d < l.radius_km as f64 * 3.0 => {
                 Some((l.level_km as f64, l.salt))
             }
             _ => None,
