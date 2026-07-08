@@ -437,7 +437,12 @@ pub fn sample(planet: &Planet, face: usize, u: f64, v: f64, octaves: u32) -> Sam
             // only the sub-pond wobble, leaving fine dips flooded and bumps as
             // tiny shore.
             let wl = e_raw - 0.0018;
-            if wl > h {
+            // never perched: the pool may not stand above this column's
+            // NATURAL (pre-dig) ground — a blob lapping onto a slope or a
+            // valley rim otherwise hangs its flat surface metres above the
+            // downhill terrain as a standing wall (census: 20 m pond walls
+            // at 4.999 -29.391). Water that would drain does not exist.
+            if wl > h && wl <= h + pd + 0.002 {
                 out.water_km = out.water_km.max(wl);
                 out.wet_soft = out.wet_soft.max(smoothstep(0.0, 0.004, pd));
             }
