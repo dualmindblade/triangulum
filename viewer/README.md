@@ -33,9 +33,9 @@ cargo run --release -- --capture shot.png --lat 22 --lon 28 --alt 500 --pitch -3
 | **Q / E** | break a block / place a block against the face you're aiming at (edits persist to `assets/edits_seed*.bin`) |
 | **R** | place/remove a torch on the block you're aiming at — real light at night and in caves (persists to `assets/torches_seed*.bin`) |
 | **F** | back to fly mode |
-| **T** | teleport: type `lat lon [alt km]` into the title bar, Enter to go |
-| **P** | screenshot to `interchange/shot_lat…_lon…_alt…km_….png` (coordinates in the filename) |
-| Esc | quit (or cancel the teleport prompt) |
+| **T** | the photo map: a minimap popup with a marker for every screenshot. Click a marker or list row to pick a photo (preview + two-way highlight), click open water/land to set a free destination, or type `lat lon [alt km]` — then **Teleport** commits (a photo restores its exact view; tick *Restore photo's time of day* to also rewind the day/night cycle to the shot's sidecar time). Checkboxes + **Delete** move photos to `interchange/trash/` after a confirm. Esc closes |
+| **P** | screenshot to `interchange/shot_lat…_lon…_alt…km_….png` (pose in the filename, full state incl. sun in a `.json` sidecar) |
+| Esc | quit (or close the photo map / release the mouse first) |
 
 Scenic destination: the planet's highest peak (8.58 km) is at
 `--lat 69 --lon 122`.
