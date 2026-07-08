@@ -287,6 +287,9 @@ fn write_shot_sidecar(
         "seed": planet.seed,
         "world": world_source(),
         "mode": mode,
+        // which build took this photo — the first triage question after a
+        // day of rapid pushes (a long-lived session outlives many commits)
+        "build": env!("TRI_BUILD"),
     });
     let mut sidecar = std::path::PathBuf::from(path);
     sidecar.set_extension("json");
@@ -605,7 +608,8 @@ impl App {
                     Mode::Walk => "walk (F fly, space jump, T teleport, P shot)",
                 };
                 gfx.window.set_title(&format!(
-                    "Neisor — {} | lat {:.3} lon {:.3} alt {:.3} km",
+                    "Neisor [{}] — {} | lat {:.3} lon {:.3} alt {:.3} km",
+                    env!("TRI_BUILD"),
                     mode,
                     self.camera.lat.to_degrees(),
                     self.camera.lon.to_degrees(),
