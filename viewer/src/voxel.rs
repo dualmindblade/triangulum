@@ -246,8 +246,17 @@ pub fn col_ctx(planet: &Planet, edits: &Edits, face: usize, ci: u64, cj: u64) ->
     // caves: tubes along the intersection of two noise level-sets, in dry
     // land only. The radial offset gives the noise true vertical variation.
     // Anchored to the natural ground so edits don't drag the cave band.
+    // NOT near open water (BUGS.md W-6): a mouth breaching a river bank or
+    // lake shore opens a bone-dry pit with its floor below the water table
+    // two columns away (photographed at 3.726 63.065). Until caves can
+    // flood, they keep clear of river corridors and near-waterline lake
+    // shores entirely.
+    let near_river = s.river_dist_km.is_finite()
+        && s.river_dist_km < s.river_hw_km * 2.0 + 0.025;
+    let near_lake_shore =
+        s.lake_level_km.is_finite() && s.h_km < s.lake_level_km + 0.006;
     let mut cave_bits = 0u32;
-    if water == i64::MIN && ground0 > 4 {
+    if water == i64::MIN && ground0 > 4 && !near_river && !near_lake_shore {
         let dir = face_dir(face, u, v);
         let seed = planet.seed;
         let region = crate::noise::gradient_noise(dir * 90.0, seed.wrapping_add(40961));
@@ -946,7 +955,13 @@ pub fn build_chunk(
                             let cave = (1.0
                                 - 0.20 * (nb.top_solid() - (z - 1)).max(0) as f32)
                                 .clamp(0.25, 1.0);
-                            let col = vary(vary(m0.color(tint), 0.72), bright(z0));
+                            // riser bake: 0.72 predates slope-lit tops and
+                            // double-counted once they landed — step-dense
+                            // terrain (terraced washes, meander banks) read
+                            // as dark smears from any distance (the banding
+                            // reports of 2026-07-08). Sun + sky-fill now do
+                            // the modelling; keep only a whisper of bake.
+                            let col = vary(vary(m0.color(tint), 0.90), bright(z0));
                             quad([da * r1, db * r1, db * r0, da * r0], n_side, [col; 4], cave);
                             run_start = other.map(|mm| (z, mm));
                         }
