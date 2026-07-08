@@ -14,6 +14,21 @@ use crate::voxel::{
 /// Player eye height above the feet, km.
 pub const EYE_KM: f64 = 0.0018;
 
+/// Fly-speed radius scaling (creative-director request C-2). Far from the
+/// planet the cruise speed is `FAR_SPEED_COEF * distance-from-planet-center`,
+/// so you drift at roughly the planet's rotational pace and can watch it turn
+/// instead of strafing teleport-fast. 0.003/s is ~0.57x the default
+/// 20-minute-day angular rate, so the planet visibly rotates under you. The
+/// term is capped at `FAR_SPEED_CAP_RADII` planet radii — past that "pretty
+/// far" distance the speed stops climbing.
+const FAR_SPEED_COEF: f64 = 0.003;
+const FAR_SPEED_CAP_RADII: f64 = 4.0;
+
+/// Minimum height the cruise elevation-lock keeps above the terrain when a
+/// peak rises above the held radius (matches the voxel branch's floor, so the
+/// handoff across the voxel boundary doesn't snap).
+const CRUISE_FLOOR_KM: f64 = 0.0025;
+
 #[derive(PartialEq, Clone, Copy, Debug)]
 pub enum Mode {
     Fly,
@@ -35,11 +50,25 @@ pub struct PlayerState {
     pub vert_vel_mps: f64, // vertical velocity in walk mode (gravity, jumps, swim)
     pub grounded: bool,    // feet resting on a solid top last tick
     pub underwater: bool,  // eye below a water surface
+    /// Cruise elevation-lock setpoint: the held `ground_km + altitude_km`
+    /// (i.e. radius above the planet baseline) that fly cruising keeps
+    /// constant above the voxel range. See the Fly branch of `update`.
+    pub fly_elev_km: f64,
+    /// True while the elevation-lock is riding terrain that poked above the
+    /// held radius — freezes `fly_elev_km` so we settle back to it afterward.
+    pub fly_riding: bool,
 }
 
 impl Default for PlayerState {
     fn default() -> Self {
-        Self { mode: Mode::Fly, vert_vel_mps: 0.0, grounded: false, underwater: false }
+        Self {
+            mode: Mode::Fly,
+            vert_vel_mps: 0.0,
+            grounded: false,
+            underwater: false,
+            fly_elev_km: 0.0,
+            fly_riding: false,
+        }
     }
 }
 
@@ -60,12 +89,15 @@ impl PlayerState {
         camera.altitude_km = EYE_KM;
         self.vert_vel_mps = 0.0;
         self.grounded = false;
+        self.fly_riding = false;
     }
 
     /// F: back to fly mode.
     pub fn set_fly(&mut self, camera: &mut Camera) {
         self.mode = Mode::Fly;
         camera.altitude_km = camera.altitude_km.max(0.004);
+        // re-baseline the elevation-lock on the next cruise tick
+        self.fly_riding = false;
     }
 
     /// Jump to a lat/lon (degrees), fly mode, like the T key.
@@ -89,6 +121,10 @@ impl PlayerState {
         self.mode = Mode::Fly;
         self.vert_vel_mps = 0.0;
         self.grounded = false;
+        // a teleport is a deliberate elevation change: re-baseline the
+        // cruise elevation-lock on the next tick rather than riding a stale
+        // held radius from before the jump.
+        self.fly_riding = false;
         camera.ground_km = crate::terrain::ground_height_km(
             planet,
             camera.position().normalize(),
@@ -169,8 +205,20 @@ impl PlayerState {
         match self.mode {
             Mode::Fly => {
                 if fwd != 0.0 || strafe != 0.0 {
-                    // speed scales with altitude: cruise in orbit, glide low
-                    let speed_kms = (camera.altitude_km * 0.5).clamp(0.02, 600.0);
+                    // Fly speed. Near the planet: scale with altitude so you
+                    // glide low and cruise higher (unchanged low-altitude
+                    // feel). Far out (C-2): scale with distance from the planet
+                    // CENTER (radius) and cap it a few planet radii away, so at
+                    // great distance you drift at roughly the planet's
+                    // rotational pace and can watch it turn instead of
+                    // strafing teleport-fast. `min` blends the two continuously
+                    // — altitude wins low, the capped radius term wins high
+                    // (crossover ~52 km altitude).
+                    let radius = camera.radius_km + camera.ground_km + camera.altitude_km;
+                    let near = camera.altitude_km * 0.5;
+                    let far =
+                        radius.min(camera.radius_km * FAR_SPEED_CAP_RADII) * FAR_SPEED_COEF;
+                    let speed_kms = near.min(far).clamp(0.02, 1200.0);
                     let sprint = if input.sprint { 4.0 } else { 1.0 };
                     let h = camera.heading(strafe, fwd);
                     camera.translate(h, speed_kms * sprint * dt);
@@ -191,13 +239,38 @@ impl PlayerState {
                         .max(ground + 0.0012);
                     camera.ground_km = ground;
                     camera.altitude_km = height - ground;
+                    // re-baseline the cruise elevation-lock when we climb back
+                    // out of the voxel range
+                    self.fly_riding = false;
                 } else {
-                    // cruising: classic terrain-following at constant AGL
-                    camera.ground_km =
-                        crate::terrain::ground_height_km(planet, dir2, exagg);
+                    // Cruising above the voxel range: LOCK TO ELEVATION (C-1).
+                    // Hold a constant planet-center radius as WASD moves us,
+                    // instead of the old constant height-above-ground (which
+                    // bobbed the camera up and over every mountain). The held
+                    // elevation is `fly_elev_km` (= ground_km + altitude_km =
+                    // radius above the planet baseline). We re-baseline it to
+                    // the player's current elevation every tick they're freely
+                    // above the terrain — that tracks deliberate altitude
+                    // changes (scroll, teleport) for free — but FREEZE it while
+                    // riding terrain, so a peak poking above the held radius
+                    // lifts us over it and then we settle back to the held
+                    // radius on the far side (never underground: max of held vs
+                    // terrain). Continuous with the voxel branch, which also
+                    // preserves ground_km + altitude_km, so crossing the 2.5 km
+                    // boundary doesn't snap.
+                    let ground = crate::terrain::ground_height_km(planet, dir2, exagg);
+                    let floor = ground + CRUISE_FLOOR_KM;
+                    if !self.fly_riding {
+                        self.fly_elev_km = camera.ground_km + camera.altitude_km;
+                    }
+                    let elevation = self.fly_elev_km.max(floor);
+                    self.fly_riding = self.fly_elev_km < floor;
+                    camera.ground_km = ground;
+                    camera.altitude_km = elevation - ground;
                 }
             }
             Mode::Walk => {
+                self.fly_riding = false;
                 let mut feet = camera.ground_km;
                 // -- horizontal, with side collision and 1-block step-up
                 if fwd != 0.0 || strafe != 0.0 {
