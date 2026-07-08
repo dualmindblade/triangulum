@@ -1,0 +1,96 @@
+# Camera-controls suite: locks in the three creative-director camera changes
+# on branch feat/camera-controls. Deterministic (fixed seed 42, 60 Hz), so it
+# doubles as a regression gate. Run:
+#   ./viewer/target/release/examples/play.exe viewer/scripts/camera-controls.play
+#
+# NOTE on the C-1 assertion sense: "lock to elevation" means the camera holds a
+# constant planet-CENTER radius while cruising, so its height-above-ground
+# (alt_km) now VARIES as the terrain rises and falls under it. This is the
+# inverse of the old behavior (constant alt_km, radius bobbing over mountains).
+# So the lock is asserted on radius_km staying constant while alt_km/ground_km
+# move — not on alt_km staying constant, which would be the OLD bug.
+
+# ============================ C-1: elevation lock ============================
+# Above the voxel range (alt > 2.5 km) WASD holds a constant planet-center
+# radius. Fly north across the highest-peak region (lat 69 lon 122): the
+# terrain swings ~0.5 km under the flight path, but the radius must not move.
+log C-1 cruise above the voxel range holds a constant planet-center radius
+teleport 69 122 10
+look 0 0
+assert mode fly
+assert radius_km ~ 8678.7485 0.05
+assert alt_km ~ 10.0 0.001
+hold w 4
+hold w 4
+hold w 4
+hold w 4
+# LOCK: after 16 s / ~0.53 deg of flight the radius is unchanged to <1 m ...
+assert radius_km ~ 8678.7485 0.05
+# ... while the terrain genuinely rose under us (start ground was 8.4944 km) ...
+assert ground_km > 8.7
+# ... and alt-above-ground therefore DROPPED off its initial 10 km (it is the
+# height-above-ground that gives now, not the elevation). Old constant-AGL
+# behavior would have kept alt_km == 10 and let the radius climb ~0.4 km.
+assert alt_km < 9.9
+assert alt_km ~ 9.61899 0.05
+assert ground_km ~ 8.8754 0.05
+look 0 -30
+shot c1_elevation_lock
+
+# ---- C-1b: BELOW the threshold, terrain-following is unchanged (voxel branch).
+# The camera must still ride the terrain and never tunnel underground.
+log C-1b below 2.5 km, fly still follows terrain and stays above ground
+teleport 51.18 85.83 0.05
+look 0 0
+assert mode fly
+hold w 2
+hold w 2
+assert grounded false
+assert alt_km > 0.001
+assert alt_km < 0.5
+assert alt_km < 0.049
+shot c1b_terrain_follow
+
+# ===================== C-2: radius-proportional fly speed =====================
+# Far from the planet the speed scales with distance from the planet CENTER
+# (not altitude) and caps a few planet radii out. Holding W north for a fixed
+# 3 s, the change in latitude is the angular travel = speed / radius.
+#
+# In the radius-proportional band (below the 4-planet-radii cap) angular travel
+# is CONSTANT regardless of radius: speed = coef*radius so speed/radius = coef.
+# Two very different altitudes must give the SAME lat delta (= 0.003 rad/s *
+# 3 s = 0.515662 deg). Under the old altitude*0.5 (capped 600 km/s) scaling
+# this hold would have swept ~6 deg, so this pins the new law tightly.
+log C-2 radius-proportional band: same angular rate at 8000 and 20000 km alt
+teleport 0 0 8000
+look 0 0
+hold w 3
+assert lat_deg ~ 0.515662 0.003
+
+teleport 0 0 20000
+look 0 0
+hold w 3
+assert lat_deg ~ 0.515662 0.003
+
+# Beyond the cap (radius > 4 planet radii = 34641 km) the speed is pinned at
+# ~103.9 km/s, so angular travel now FALLS as radius grows: farther out, you
+# drift slower relative to the planet and can watch it rotate.
+log C-2 beyond the 4-radii cap the angular rate falls off (speed pinned)
+teleport 0 0 60000
+look 0 0
+hold w 3
+assert lat_deg < 0.45
+assert lat_deg ~ 0.260166 0.01
+
+teleport 0 0 78000
+look 0 0
+hold w 3
+assert lat_deg < 0.24
+assert lat_deg ~ 0.206127 0.01
+
+# ===================== C-3: auto-tilt is opt-in (--auto-tilt) =================
+# The scroll-driven auto-tilt lives only in the window app (main.rs scroll
+# handler); the headless harness has no scroll path, so C-3 cannot be asserted
+# here. Verified by code inspection + an app run: default no pan (scroll leaves
+# pitch untouched), --auto-tilt restores the descent cinematic.
+log C-3 auto-tilt is a window-app launch flag (default off); not harness-assertable

@@ -26,8 +26,8 @@ cargo run --release -- --capture shot.png --lat 22 --lon 28 --alt 500 --pitch -3
 |---|---|
 | **click** | capture the mouse for raw free-look (Esc releases; Esc again quits) |
 | drag | free look when the mouse isn't captured |
-| W A S D | move along your heading (fly: speed scales with altitude; Shift = sprint) |
-| scroll | altitude (fly mode; above 100 km the view auto-tilts with altitude, below that pitch is all yours). Descends to ~2.5 m — hover over the grass, sink into cave pits (roofs are solid) |
+| W A S D | move along your heading (Shift = sprint). Fly speed scales with altitude near the planet and with distance from the planet **center** when far out, capped ~4 planet radii away so at great distance you drift at roughly the planet's rotation rate and can watch it turn. Cruising above the 2.5 km voxel range **locks to elevation** — a constant planet-center radius, so you no longer bob up and over mountains (a peak rising above the held radius still lifts you clear of it); below 2.5 km it terrain-follows so you can't fly into hills |
+| scroll | altitude (fly mode). Descends to ~2.5 m — hover over the grass, sink into cave pits (roofs are solid). Pitch is always yours; pass `--auto-tilt` to opt into the descent cinematic (above 100 km the view eases toward the planet as you zoom) |
 | **G** | walk mode — real gravity: pressed in flight you skydive from there. Walls stop you, one-block ledges step up, cave ceilings bump your head, pits drop you in. Water: you sink slowly; hold Space to swim up |
 | **Space** | jump (walk mode, when standing) / swim up (in water) |
 | **Q / E** | break a block / place a block against the face you're aiming at (edits persist to `assets/edits_seed*.bin`) |
@@ -53,6 +53,10 @@ Sunset brings out the stars; torches matter after dark. `--day-len 0`
 restores the old always-noon-where-you-are mode, and `--sun-lat/--sun-lon`
 pins the sun exactly (screenshots stay reproducible). `--exagg N` scales
 terrain height (default 10; walk mode is best at `--exagg 1`).
+
+**`--auto-tilt`** opts into the descent cinematic: above 100 km, scrolling
+altitude eases the view pitch toward the planet. Default **off** — scroll
+never touches pitch, so the camera is entirely yours (drag/mouse-look own it).
 
 ## What's here (and what it proves)
 

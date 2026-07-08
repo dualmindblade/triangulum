@@ -32,6 +32,10 @@ struct Args {
     /// Voxel patch radius multiplier (chunks stream in asynchronously,
     /// so bigger discs cost memory and build throughput, not frame hitches).
     patch: f64,
+    /// Opt in to the descent cinematic: above 100 km, scrolling altitude
+    /// eases the view pitch toward the planet. Default OFF so scroll never
+    /// touches pitch and the camera is entirely yours (request C-3).
+    auto_tilt: bool,
 }
 
 fn parse_args() -> Args {
@@ -47,6 +51,7 @@ fn parse_args() -> Args {
         sun: None,
         day_len: 1200.0,
         patch: 1.0,
+        auto_tilt: false,
     };
     let argv: Vec<String> = std::env::args().collect();
     let mut i = 1;
@@ -99,6 +104,7 @@ fn parse_args() -> Args {
                 a.patch = next(i).parse::<f64>().unwrap_or(a.patch).clamp(0.3, 2.0);
                 i += 1;
             }
+            "--auto-tilt" => a.auto_tilt = true,
             other => eprintln!("unknown arg: {other}"),
         }
         i += 1;
@@ -802,15 +808,16 @@ impl ApplicationHandler for App {
                     // pits — the update pass keeps the camera out of solids
                     self.camera.altitude_km =
                         (self.camera.altitude_km * (1.0 - amount * 0.12)).clamp(0.0025, 80000.0);
-                    // the descent cinematic: zooming eases the view from
-                    // planet-gazing toward the horizon as altitude drops.
-                    // The pull is a pure function of altitude (identical
-                    // ascending and descending) and fades to nothing below
-                    // FREE_LOOK_ALT_KM — near the ground the camera angle is
-                    // entirely the player's, as it is in walk mode.
+                    // the descent cinematic (opt-in, request C-3): with
+                    // --auto-tilt, zooming eases the view from planet-gazing
+                    // toward the horizon as altitude drops. The pull is a pure
+                    // function of altitude (identical ascending and descending)
+                    // and fades to nothing below FREE_LOOK_ALT_KM. Default OFF:
+                    // scroll never touches pitch, so the camera is entirely the
+                    // player's, as it is in walk mode.
                     const FREE_LOOK_ALT_KM: f64 = 100.0;
                     let alt = self.camera.altitude_km;
-                    if alt > FREE_LOOK_ALT_KM {
+                    if self.args.auto_tilt && alt > FREE_LOOK_ALT_KM {
                         let t = (alt / 8000.0).clamp(0.0, 1.0);
                         let target = (-12.0 - 73.0 * t).to_radians();
                         let engage = ((alt / FREE_LOOK_ALT_KM).ln() / 8.0f64.ln())

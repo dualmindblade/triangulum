@@ -25,7 +25,7 @@
 //!   assert FIELD OP VALUE         check a state value; any failure makes the
 //!                                 run exit non-zero (self-checking scripts).
 //!                                 FIELD: grounded, underwater, mode, has_water,
-//!                                 alt_km, ground_km, support_below_km,
+//!                                 alt_km, radius_km, ground_km, support_below_km,
 //!                                 water_surface_km, ceiling_above_km,
 //!                                 vert_vel_mps, lat_deg, lon_deg, yaw_deg,
 //!                                 pitch_deg. OP: == != < <= > >= or ~ (approx,
@@ -178,6 +178,7 @@ fn main() -> anyhow::Result<()> {
             "lat_deg": camera.lat.to_degrees(),
             "lon_deg": camera.lon.to_degrees(),
             "alt_km": camera.altitude_km,
+            "radius_km": camera.radius_km + camera.ground_km + camera.altitude_km,
             "yaw_deg": camera.yaw.to_degrees(),
             "pitch_deg": camera.pitch.to_degrees(),
             "mode": if ps.mode == Mode::Walk { "walk" } else { "fly" },
@@ -340,9 +341,10 @@ fn main() -> anyhow::Result<()> {
             }
             // assert FIELD OP VALUE  — check a state value; a failure is
             // recorded and makes the whole run exit non-zero. FIELD is any
-            // state key (grounded, underwater, mode, alt_km, ground_km,
-            // support_below_km, water_surface_km, ceiling_above_km, has_water,
-            // vert_vel_mps, lat_deg, lon_deg, yaw_deg, pitch_deg). OP is one of
+            // state key (grounded, underwater, mode, alt_km, radius_km,
+            // ground_km, support_below_km, water_surface_km, ceiling_above_km,
+            // has_water, vert_vel_mps, lat_deg, lon_deg, yaw_deg, pitch_deg).
+            // OP is one of
             // == != < <= > >= or ~ (approx; optional 4th token = tolerance).
             // VALUE is a number, true/false, a mode string, or `none`.
             "assert" => {
@@ -370,6 +372,10 @@ fn main() -> anyhow::Result<()> {
                     }
                     "mode" => V::S(if ps.mode == Mode::Walk { "walk" } else { "fly" }),
                     "alt_km" => V::N(camera.altitude_km),
+                    // absolute distance from the planet center (= radius_km +
+                    // ground_km + altitude_km): the quantity the fly cruise
+                    // elevation-lock (C-1) holds constant over mountains.
+                    "radius_km" => V::N(camera.radius_km + camera.ground_km + camera.altitude_km),
                     "ground_km" => V::N(camera.ground_km),
                     "vert_vel_mps" => V::N(ps.vert_vel_mps),
                     "lat_deg" => V::N(camera.lat.to_degrees()),
