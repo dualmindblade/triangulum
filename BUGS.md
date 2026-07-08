@@ -9,6 +9,25 @@ are `teleport LAT LON [ALT_KM]` viewer args at `--exagg 1` unless noted.
 
 ## OPEN
 
+### S-2 Banded lighting: cube lee faces collapse to near-black (land + trees)
+Reported 2026-07-08 PM (shots at 8.097 -35.673 and the night shot at
+4.990 -29.401): terrace risers and tree/canopy side faces band light/dark
+harshly, and Mat::Shrub [0.10,0.16,0.06] is so dark an isolated shrub block
+reads as a hole in the ground. Root cause: the fragment shader lights
+`base * (0.10 + max(dot(n,sun),0))` — a flat 10% ambient, so a face away
+from the sun renders at ~1/11th of a sunlit face. Fix direction: a
+day-scaled sky-hemisphere fill (~(0.5+0.5*dot(n,up)) * k * day) so vertical
+faces get sky light regardless of sun azimuth (the same cure codex applied
+to water side faces), plus a brighter dry-brush Mat::Shrub. Night/moon path
+must stay untouched; caves/torches multiply after and must keep contrast.
+
+### W-6 Caves near rivers/lakes should be water-filled (polish)
+Cave tubes carve under dry land only by intent, but tubes that pass just
+below a river/lake water table render dry with the water surface above them
+— walk in and the physics/visuals disagree with the hydrology. Flood cave
+cells whose ceiling sits below the local water level (needs care with the
+walkable-ice and cave-darkness paths). Noted by Austin 2026-07-08.
+
 ### W-5 Knife-ridge mountain lakes flood their outer flanks (sim-resolution overhang)
 Census-after residual is dominated by TWO high-mountain lakes: level 3282 m
 at `-12.1 107.3` (hundreds of grouped sites, walls to 1.6 km) and 3810 m at

@@ -940,7 +940,35 @@ pub fn build_chunk(
 
             // ---- water: top surface and exposed banks
             if c.has_water() {
-                let w = c.water;
+                // Rendered water top, clamped to meet DRY shore neighbours
+                // flush. Blended river levels tilt the water surface, and
+                // quantizing a tilted surface against the terrain contour
+                // otherwise leaves the water standing one block PROUD of the
+                // bank along stretches of shoreline (floor(level) can exceed
+                // floor(bank h) while the bank itself is genuinely above the
+                // water). A dry neighbour is only ever lower than the water
+                // block through that rounding mismatch, so meeting it flush
+                // mis-renders by <1 m and reads as a real waterline. Both
+                // sides of every seam compute the same clamp (pure function
+                // of the column + 4-neighbourhood, all inside the ghost
+                // margin), so faces agree across chunk borders.
+                // (LIQUID only: a frozen sheet is walkable geometry — physics
+                // stands on the unclamped block, so its visual must not sink.)
+                let w_eff = |i: i64, j: i64| -> i64 {
+                    let cc = at(i, j);
+                    let mut we = cc.water;
+                    if cc.temp < -4.0 {
+                        return we;
+                    }
+                    for (di, dj) in [(1i64, 0i64), (-1, 0), (0, 1), (0, -1)] {
+                        let nb = at(i + di, j + dj);
+                        if !nb.has_water() && nb.top_solid() < we {
+                            we = nb.top_solid();
+                        }
+                    }
+                    we.max(cc.top_solid() + 1)
+                };
+                let w = w_eff(i, j);
                 let frozen = c.temp < -4.0;
                 let wmat = if frozen { Mat::Ice } else { Mat::Water };
                 let mut wcol = wmat.color(tint);
@@ -1001,12 +1029,16 @@ pub fn build_chunk(
                 let wtop = if frozen { vary(wcol, bright(w)) } else { wcol };
                 quad([d00 * r, d10 * r, d11 * r, d01 * r], up, [wtop; 4], 1.0);
                 let wside = vary(wtop, 0.93);
+                // same order as `nbs`: +i, -i, +j, -j
+                let nb_off = [(1i64, 0i64), (-1, 0), (0, 1), (0, -1)];
                 for (nbi, da, db) in sides {
                     let nb = nbs[nbi];
-                    let nb_surf = nb.top_solid().max(if nb.water == i64::MIN {
-                        i64::MIN
+                    // the neighbour's water top must be ITS clamped value, or
+                    // the two columns disagree about the seam and leak faces
+                    let nb_surf = nb.top_solid().max(if nb.has_water() {
+                        w_eff(i + nb_off[nbi].0, j + nb_off[nbi].1)
                     } else {
-                        nb.water
+                        i64::MIN
                     });
                     if nb_surf < w {
                         let out_n = (da + db).normalize() - up * (da + db).normalize().dot(up);
