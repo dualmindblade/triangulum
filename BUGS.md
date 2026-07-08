@@ -47,14 +47,17 @@ voxel patch renders visibly darker/flatter green than the blocky near field.
 Long-term probably texturing/material unification (roadmap may absorb this);
 recorded so it isn't lost. Polish, not a correctness bug.
 
-### C-1..C-3 Camera/control requests (viewer/interchange/requested-changes-and-bugs.txt)
-1. Mesh-only altitude range: camera locks to terrain height and bobs while
-   navigating — should lock to elevation (constant radius).
-2. Far from planet, velocity should scale ~ with radius (capped at some
-   distance) so the planet's rotation is visible while translating.
-3. Camera auto-pan while descending/ascending should be a flag, default OFF.
 
 ## FIXED
+
+### F-7 (was C-1..C-3) Camera/control requests
+Fixed 2026-07-08 (feat/camera-controls bf8bb70, Opus 4.8): above the voxel
+range WASD cruising holds constant planet-center radius (rides over peaks,
+settles back — asserted <1 m drift over a 16 s mountain flight in
+camera-controls.play, now in the verify.sh gate); fly speed far out scales
+with radius, capped at 4 planet radii (~0.57x the day's rotation rate);
+scroll auto-tilt is behind --auto-tilt, default OFF. Constants are
+single-line tunables in player.rs if the feel needs adjusting.
 
 ### F-4 (was W-1/W-2) The water-wall family: discontinuous water surfaces
 Fixed 2026-07-08 (fix/water-fill-levels, merge fb4d853). Census baseline:
