@@ -1233,3 +1233,103 @@ or steep-pitch rendering bug.
   failing probe (`ceil=0.0`) in one run.
 * Edits persist within a play run — two digging regressions at the same column
   contaminate each other; order them or separate the columns.
+
+## Phase 8e - the water-wall family falls to a census (2026-07-08, Fable overnight)
+
+The humans kept finding "big and obvious" water bugs by flying around
+(stepped river cliffs, a giant sunken pie slice in what looked like ocean,
+grey striped curtains at canyon heads) faster than the harness did. This
+session closed that gap: build the tool that finds the whole class by
+exhaustion, then fix the class.
+
+### The census (examples/census.rs)
+
+Sweeps every river segment (cross-channel transects) and lake cell (radial
+spokes) through terrain::sample, BISECTING every adjacent disagreement about
+water until it either dissolves (smooth ramp / real levee - not a bug) or
+survives at <=12 m separation (a cliff a player can stand under). Classes:
+WALL (water >2 m above adjacent dry ground), JUMP (water-vs-water level
+jump), SEAJUMP (vs the sea). Deduped into ~1.5 km sites, sorted by
+magnitude, emitted as teleport commands. --at densely grids one site;
+--probe dumps full Sample state for triage. ~104M samples, ~2 min with
+rayon (gotcha: par_iter().step_by() serializes the pool - use filter).
+
+BASELINE: 351,711 sites - 1,410,517 WALL / 288,174 JUMP / 130 SEAJUMP,
+worst a 3.7 km wall of lake standing over a valley.
+AFTER (all fixes): 115,248 sites - 262,542 WALL / 5,290 JUMP / 6 SEAJUMP.
+JUMP -98.2%, SEAJUMP -95%, WALL -81%; the reported bend site went 668
+findings -> 0 in 126k dense samples. The residual WALL population is
+dominated by TWO knife-ridge mountain lakes (3282 m at -12.1 107.3, 3810 m
+at 50.9 -28.1) whose 31 km cells overhang their flanks - ledgered as W-5
+(needs a bake-level whole-lake fix; two per-sample gates were
+census-measured to only move/worsen those walls and were REVERTED - the
+census earning its keep as an honest referee against plausible fixes).
+
+### One disease, four expressions
+
+Every human-reported artifact traced to water surfaces that are not
+hydraulically continuous:
+
+1. bake_rivers levels were BED-anchored (min-relaxed to the deepest bed
+   along each route): routes through dry pits carried km-negative levels ->
+   bottomless slot gorges beside sea-level terrain; mouth segments lerped
+   into ocean BATHYMETRY -> rivers reached the sea in sunken corridors
+   walled in by water. NOW: levels are the hydraulic FILL SURFACE
+   (level = max(own elev, receiver level) up from terminals; oceans pinned
+   to 0; in-lake nodes pinned to the lake surface; re-anchor vs the fill).
+2. The 586a828 lake flood (raw 3-radius disc) poured over dams. NOW:
+   bounded by the sim rim ring (lake Voronoi + rim-cell territory at
+   <=1.15r of a rim center); outlet channels own their water once clearly
+   descended. lake-regressions.play caught the first too-tight version of
+   this boundary (dried lake 414's pit again) and drove the final rule -
+   the regression gate did its job.
+3. Winner-take-all nearest-segment river levels cliffed along Voronoi
+   bisectors at bends/confluences. NOW: levels blend across in-influence
+   segments (closeness^2) - continuous by construction; cliffs become
+   rapids in the overlap zone.
+4. Ponds formed inside river floodplains AND on slopes, hanging raster-
+   anchored flat surfaces up to 20 m above the downhill terrain. NOW: gated
+   out of carved/valley ground, and a pool may never stand above its own
+   column's natural pre-dig ground (water that would drain does not exist).
+
+Verified: full verify.sh green (now 69 probes incl. liquid lakes, below);
+water-walls.play re-shoots every reported site - the temperate bend is one
+continuous river, the pie slice is a flat lake with a real island (the
+"residual hole" probed as terrain 0.7 m ABOVE the level: a shoal, not a
+water bug - ledgered V-2 for shore material), the canyon head is a clean
+desert river reaching the sea, lake 414 unchanged. REBAKE REQUIRED
+(bake_rivers.py) - rivers.bin level semantics changed.
+
+### Parallel delegation (Opus 4.8 + codex GPT-5.5, isolated worktrees)
+
+* Opus: terrace-ring shading fix - 69a78fa's quantized-height normals tilt
+  a one-column ring at every terrace edge on gentle slopes (dark contour
+  rings). Top normals now difference the CONTINUOUS h_km carried on ColCtx;
+  edited/carved columns keep the quantized fallback. Baseline-vs-after at
+  4 sites, verify green. (Worktree + own assets copy; zero collisions with
+  the parallel water work.)
+* codex: the survey's liquid-lake class was EMPTY (tmean>6C + interior()
+  = 0 cells on a planet whose lakes are cold and tiny - median 1.7 C and
+  3 cells). That is WHY this bug family was human-eyes-only. New class
+  (lake & tmean>-4, cell-center sampling): 8 liquid-lake probes, all green
+  post-fix. Also: every screenshot (P key AND --capture) now writes a JSON
+  sidecar with pose + EFFECTIVE sun + day-cycle state, and
+  scripts/repro_shot.py turns any shot (even legacy filename-only) into a
+  .play script / --capture command - human reports are now one command from
+  reproducible. (codex sandbox cannot commit in a linked worktree - the
+  gitdir lives under the read-only main tree; its diff was reviewed and
+  committed for it.)
+
+### Method notes
+
+* Instrument before theorizing held again: the first W-1 mechanism read
+  (lake vs SEA) was wrong - rivers.bin inspection showed the ocean 119 km
+  away; probe data found the real outlet-below-fill story in minutes.
+* The census turns "fix verified at the reported site" into "fix verified
+  at every site of the class, counted" - and it REJECTED two plausible
+  fixes tonight by measuring them worse. That is the standard water/terrain
+  fixes should meet from now on.
+* PowerShell 5.1 traps that cost time tonight: embedded double quotes in
+  native-exe args get mangled (keep commit messages quote-free), and a
+  Get-Content/Set-Content round-trip mojibakes UTF-8 (use IO.File with
+  UTF8Encoding(false) or dedicated file tools).

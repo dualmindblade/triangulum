@@ -319,6 +319,12 @@ pub fn sample(planet: &Planet, face: usize, u: f64, v: f64, octaves: u32) -> Sam
         // the sim's coarse footprint leaves out (lake 414's dry pit), while
         // anything past the rim ring — e.g. a below-level outlet corridor
         // 40 km on — stays governed by its own hydrology.
+        // KNOWN RESIDUAL (BUGS.md W-5): a knife-ridge mountain lake's 31 km
+        // cells overhang their outer flanks, so this territory test floods
+        // terrain far below such a lake. Per-sample gates (level margin,
+        // basin-floor comparison) were measured by the census to only move
+        // or worsen those walls — the overhang needs a bake-level fix with
+        // whole-lake context (shrink/flag steep-rim cells at export).
         let d_any = hit.d_lake_km - hit.past_boundary_km;
         (hit.in_lake_voronoi || d_any < hit.radius_km * 1.15)
             .then_some((hit.level_km, hit.salt))

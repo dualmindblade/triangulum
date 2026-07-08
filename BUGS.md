@@ -9,43 +9,26 @@ are `teleport LAT LON [ALT_KM]` viewer args at `--exagg 1` unless noted.
 
 ## OPEN
 
-### W-1 Water-wall family: flood-disc edges + bed-anchored river levels
-STATUS: fixes implemented 2026-07-08, verification in progress.
-The "pie slice sunken into the ocean" (shot_lat0.813_lon67.967) is NOT the
-sea: probes + rivers.bin inspection show a 26-cell lake at level +69.9 m
-(nearest ocean cell 119 km away). The sunken capsule is the lake's OUTLET
-RIVER corridor: bake_rivers re-anchored river levels to cell BED elevations
-even inside lake basins (outlet leaves 20-30 m below the lake surface), and
-586a828's 3×radius influence-disc flood stops at an arbitrary circle, so the
-below-level corridor past that circle rendered dry/sunken with a stepped
-water cliff around it. The planet-wide census (census-baseline.md: 351,711
-sites, 1.4M WALL / 288k JUMP / 130 SEAJUMP) shows the full family, worst
-case a 3.7 km wall (lake@4303m over terrain@587m, -9.33 105.50).
-Root causes and fixes (all landed together):
-1. rivers::lake_at floods a raw 3r disc -> restored rim-ring boundary:
-   flood covers lake Voronoi territory + a bounded shore band into rim
-   territory (noise-dip shores), never past the dam. (terrain.rs decides.)
-2. bake_rivers levels were BED-anchored via min-relaxation -> now export the
-   HYDRAULIC FILL SURFACE (level = max(elev, receiver level), built up from
-   terminals; ocean cells pinned to 0; in-lake nodes pinned to the lake
-   level). Kills the deep-negative mouth levels (rivers walled in by the
-   sea: shot_lat-0.914_lon-67.773, the 2:13 AM striped-column shot) AND the
-   bottomless slot gorges where routes crossed dry pits (census showed
-   2-4 km deep carves at e.g. -41.87 -120.47 and -9.33 105.50).
-3. river_near returned winner-take-all segment levels -> levels now blend
-   across in-influence segments (see W-2).
+### W-5 Knife-ridge mountain lakes flood their outer flanks (sim-resolution overhang)
+Census-after residual is dominated by TWO high-mountain lakes: level 3282 m
+at `-12.1 107.3` (hundreds of grouped sites, walls to 1.6 km) and 3810 m at
+`50.91 -28.06`. Their 31 km lake cells overhang knife-edge rims, so ANY
+local flood test (Voronoi/rim territory, level margins, basin-floor
+comparison — all census-measured 2026-07-08) floods some of the outer
+flank, standing the lake surface far above the mountainside, further
+complicated by an outlet river carving the same flank. Fix belongs in
+bake_rivers.py with whole-lake context: detect cells whose own raster
+elevation sits far below the lake level on part of their footprint (steep
+rim), and shrink their exported radius / flag them Voronoi-only, possibly
+splitting the flood footprint. Everything else in the wall family is fixed
+(F-4); this is the last big WALL contributor.
 
-### W-2 River water cliff running ALONG the channel at a bend
-Temperate valley bend `4.990 -29.403 0.3`: the river surface splits into two
-levels meeting along a ~hundreds-of-meters diagonal staircase wall mid-water
-(shot_lat4.990_lon-29.403_alt0.047km_yaw37_pitch-29.png and the 12:22 AM shot
-at the same site; unchanged by the 02:00 fixes — different code path). The
-wall runs roughly parallel to the channel, so this is NOT simple downstream
-level drop: it is the nearest-segment Voronoi bisector between two competing
-reaches (bend arms / confluence) with different interpolated levels. Fix
-direction: blend (or min) levels across all segments within influence instead
-of winner-take-all nearest. Also visible: a dry notch in the bank where the
-perch guard dries part of the channel edge.
+### V-2 Barely-emergent lake shoals read as holes in the water
+At grazing angles a flat noise shoal standing <1 m above a lake surface
+(e.g. `0.835 67.940`, 0.7 m above the 69.9 m lake) reads as a sunken lens
+with a hard dark rim rather than a sandbar/island. It IS land above water
+(probed; no water bug) — needs shore/wet-sand material + softer rim
+shading. Found while verifying W-1.
 
 ### W-3 Voxel quantization staircases on sloping river surfaces
 Any sloping river surface renders as 1 m water terraces with exposed side
@@ -58,29 +41,11 @@ Water wall side quads take `n_side` + sun with 0.8 vary — zigzag walls
 alternate harshly lit/dark (very visible in shot_lat4.990 2:07 AM). Consider
 a more upward-biased or dedicated water-wall shading.
 
-### S-1 Concentric terrace-ring shading bands on gentle slopes
-shot_lat4.992_lon-29.403_alt0.018km_yaw-10_pitch-36.png: dark rings at every
-contour terrace on a gentle hill. Mechanism: commit 69a78fa derives top-face
-normals from central differences of QUANTIZED block heights — on a gentle
-slope the one-column ring at each terrace edge gets a ~27 deg tilted normal
-while flat terrace tops stay radial-bright. The original fall-line stripes
-(shot_lat-4.498_lon-12.694, 12:26 AM) ARE fixed (verified at exact pose:
-interchange/runs/stripes/hillside.png); this is the residual/transformed
-artifact. Fix direction: derive top normals from the CONTINUOUS terrain
-height (per-column h_km, the same surface the mesh shades) so voxel tops
-shade like the mesh; keep quantized behavior on edited columns.
-
 ### V-1 Far-mesh color does not match the voxel landscape
 shot_lat0.569_lon68.915_alt0.263km_yaw-149_pitch-25.png: the mesh beyond the
 voxel patch renders visibly darker/flatter green than the blocky near field.
 Long-term probably texturing/material unification (roadmap may absorb this);
 recorded so it isn't lost. Polish, not a correctness bug.
-
-### T-1 Survey gate has ZERO liquid-lake probes
-`where.py` / `gen_survey.py` class `liquid-lake` yields 0 cells on seed42_r8
-(mask `interior(lake & tmean>6)` too strict — likely `interior()` on 1-2 cell
-lakes). The whole liquid-lake bug family was therefore invisible to
-auto-survey. Fix the mask and add water-level-sanity asserts.
 
 ### C-1..C-3 Camera/control requests (viewer/interchange/requested-changes-and-bugs.txt)
 1. Mesh-only altitude range: camera locks to terrain height and bobs while
@@ -90,6 +55,30 @@ auto-survey. Fix the mask and add water-level-sanity asserts.
 3. Camera auto-pan while descending/ascending should be a flag, default OFF.
 
 ## FIXED
+
+### F-4 (was W-1/W-2) The water-wall family: discontinuous water surfaces
+Fixed 2026-07-08 (fix/water-fill-levels, merge fb4d853). Census baseline:
+351,711 sites / 1.41M WALL / 288k JUMP / 130 SEAJUMP; four root causes
+(bed-anchored river levels incl. ocean bathymetry at mouths and pit-routes,
+raw 3r lake flood disc, winner-take-all segment levels, ponds in
+floodplains) — full story in the merge commit and ITERATION_LOG Phase 8e.
+Post-fix census totals recorded there. Regression: water-walls.play +
+lake-regressions.play (which caught the first too-tight flood boundary).
+Requires rebake (bake_rivers.py).
+
+### F-5 (was S-1) Concentric terrace-ring shading bands on gentle slopes
+Fixed 2026-07-08 (fix/terrace-ring-shading 59608a9, Opus 4.8): top normals
+difference the continuous h_km instead of quantized block heights; edited/
+carved columns keep the quantized fallback. Verified baseline-vs-after at 4
+sites (shade-rings.play); fall-line stripe fix (F-2) preserved.
+
+### F-6 (was T-1) Survey gate had ZERO liquid-lake probes
+Fixed 2026-07-08 (fix/survey-lake-coverage a9aeddd, codex GPT-5.5): class
+was `interior(lake & tmean>6)` on a planet whose lakes are cold (median
+1.7 C) and tiny (median 3 cells) — 0 cells. Now `lake & tmean > -4`
+(viewer's freeze threshold), cell-center sampled: 8 probes, all green.
+Plus: screenshot JSON sidecars (pose + effective sun) and repro_shot.py
+(4bb3ced) make every human screenshot reproducible.
 
 ### F-1 Lake fills its Voronoi footprint regardless of fine terrain (lake 414)
 Giant wall of ocean-looking water above dry land at `24.5 25.0`. Fixed in
