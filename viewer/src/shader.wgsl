@@ -131,8 +131,13 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     }
     let base = mix(in.color, in.water.rgb, clamp(wet, 0.0, 1.0));
     let n = normalize(in.normal);
+    let up = globals.sky.xyz;
+    let day = smoothstep(-0.08, 0.15, dot(globals.sun_dir.xyz, up));
     let light = max(dot(n, globals.sun_dir.xyz), 0.0);
-    var c = base * (0.10 + 1.0 * light);
+    let sky_hemi = clamp(0.5 + 0.5 * dot(n, up), 0.0, 1.0);
+    let ambient = 0.10 + 0.40 * day * sky_hemi;
+    let sun_coeff = mix(1.0, 0.60, day);
+    var c = base * (ambient + sun_coeff * light);
     if (in.rel_flag.w < 0.5) {
         if (in.water.a > 1.5) {
             // emissive block face (torch flames): full-bright, no sun, no
@@ -161,7 +166,6 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     // aerial perspective: distant terrain melts toward the same horizon
     // color the sky pass uses; the effect thins away with camera altitude
     let atm = exp(-max(globals.sky.w, 0.0) / 45.0);
-    let day = smoothstep(-0.08, 0.15, dot(globals.sun_dir.xyz, globals.sky.xyz));
     // moonlight: a cool directional lift plus a faint ambient floor so night
     // terrain reads as moonlit rather than flat black. Present only at night
     // (fades as the sun rises) and only while the moon is above the horizon.

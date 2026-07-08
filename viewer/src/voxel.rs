@@ -84,7 +84,7 @@ impl Mat {
             Mat::LeavesConifer => [0.035, 0.11, 0.05],
             Mat::LeavesJungle => [0.04, 0.19, 0.03],
             Mat::LeavesAcacia => [0.14, 0.20, 0.045],
-            Mat::Shrub => [0.10, 0.16, 0.06],
+            Mat::Shrub => [0.22, 0.25, 0.10],
         }
     }
 }
