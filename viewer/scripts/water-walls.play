@@ -1,0 +1,50 @@
+# Visual verification for the water-wall family fixes (BUGS.md W-1/W-2).
+# Sites match the human-reported screenshots (pose from filenames) plus the
+# census's worst offenders. Default lighting (local noon) — the originals
+# were day-cycle shots, so exact-pixel comparison isn't the goal; the WALLS
+# are.
+
+mode fly
+
+# --- the "pie slice" / lake outlet (was: sunken capsule in the lake) ---
+teleport 0.813 67.967 0.074
+look -52 -12
+shot pie_slice
+state pie_slice
+
+# from above, to see the whole outlet corridor
+teleport 0.75 68.05 1.5
+look -52 -75
+shot pie_above
+
+# --- temperate valley river bend (was: staircase water cliff mid-river) ---
+teleport 4.990 -29.403 0.047
+look 37 -29
+shot bend
+state bend
+
+# --- the -67.8 canyon head (was: grey striped curtain / sea wall) ---
+teleport -0.914 -67.773 0.049
+look -234 -32
+shot canyon_head
+
+# --- the 2:13 AM striped-columns site near the river/coast ---
+teleport 0.422 68.901 0.192
+look 153 -49
+shot striped_columns
+
+# --- lake 414 regression (must STAY fixed: flat lake, shores, no walls) ---
+teleport 24.483 24.971 0.070
+look -87 -29
+shot lake414
+state lake414
+
+# --- census worst offender: 4.3 km lake wall over a carved gorge ---
+teleport -9.329 105.498 1.0
+look 0 -55
+shot census_worst_lake
+
+# --- census: pond/abyss + sea-vs-dry site ---
+teleport -41.87 -120.47 1.0
+look 0 -50
+shot census_pond_abyss
