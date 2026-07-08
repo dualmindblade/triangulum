@@ -132,6 +132,7 @@ pub struct ColCtx {
     pub rough: f32,
     pub carved: bool, // river/pond carving touched this column
     pub salt: bool,   // water here belongs to a salt lake
+    pub lake_shore: bool, // dry ground within the lake beach band
 }
 
 impl ColCtx {
@@ -265,6 +266,9 @@ pub fn col_ctx(planet: &Planet, edits: &Edits, face: usize, ci: u64, cj: u64) ->
         rough: s.rough as f32,
         carved: s.carve_km > 0.001,
         salt: s.salt,
+        lake_shore: s.lake_level_km.is_finite()
+            && s.h_km >= s.lake_level_km
+            && s.h_km - s.lake_level_km <= 0.0015,
     }
 }
 
@@ -275,6 +279,9 @@ fn surface_mat(c: &ColCtx, steep: i64, jitter: f64) -> Mat {
     // underwater floors
     if c.water != i64::MIN && c.ground < c.water {
         return if c.water - c.ground > 4 { Mat::Gravel } else { Mat::Sand };
+    }
+    if c.lake_shore && c.temp >= -4.0 {
+        return Mat::Sand;
     }
     if c.koppen == 29 || (c.temp as f64) < -9.0 + (jitter - 0.5) * 3.0 {
         return Mat::Snow;
@@ -347,7 +354,7 @@ pub enum TreeKind {
 pub fn tree_at(c: &ColCtx, face: u8, ci: u64, cj: u64, seed: i64) -> Option<(TreeKind, i64)> {
     // no trees in water, on beaches, or in river/pond carved ground (a
     // canopy anchored in a gully pokes out at rim level as leaf shards)
-    if c.has_water() || c.water != i64::MIN || c.e_raw < 0.010 || c.carved {
+    if c.has_water() || c.water != i64::MIN || c.e_raw < 0.010 || c.lake_shore || c.carved {
         return None;
     }
     // densities are per-column; one canopy covers ~25 columns, so 0.010
@@ -993,6 +1000,7 @@ pub fn build_chunk(
                 // land so the flat sheet reads as tiled ground, not a plane
                 let wtop = if frozen { vary(wcol, bright(w)) } else { wcol };
                 quad([d00 * r, d10 * r, d11 * r, d01 * r], up, [wtop; 4], 1.0);
+                let wside = vary(wtop, 0.93);
                 for (nbi, da, db) in sides {
                     let nb = nbs[nbi];
                     let nb_surf = nb.top_solid().max(if nb.water == i64::MIN {
@@ -1002,12 +1010,12 @@ pub fn build_chunk(
                     });
                     if nb_surf < w {
                         let out_n = (da + db).normalize() - up * (da + db).normalize().dot(up);
-                        let n_side = (out_n.normalize_or_zero() + up * 0.85).normalize();
+                        let n_side = (out_n.normalize_or_zero() * 0.18 + up).normalize();
                         let (r0, r1) = (shell(nb_surf.max(c.top_solid())), shell(w));
                         quad(
                             [da * r1, db * r1, db * r0, da * r0],
                             n_side,
-                            [vary(wcol, 0.8); 4],
+                            [wside; 4],
                             1.0,
                         );
                     }
@@ -1137,4 +1145,3 @@ pub fn build_chunk(
 
     TileMesh { origin_km: origin, vertices, indices }
 }
-

@@ -181,6 +181,9 @@ pub struct Sample {
     /// Lakes render like the sea: real geometry at the surface, so a
     /// 100-km lake reads flat from orbit instead of a painted bowl.
     pub lake: bool,
+    /// Candidate lake level for local shore material, even when this sample
+    /// is dry ground just above the waterline.
+    pub lake_level_km: f64,
     /// Distance to the nearest (meandered) river course and its channel
     /// half-width, for LOD-aware paint: a river narrower than a coarse
     /// tile's vertex spacing would only catch sporadic vertices and shatter
@@ -245,6 +248,7 @@ pub fn sample(planet: &Planet, face: usize, u: f64, v: f64, octaves: u32) -> Sam
         wet_soft: 0.0,
         carve_km: 0.0,
         lake: false,
+        lake_level_km: f64::NEG_INFINITY,
         river_dist_km: f64::INFINITY,
         river_hw_km: 0.0,
         river_wet: 0.0,
@@ -402,6 +406,7 @@ pub fn sample(planet: &Planet, face: usize, u: f64, v: f64, octaves: u32) -> Sam
     // lakes: fill to the spill level from the drainage graph. The bed is
     // the natural terrain — noise poking above the level makes islands.
     if let Some((lvl, salt)) = lake_flood {
+        out.lake_level_km = lvl;
         // the OUTLET channel owns its own water: past the spill the river's
         // fill level descends with the terrain, and letting the flood lay a
         // tongue of lake-level water in that descending channel would end in
@@ -759,5 +764,15 @@ fn shade_ground(
         ((-7.5 - s.temp_c) / 3.0).clamp(0.0, 1.0) as f32
     };
     c = mix3(c, [0.82, 0.85, 0.90], snowy);
+    // Lake shore sand on dry ground just above the local lake level. Apply
+    // after rock/snow for liquid-temperature lakes so barely-emergent shoals
+    // read as sandbars instead of steep dark holes in the water.
+    let lake_shore =
+        if s.temp_c >= -4.0 && s.lake_level_km.is_finite() && s.h_km >= s.lake_level_km {
+            (1.0 - ((s.h_km - s.lake_level_km) / 0.0015).clamp(0.0, 1.0)) as f32
+        } else {
+            0.0
+        };
+    c = mix3(c, [0.55, 0.47, 0.27], lake_shore * 0.9);
     c
 }
