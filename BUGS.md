@@ -9,6 +9,23 @@ are `teleport LAT LON [ALT_KM]` viewer args at `--exagg 1` unless noted.
 
 ## OPEN
 
+### V-4 Sub-voxel creeks: mesh paints them, voxels can't show them
+A creek narrower/shallower than ~a block renders as painted blue on the far
+mesh but has no voxel water blocks up close — reads as the river drying at
+the patch boundary. Related: a prominent DRY noise gully next to a painted
+river reads as the same river gone dry (legit but confusing — the reported
+9.75 30.23 case probed as this). Options: minimum 1-block water film for
+in-channel columns, or fade the mesh paint at sub-voxel width. Census
+--lips exists now (2026-07-08) for measuring shoreline classes; its liquid
+tail (bank-cliff-with-water-film sites) needs triage.
+
+### S-3 Frozen shore cliffs (ice sheets wall above dry ground)
+census --lips: most of its 55k sites are FROZEN lakes/rivers whose walkable
+ice sheet ends in a multi-block cliff above dry ground (biggest are the W-5
+family at high frozen mountain lakes). The liquid clamp deliberately skips
+ice (physics stands on it). Whether an ice-shelf edge cliff is even wrong
+is a taste call — an ice shelf HAS an edge; the extreme cases are W-5.
+
 ### W-6 Caves near rivers/lakes should be water-filled (polish)
 Cave tubes carve under dry land only by intent, but tubes that pass just
 below a river/lake water table render dry with the water surface above them
