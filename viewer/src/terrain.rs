@@ -154,6 +154,10 @@ pub fn ground_height_km(planet: &Planet, dir: DVec3, exaggeration: f64) -> f64 {
 
 /// The full octave depth used for voxel block heights (~3 m floor).
 pub const VOXEL_OCTAVES: u32 = 12;
+/// Octave depth of the river wet/dry reference surface: every LOD reads the
+/// perch decision at this depth so mesh and voxels always agree about which
+/// reaches carry water.
+pub const RIVER_REF_OCTAVES: u32 = 8;
 
 fn smoothstep(a: f64, b: f64, x: f64) -> f64 {
     let t = ((x - a) / (b - a)).clamp(0.0, 1.0);
@@ -346,6 +350,10 @@ pub fn sample(planet: &Planet, face: usize, u: f64, v: f64, octaves: u32) -> Sam
     } else {
         1.0
     };
+    // terrain height at the FIXED river-reference octave depth — the wet/dry
+    // decision for rivers reads this at every LOD (see below). Falls back to
+    // the caller's own h only on octave-0 tiles (orbital, paint subpixel).
+    let mut h_river_ref = h;
     if octaves > 0 {
         // relief amplitude follows the map's own roughness metric: jagged
         // where the map is jagged, calm plains stay calm. Ridged noise
@@ -366,6 +374,21 @@ pub fn sample(planet: &Planet, face: usize, u: f64, v: f64, octaves: u32) -> Sam
         let detail = rw * ridged_band(dir, 0, octaves, DETAIL_BASE_FREQ, seed.wrapping_add(1013))
             + (0.95 - rw) * fbm_band(dir, 0, octaves, DETAIL_BASE_FREQ, seed.wrapping_add(2027));
         h = (e_raw + env * detail).max(h_floor);
+        // Octave-stable river reference: wet-or-dry must be the SAME
+        // decision at every LOD, or a coarse background tile paints a blue
+        // river through a valley the near voxels render as a dry wash
+        // (reported 2026-07-08, lat 9.75 lon 30.23). The perch test
+        // therefore always reads the terrain at a FIXED octave depth,
+        // regardless of how many octaves this caller carries for geometry.
+        if hw > 0.0 && octaves != RIVER_REF_OCTAVES {
+            let dref = rw
+                * ridged_band(dir, 0, RIVER_REF_OCTAVES, DETAIL_BASE_FREQ, seed.wrapping_add(1013))
+                + (0.95 - rw)
+                    * fbm_band(dir, 0, RIVER_REF_OCTAVES, DETAIL_BASE_FREQ, seed.wrapping_add(2027));
+            h_river_ref = (e_raw + env * dref).max(h_floor);
+        } else {
+            h_river_ref = h;
+        }
     }
 
     // carve the channel: parabolic bed guaranteed below the water line,
@@ -375,13 +398,14 @@ pub fn sample(planet: &Planet, face: usize, u: f64, v: f64, octaves: u32) -> Sam
     if hw > 0.0 {
         out.river_dist_km = riv_d;
         out.river_hw_km = hw;
-        out.river_wet = 1.0 - smoothstep(0.002, 0.006, wl - h);
+        out.river_wet = 1.0 - smoothstep(0.002, 0.006, wl - h_river_ref);
         let bank_w = (hw * 0.9).max(0.02) + (h - wl).max(0.0) * 1.2;
         if riv_d < hw + bank_w {
             // the graph level never exceeds its own cell's bed elevation,
             // so perching only happens where raster and graph disagree —
-            // fade to a dry wash rather than a standing wall of water
-            let perch = smoothstep(0.002, 0.006, wl - h);
+            // fade to a dry wash rather than a standing wall of water.
+            // Perch reads the octave-stable reference, not this LOD's h.
+            let perch = smoothstep(0.002, 0.006, wl - h_river_ref);
             if riv_d < hw {
                 let x = riv_d / hw;
                 let bed = wl - 0.0012 - d_max * (1.0 - x * x);

@@ -163,7 +163,7 @@ impl ColCtx {
         z
     }
 
-    fn has_water(&self) -> bool {
+    pub fn has_water(&self) -> bool {
         self.water != i64::MIN && self.water > self.top_solid()
     }
 
@@ -180,9 +180,27 @@ impl ColCtx {
     }
 }
 
+/// The block whose top the water surface RENDERS at for a liquid column:
+/// clamped so the surface meets DRY shore neighbours (all 8) flush — the
+/// mesher's shoreline rule, shared with the census `--lips` survey so the
+/// survey measures exactly what renders. Frozen sheets are walkable and
+/// never clamp. `nbs8` is the 8-neighbourhood in any order.
+pub fn water_render_top(cc: &ColCtx, nbs8: &[ColCtx; 8]) -> i64 {
+    let mut we = cc.water;
+    if cc.temp < -4.0 {
+        return we;
+    }
+    for nb in nbs8 {
+        if !nb.has_water() && nb.top_solid() < we {
+            we = nb.top_solid();
+        }
+    }
+    we.max(cc.top_solid() + 1)
+}
+
 /// Canonical face/column for an extended lattice index. In-range indices keep
 /// their identity; out-of-range indices follow the cube-face direction map.
-fn canonical_column(face: usize, i_ext: i64, j_ext: i64) -> (u8, u64, u64) {
+pub fn canonical_column(face: usize, i_ext: i64, j_ext: i64) -> (u8, u64, u64) {
     let max = COLUMNS_PER_FACE as i64;
     if (0..max).contains(&i_ext) && (0..max).contains(&j_ext) {
         (face as u8, i_ext as u64, j_ext as u64)
@@ -490,7 +508,7 @@ pub fn lift_km(exaggeration: f64) -> f64 {
     (1.6 * VOXEL_KM * exaggeration).max(0.0012)
 }
 
-fn column_of(u: f64, v: f64) -> (u64, u64) {
+pub fn column_of(u: f64, v: f64) -> (u64, u64) {
     let n = COLUMNS_PER_FACE as f64;
     let ci = (((u + 1.0) * 0.5 * n).clamp(0.0, n - 1.0)) as u64;
     let cj = (((v + 1.0) * 0.5 * n).clamp(0.0, n - 1.0)) as u64;
@@ -955,18 +973,17 @@ pub fn build_chunk(
                 // (LIQUID only: a frozen sheet is walkable geometry — physics
                 // stands on the unclamped block, so its visual must not sink.)
                 let w_eff = |i: i64, j: i64| -> i64 {
-                    let cc = at(i, j);
-                    let mut we = cc.water;
-                    if cc.temp < -4.0 {
-                        return we;
-                    }
-                    for (di, dj) in [(1i64, 0i64), (-1, 0), (0, 1), (0, -1)] {
-                        let nb = at(i + di, j + dj);
-                        if !nb.has_water() && nb.top_solid() < we {
-                            we = nb.top_solid();
-                        }
-                    }
-                    we.max(cc.top_solid() + 1)
+                    let nbs8 = [
+                        *at(i + 1, j),
+                        *at(i - 1, j),
+                        *at(i, j + 1),
+                        *at(i, j - 1),
+                        *at(i + 1, j + 1),
+                        *at(i + 1, j - 1),
+                        *at(i - 1, j + 1),
+                        *at(i - 1, j - 1),
+                    ];
+                    water_render_top(at(i, j), &nbs8)
                 };
                 let w = w_eff(i, j);
                 let frozen = c.temp < -4.0;

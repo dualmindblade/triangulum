@@ -32,6 +32,9 @@ use glam::DVec3;
 use rayon::prelude::*;
 use triangulum_viewer::planet::{face_from_dir, Planet};
 use triangulum_viewer::terrain::{sample, Sample, VOXEL_OCTAVES};
+use triangulum_viewer::voxel::{
+    canonical_column, col_ctx, column_of, water_render_top, ColCtx, Edits,
+};
 
 const WALL_KM: f64 = 0.002; // 2 m
 const JUMP_KM: f64 = 0.002;
@@ -45,6 +48,10 @@ enum Class {
     Wall,
     Jump,
     SeaJump,
+    /// Voxel-level: rendered water surface >= 1 block above adjacent dry
+    /// ground at a shoreline (--lips survey; the mesher clamp should make
+    /// these impossible — any hit is a rendering bug).
+    Lip,
 }
 
 #[derive(Clone, Copy)]
@@ -144,6 +151,82 @@ fn lat_lon(d: DVec3) -> (f64, f64) {
     (d.z.asin().to_degrees(), d.y.atan2(d.x).to_degrees())
 }
 
+/// Voxel-level shoreline check at a water/dry transition point: build the
+/// actual columns and measure how far the RENDERED water surface (after the
+/// mesher's shoreline clamp, `water_render_top`) stands above adjacent dry
+/// ground. >= 1 block is a lip a player can stare into. Returns the worst
+/// lip in blocks at this spot.
+fn lip_at(planet: &Planet, edits: &Edits, dir: DVec3) -> i64 {
+    let (face, u, v) = face_from_dir(dir);
+    let (ci, cj) = column_of(u, v);
+    let ctx = |di: i64, dj: i64| -> ColCtx {
+        let (f2, c2, j2) = canonical_column(face, ci as i64 + di, cj as i64 + dj);
+        col_ctx(planet, edits, f2 as usize, c2, j2)
+    };
+    let mut worst = 0i64;
+    for wi in -1..=1i64 {
+        for wj in -1..=1i64 {
+            let cc = ctx(wi, wj);
+            if !cc.has_water() {
+                continue;
+            }
+            let nbs8 = [
+                ctx(wi + 1, wj),
+                ctx(wi - 1, wj),
+                ctx(wi, wj + 1),
+                ctx(wi, wj - 1),
+                ctx(wi + 1, wj + 1),
+                ctx(wi + 1, wj - 1),
+                ctx(wi - 1, wj + 1),
+                ctx(wi - 1, wj - 1),
+            ];
+            let wr = water_render_top(&cc, &nbs8);
+            for nb in &nbs8 {
+                if !nb.has_water() {
+                    worst = worst.max(wr - nb.top_solid());
+                }
+            }
+        }
+    }
+    worst
+}
+
+/// Walk a line of sample points, column-test every water/dry transition.
+fn lips_on_line(
+    planet: &Planet,
+    edits: &Edits,
+    pts: &[DVec3],
+    out: &mut Vec<Finding>,
+) {
+    let mut prev: Option<(DVec3, bool)> = None;
+    for &p in pts {
+        let (f, u, v) = face_from_dir(p);
+        let s = sample(planet, f, u, v, VOXEL_OCTAVES);
+        SAMPLES.fetch_add(1, Ordering::Relaxed);
+        let wet = s.has_water();
+        if let Some((pp, pwet)) = prev
+            && pwet != wet
+        {
+            let mid = (pp + p).normalize();
+            let lip = lip_at(planet, edits, mid);
+            if lip >= 1 {
+                let side_at = |d: DVec3| {
+                    let (f, u, v) = face_from_dir(d);
+                    side(&sample(planet, f, u, v, VOXEL_OCTAVES))
+                };
+                out.push(Finding {
+                    class: Class::Lip,
+                    mid,
+                    mag_km: lip as f64 * 0.001,
+                    a: side_at(pp),
+                    b: side_at(p),
+                });
+            }
+        }
+        prev = Some((p, wet));
+    }
+}
+
 fn describe(s: &Side) -> String {
     let kind = if s.sea {
         "sea"
@@ -170,6 +253,7 @@ struct Group {
     wall: usize,
     jump: usize,
     seajump: usize,
+    lip: usize,
     best: Finding,
 }
 
@@ -179,6 +263,7 @@ fn main() -> anyhow::Result<()> {
     let mut quick = 1usize;
     let mut at: Option<(f64, f64)> = None;
     let mut probe_at: Option<(f64, f64)> = None;
+    let mut lips = false;
     let mut radius = 3.0f64;
     let mut i = 1;
     while i < argv.len() {
@@ -204,6 +289,7 @@ fn main() -> anyhow::Result<()> {
                 probe_at = Some((lat, lon));
                 i += 2;
             }
+            "--lips" => lips = true,
             "--radius" => {
                 radius = next(i).parse().unwrap_or(3.0);
                 i += 1;
@@ -242,9 +328,11 @@ fn main() -> anyhow::Result<()> {
             let p = (center + (t1 * (dx as f64 * 0.025) + t2 * (dy as f64 * 0.025)) / r_km).normalize();
             let (f, u, v) = face_from_dir(p);
             let s = sample(&planet, f, u, v, VOXEL_OCTAVES);
+            // a coarse-mesh view of the same point: LOD wetness agreement
+            let m = sample(&planet, f, u, v, 5);
             let (plat, plon) = lat_lon(p);
             println!(
-                "({dx:+},{dy:+}) lat {plat:.4} lon {plon:.4}  h={:.1}m e_raw={:.1}m water={} sea={} lake={} riv_d={} wet={:.2} ofrac={:.2} wmask={:.2} rough={:.2}",
+                "({dx:+},{dy:+}) lat {plat:.4} lon {plon:.4}  h={:.1}m e_raw={:.1}m water={} sea={} lake={} riv_d={} wet={:.2} rwet={:.2} | mesh5 water={} wet={:.2} rwet={:.2} | ofrac={:.2} wmask={:.2} rough={:.2}",
                 s.h_km * 1000.0,
                 s.e_raw * 1000.0,
                 if s.has_water() { format!("{:.1}m", s.water_km * 1000.0) } else { "-".into() },
@@ -252,6 +340,10 @@ fn main() -> anyhow::Result<()> {
                 s.lake,
                 if s.river_dist_km.is_finite() { format!("{:.2}km", s.river_dist_km) } else { "-".into() },
                 s.wet_soft,
+                s.river_wet,
+                if m.has_water() { format!("{:.1}m", m.water_km * 1000.0) } else { "-".into() },
+                m.wet_soft,
+                m.river_wet,
                 planet.ocean(f, u, v),
                 planet.water_frac(f, u, v),
                 s.rough,
@@ -262,7 +354,72 @@ fn main() -> anyhow::Result<()> {
 
     let mut findings: Vec<Finding> = Vec::new();
 
-    if let Some((lat, lon)) = at {
+    if lips {
+        // ---- voxel shoreline survey: rendered water lips at river banks
+        // and lake shores. The mesher clamp should make every count zero.
+        let edits = Edits::default();
+        let segs = &planet.rivers.segments;
+        eprintln!("lip survey: {} segments, {} lake cells", segs.len(), planet.rivers.lakes.len());
+        let mut per_seg: Vec<Vec<Finding>> = (0..segs.len())
+            .into_par_iter()
+            .filter(|si| si % quick == 0)
+            .map(|si| {
+                let s = &segs[si];
+                let mut out = Vec::new();
+                let len_km = (s.a - s.b).length() * r_km;
+                let steps = ((len_km / 0.12).ceil() as usize).clamp(2, 400);
+                for k in 0..=steps {
+                    let t = k as f64 / steps as f64;
+                    let p = (s.a + (s.b - s.a) * t).normalize();
+                    let along = (s.b - s.a).normalize_or_zero();
+                    let across = p.cross(along).normalize_or_zero();
+                    if across.length_squared() < 0.5 {
+                        continue;
+                    }
+                    let pts: Vec<DVec3> = (-15..=15)
+                        .map(|o| (p + across * (o as f64 * 0.06 / r_km)).normalize())
+                        .collect();
+                    lips_on_line(&planet, &edits, &pts, &mut out);
+                }
+                out
+            })
+            .collect();
+        for v in &mut per_seg {
+            findings.append(v);
+        }
+        let lakes = &planet.rivers.lakes;
+        let mut per_lake: Vec<Vec<Finding>> = (0..lakes.len())
+            .into_par_iter()
+            .filter(|li| li % quick == 0)
+            .map(|li| {
+                let l = &lakes[li];
+                let mut out = Vec::new();
+                if l.rim {
+                    return out;
+                }
+                let r = l.radius_km as f64;
+                let e = if l.center.z.abs() < 0.9 { DVec3::Z } else { DVec3::X };
+                let t1 = (e - l.center * e.dot(l.center)).normalize();
+                let t2 = l.center.cross(t1);
+                for sp in 0..12 {
+                    let ang = sp as f64 / 12.0 * std::f64::consts::TAU;
+                    let radial = t1 * ang.cos() + t2 * ang.sin();
+                    let n = ((1.8 - 0.35) * r / 0.1) as usize;
+                    let pts: Vec<DVec3> = (0..=n.min(400))
+                        .map(|k| {
+                            let d = 0.35 * r + k as f64 * 0.1;
+                            (l.center + radial * (d / r_km)).normalize()
+                        })
+                        .collect();
+                    lips_on_line(&planet, &edits, &pts, &mut out);
+                }
+                out
+            })
+            .collect();
+        for v in &mut per_lake {
+            findings.append(v);
+        }
+    } else if let Some((lat, lon)) = at {
         // ---- dense single-site grid: rows scanned in both axes ----
         let (la, lo) = (lat.to_radians(), lon.to_radians());
         let center = DVec3::new(la.cos() * lo.cos(), la.cos() * lo.sin(), la.sin());
@@ -382,6 +539,7 @@ fn main() -> anyhow::Result<()> {
                     Class::Wall => g.wall += 1,
                     Class::Jump => g.jump += 1,
                     Class::SeaJump => g.seajump += 1,
+                    Class::Lip => g.lip += 1,
                 }
             }
             None => {
@@ -392,12 +550,14 @@ fn main() -> anyhow::Result<()> {
                     wall: 0,
                     jump: 0,
                     seajump: 0,
+                    lip: 0,
                     best: f.clone(),
                 };
                 match f.class {
                     Class::Wall => g.wall += 1,
                     Class::Jump => g.jump += 1,
                     Class::SeaJump => g.seajump += 1,
+                    Class::Lip => g.lip += 1,
                 }
                 groups.push(g);
             }
@@ -413,19 +573,21 @@ fn main() -> anyhow::Result<()> {
         SAMPLES.load(Ordering::Relaxed),
         t0.elapsed().as_secs_f64()
     );
-    let (mut nw, mut nj, mut ns) = (0usize, 0usize, 0usize);
+    let (mut nw, mut nj, mut ns, mut nl) = (0usize, 0usize, 0usize, 0usize);
     for g in &groups {
         nw += g.wall;
         nj += g.jump;
         ns += g.seajump;
+        nl += g.lip;
     }
-    let _ = writeln!(report, "class totals: WALL {nw}  JUMP {nj}  SEAJUMP {ns}\n");
+    let _ = writeln!(report, "class totals: WALL {nw}  JUMP {nj}  SEAJUMP {ns}  LIP {nl}\n");
     for g in &groups {
         let (lat, lon) = lat_lon(g.center);
         let cls = [
             (g.wall, "WALL"),
             (g.jump, "JUMP"),
             (g.seajump, "SEAJUMP"),
+            (g.lip, "LIP"),
         ]
         .iter()
         .filter(|(n, _)| *n > 0)
