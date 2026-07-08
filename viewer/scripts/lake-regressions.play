@@ -1,0 +1,33 @@
+# Lake water-wall regression (fix 2026-07-08). Lake 414 (lat ~24.5 lon ~25)
+# used to render a flat fill over its whole Voronoi footprint regardless of the
+# viewer's fine terrain, so:
+#   - dry cells the footprint left out sat BELOW the adjacent water surface
+#     (a vertical wall of water over dry land + a dry pit at lon 25.05),
+#   - fine noise spiked islands and dug 80 m pockets under the flat fill.
+# Fix: flood any below-level terrain within a lake cell's influence (not just
+# the hard Voronoi footprint), and damp fine relief by submergence depth.
+#
+# INVARIANTS: the surface is ONE flat level everywhere on the lake, the former
+# dry pit is now flooded, and true shore (terrain above the level) stays dry.
+mode fly
+
+# formerly a dry pit at 588 m, an island-ring the footprint left below the water
+teleport 24.48 25.05 0.3
+assert has_water == true
+assert water_surface_km ~ 0.6006 0.001
+
+# deep basin + far edge: same flat surface (no stepping / no wall)
+teleport 24.48 24.95 0.3
+assert has_water == true
+assert water_surface_km ~ 0.6006 0.001
+teleport 24.48 25.60 0.3
+assert has_water == true
+assert water_surface_km ~ 0.6006 0.001
+teleport 24.48 25.25 0.3
+assert water_surface_km ~ 0.6006 0.001
+
+# true shore: terrain rises above the lake level, so it stays DRY (land >= water,
+# never water standing above dry land)
+teleport 24.48 24.65 0.3
+assert has_water == false
+assert ground_km > 0.5995

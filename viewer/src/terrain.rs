@@ -298,6 +298,13 @@ pub fn sample(planet: &Planet, face: usize, u: f64, v: f64, octaves: u32) -> Sam
         }
     }
 
+    // lake candidate (level/salt/dist/radius) — queried BEFORE the octave
+    // block so a lake can flatten the fine relief under its own footprint: a
+    // lake bed is level sediment, and full-strength noise there both spikes
+    // dry islands through the surface and digs pockets the flat fill drowns
+    // into walls.
+    let lake = planet.rivers.lake_at(face, u, v, dir);
+
     // the roughness raster spikes wherever a land cell borders deep ocean
     // (continental slope) — damp it near sea level so coasts get beaches,
     // not kilometer cliffs
@@ -314,7 +321,16 @@ pub fn sample(planet: &Planet, face: usize, u: f64, v: f64, octaves: u32) -> Sam
         // relief amplitude follows the map's own roughness metric: jagged
         // where the map is jagged, calm plains stay calm. Ridged noise
         // dominates in rough country, billowy fbm elsewhere.
-        let env = (0.06 + rough_r * 0.85 + e_raw * 0.10).clamp(0.05, 1.7) * valley;
+        let mut env = (0.06 + rough_r * 0.85 + e_raw * 0.10).clamp(0.05, 1.7) * valley;
+        // flatten the bed in proportion to how far the COARSE terrain sits
+        // below the lake level: flat sediment deep in the basin (so the flat
+        // fill can't spike islands or dig wall-making pockets), full relief on
+        // dry land at/above the level — a lake can't flatten unrelated higher
+        // ground that merely falls inside its cell-search disc (e.g. a pond).
+        if let Some((lvl, _)) = lake {
+            let submerge = smoothstep(-0.005, 0.012, lvl - e_raw);
+            env *= 1.0 - 0.88 * submerge;
+        }
         let rw = (0.30 + rough_r * 0.50).clamp(0.30, 0.72);
         let detail = rw * ridged_band(dir, 0, octaves, DETAIL_BASE_FREQ, seed.wrapping_add(1013))
             + (0.95 - rw) * fbm_band(dir, 0, octaves, DETAIL_BASE_FREQ, seed.wrapping_add(2027));
@@ -358,7 +374,7 @@ pub fn sample(planet: &Planet, face: usize, u: f64, v: f64, octaves: u32) -> Sam
 
     // lakes: fill to the spill level from the drainage graph. The bed is
     // the natural terrain — noise poking above the level makes islands.
-    if let Some((lvl, salt)) = planet.rivers.lake_at(face, u, v, dir) {
+    if let Some((lvl, salt)) = lake {
         if lvl > h + 0.0005 {
             out.water_km = out.water_km.max(lvl);
             out.lake = true;
