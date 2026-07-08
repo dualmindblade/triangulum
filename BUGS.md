@@ -32,6 +32,10 @@ below a river/lake water table render dry with the water surface above them
 — walk in and the physics/visuals disagree with the hydrology. Flood cave
 cells whose ceiling sits below the local water level (needs care with the
 walkable-ice and cave-darkness paths). Noted by Austin 2026-07-08.
+MITIGATED 0707a2f: the cave band now keeps clear of river corridors and
+near-waterline lake shores entirely (a mouth breached a river bank at
+3.726 63.065 — dry pit below the water table, photographed). True flooded
+caves remain the open feature; this entry stays open for that.
 
 ### W-5 Knife-ridge mountain lakes flood their outer flanks (sim-resolution overhang)
 Census-after residual is dominated by TWO high-mountain lakes: level 3282 m
@@ -61,6 +65,16 @@ recorded so it isn't lost. Polish, not a correctness bug.
 
 
 ## FIXED
+
+### F-11 Riser-bake smears: step-dense terrain read as dark bands
+Fixed 2026-07-08 evening (0707a2f). The third and final layer of "banding":
+riser faces baked at 0.72 brightness (a relief cue from before slope-lit
+tops existed) compounded wherever steps are dense — terraced washes and
+meander banks read as dark smears tracing the channel. Bake lifted to 0.90;
+slope shading + sky fill carry the modelling. Layers, for the record:
+F-2 fall-line stripes (top normals), F-5 terrace rings (continuous
+normals), F-8 lee-face collapse (sky fill), F-11 riser bake (this). What
+remains is per-corner AO flecks and taste — texturing territory (V-1).
 
 ### F-8 (was S-2) Banded lighting: cube lee faces collapsed to near-black
 Fixed 2026-07-08 (fix/sky-fill-lighting 94506c6, codex GPT-5.5): the shader
