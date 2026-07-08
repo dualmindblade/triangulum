@@ -288,8 +288,9 @@ fn write_shot_sidecar(
         "world": world_source(),
         "mode": mode,
         // which build took this photo — the first triage question after a
-        // day of rapid pushes (a long-lived session outlives many commits)
-        "build": env!("TRI_BUILD"),
+        // day of rapid pushes (a long-lived session outlives many commits).
+        // option_env: a build-script hiccup must never fail the build.
+        "build": option_env!("TRI_BUILD").unwrap_or("unstamped"),
     });
     let mut sidecar = std::path::PathBuf::from(path);
     sidecar.set_extension("json");
@@ -609,7 +610,7 @@ impl App {
                 };
                 gfx.window.set_title(&format!(
                     "Neisor [{}] — {} | lat {:.3} lon {:.3} alt {:.3} km",
-                    env!("TRI_BUILD"),
+                    option_env!("TRI_BUILD").unwrap_or("unstamped"),
                     mode,
                     self.camera.lat.to_degrees(),
                     self.camera.lon.to_degrees(),
