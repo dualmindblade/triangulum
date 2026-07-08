@@ -9,19 +9,6 @@ are `teleport LAT LON [ALT_KM]` viewer args at `--exagg 1` unless noted.
 
 ## OPEN
 
-### FIXED 2026-07-08 (94506c6, codex): moved to F-8 below
-### S-2-archived Banded lighting: cube lee faces collapse to near-black (land + trees)
-Reported 2026-07-08 PM (shots at 8.097 -35.673 and the night shot at
-4.990 -29.401): terrace risers and tree/canopy side faces band light/dark
-harshly, and Mat::Shrub [0.10,0.16,0.06] is so dark an isolated shrub block
-reads as a hole in the ground. Root cause: the fragment shader lights
-`base * (0.10 + max(dot(n,sun),0))` — a flat 10% ambient, so a face away
-from the sun renders at ~1/11th of a sunlit face. Fix direction: a
-day-scaled sky-hemisphere fill (~(0.5+0.5*dot(n,up)) * k * day) so vertical
-faces get sky light regardless of sun azimuth (the same cure codex applied
-to water side faces), plus a brighter dry-brush Mat::Shrub. Night/moon path
-must stay untouched; caves/torches multiply after and must keep contrast.
-
 ### W-6 Caves near rivers/lakes should be water-filled (polish)
 Cave tubes carve under dry land only by intent, but tubes that pass just
 below a river/lake water table render dry with the water surface above them
@@ -43,23 +30,11 @@ rim), and shrink their exported radius / flag them Voronoi-only, possibly
 splitting the flood footprint. Everything else in the wall family is fixed
 (F-4); this is the last big WALL contributor.
 
-### V-2 Barely-emergent lake shoals read as holes in the water
-At grazing angles a flat noise shoal standing <1 m above a lake surface
-(e.g. `0.835 67.940`, 0.7 m above the 69.9 m lake) reads as a sunken lens
-with a hard dark rim rather than a sandbar/island. It IS land above water
-(probed; no water bug) — needs shore/wet-sand material + softer rim
-shading. Found while verifying W-1.
-
 ### W-3 Voxel quantization staircases on sloping river surfaces
 Any sloping river surface renders as 1 m water terraces with exposed side
 faces (all river shots). Roadmap already names the endgame ("rapids/
 waterfalls where river levels step"). Polish; distinct from W-2 (which is a
 spurious LEVEL discontinuity, not quantization).
-
-### W-4 Water staircase side faces alternate bright/near-black
-Water wall side quads take `n_side` + sun with 0.8 vary — zigzag walls
-alternate harshly lit/dark (very visible in shot_lat4.990 2:07 AM). Consider
-a more upward-biased or dedicated water-wall shading.
 
 ### V-1 Far-mesh color does not match the voxel landscape
 shot_lat0.569_lon68.915_alt0.263km_yaw-149_pitch-25.png: the mesh beyond the
@@ -69,6 +44,25 @@ recorded so it isn't lost. Polish, not a correctness bug.
 
 
 ## FIXED
+
+### F-8 (was S-2) Banded lighting: cube lee faces collapsed to near-black
+Fixed 2026-07-08 (fix/sky-fill-lighting 94506c6, codex GPT-5.5): the shader
+lit faces with a flat 10% ambient (lee faces at ~1/11th of sunlit). Now a
+day-scaled sky-hemisphere fill — ambient = 0.10 + 0.40*day*(0.5+0.5*n.up),
+sun term compensated to keep sunlit tops exactly at the old brightness.
+Night pixel-identical (diff max_abs 0); noon +0.73% luma. Mat::Shrub
+brightened from near-black to dry olive [0.22,0.25,0.10].
+
+### F-9 (was W-4) Water step side faces alternated bright/near-black
+Fixed 2026-07-08 (fix/water-visual-polish 8891546, codex GPT-5.5): side
+faces take an up-biased normal (outward*0.18+up) and 0.93 of the surface
+color — steps read as water edges under any sun.
+
+### F-10 (was V-2) Barely-emergent lake shoals read as holes in the water
+Fixed 2026-07-08 (fix/water-visual-polish 8891546, codex GPT-5.5): dry
+ground within 1.5 m above the local lake level renders as sand on both the
+voxel and far-mesh paths (temperature-gated, tree-free) — shoals read as
+sandbars, e.g. `0.835 67.940`.
 
 ### F-7 (was C-1..C-3) Camera/control requests
 Fixed 2026-07-08 (feat/camera-controls bf8bb70, Opus 4.8): above the voxel
