@@ -14,6 +14,12 @@ use wgpu::util::DeviceExt;
 
 pub const VOXEL_MAX_ALT_KM: f64 = 2.5;
 
+#[derive(Clone, Copy, Debug)]
+pub struct SunState {
+    pub dir: DVec3,
+    pub day_time_s: f64,
+}
+
 /// Screen-space-error target for tile selection. The geomorph bands are
 /// derived from this: with tau = err_target, a tile of size S is selected
 /// while its center distance is in [S/tau, 2S/tau). Morphing must complete
@@ -347,6 +353,31 @@ impl Renderer {
         }
     }
 
+    pub fn sun_state(&self, cam_pos: DVec3) -> SunState {
+        let t_s = self.start.elapsed().as_secs_f64();
+        let dir = self.sun_dir.unwrap_or_else(|| {
+            if self.day_len_s > 0.0 {
+                // the sun hangs in space and the planet turns under it:
+                // start ~mid-morning at the reference longitude, sweep
+                // westward, gentle 10 deg declination for softer noons
+                let lon = self.sun_ref_lon + 0.7
+                    - t_s / self.day_len_s * std::f64::consts::TAU;
+                let lat = 10f64.to_radians();
+                DVec3::new(lat.cos() * lon.cos(), lat.cos() * lon.sin(), lat.sin())
+            } else {
+                cam_pos.normalize()
+            }
+        });
+        SunState {
+            dir,
+            day_time_s: if self.day_len_s > 0.0 {
+                t_s.rem_euclid(self.day_len_s)
+            } else {
+                0.0
+            },
+        }
+    }
+
     /// Drop cached chunk meshes (after edits) so they rebuild next frame.
     /// In-flight builds of these chunks are orphaned: removing the key from
     /// the pending set makes their (stale) results get dropped on arrival.
@@ -400,19 +431,7 @@ impl Renderer {
         let vp = camera.view_proj(self.size.0 as f64 / self.size.1 as f64);
         let vp32 = Mat4::from_cols_array(&vp.to_cols_array().map(|x| x as f32));
         let t_s = self.start.elapsed().as_secs_f64();
-        let sun = self.sun_dir.unwrap_or_else(|| {
-            if self.day_len_s > 0.0 {
-                // the sun hangs in space and the planet turns under it:
-                // start ~mid-morning at the reference longitude, sweep
-                // westward, gentle 10 deg declination for softer noons
-                let lon = self.sun_ref_lon + 0.7
-                    - t_s / self.day_len_s * std::f64::consts::TAU;
-                let lat = 10f64.to_radians();
-                DVec3::new(lat.cos() * lon.cos(), lat.cos() * lon.sin(), lat.sin())
-            } else {
-                cam_pos.normalize()
-            }
-        });
+        let sun = self.sun_state(cam_pos).dir;
         // the moon rides opposite the sun (rises at sunset, near-full), tilted
         // ~18 deg off the solar path about the world X axis so it isn't a
         // mirror image of the sun and clears the horizon on its own arc. Tied
