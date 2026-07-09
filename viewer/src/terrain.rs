@@ -534,15 +534,42 @@ pub fn sample(planet: &Planet, face: usize, u: f64, v: f64, octaves: u32) -> Sam
     // ...and never into a lake-shore apron: the bank is structural fill
     // holding the waterline (a pond dug through it would re-open the very
     // dip the apron exists to cover)
+    // ...and only where fine relief stays within BANKING distance of the
+    // pool: the pond's level rides e_raw, so in craggy or high country
+    // (env0 >= 0.13 — detail digs 100+ m) every blob edge is an unbankable
+    // cliff. The census measured 300 m pond walls on 2-5 km mountainsides
+    // the moment interior water was allowed there; no pond beats a broken
+    // pond. env0 mirrors the octave block's relief envelope, un-valleyed.
+    let env0 = (0.06 + rough_r * 0.85 + e_raw * 0.10).clamp(0.05, 1.7);
+    // ...and only on quasi-LEVEL coarse ground: a pool at e_raw-1.8m on a
+    // sloping raster is a terraced sheet whose every downhill edge hangs
+    // (rough and env0 are blind to sub-cell raster cliffs — the census
+    // found 50-100 m pond walls and >60k water-to-water jumps on calm-
+    // rough coastal escarpments at e.g. 9.27 -76.81). Two taps per axis
+    // ~0.5 km apart, gated at a 2% grade; clamped taps at face edges only
+    // make the gate more permissive there, never wrong-sided.
+    let pond_flat = || {
+        let d = 1e-4; // ~0.5 km in face uv
+        let gx = planet.elevation(face, u + d, v) - planet.elevation(face, u - d, v);
+        let gy = planet.elevation(face, u, v + d) - planet.elevation(face, u, v - d);
+        ((gx * gx + gy * gy) as f64).sqrt() < 0.02
+    };
+    // ...and never inside a lake's flood-eligible territory: the raster
+    // blends an escarpment over ~12 km, so e_raw at a basin's rim can read
+    // 55 m above the actual lake level — a pond anchored to it is fiction
+    // hanging over the lake basin (census: pond@556 over lake@503.8 at
+    // 9.27 -76.81, pond@130 over dry@30 at -21.11 -108.41)
     if octaves >= 8
         && precip > 550.0
         && rough_r < 0.45
         && e_raw > 0.03
-        && valley >= 0.999
+        && env0 < 0.13
+        && lake_flood.is_none()
         && !on_apron_band
+        && pond_flat()
     {
         let pn = fbm_band(dir, 0, 2, 16000.0, seed.wrapping_add(9241));
-        if pn < -0.50 {
+        if pn < -0.50 && valley >= 0.999 {
             let pd = (-0.50 - pn) * 0.030;
             h -= pd;
             out.carve_km += pd;
@@ -555,14 +582,67 @@ pub fn sample(planet: &Planet, face: usize, u: f64, v: f64, octaves: u32) -> Sam
             // only the sub-pond wobble, leaving fine dips flooded and bumps as
             // tiny shore.
             let wl = e_raw - 0.0018;
+            // moderate interior dips fill with GROUND to just under the
+            // pool — an underwater bench, i.e. bathymetry — so the pool
+            // covers them instead of walling around a dry pit (18 m wall
+            // photographed at -0.798 -67.941). The budget matches the
+            // edge apron's reach so the mask edge can always hand off;
+            // dips deeper than it stay honest dry pits. (Flooding interior
+            // dips UNCONDITIONALLY was measured catastrophic: blobs on
+            // mountainsides filled 300 m relief gorges and the planet
+            // census exploded from 38k to 79k pond walls.)
+            // budget scales with the local relief envelope so it always
+            // covers what detail can dig inside an env0-gated pond — a
+            // fixed 30 m budget left a razor edge where a 31 m dip beside
+            // a 30 m dip became an instant benched-water-vs-pit cliff
+            // (census, 4.992 -29.395). NEVER bench ground that is already
+            // underwater: a lake-flooded dip benched up through its own
+            // lake surface grew a +54 m pond terrace on top of the lake
+            // (census, 9.270 -76.780 — the old guard made pond-over-lake
+            // unreachable by construction, and this gate preserves that).
+            let bench = wl - 0.0015;
+            if out.water_km <= h && h < bench && bench - h <= env0 * 1.5 {
+                h = bench;
+            }
             // never perched: the pool may not stand above this column's
-            // NATURAL (pre-dig) ground — a blob lapping onto a slope or a
-            // valley rim otherwise hangs its flat surface metres above the
-            // downhill terrain as a standing wall (census: 20 m pond walls
-            // at 4.999 -29.391). Water that would drain does not exist.
+            // NATURAL (post-bench) ground — a blob lapping onto a slope or
+            // a valley rim otherwise hangs its flat surface metres above
+            // the downhill terrain as a standing wall (census: 20 m pond
+            // walls at 4.999 -29.391). Water that would drain does not
+            // exist.
             if wl > h && wl <= h + pd + 0.002 {
                 out.water_km = out.water_km.max(wl);
                 out.wet_soft = out.wet_soft.max(smoothstep(0.0, 0.004, pd));
+            }
+        } else if out.carve_km <= 0.0 && riv_d > hw * 1.5 {
+            // pond shore apron, the lake apron's little sibling: where
+            // ground just OUTSIDE the water mask dips below the local pool
+            // level, it floors at the pool and falls away as the mask
+            // fades, so pond water meets a bank instead of standing as a
+            // wall over a relief dip (18 m pond wall photographed at
+            // -0.798 -67.941; ~38k pond walls in the planet census). pn is
+            // the only distance proxy out here, and it is ~10x steeper
+            // than its wavelength suggests, so the profile is quadratic:
+            // ~12 m/pn at the shoreline (a ~6% metric grade — under the
+            // census's 2 m-per-pair wall threshold) steepening with
+            // distance so the far field still sinks below all but the
+            // deepest relief (at pn = 0 the floor sits ~32 m under the
+            // pool — it only acts on dips deeper than that, and nothing
+            // needs an outer bound). Unlike the dig, the apron is NOT
+            // valley-gated: pond water stops hard at the valley gate while
+            // the ground descends toward the river, and that seam stood as
+            // the same wall (the in-blob x<0 clamp keeps the in-valley
+            // floor at pool level, continuous with the pond edge). The
+            // carve/ownership guards keep the bank out of river channels.
+            let wl = e_raw - 0.0018;
+            let x = (pn + 0.50).max(0.0);
+            // profile scaled by the relief envelope (env0 ~0.10 in classic
+            // pond country leaves it as written): the bank must be able to
+            // descend as deep as detail digs before the profile runs out
+            let scale = env0 * 10.0;
+            let floor = wl - 0.001 - (0.012 * x + 0.090 * x * x) * scale;
+            if h < floor {
+                h = floor;
             }
         }
     }
