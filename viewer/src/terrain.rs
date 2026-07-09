@@ -421,6 +421,16 @@ pub fn sample(planet: &Planet, face: usize, u: f64, v: f64, octaves: u32) -> Sam
                 let target = (edge + (h - edge) * t).min(h);
                 out.carve_km += h - target;
                 h = target;
+                // carved below the waterline IS riverbed: the bank blend
+                // digs up to ~1.2 m under the water level, and leaving those
+                // columns dry ringed every river with a strip of land one
+                // block below its own surface — the universal one-block
+                // shoreline lip (Austin, shot at 15.650 28.794). Flooding
+                // them puts the shoreline exactly where the carved profile
+                // crosses the level, which also rounds flush.
+                if perch < 0.5 && wl > h + 0.0002 {
+                    out.water_km = wl;
+                }
             }
             out.wet_soft =
                 (1.0 - smoothstep(hw, (hw * 1.8).max(0.28), riv_d)) * (1.0 - perch);
