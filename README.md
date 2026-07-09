@@ -39,9 +39,10 @@ Then generate a planet and fly it (from the repo root):
 # 1. grow the planet (~17 min at res 7; --res 8 is showcase quality, ~1.5 h)
 python -m planetgen --seed 42 --res 7
 
-# 2. bake the planet onto cube-face rasters + export rivers for the viewer
+# 2. bake the planet onto cube-face rasters + export rivers + weather
 python scripts/bake_faces.py output/seed42_r7 1024
 python scripts/bake_rivers.py output/seed42_r7
+python scripts/bake_weather.py output/seed42_r7
 
 # 3. fly (first build takes a few minutes)
 cd viewer
