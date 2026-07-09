@@ -52,11 +52,24 @@ faces (all river shots). Roadmap already names the endgame ("rapids/
 waterfalls where river levels step"). Polish; distinct from W-2 (which is a
 spurious LEVEL discontinuity, not quantization).
 
+### V-5 Lake footprints alias into angular polygons at coarse LOD (promoted)
+Round-6 hunt: from ~1 km up, big-lake shores and islands render as broad
+straight-edged polygons with orphan blue cells inland (13.357 -4.861; frame
+in interchange/runs/round6-findings-repro/). The Phase-7 roadmap item
+("needs a soft distance-to-shore signal from the lake index") is now the
+most visible artifact from altitude. Walking-height is fine.
+
 ### V-1 Far-mesh color does not match the voxel landscape
 shot_lat0.569_lon68.915_alt0.263km_yaw-149_pitch-25.png: the mesh beyond the
 voxel patch renders visibly darker/flatter green than the blocky near field.
 Long-term probably texturing/material unification (roadmap may absorb this);
 recorded so it isn't lost. Polish, not a correctness bug.
+ESCALATED by the round-6 hunt (2026-07-08 night): over flat terrain from
+low flight the voxel patch reads as a distinct CIRCULAR DISK of
+high-frequency texture against the flat far mesh (7.042 33.477 alt 0.8;
+frame in interchange/runs/round6-findings-repro/patch_disk_mouth.png) —
+a patch-footprint dome, not merely a color shift. Centerpiece of the
+texturing conversation with Andrew.
 
 
 ## FIXED
