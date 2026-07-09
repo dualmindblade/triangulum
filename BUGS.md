@@ -37,19 +37,14 @@ near-waterline lake shores entirely (a mouth breached a river bank at
 3.726 63.065 — dry pit below the water table, photographed). True flooded
 caves remain the open feature; this entry stays open for that.
 
-### W-5 Knife-ridge mountain lakes flood their outer flanks (sim-resolution overhang)
-Census-after residual is dominated by TWO high-mountain lakes: level 3282 m
-at `-12.1 107.3` (hundreds of grouped sites, walls to 1.6 km) and 3810 m at
-`50.91 -28.06`. Their 31 km lake cells overhang knife-edge rims, so ANY
-local flood test (Voronoi/rim territory, level margins, basin-floor
-comparison — all census-measured 2026-07-08) floods some of the outer
-flank, standing the lake surface far above the mountainside, further
-complicated by an outlet river carving the same flank. Fix belongs in
-bake_rivers.py with whole-lake context: detect cells whose own raster
-elevation sits far below the lake level on part of their footprint (steep
-rim), and shrink their exported radius / flag them Voronoi-only, possibly
-splitting the flood footprint. Everything else in the wall family is fixed
-(F-4); this is the last big WALL contributor.
+### W-5b Frozen summit-lake ice cliffs (residual of W-5, remote + frozen)
+After the W-5 bake fixes (8047b27) the wall family's residual is ~600 m ice
+cliffs at frozen lakes on the 7-8 km summits (e.g. `-5.86 106.71`,
+`40.83 -91.98`) — same merged-depression pathology at the planet's most
+remote spots, all below -40 C so they render as walkable ice. The honest
+upstream fix is in PLANETGEN: don't merge depression chains into single
+lake ids (then delete the bake-side peel). Backlog; census-w5d.md is the
+inventory.
 
 ### W-3 Voxel quantization staircases on sloping river surfaces
 Any sloping river surface renders as 1 m water terraces with exposed side
@@ -65,6 +60,19 @@ recorded so it isn't lost. Polish, not a correctness bug.
 
 
 ## FIXED
+
+### F-12 (was W-5) Degenerate sim lakes flooded mountain flanks
+Fixed 2026-07-08 night (8047b27): planetgen merges depression chains into
+one lake id (lake 873: beds 588..3279 m under a 3282 m spill). Bake now
+peels conduit cells (>300 m below spill; healthy lakes are shallow dishes,
+p99 depth 376 m), caps every lake's level so its territory-edge cliff
+cannot exceed ~15 m against the BLENDED terrain (223 unrenderable lakes
+export dry), and rims carry their elevation so shore-band flood-through
+only crosses true dams. Census: max wall 1653 -> 634 m, >100 m sites
+-43%, total magnitude -27%. Residual: W-5b (frozen summit ice cliffs).
+The regression-gate catch that re-locked lake-414/pond suites exposed
+that 414's sim level had ALWAYS stood as 131 m walls at its unphotographed
+perimeter — the suites now lock corrected levels.
 
 ### F-11 Riser-bake smears: step-dense terrain read as dark bands
 Fixed 2026-07-08 evening (0707a2f). The third and final layer of "banding":
