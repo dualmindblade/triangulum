@@ -9,16 +9,6 @@ are `teleport LAT LON [ALT_KM]` viewer args at `--exagg 1` unless noted.
 
 ## OPEN
 
-### V-4 Sub-voxel creeks: mesh paints them, voxels can't show them
-A creek narrower/shallower than ~a block renders as painted blue on the far
-mesh but has no voxel water blocks up close — reads as the river drying at
-the patch boundary. Related: a prominent DRY noise gully next to a painted
-river reads as the same river gone dry (legit but confusing — the reported
-9.75 30.23 case probed as this). Options: minimum 1-block water film for
-in-channel columns, or fade the mesh paint at sub-voxel width. Census
---lips exists now (2026-07-08) for measuring shoreline classes; its liquid
-tail (bank-cliff-with-water-film sites) needs triage.
-
 ### S-3 Frozen shore cliffs (ice sheets wall above dry ground)
 census --lips: most of its 55k sites are FROZEN lakes/rivers whose walkable
 ice sheet ends in a multi-block cliff above dry ground (biggest are the W-5
@@ -26,6 +16,38 @@ family at high frozen mountain lakes). The liquid clamp deliberately skips
 ice (physics stands on it). Whether an ice-shelf edge cliff is even wrong
 is a taste call — an ice shelf HAS an edge; the extreme cases are W-5.
 
+### W-5b Frozen summit-lake ice cliffs (residual of W-5, remote + frozen)
+After the W-5 bake fixes (8047b27) the wall family's residual is ~600 m ice
+cliffs at frozen lakes on the 7-8 km summits (e.g. `-5.86 106.71`,
+`40.83 -91.98`) — same merged-depression pathology at the planet's most
+remote spots, all below -40 C so they render as walkable ice. The honest
+upstream fix is in PLANETGEN: don't merge depression chains into single
+lake ids (then delete the bake-side peel). Backlog; census-w5d.md is the
+inventory.
+
+### V-5 Lake footprints alias into angular polygons at coarse LOD (promoted)
+Round-6 hunt: from ~1 km up, big-lake shores and islands render as broad
+straight-edged polygons with orphan blue cells inland (13.357 -4.861; frame
+in interchange/runs/round6-findings-repro/). The Phase-7 roadmap item
+("needs a soft distance-to-shore signal from the lake index") is now the
+most visible artifact from altitude. Walking-height is fine.
+
+### V-1 Far-mesh color does not match the voxel landscape
+shot_lat0.569_lon68.915_alt0.263km_yaw-149_pitch-25.png: the mesh beyond the
+voxel patch renders visibly darker/flatter green than the blocky near field.
+Long-term probably texturing/material unification (roadmap may absorb this);
+recorded so it isn't lost. Polish, not a correctness bug.
+ESCALATED by the round-6 hunt (2026-07-08 night): over flat terrain from
+low flight the voxel patch reads as a distinct CIRCULAR DISK of
+high-frequency texture against the flat far mesh (7.042 33.477 alt 0.8;
+frame in interchange/runs/round6-findings-repro/patch_disk_mouth.png) —
+a patch-footprint dome, not merely a color shift. Centerpiece of the
+texturing conversation with Andrew.
+
+
+## FIXED
+
+### F-13 (was W-6) Flooded caves — RESOLVED, see the entry moved below
 ### W-6 Caves near rivers/lakes should be water-filled (polish)
 Cave tubes carve under dry land only by intent, but tubes that pass just
 below a river/lake water table render dry with the water surface above them
@@ -49,42 +71,16 @@ never the walkable-ice path); the single-surface model still can't show an
 air pocket that a player must reach through a fully-submerged passage — such
 a pocket reports as submerged. The old dry pit at 3.726 63.065 now floods.
 
-### W-5b Frozen summit-lake ice cliffs (residual of W-5, remote + frozen)
-After the W-5 bake fixes (8047b27) the wall family's residual is ~600 m ice
-cliffs at frozen lakes on the 7-8 km summits (e.g. `-5.86 106.71`,
-`40.83 -91.98`) — same merged-depression pathology at the planet's most
-remote spots, all below -40 C so they render as walkable ice. The honest
-upstream fix is in PLANETGEN: don't merge depression chains into single
-lake ids (then delete the bake-side peel). Backlog; census-w5d.md is the
-inventory.
-
-### W-3 Voxel quantization staircases on sloping river surfaces
-Any sloping river surface renders as 1 m water terraces with exposed side
-faces (all river shots). Roadmap already names the endgame ("rapids/
-waterfalls where river levels step"). Polish; distinct from W-2 (which is a
-spurious LEVEL discontinuity, not quantization).
-
-### V-5 Lake footprints alias into angular polygons at coarse LOD (promoted)
-Round-6 hunt: from ~1 km up, big-lake shores and islands render as broad
-straight-edged polygons with orphan blue cells inland (13.357 -4.861; frame
-in interchange/runs/round6-findings-repro/). The Phase-7 roadmap item
-("needs a soft distance-to-shore signal from the lake index") is now the
-most visible artifact from altitude. Walking-height is fine.
-
-### V-1 Far-mesh color does not match the voxel landscape
-shot_lat0.569_lon68.915_alt0.263km_yaw-149_pitch-25.png: the mesh beyond the
-voxel patch renders visibly darker/flatter green than the blocky near field.
-Long-term probably texturing/material unification (roadmap may absorb this);
-recorded so it isn't lost. Polish, not a correctness bug.
-ESCALATED by the round-6 hunt (2026-07-08 night): over flat terrain from
-low flight the voxel patch reads as a distinct CIRCULAR DISK of
-high-frequency texture against the flat far mesh (7.042 33.477 alt 0.8;
-frame in interchange/runs/round6-findings-repro/patch_disk_mouth.png) —
-a patch-footprint dome, not merely a color shift. Centerpiece of the
-texturing conversation with Andrew.
-
-
-## FIXED
+### F-14 (was W-3) Rapids foam where liquid rivers step
+Fixed 2026-07-09 (fix/river-micro 6dbf96f, codex): liquid water-to-water
+steps tint their exposed face + a lip of the upper surface toward pale
+foam; frozen cascades and shoreline faces exempt. Verified before/after at
+gentle, mountain, and icy sites.
+### F-15 (was V-4) Sub-voxel creeks keep a 1-block film
+Fixed 2026-07-09 (6dbf96f): narrow channel cores whose water rounded away
+force water = ground+1 when the sample is genuinely wet (liquid, non-sea,
+non-lake, unedited). Dry washes stay dry (guard verified); wading is
+ankle-deep; census --lips unchanged (no new shoreline lips).
 
 ### F-12 (was W-5) Degenerate sim lakes flooded mountain flanks
 Fixed 2026-07-08 night (8047b27): planetgen merges depression chains into
