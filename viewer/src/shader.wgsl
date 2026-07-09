@@ -172,8 +172,15 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     let moon = globals.moon_dir.xyz;
     let moon_up = smoothstep(0.0, 0.15, dot(moon, globals.sky.xyz));
     let moonlit = max(dot(n, moon), 0.0);
+    // sky-shaped night floor: with a flat floor and a LOW moon, vertical
+    // step faces toward the moon glowed brighter than the tops around them
+    // and terraces read as bright contour stripes (2026-07-08 night shots).
+    // Faces that see more sky keep more of the floor, restoring the
+    // tops-over-sides hierarchy while the directional term still lets a low
+    // moon rake across scarps.
+    let hemi_n = 0.5 + 0.5 * dot(n, globals.sky.xyz);
     c += base * vec3<f32>(0.40, 0.50, 0.72)
-        * (moonlit * 0.13 + 0.03) * (1.0 - day) * moon_up;
+        * (moonlit * 0.10 + 0.015 + 0.05 * hemi_n) * (1.0 - day) * moon_up;
     let fog = (1.0 - exp(-in.dist_km * 0.0035)) * atm * 0.7;
     c = mix(c, vec3<f32>(0.55, 0.70, 0.88) * (0.15 + 0.85 * day), fog);
     // wading with your eyes under the surface: everything goes water-blue

@@ -71,7 +71,12 @@ impl Mat {
     fn color(self, tint: [f32; 3]) -> [f32; 3] {
         match self {
             Mat::Grass => tint,
-            Mat::Dirt => [0.23, 0.15, 0.085],
+            // dry loam, not wet cellar soil: the old [0.23,0.15,0.085] was
+            // the darkest ground material in the palette (darker than
+            // stone), so every 2-block step's exposed dirt stratum read as
+            // a black hole against grass tops in low light (the arrowed
+            // faces in shot_lat20.810_lon28.922).
+            Mat::Dirt => [0.33, 0.235, 0.135],
             Mat::Sand => [0.60, 0.51, 0.30],
             Mat::Gravel => [0.32, 0.31, 0.29],
             Mat::Stone => [0.30, 0.29, 0.28],
