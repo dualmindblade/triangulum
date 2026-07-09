@@ -51,42 +51,34 @@ assert alt_km < 0.5
 assert alt_km < 0.049
 shot c1b_terrain_follow
 
-# ===================== C-2: radius-proportional fly speed =====================
-# Far from the planet the speed scales with distance from the planet CENTER
-# (not altitude) and caps a few planet radii out. Holding W north for a fixed
-# 3 s, the change in latitude is the angular travel = speed / radius.
+# ===================== C-2: fast traversal, far-out speed cap =================
+# (Re-locked 2026-07-09: the first C-2 cut made a radius term the MINIMUM
+# everywhere — traversal above ~40 km silently slowed 3-8x, and the creative
+# director noticed within a day. The law is now speed = alt*0.5 capped at
+# 1500 km/s, the cap engaging ~3000 km up: "pretty far away". Holding W for
+# 3 s, lat delta = angular travel = speed*3 / radius.)
 #
-# In the radius-proportional band (below the 4-planet-radii cap) angular travel
-# is CONSTANT regardless of radius: speed = coef*radius so speed/radius = coef.
-# Two very different altitudes must give the SAME lat delta (= 0.003 rad/s *
-# 3 s = 0.515662 deg). Under the old altitude*0.5 (capped 600 km/s) scaling
-# this hold would have swept ~6 deg, so this pins the new law tightly.
-log C-2 radius-proportional band: same angular rate at 8000 and 20000 km alt
+# In the capped band the LINEAR speed is constant, so angular travel FALLS
+# as radius grows — farther out you drift slower relative to the planet and
+# can watch it rotate — and it must be FAST: ~15 deg per 3 s at 8000 km,
+# where the old law crawled at 0.52 deg.
+log C-2 capped band: fast traversal, angular rate falls with radius
 teleport 0 0 8000
 look 0 0
 hold w 3
-assert lat_deg ~ 0.515662 0.003
-
+assert lat_deg ~ 15.4758 0.05
 teleport 0 0 20000
 look 0 0
 hold w 3
-assert lat_deg ~ 0.515662 0.003
-
-# Beyond the cap (radius > 4 planet radii = 34641 km) the speed is pinned at
-# ~103.9 km/s, so angular travel now FALLS as radius grows: farther out, you
-# drift slower relative to the planet and can watch it rotate.
-log C-2 beyond the 4-radii cap the angular rate falls off (speed pinned)
+assert lat_deg ~ 8.9961 0.05
 teleport 0 0 60000
 look 0 0
 hold w 3
-assert lat_deg < 0.45
-assert lat_deg ~ 0.260166 0.01
-
+assert lat_deg ~ 3.7552 0.05
 teleport 0 0 78000
 look 0 0
 hold w 3
-assert lat_deg < 0.24
-assert lat_deg ~ 0.206127 0.01
+assert lat_deg ~ 2.9752 0.05
 
 # ===================== C-3: auto-tilt is opt-in (--auto-tilt) =================
 # The scroll-driven auto-tilt lives only in the window app (main.rs scroll

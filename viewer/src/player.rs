@@ -14,15 +14,13 @@ use crate::voxel::{
 /// Player eye height above the feet, km.
 pub const EYE_KM: f64 = 0.0018;
 
-/// Fly-speed radius scaling (creative-director request C-2). Far from the
-/// planet the cruise speed is `FAR_SPEED_COEF * distance-from-planet-center`,
-/// so you drift at roughly the planet's rotational pace and can watch it turn
-/// instead of strafing teleport-fast. 0.003/s is ~0.57x the default
-/// 20-minute-day angular rate, so the planet visibly rotates under you. The
-/// term is capped at `FAR_SPEED_CAP_RADII` planet radii — past that "pretty
-/// far" distance the speed stops climbing.
-const FAR_SPEED_COEF: f64 = 0.003;
-const FAR_SPEED_CAP_RADII: f64 = 4.0;
+/// Fly-speed ceiling (creative-director request C-2): speed grows with
+/// altitude (x0.5) and stops increasing at this cap — reached around
+/// 3,000 km up, roughly half a planet radius, which is where "pretty far
+/// away" starts. At the cap a hemisphere crossing takes ~13 s (Shift for
+/// 4x), while the planet's ~33 km/s equatorial rotation stays readable
+/// whenever you pause.
+const FAR_SPEED_CAP_KMS: f64 = 1500.0;
 
 /// Minimum height the cruise elevation-lock keeps above the terrain when a
 /// peak rises above the held radius (matches the voxel branch's floor, so the
@@ -205,20 +203,17 @@ impl PlayerState {
         match self.mode {
             Mode::Fly => {
                 if fwd != 0.0 || strafe != 0.0 {
-                    // Fly speed. Near the planet: scale with altitude so you
-                    // glide low and cruise higher (unchanged low-altitude
-                    // feel). Far out (C-2): scale with distance from the planet
-                    // CENTER (radius) and cap it a few planet radii away, so at
-                    // great distance you drift at roughly the planet's
-                    // rotational pace and can watch it turn instead of
-                    // strafing teleport-fast. `min` blends the two continuously
-                    // — altitude wins low, the capped radius term wins high
-                    // (crossover ~52 km altitude).
-                    let radius = camera.radius_km + camera.ground_km + camera.altitude_km;
-                    let near = camera.altitude_km * 0.5;
-                    let far =
-                        radius.min(camera.radius_km * FAR_SPEED_CAP_RADII) * FAR_SPEED_COEF;
-                    let speed_kms = near.min(far).clamp(0.02, 1200.0);
+                    // Fly speed scales with altitude — glide low, cruise
+                    // high, and the planet stays traversable from orbit —
+                    // with a cap that engages only genuinely far out (C-2:
+                    // "a limit that's pretty far away where velocity stops
+                    // increasing"). The first C-2 cut made a radius term the
+                    // MINIMUM everywhere, which silently slowed everything
+                    // above ~40 km by 3-8x (Andrew felt it within a day).
+                    // Past the cap your angular pace keeps falling, so the
+                    // planet's rotation reads clearly when you drift or stop.
+                    let speed_kms =
+                        (camera.altitude_km * 0.5).clamp(0.02, FAR_SPEED_CAP_KMS);
                     let sprint = if input.sprint { 4.0 } else { 1.0 };
                     let h = camera.heading(strafe, fwd);
                     camera.translate(h, speed_kms * sprint * dt);
