@@ -333,8 +333,11 @@ pub fn sample(planet: &Planet, face: usize, u: f64, v: f64, octaves: u32) -> Sam
         // basin-floor comparison) were measured by the census to only move
         // or worsen those walls — the overhang needs a bake-level fix with
         // whole-lake context (shrink/flag steep-rim cells at export).
+        // ...and only over TRUE DAMS: a rim whose own elevation is far below
+        // the level (a peeled conduit cell down a flank) must not pass the
+        // flood through its territory (W-5, lake 873).
         let d_any = hit.d_lake_km - hit.past_boundary_km;
-        (hit.in_lake_voronoi || d_any < hit.radius_km * 1.15)
+        (hit.in_lake_voronoi || (d_any < hit.radius_km * 1.15 && hit.rim_is_dam))
             .then_some((hit.level_km, hit.salt))
     });
 

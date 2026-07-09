@@ -55,6 +55,12 @@ pub struct LakeHit {
     /// how far past the lake/rim Voronoi boundary the query sits (0 inside
     /// lake territory; grows toward the rim cell's far side)
     pub past_boundary_km: f64,
+    /// the nearest rim (when the nearest cell is one) is a TRUE DAM: its own
+    /// elevation reaches the lake level. Shore-band flood-through is only
+    /// sound over dam-height rims — a below-level rim (e.g. a peeled
+    /// conduit cell down a mountain flank) must not pass the flood through
+    /// its territory.
+    pub rim_is_dam: bool,
 }
 
 const GRID: usize = 128;
@@ -265,12 +271,14 @@ impl RiverIndex {
         let mut best_lake: Option<(f64, &LakeCell)> = None; // nearest true lake cell
         let mut d_any = f64::INFINITY; // nearest cell of either kind
         let mut any_is_lake = false;
+        let mut any_rim_elev = f64::NEG_INFINITY; // rim rows carry elevation
         for &id in ids {
             let l = &self.lakes[id as usize];
             let d = (p - l.center * self.radius_km).length();
             if d < d_any {
                 d_any = d;
                 any_is_lake = !l.rim;
+                any_rim_elev = if l.rim { l.level_km as f64 } else { f64::NEG_INFINITY };
             }
             if !l.rim && best_lake.as_ref().is_none_or(|b| d < b.0) {
                 best_lake = Some((d, l));
@@ -285,6 +293,8 @@ impl RiverIndex {
                 radius_km: l.radius_km as f64,
                 in_lake_voronoi: any_is_lake,
                 past_boundary_km: if any_is_lake { 0.0 } else { (d - d_any).max(0.0) },
+                rim_is_dam: any_is_lake
+                    || any_rim_elev + 0.03 >= l.level_km as f64,
             }),
             _ => None,
         }

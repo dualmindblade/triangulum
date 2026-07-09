@@ -1,22 +1,25 @@
 # Water-surface invariants. Locks fixes so they can't silently regress.
 #
-# FLAT NOISE POND (fix 2026-07-07): a noise pond is a level water table, so
-# every submerged column in one pond shares ONE surface height. Before the
-# fix the level was per-column (h0 - 1.8 m) and stepped down the terrain;
-# now it is the coarse elevation (e_raw - 1.8 m), constant across the basin.
-# These four columns are all inside the same pond at lat 12.34-12.36 /
-# lon 32.36-32.375; each must report the same surface (~0.2046 km) to <0.3 m.
+# FLAT WATER TABLE (fix 2026-07-07; re-locked 2026-07-08 after the W-5
+# renderability cap): every submerged column of one still-water body shares
+# ONE surface height. This body (a lake at lat ~12.34 / lon ~32.36) was
+# re-levelled by the cap — the census had recorded 12-22 m water walls at
+# its old rim (census-after.md lines ~50394/71140), so the level dropped and
+# the shore moved; three in-lake columns must agree to <0.3 m at the NEW
+# level (~0.1986 km), and the two formerly-asserted columns that are now
+# shore must be DRY (they sit outside the flood at the corrected level).
 mode fly
 teleport 12.340 32.360 0.05
 assert water_surface_km != none
-assert water_surface_km > 0.2043
-assert water_surface_km < 0.2049
+assert water_surface_km > 0.1983
+assert water_surface_km < 0.1989
+teleport 12.345 32.352 0.05
+assert water_surface_km > 0.1983
+assert water_surface_km < 0.1989
+teleport 12.343 32.357 0.05
+assert water_surface_km > 0.1983
+assert water_surface_km < 0.1989
 teleport 12.350 32.360 0.05
-assert water_surface_km > 0.2043
-assert water_surface_km < 0.2049
+assert water_surface_km == none
 teleport 12.360 32.360 0.05
-assert water_surface_km > 0.2043
-assert water_surface_km < 0.2049
-teleport 12.340 32.375 0.05
-assert water_surface_km > 0.2043
-assert water_surface_km < 0.2049
+assert water_surface_km == none
