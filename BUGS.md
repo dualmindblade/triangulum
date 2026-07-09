@@ -9,6 +9,50 @@ are `teleport LAT LON [ALT_KM]` viewer args at `--exagg 1` unless noted.
 
 ## OPEN
 
+### W-7 Residual liquid walls at merged mega-lakes (upstream of W-5b)
+After the shore-apron + bounded-flood fix (072a512) the liquid wall census
+fell 114,421 findings/683 lakes -> 11,659/556 (median 21.2 m -> 5.9 m, max
+267.5 -> 76.3). The remainder is overwhelmingly ONE family: merged
+depression chains exported as mega-lakes (cells r 14-18 km), whose peeled
+conduit rims march 30-40 km from the basin and whose per-cell radius flips
+make any radius-scaled flood/apron rule jitter across Voronoi seams (probe
+pair at 22.277 106.010: apron_past 0 vs 2.3 km across 25 m; worst live wall
+76 m at 33.539 23.942). Same upstream disease as W-5b (frozen variant):
+don't merge depression chains at export / shrink-or-flag steep-rim cells.
+Fixing it in planetgen collapses both entries; code-side epicycles were
+measured into diminishing returns (three rounds: 114k -> 26k -> 13.7k ->
+11.7k). Gate: census --caps (liquid lake WALL sites as JSON) must trend to
+zero. Known cosmetic caveat of the apron itself: at cell-radius flips the
+bank floor can step tens of metres — DIRT steps (census-invisible, natural
+looking), traded for standing water cliffs; revisit with Andrew alongside
+the planetgen fix.
+
+### V-6 A fully morphed LOD child does not reproduce its parent mesh (pop)
+Sol review finding 5 (2026-07-09, confirmed by code read + Sol's mesh probe).
+terrain.rs build_tile: odd child vertices morph toward a BILINEAR blend of 4
+parent heights, but the parent renders two triangles split on a fixed
+diagonal — at odd/odd vertices those are different surfaces (the twist term
+(h_a+h_c-h_b-h_d)/4). The morph is also radial-only (cannot reproduce the
+parent chord's tangential position) and wet_parent re-samples wetness rather
+than interpolating the parent triangle attribute. Measured residual at swap:
+62.4 m at the highest-peak level-9 tile (face 4, ix 339, iy 308), 14.7 m at a
+temperate valley — despite renderer.rs documenting "identical geometry".
+Cheap partial fix: match the parent's actual triangle diagonal in parent_h
+(kills the twist term, likely dominant). Exact fix needs a 3-D parent delta +
+triangle-interpolated attributes — belongs to the TRANSITIONS.md program
+(same "one truth, two renderers" family as V-1/V-5). Design-gated: pop
+visibility is a taste/priority call for Andrew.
+
+### T-1 The lip census cannot see creek films (verification blind spot)
+Sol review finding 13. census --lips finds wet/dry transitions from
+terrain::sample points ~60 m apart, then column-tests them; the F-15 creek
+film exists only after col_ctx's sub-cell samples, so a sub-1.5 m creek
+between two dry transect points is never column-tested. "Census unchanged"
+therefore does NOT verify the film introduced no lips or clamp/cave
+interactions. Fix direction: a film-specific census walking the canonical
+column lattice around low-flow segments (enumerate columns the sub-cell
+predicate selects; compare rendered water top to all 8 neighbors).
+
 ### S-3 Frozen shore cliffs (ice sheets wall above dry ground)
 census --lips: most of its 55k sites are FROZEN lakes/rivers whose walkable
 ice sheet ends in a multi-block cliff above dry ground (biggest are the W-5
@@ -46,6 +90,37 @@ texturing conversation with Andrew.
 
 
 ## FIXED
+
+### F-16 The liquid water-wall family (Sol findings 1+3) — 072a512
+Shore aprons + 2.6 r flood bound + carve-wide river ownership in the shared
+sample(); census -90% findings, worst 143 m wall at 4.377 39.078 now a
+1-block shoreline (interchange sol1_wall_*{before,after}*.png). Residual is
+W-7 (open). The render-vs-physics divergence (finding 3) shrinks with the
+data; the census --lips survey stays its gate (LIP 0 planet-wide).
+
+### F-17 Ocean mask disagreed across cube-face seams (Sol finding 2) — bb16cba
+Per-face edge-clamped blur made the derived ocean fraction differ at the
+same world direction (half-navy/half-sand vertical split at -14.457 -45.0).
+Ghost-ring border re-blur + canonical shared texels; property test marches
+all 12 edges + 8 corners (12,360 pairs, fail-before/pass-after). By Opus.
+
+### F-18 Frozen ice solid only to some world queries (Sol finding 4) — 0ec7b8d
+surface_height_km/ceiling/raycast/torches now see the ice sheet (aim, build,
+collide, torch height); invariant-survey locks surface==support on sea ice
+and a finite ceiling from under the sheet.
+
+### F-19 NaN input + corrupt-save robustness (Sol findings 6+7) — d079d31
+Finite-only numeric parsing (CLI + photo map), total_cmp torch sort,
+record-validated loaders (face<6, on-lattice, bounded delta), atomic saves.
+
+### F-20 Determinism/input/UI sweep (Sol findings 8,10-16) — c4f171b
+Explicit render time (byte-identical play runs, flicker phase by torch
+identity), Arc world snapshots per chunk build, key auto-repeat gating,
+strict assert semantics, preview staleness, transactional trash moves,
+caveprobe seam canonicalization. By codex GPT-5.5.
+
+### F-21 Photo restore reproduces the photo (Sol finding 9) — 31acf19
+Sidecar ground_km + mode + solar phase rescaling, seed-gated exact restore.
 
 ### F-13 (was W-6) Flooded caves — RESOLVED, see the entry moved below
 ### W-6 Caves near rivers/lakes should be water-filled (polish)

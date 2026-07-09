@@ -1428,3 +1428,40 @@ holds the finish line), fresh discovery round against the now-clean
 baseline (the big families were masking whatever is underneath), W-3
 (rapids/waterfalls art), V-1 + texturing (the "better than Minecraft"
 conversation - Andrew's call).
+
+## Phase 8g — the Sol review triage (2026-07-09)
+
+GPT-5.6 Sol (new strongest codex model, effort=max) ran the first full
+independent review of the codebase: 16 findings, 11 major. Every one was
+re-verified against code and runtime before action — ALL 16 CONFIRMED,
+zero refuted, several with Sol's own runtime demonstrations. Calibration:
+trust Sol's "certain" (the re-verification stays mandatory and found
+nothing to correct). Triage: 6 findings fixed by Fable directly
+(ice-solidity unification 0ec7b8d, NaN/persistence robustness d079d31,
+water-wall family 072a512, photo restore 31acf19), 7 delegated to codex
+GPT-5.5 as one sweep (c4f171b: deterministic render time with a
+byte-identical double-run gate, Arc world snapshots, key auto-repeat,
+assert semantics, preview staleness, transactional trash, caveprobe
+seams), 1 delegated to Opus (bb16cba: cube-edge ocean-mask exactness with
+a 12,360-pair property test), 2 backlogged with ledger entries (V-6 LOD
+morph pop — TRANSITIONS program; T-1 film-scale census blind spot).
+
+The headline was Sol's finding 1: the W-5 renderability cap bounds the
+bake's blended raster, but the viewer's procedural relief digs beneath it
+— census generalized one 143 m liquid wall to 683 lakes (114,421 wall
+findings). Two capping strategies were implemented and MEASURED DEAD
+(outside-dip caps: 648/678 lakes dry; two-sided caps: 628 dry — no level
+choice survives territory boundaries crossing relief gorges). The shipped
+fix changes the GROUND instead: shore aprons in the shared sample()
+(floor at level, 3% bank fall-away, liquid-only), flood bounded to 2.6
+lake-radii (killed phantom pools around far conduit rims), river
+ownership extended to the whole carved gorge. Census: -90% findings,
+median 21->6 m, max 267->76 m; residual = the merged mega-lake family,
+ledgered as W-7 pointing at the same planetgen fix as W-5b. Method note
+for the record: three successive "obvious" fixes at three sites each
+turned out to be a DIFFERENT mechanism (union-of-frontiers distance,
+coverage truncation, exemption-seam width) — the probe-first discipline
+(lakeprobe.rs, new) beat pattern-matching every time.
+
+Also: verify.sh counts SEVEN suites (Sol corrected our own docs), and
+sea-ice solidity + under-ice ceilings are now locked in invariant-survey.
