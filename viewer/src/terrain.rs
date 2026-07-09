@@ -343,8 +343,16 @@ pub fn sample(planet: &Planet, face: usize, u: f64, v: f64, octaves: u32) -> Sam
         // the level (a peeled conduit cell down a flank) must not pass the
         // flood through its territory (W-5, lake 873).
         let d_any = hit.d_lake_km - hit.past_boundary_km;
-        (hit.in_lake_voronoi || (d_any < hit.radius_km * 1.15 && hit.rim_is_dam))
-            .then_some((hit.level_km, hit.salt))
+        // ...and only within 2.6 radii of a true lake cell: a dam-height rim
+        // left far up a peeled conduit chain otherwise floods its band with
+        // water pinned at basin level 40+ km from any actual lake — phantom
+        // pools that ended in census walls wherever coverage or terrain cut
+        // them (166 m at 16.569 -32.262). Legit shore bands top out ~2.2 r
+        // (voronoi edge + rim band), so 2.6 keeps every real shore wet. The
+        // shore apron grades from this frontier too (rivers.rs apron_past).
+        (hit.d_lake_km < hit.radius_km * 2.6
+            && (hit.in_lake_voronoi || (d_any < hit.radius_km * 1.15 && hit.rim_is_dam)))
+        .then_some((hit.level_km, hit.salt))
     });
 
     // the roughness raster spikes wherever a land cell borders deep ocean
@@ -397,6 +405,41 @@ pub fn sample(planet: &Planet, face: usize, u: f64, v: f64, octaves: u32) -> Sam
             h_river_ref = (e_raw + env * dref).max(h_floor);
         } else {
             h_river_ref = h;
+        }
+    }
+
+    // shore apron (Sol review finding 1, generalized by census): fine relief
+    // digs dips just OUTSIDE a lake's flood boundary that the bake's
+    // blended-raster renderability cap cannot see, and the consequence is
+    // planet-scale — 683 liquid lakes end somewhere in a standing water
+    // cliff (median worst wall 21 m; 143 m at 4.377 39.078). No level cap
+    // can fix it: capping levels to the rendered dips measured 628 of 678
+    // lakes bone dry (the flood territory inevitably crosses relief gorges
+    // deeper than any viable level). So the GROUND yields instead: where
+    // terrain just past the flood boundary would dip below the waterline,
+    // it floors at the level and falls away at a gentle bank grade — water
+    // always meets a shore, and terrain that never dipped is untouched.
+    // LIQUID lakes only: the frozen wall families (S-3/W-5b) are a
+    // deliberately-open aesthetic call, and their 600 m summit cliffs would
+    // demand 20 km aprons. Octave-independent by construction (pure
+    // function of the lake hit + level), so every LOD agrees on the shore.
+    let mut on_apron_band = false;
+    if lake_flood.is_none()
+        && temp_c >= -4.0
+        && let Some(hit) = &lake
+    {
+        // distance past the flood's outer edge: rivers.rs measures it
+        // against the UNION of flood frontiers (lake Voronoi + every dam
+        // rim's 1.15 r band) — a single-frontier metric left the floor
+        // metres-to-kilometres down its grade right beside the water
+        // (measured at 4.377 39.078 and 16.569 -32.262).
+        let past = hit.apron_past_km;
+        const APRON_GRADE: f64 = 0.030; // 3% bank fall-away
+        let floor = hit.level_km - 0.001 - APRON_GRADE * past;
+        if h < floor {
+            h = floor;
+            h_river_ref = h_river_ref.max(floor);
+            on_apron_band = true;
         }
     }
 
@@ -461,7 +504,18 @@ pub fn sample(planet: &Planet, face: usize, u: f64, v: f64, octaves: u32) -> Sam
         // few metres below the fill just short of the dam; a channel merely
         // metres under the lake level is SUBMERGED, not downstream — only a
         // clearly-descended reach owns its water.
-        let river_owns = hw > 0.0 && riv_d < hw * 1.5 && wl.is_finite() && wl < lvl - 0.008;
+        // The carve test extends ownership to the WHOLE carved gorge: bank
+        // width grows with cut depth (bank_w above), so a deep descending
+        // gorge reaches far past the fixed 1.5 hw strip — flood filling its
+        // outer banks to lake level stood as a 79 m wall against the exempt
+        // channel (census, 27.037 -35.188). Carve tapers to zero at the
+        // bank's outer edge, so the flood/exempt handoff is smooth by
+        // construction. At lake-check time carve_km is river-only (ponds
+        // dig later).
+        let river_owns = hw > 0.0
+            && wl.is_finite()
+            && wl < lvl - 0.008
+            && (riv_d < hw * 1.5 || out.carve_km > 0.0005);
         if lvl > h + 0.0005 && !river_owns {
             out.water_km = out.water_km.max(lvl);
             out.lake = true;
@@ -477,7 +531,16 @@ pub fn sample(planet: &Planet, face: usize, u: f64, v: f64, octaves: u32) -> Sam
     // but valley-flattened/carved ground follows the river's own level —
     // a pond blob overlapping the valley hung its flat surface up to ~20 m
     // above the valley floor as a standing wall (census, 4.993 -29.392).
-    if octaves >= 8 && precip > 550.0 && rough_r < 0.45 && e_raw > 0.03 && valley >= 0.999 {
+    // ...and never into a lake-shore apron: the bank is structural fill
+    // holding the waterline (a pond dug through it would re-open the very
+    // dip the apron exists to cover)
+    if octaves >= 8
+        && precip > 550.0
+        && rough_r < 0.45
+        && e_raw > 0.03
+        && valley >= 0.999
+        && !on_apron_band
+    {
         let pn = fbm_band(dir, 0, 2, 16000.0, seed.wrapping_add(9241));
         if pn < -0.50 {
             let pd = (-0.50 - pn) * 0.030;

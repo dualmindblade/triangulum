@@ -55,6 +55,12 @@ pub struct LakeHit {
     /// how far past the lake/rim Voronoi boundary the query sits (0 inside
     /// lake territory; grows toward the rim cell's far side)
     pub past_boundary_km: f64,
+    /// distance past the NEAREST flood frontier (the flood is a union of
+    /// the lake's Voronoi territory and every dam rim's 1.15 r shore band;
+    /// the shore apron grades from whichever frontier is closest). The
+    /// Voronoi metric alone left a 170 m wall where a non-dam rim's
+    /// territory sits beside a dam rim's flooded band (16.569 -32.262).
+    pub apron_past_km: f64,
     /// the nearest rim (when the nearest cell is one) is a TRUE DAM: its own
     /// elevation reaches the lake level. Shore-band flood-through is only
     /// sound over dam-height rims — a below-level rim (e.g. a peeled
@@ -179,8 +185,9 @@ impl RiverIndex {
                 let Some(c) = face_uv(face, l.center) else { continue };
                 // pad past the cell spacing: the Voronoi test needs every
                 // competitor (lake AND rim) visible from any query point
-                // whose nearest cell might be this one
-                let pad = (l.radius_km as f64 * 3.0 + 2.0) / self.radius_km * 3.2;
+                // whose nearest cell might be this one (3.4 matches the
+                // extended hit gate in lake_at)
+                let pad = (l.radius_km as f64 * 3.4 + 2.0) / self.radius_km * 3.2;
                 let lo = (c.0 - pad, c.1 - pad);
                 let hi = (c.0 + pad, c.1 + pad);
                 if lo.0 > 1.0 || lo.1 > 1.0 || hi.0 < -1.0 || hi.1 < -1.0 {
@@ -285,17 +292,54 @@ impl RiverIndex {
             }
         }
         match best_lake {
-            Some((d, l)) if d < l.radius_km as f64 * 3.0 => Some(LakeHit {
-                level_km: l.level_km as f64,
-                salt: l.salt,
-                d_lake_km: d,
-                lake_center: l.center,
-                radius_km: l.radius_km as f64,
-                in_lake_voronoi: any_is_lake,
-                past_boundary_km: if any_is_lake { 0.0 } else { (d - d_any).max(0.0) },
-                rim_is_dam: any_is_lake
-                    || any_rim_elev + 0.03 >= l.level_km as f64,
-            }),
+            // 3.4 r: hit coverage must OUTLAST the flood (bounded at 2.6 r in
+            // terrain::sample) by the apron's grading reach, or the water and
+            // its bank get clipped mid-basin by the search radius itself —
+            // that truncation stood as a 170 m wall at 16.569 -32.262
+            Some((d, l)) if d < l.radius_km as f64 * 3.4 => {
+                let past_boundary = if any_is_lake { 0.0 } else { (d - d_any).max(0.0) };
+                // distance past every dam rim's shore band, minimized: each
+                // dam rim floods its own 1.15 r disc, so the apron must cone
+                // out from EVERY flooded frontier, not just the lake-Voronoi
+                // one (rim rows carry their elevation in level_km; only rims
+                // at dam height for THIS lake's level count — a lower
+                // cascade neighbor's rims must not hoist its ground)
+                let mut apron_past = past_boundary;
+                if !any_is_lake && apron_past > 0.0 {
+                    let band = l.radius_km as f64 * 1.15;
+                    for &id in ids {
+                        let r = &self.lakes[id as usize];
+                        if !r.rim || (r.level_km as f64) + 0.03 < l.level_km as f64 {
+                            continue;
+                        }
+                        let dr = (p - r.center * self.radius_km).length();
+                        apron_past = apron_past.min((dr - band).max(0.0));
+                        if apron_past == 0.0 {
+                            break;
+                        }
+                    }
+                }
+                // the flood region is (voronoi ∪ dam bands) ∩ {d < 2.6 r},
+                // so the apron distance is the MAX of the two violations:
+                // past the voronoi/band frontiers (computed above) and past
+                // the 2.6 r lake-distance bound. Min-ing the bound in
+                // instead let a far rim's band zero the distance inside a
+                // phantom pool the 2.6 r rule had just removed — the apron
+                // then built a 170 m dirt mesa where the fiction water was.
+                apron_past = apron_past.max((d - l.radius_km as f64 * 2.6).max(0.0));
+                Some(LakeHit {
+                    level_km: l.level_km as f64,
+                    salt: l.salt,
+                    d_lake_km: d,
+                    lake_center: l.center,
+                    radius_km: l.radius_km as f64,
+                    in_lake_voronoi: any_is_lake,
+                    past_boundary_km: past_boundary,
+                    apron_past_km: apron_past,
+                    rim_is_dam: any_is_lake
+                        || any_rim_elev + 0.03 >= l.level_km as f64,
+                })
+            }
             _ => None,
         }
     }

@@ -61,6 +61,8 @@ struct Side {
     sea: bool,
     lake: bool,
     river: bool,
+    temp_c: f64, // frozen walls (S-3/W-5b) are a backlogged aesthetic call —
+                 // the --caps export must touch LIQUID lakes only
 }
 
 #[derive(Clone)]
@@ -79,6 +81,7 @@ fn side(s: &Sample) -> Side {
         sea: s.sea,
         lake: s.lake,
         river: s.river_dist_km.is_finite() && s.river_dist_km < s.river_hw_km,
+        temp_c: s.temp_c,
     }
 }
 
@@ -265,6 +268,7 @@ fn main() -> anyhow::Result<()> {
     let mut probe_at: Option<(f64, f64)> = None;
     let mut lips = false;
     let mut radius = 3.0f64;
+    let mut caps_path = String::new();
     let mut i = 1;
     while i < argv.len() {
         let next = |i: usize| argv.get(i + 1).cloned().unwrap_or_default();
@@ -292,6 +296,10 @@ fn main() -> anyhow::Result<()> {
             "--lips" => lips = true,
             "--radius" => {
                 radius = next(i).parse().unwrap_or(3.0);
+                i += 1;
+            }
+            "--caps" => {
+                caps_path = next(i);
                 i += 1;
             }
             other => eprintln!("unknown arg: {other}"),
@@ -562,6 +570,48 @@ fn main() -> anyhow::Result<()> {
                 groups.push(g);
             }
         }
+    }
+
+    // ---- liquid lake-wall caps export: the feedback signal for the bake's
+    // renderability cap (Sol review #1). The bake caps against its own
+    // blended BASE raster, but the viewer adds procedural relief on top, so
+    // a fine-relief dip just outside the flood territory can sit far below
+    // the "safe" cap. The only authority on the rendered surface is
+    // terrain::sample itself — so the census exports every liquid lake WALL
+    // with the dry ground it found, and scripts/bake_rivers.py --caps
+    // re-caps those lakes and rebakes. Frozen sites are excluded: S-3/W-5b
+    // ice walls are a separate, backlogged aesthetic call.
+    if !caps_path.is_empty() {
+        let mut sites = Vec::new();
+        for f in &findings {
+            if f.class != Class::Wall {
+                continue;
+            }
+            let (wet, dry) =
+                if f.a.water_km.is_finite() { (&f.a, &f.b) } else { (&f.b, &f.a) };
+            if !wet.lake || wet.sea || wet.temp_c < -4.0 {
+                continue;
+            }
+            let (lat, lon) = lat_lon(f.mid);
+            sites.push(serde_json::json!({
+                "xyz": [f.mid.x, f.mid.y, f.mid.z],
+                "lat": lat,
+                "lon": lon,
+                "level_km": wet.water_km,
+                // both grounds of the refined pair: the bake's safe level
+                // per site is max(wet_h, dry_h + tol) — at or below the
+                // INSIDE bank the waterline retreats off the boundary and
+                // dry ground stands between water and the drop, which is
+                // far gentler than capping to the outside dip (that rule
+                // measured 648 of 678 lakes dead; this one keeps them)
+                "wet_h_km": wet.h_km,
+                "dry_h_km": dry.h_km,
+                "temp_c": wet.temp_c,
+                "mag_km": f.mag_km,
+            }));
+        }
+        std::fs::write(&caps_path, serde_json::to_string_pretty(&serde_json::Value::Array(sites.clone()))?)?;
+        eprintln!("caps: {} liquid lake-wall sites -> {caps_path}", sites.len());
     }
 
     let mut report = String::new();

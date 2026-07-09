@@ -18,9 +18,15 @@ Output viewer/assets/rivers.bin (little-endian):
                         clip lake water to the Voronoi footprint of the
                         actual lake cells instead of blobby per-cell discs)
 
-Usage: python scripts/bake_rivers.py [run_dir]
+Usage: python scripts/bake_rivers.py [run_dir] [--caps sites.json ...]
+
+--caps ingests liquid lake-wall sites measured by the viewer's own census
+(census.exe --caps FILE) and lowers the offending lakes' levels; pass every
+accumulated caps file each round and iterate bake -> census until the
+census reports zero liquid lake walls.
 """
 
+import json
 import os
 import struct
 import sys
@@ -28,7 +34,18 @@ import sys
 import numpy as np
 from scipy.spatial import cKDTree
 
-run_dir = sys.argv[1] if len(sys.argv) > 1 else "output/seed42_r8"
+_argv = sys.argv[1:]
+caps_files = []
+_rest = []
+_i = 0
+while _i < len(_argv):
+    if _argv[_i] == "--caps" and _i + 1 < len(_argv):
+        caps_files.append(_argv[_i + 1])
+        _i += 2
+    else:
+        _rest.append(_argv[_i])
+        _i += 1
+run_dir = _rest[0] if _rest else "output/seed42_r8"
 out_path = "viewer/assets/rivers.bin"
 
 d = np.load(os.path.join(run_dir, "planet_data.npz"))
@@ -263,6 +280,73 @@ for lid in lake_ids:
     cap = be.min() + WALL_TOL_KM
     if cap < lake_level[lid]:
         lake_level[lid] = cap
+# ---- census-driven caps (Sol review finding 1): the loop above bounds each
+# level against the bake's own BLENDED base elevations, but the viewer adds
+# procedural relief on top of that blend — a fine-relief dip just outside
+# the flood territory can undercut the blended cap by >100 m and the census
+# still finds a liquid water wall (measured: 143 m at 4.377, 39.078). The
+# only authority on the rendered surface is the viewer's terrain::sample,
+# so the fix loops through the renderer itself:
+#   1. python scripts/bake_rivers.py RUN_DIR
+#   2. census.exe --caps capsN.json      (exports liquid lake WALL sites)
+#   3. python scripts/bake_rivers.py RUN_DIR --caps caps1.json --caps ...
+#   4. repeat 2-3 (accumulating caps files) until the census is clean
+# A site is attributed to the lake whose member cell is nearest — the same
+# nearest-member rule the viewer's flood decision uses. Caps only ever
+# LOWER a level; a lake capped below its bed exports dry. dry_h bounds stay
+# valid across rounds (ground never moves), so stale files are safe.
+if caps_files:
+    cap_xyz = []
+    cap_lid = []
+    for lid in lake_ids:
+        for c in lake_cells[lid]:
+            cap_xyz.append(xyz[c])
+            cap_lid.append(lid)
+    n_applied = 0
+    pre_caps_level = {lid: lake_level[lid] for lid in lake_ids}
+    if cap_xyz:
+        lt = cKDTree(np.array(cap_xyz))
+        for cf in caps_files:
+            with open(cf) as fh:
+                sites = json.load(fh)
+            for site in sites:
+                p = np.asarray(site["xyz"], dtype=np.float64)
+                p /= np.linalg.norm(p)
+                dist, k = lt.query(p)
+                if dist * R_planet > 60.0:
+                    continue  # census site matches no exported lake
+                lid = cap_lid[k]
+                # per-site safe level: EITHER the waterline retreats to at/
+                # below the inside bank (dry ground then stands between the
+                # water and the drop) OR the level is within tolerance of
+                # the outside ground. Capping to the outside dip alone
+                # measured 648 of 678 lakes dead; this keeps them wet with
+                # the waterline hugging real terrain.
+                cap = max(site["wet_h_km"], site["dry_h_km"] + WALL_TOL_KM)
+                if cap < lake_level[lid]:
+                    lake_level[lid] = cap
+                    n_applied += 1
+    print(f"census caps: {n_applied} lowerings from {len(caps_files)} file(s)")
+    # honest damage report: a lowered lake keeps water wherever its bed dips
+    # below the new level; one capped under its whole bed exports dry
+    lowered = died = 0
+    drops = []
+    for lid in lake_ids:
+        if len(lake_cells[lid]) == 0 or lake_level[lid] >= pre_caps_level[lid]:
+            continue
+        drops.append((pre_caps_level[lid] - lake_level[lid]) * 1000.0)
+        if lake_level[lid] < elev[lake_cells[lid]].min():
+            died += 1
+        else:
+            lowered += 1
+    if drops:
+        drops.sort()
+        print(
+            f"census caps: {lowered} lakes lowered (still wet), {died} render dry; "
+            f"drop m median {drops[len(drops)//2]:.0f} "
+            f"p90 {drops[int(len(drops)*0.9)]:.0f} max {drops[-1]:.0f}"
+        )
+
 # exported lake cells = the PEELED basins only
 lc = np.concatenate(
     [lake_cells[lid] for lid in lake_ids if len(lake_cells[lid])]
