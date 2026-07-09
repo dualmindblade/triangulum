@@ -205,13 +205,15 @@ fn capture(planet: Arc<Planet>, camera: Camera, args: Args, path: &str) -> Resul
     // headless shots see the same edited world the game saves
     let edits = load_edits(planet.seed);
     renderer.torches = load_torches(planet.seed);
+    let eye_km = camera.ground_km + camera.altitude_km;
     renderer.underwater = triangulum_viewer::voxel::water_surface_km(
         &planet,
         &edits,
         camera.position().normalize(),
+        eye_km,
         args.exaggeration,
     )
-    .is_some_and(|w| camera.ground_km + camera.altitude_km < w - 0.0003);
+    .is_some_and(|w| eye_km < w - 0.0003);
     let (n, sun, sun_pinned, day_len_s) =
         capture_with_recorded_sun(&mut renderer, &planet, &camera, &edits, path)?;
     write_shot_sidecar(path, &planet, &camera, &args, "fly", sun, sun_pinned, day_len_s)?;

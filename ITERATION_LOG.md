@@ -1385,10 +1385,46 @@ fails the build), cave suppression near water tables (W-6 mitigation,
 after Austin photographed his own morning prediction), dirt as dry loam,
 sky-shaped night floor.
 
+### Flooded caves (W-6 proper, feat/flooded-caves)
+
+Austin's ask: "caves very near lakes and rivers will probably need to be
+full of water!" The 0707a2f mitigation only SUPPRESSED caves near water to
+kill the dry pit; this makes them real. The single-surface column model
+(one `water` block) can't express "pool under solid rock", so ColCtx grows
+one field: `cave_water`, a per-column LATERAL water table read from the
+sample even on dry banks - the river's graph level (new `river_level_km`
+on Sample) within a bank band, a lake's spill level within its shore band,
+or sea level right on the coast. A carved cave cell at or below it is
+water. A perch guard (`wt <= ground0`) forbids the table standing above the
+column's own surface, so a dry column below the waterline never grows a
+water wall.
+
+Mesher: cave-water faces are their own pass - a free TOP surface only where
+dry air sits above the pool (air pocket to dive from, or an open pit read
+from above), SIDE faces only into a DRY cave passage, never against open sky
+over lower ground (that was the W-1 water-wall shape). Cave darkness (the
+depth dim carried in the water attr's alpha) applies, so a shallow pit pool
+is day-lit and a deep flood goes dark until a torch reaches it; the global
+underwater tint does the "I'm submerged" work. Physics: `water_surface_km`
+gained an `at_km` arg and reports the sub-surface pool ONLY when the query
+point is at/below it - so a bank walker over a flooded tunnel is NOT swimming
+and a dry lake shore keeps `has_water == none` (the surveys still pass).
+Cave water is always LIQUID (underground; never the walkable-ice path).
+
+Verified at a river-bank pool (3.7259 63.0658, found with the new caveprobe
+example): a walker drops in reading underwater + has_water, rests on solid
+rock (no fall-through), swims back up and surfaces; digging a shaft down
+through a 1-block rock cap floods it and drops the player through. The old
+dry-pit coordinate 3.726 63.065 now reads as water pockets in the bank, not
+a hole. scripts/flooded-caves.play (7th verify suite, all green) locks the
+physics; flooded-caves-visual.play carries the frames. LIMITATION: the model
+still can't show an air pocket a player must reach through a fully-submerged
+passage - such a pocket reports submerged.
+
 ### Open, in recommended order
 
 W-5 (knife-ridge lakes - bake-level whole-lake footprint; the census
 holds the finish line), fresh discovery round against the now-clean
-baseline (the big families were masking whatever is underneath), W-6
-proper (flooded caves as a feature), W-3 (rapids/waterfalls art), V-1 +
-texturing (the "better than Minecraft" conversation - Andrew's call).
+baseline (the big families were masking whatever is underneath), W-3
+(rapids/waterfalls art), V-1 + texturing (the "better than Minecraft"
+conversation - Andrew's call).

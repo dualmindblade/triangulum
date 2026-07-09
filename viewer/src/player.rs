@@ -147,7 +147,7 @@ impl PlayerState {
     ) {
         let dir = camera.position().normalize();
         let eye = camera.ground_km + camera.altitude_km;
-        self.underwater = water_surface_km(planet, edits, dir, exaggeration)
+        self.underwater = water_surface_km(planet, edits, dir, eye, exaggeration)
             .is_some_and(|w| eye < w - 0.0003);
     }
 
@@ -335,7 +335,7 @@ impl PlayerState {
                 }
                 let dir2 = camera.position().normalize();
                 // -- vertical: gravity (or buoyancy), landing, head bump
-                let water = water_surface_km(planet, edits, dir2, exagg);
+                let water = water_surface_km(planet, edits, dir2, feet, exagg);
                 let in_water = water.is_some_and(|w| feet + 0.0009 < w);
                 if in_water {
                     // sink slowly; hold Space to swim up

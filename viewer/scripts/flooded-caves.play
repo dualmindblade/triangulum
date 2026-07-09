@@ -1,0 +1,62 @@
+# Flooded caves (BUGS.md W-6). A cave that passes below a nearby water table
+# fills with water: swimmable, physically water, visually water. The earlier
+# fix only SUPPRESSED caves near rivers/lakes to avoid a dry pit whose floor
+# sat below the water line (photographed at 3.726 63.065); flooding turns that
+# pit into water, so the suppression is lifted and this locks the new physics.
+#
+# Site: a river-bank pool at 3.7259 63.0658 — caveprobe finds a 5 m water
+# column (rock floor z=237, water surface at the river table z=242), open to
+# the sky so a walker can drop in, be underwater, and swim back up and out.
+
+mode fly
+
+# --- drop into the flooded pit and settle on its rock floor
+teleport 3.725916 63.065764 0.003
+mode walk
+wait 4
+state at_bottom
+assert mode == walk
+# submerged: eye below the cave water surface
+assert underwater == true
+# the flooded cave is real water to the physics
+assert has_water == true
+# rests on SOLID rock — the flood does not let the player fall through
+assert grounded == true
+assert vert_vel_mps ~ 0.0 0.5
+# the reported surface is the sub-surface cave table (~0.244 km), NOT some
+# open-air body (this column is dry at the surface)
+assert water_surface_km > 0.240
+assert water_surface_km < 0.246
+
+# --- swim up: hold Space, buoyancy carries the player to the surface and out
+hold space 1.6
+state surfaced
+# broke the surface — no longer underwater
+assert underwater == false
+# above the water table now
+assert ground_km > 0.242
+
+# --- a dry column near the same river must NOT gain a spurious water surface
+# from the flood (the flooded pool is sub-surface, reported only underwater):
+# stand on the bank above the water line and confirm it reads as dry land.
+mode fly
+teleport 3.726 63.065 0.05
+assert has_water == false
+assert underwater == false
+
+# --- DIG into a buried flooded cave from above. A solid bank surface with the
+# water table one block down: breaking the rock cap must flood the shaft, so
+# the player drops through into water (edits interact with the flood — no dry
+# shaft below the table).
+mode fly
+teleport 3.725926 63.065764 0.004
+mode walk
+wait 2
+assert grounded == true
+assert underwater == false
+assert has_water == false          # solid cap intact — dry on top
+look 0 -90
+tap q                              # break the rock cap into the flooded cave
+wait 2.5
+assert underwater == true          # dropped through into the flooded water
+assert has_water == true

@@ -196,6 +196,11 @@ pub struct Sample {
     pub river_dist_km: f64,
     pub river_hw_km: f64,
     pub river_wet: f64,
+    /// Graph water-surface level (km) of the nearest river course, kept even
+    /// for dry banks above the waterline. The lateral water table that floods
+    /// caves passing under a river bank (flooded-caves feature) reads this.
+    /// f64::NEG_INFINITY when no river is near.
+    pub river_level_km: f64,
     /// Flooding lake is a salt lake (mineral-pale water).
     pub salt: bool,
     /// True open ocean. NOT the same as e_raw <= 0: the map has genuine dry
@@ -256,6 +261,7 @@ pub fn sample(planet: &Planet, face: usize, u: f64, v: f64, octaves: u32) -> Sam
         river_dist_km: f64::INFINITY,
         river_hw_km: 0.0,
         river_wet: 0.0,
+        river_level_km: f64::NEG_INFINITY,
         salt: false,
         sea: e_raw <= 0.0 && (wmask >= 0.5 || (e_raw <= -0.1 && ofrac > 0.35)),
     };
@@ -401,6 +407,7 @@ pub fn sample(planet: &Planet, face: usize, u: f64, v: f64, octaves: u32) -> Sam
     if hw > 0.0 {
         out.river_dist_km = riv_d;
         out.river_hw_km = hw;
+        out.river_level_km = wl;
         out.river_wet = 1.0 - smoothstep(0.002, 0.006, wl - h_river_ref);
         let bank_w = (hw * 0.9).max(0.02) + (h - wl).max(0.0) * 1.2;
         if riv_d < hw + bank_w {
