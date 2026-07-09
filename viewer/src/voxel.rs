@@ -947,7 +947,7 @@ pub fn build_chunk(
             for (nbi, da, db) in sides {
                 let nb = nbs[nbi];
                 let out_n = (da + db).normalize() - up * (da + db).normalize().dot(up);
-                let n_side = (out_n.normalize_or_zero() + up * 0.85).normalize();
+                let n_cube = (out_n.normalize_or_zero() + up * 0.85).normalize();
                 let mut run_start: Option<(i64, Mat)> = None;
                 let mut z = z_lo;
                 while z <= c.ground + 1 {
@@ -967,6 +967,25 @@ pub fn build_chunk(
                             // reports of 2026-07-08). Sun + sky-fill now do
                             // the modelling; keep only a whisper of bake.
                             let col = vary(vary(m0.color(tint), 0.90), bright(z0));
+                            // Riser normals: a natural terrain step is a
+                            // QUANTIZATION of a smooth slope, but a cube
+                            // normal admits only four side orientations — so
+                            // two faces meeting at a corner split light/dark
+                            // under any directional sun/moon, and a zigzag
+                            // contour line bands face-by-face (Austin's
+                            // annotated shots, 2026-07-08 night). Surface-
+                            // adjacent risers therefore inherit the SAME
+                            // continuous surface normal the tops shade with,
+                            // fading back to the cube normal a few blocks
+                            // down (real cliff walls) — and player-built
+                            // walls keep crisp cube shading outright.
+                            let n_side = if c.ground != c.ground0 {
+                                n_cube
+                            } else {
+                                let depth = (c.top_solid() - (z - 1)).max(0) as f64;
+                                let k = (0.85 - 0.28 * depth).clamp(0.0, 0.85);
+                                (top_n * k + n_cube * (1.0 - k)).normalize()
+                            };
                             quad([da * r1, db * r1, db * r0, da * r0], n_side, [col; 4], cave);
                             run_start = other.map(|mm| (z, mm));
                         }
