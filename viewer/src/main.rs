@@ -57,51 +57,57 @@ fn parse_args() -> Args {
     let mut i = 1;
     while i < argv.len() {
         let next = |i: usize| argv.get(i + 1).cloned().unwrap_or_default();
+        // "NaN"/"inf" parse as valid f64 and poison the camera (every
+        // comparison goes false: culling dies, tile selection explodes,
+        // torch sorting panics) — numeric args accept finite values only
+        let numf = |i: usize, d: f64| {
+            next(i).parse::<f64>().ok().filter(|v| v.is_finite()).unwrap_or(d)
+        };
         match argv[i].as_str() {
             "--capture" => {
                 a.capture = Some(next(i));
                 i += 1;
             }
             "--lat" => {
-                a.lat = next(i).parse().unwrap_or(a.lat);
+                a.lat = numf(i, a.lat).clamp(-90.0, 90.0);
                 i += 1;
             }
             "--lon" => {
-                a.lon = next(i).parse().unwrap_or(a.lon);
+                a.lon = numf(i, a.lon);
                 i += 1;
             }
             "--alt" => {
-                a.alt = next(i).parse().unwrap_or(a.alt);
+                a.alt = numf(i, a.alt).clamp(0.0025, 80000.0);
                 i += 1;
             }
             "--exagg" => {
-                a.exaggeration = next(i).parse().unwrap_or(a.exaggeration);
+                a.exaggeration = numf(i, a.exaggeration);
                 i += 1;
             }
             "--yaw" => {
-                a.yaw = next(i).parse().unwrap_or(a.yaw);
+                a.yaw = numf(i, a.yaw);
                 i += 1;
             }
             "--pitch" => {
-                a.pitch = next(i).parse().unwrap_or(a.pitch);
+                a.pitch = numf(i, a.pitch);
                 i += 1;
             }
             "--sun-lat" => {
-                let v: f64 = next(i).parse().unwrap_or(30.0);
+                let v = numf(i, 30.0);
                 a.sun = Some((v, a.sun.map_or(30.0, |s| s.1)));
                 i += 1;
             }
             "--sun-lon" => {
-                let v: f64 = next(i).parse().unwrap_or(30.0);
+                let v = numf(i, 30.0);
                 a.sun = Some((a.sun.map_or(30.0, |s| s.0), v));
                 i += 1;
             }
             "--day-len" => {
-                a.day_len = next(i).parse().unwrap_or(a.day_len);
+                a.day_len = numf(i, a.day_len);
                 i += 1;
             }
             "--patch" => {
-                a.patch = next(i).parse::<f64>().unwrap_or(a.patch).clamp(0.3, 2.0);
+                a.patch = numf(i, a.patch).clamp(0.3, 2.0);
                 i += 1;
             }
             "--auto-tilt" => a.auto_tilt = true,
@@ -352,6 +358,27 @@ fn torches_path(seed: i64) -> String {
     format!("{}/torches_seed{}.bin", assets_dir(), seed)
 }
 
+/// A structurally valid save file can still carry a corrupt record (face
+/// byte >= 6 panics `face_dir`; an off-lattice column or absurd edit delta
+/// poisons meshing) — every record is range-checked on load, bad ones are
+/// dropped with a warning instead of taking the session down.
+fn valid_column(face: u8, ci: u64, cj: u64) -> bool {
+    let n = triangulum_viewer::voxel::COLUMNS_PER_FACE;
+    (face as usize) < 6 && ci < n && cj < n
+}
+
+/// Largest per-column edit delta a save may carry: generous for gameplay
+/// (a 4 km tower), small enough that height arithmetic can't wrap.
+const MAX_EDIT_BLOCKS: i64 = 4096;
+
+/// Write through a temp file + rename so a crash mid-save can't leave a
+/// truncated file that silently drops the whole roll on the next load.
+fn write_atomic(path: &str, buf: &[u8]) -> std::io::Result<()> {
+    let tmp = format!("{path}.tmp");
+    std::fs::write(&tmp, buf)?;
+    std::fs::rename(&tmp, path)
+}
+
 fn load_torches(seed: i64) -> triangulum_viewer::voxel::Torches {
     let mut out = triangulum_viewer::voxel::Torches::default();
     let Ok(raw) = std::fs::read(torches_path(seed)) else { return out };
@@ -362,12 +389,20 @@ fn load_torches(seed: i64) -> triangulum_viewer::voxel::Torches {
     if raw.len() != 8 + n * 17 {
         return out;
     }
+    let mut dropped = 0usize;
     for k in 0..n {
         let o = 8 + k * 17;
         let face = raw[o];
         let ci = u64::from_le_bytes(raw[o + 1..o + 9].try_into().unwrap());
         let cj = u64::from_le_bytes(raw[o + 9..o + 17].try_into().unwrap());
+        if !valid_column(face, ci, cj) {
+            dropped += 1;
+            continue;
+        }
         out.insert((face, ci, cj));
+    }
+    if dropped > 0 {
+        eprintln!("torches: dropped {dropped} corrupt record(s)");
     }
     out
 }
@@ -381,7 +416,7 @@ fn save_torches(seed: i64, torches: &triangulum_viewer::voxel::Torches) {
         buf.extend_from_slice(&ci.to_le_bytes());
         buf.extend_from_slice(&cj.to_le_bytes());
     }
-    if let Err(e) = std::fs::write(torches_path(seed), buf) {
+    if let Err(e) = write_atomic(&torches_path(seed), &buf) {
         eprintln!("could not save torches: {e}");
     }
 }
@@ -396,13 +431,24 @@ fn load_edits(seed: i64) -> triangulum_viewer::voxel::Edits {
     if raw.len() != 8 + n * 25 {
         return out;
     }
+    let mut dropped = 0usize;
     for k in 0..n {
         let o = 8 + k * 25;
         let face = raw[o];
         let ci = u64::from_le_bytes(raw[o + 1..o + 9].try_into().unwrap());
         let cj = u64::from_le_bytes(raw[o + 9..o + 17].try_into().unwrap());
         let dh = i64::from_le_bytes(raw[o + 17..o + 25].try_into().unwrap());
+        if dh == 0 {
+            continue; // dig-then-refill leaves a harmless no-op entry
+        }
+        if !valid_column(face, ci, cj) || dh.abs() > MAX_EDIT_BLOCKS {
+            dropped += 1;
+            continue;
+        }
         out.insert((face, ci, cj), dh);
+    }
+    if dropped > 0 {
+        eprintln!("edits: dropped {dropped} corrupt record(s)");
     }
     out
 }
@@ -417,7 +463,7 @@ fn save_edits(seed: i64, edits: &triangulum_viewer::voxel::Edits) {
         buf.extend_from_slice(&cj.to_le_bytes());
         buf.extend_from_slice(&dh.to_le_bytes());
     }
-    if let Err(e) = std::fs::write(edits_path(seed), buf) {
+    if let Err(e) = write_atomic(&edits_path(seed), &buf) {
         eprintln!("could not save edits: {e}");
     }
 }
@@ -520,7 +566,9 @@ impl App {
     /// Commit a destination chosen in the photo map: position, then the
     /// photo's view if it carried one, then (opt-in) its time of day.
     fn apply_teleport(&mut self, act: triangulum_viewer::ui::TeleportAction) {
-        if act.lat.abs() > 90.0 {
+        // NaN passes an `abs() > 90` check (all NaN comparisons are false)
+        // and would poison the camera — require finite, in-range values
+        if !act.lat.is_finite() || !act.lon.is_finite() || act.lat.abs() > 90.0 {
             return;
         }
         self.player.teleport(
@@ -529,16 +577,17 @@ impl App {
             &mut self.camera,
             act.lat,
             act.lon,
-            act.alt_km,
+            act.alt_km.filter(|a| a.is_finite()),
             self.args.exaggeration,
         );
-        if let Some(y) = act.yaw_deg {
+        if let Some(y) = act.yaw_deg.filter(|v| v.is_finite()) {
             self.camera.yaw = y.to_radians();
         }
-        if let Some(p) = act.pitch_deg {
+        if let Some(p) = act.pitch_deg.filter(|v| v.is_finite()) {
             self.camera.pitch = p.to_radians().clamp(-1.50, 1.50);
         }
-        if let (Some(t), Some(gfx)) = (act.day_time_s, self.gfx.as_mut()) {
+        if let (Some(t), Some(gfx)) = (act.day_time_s.filter(|v| v.is_finite()), self.gfx.as_mut())
+        {
             gfx.renderer.set_day_time_s(t);
         }
     }

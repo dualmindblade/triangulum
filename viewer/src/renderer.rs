@@ -478,7 +478,7 @@ impl Renderer {
                     ((dir * cam_pos.length() - cam_pos).length_squared(), dir)
                 })
                 .collect();
-            ranked.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+            ranked.sort_by(|a, b| a.0.total_cmp(&b.0));
             for &(_, dir) in ranked.iter().take(MAX_LIGHTS) {
                 let top = crate::voxel::surface_height_km(planet, edits, dir, self.exaggeration);
                 let pos = dir * (planet.radius_km + top + 0.55 * crate::voxel::VOXEL_KM * self.exaggeration)

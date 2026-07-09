@@ -559,21 +559,26 @@ impl PhotoMap {
                 day_time_s: None,
             });
         }
-        // manual "lat lon [alt]" text, the old prompt's grammar
-        let parts: Vec<f64> = self
-            .coord_input
-            .split_whitespace()
-            .filter_map(|t| t.parse().ok())
-            .collect();
-        if parts.len() >= 2 {
-            return Some(TeleportAction {
-                lat: parts[0],
-                lon: parts[1],
-                alt_km: parts.get(2).copied(),
-                yaw_deg: None,
-                pitch_deg: None,
-                day_time_s: None,
-            });
+        // manual "lat lon [alt]" text, the old prompt's grammar — strict:
+        // exactly 2 or 3 tokens, every one a finite number ("NaN" parses as
+        // a valid f64 and would poison the camera), latitude in range
+        let toks: Vec<&str> = self.coord_input.split_whitespace().collect();
+        if toks.len() == 2 || toks.len() == 3 {
+            let parts: Vec<f64> = toks
+                .iter()
+                .filter_map(|t| t.parse().ok())
+                .filter(|v: &f64| v.is_finite())
+                .collect();
+            if parts.len() == toks.len() && parts[0].abs() <= 90.0 {
+                return Some(TeleportAction {
+                    lat: parts[0],
+                    lon: parts[1],
+                    alt_km: parts.get(2).copied().filter(|a| *a > 0.0),
+                    yaw_deg: None,
+                    pitch_deg: None,
+                    day_time_s: None,
+                });
+            }
         }
         None
     }
