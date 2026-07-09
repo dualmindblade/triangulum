@@ -1465,3 +1465,26 @@ coverage truncation, exemption-seam width) — the probe-first discipline
 
 Also: verify.sh counts SEVEN suites (Sol corrected our own docs), and
 sea-ice solidity + under-ice ceilings are now locked in invariant-survey.
+
+## Phase 8h — the pond wall family (2026-07-09, evening)
+
+Austin field-tested the Sol-triage build and photographed an 18 m water
+wall at a "lake" (-0.798 -67.941) — census triage showed it was a POND
+(the noise-pond system), the third variant of the mask-ends-mid-relief
+disease after lake territories and river gorges. The fix took SIX
+census-gated iterations, four of them wrong in instructive ways:
+unconditional interior flooding (79.5k pond walls + 141k jumps — ponds
+blanket mountainsides), a fixed 30 m bench budget (razor-edge cliffs at
+the budget boundary), an envelope-scaled bench without a water gate
+(benched a lake-flooded dip through its own lake surface: +54 m pond
+terrace ON a lake), and a 2%-grade gate alone (raster blends hide 55 m
+escarpments at 1.8%). What landed: benches for interior dips (never
+under existing water), pn-graded quadratic shore aprons (valley gate
+included), and three spawn gates (env0 < 0.13, <2% coarse grade, never
+inside lake flood territory). Every planet-census class ended BELOW its
+morning baseline: sites 52.9k -> 20.1k, pond walls -68%, JUMP -61%,
+liquid lake walls -64%. Since the pre-Sol baseline this morning: sites
+109.7k -> 20.1k (-82%). The method note stands: every single hypothesis
+this session that was shipped without a probe first turned out wrong;
+every probe-first fix survived. Ponds visibly change for Andrew (gone
+from crags, slopes, lake basins; interiors are shallow pools) — F-22.

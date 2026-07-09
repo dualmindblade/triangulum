@@ -91,6 +91,20 @@ texturing conversation with Andrew.
 
 ## FIXED
 
+### F-22 Pond water walls (Austin's photographed 18 m wall) — d97527e
+The noise-pond mask ended mid-relief exactly like lake territories did:
+pond water in walls over dips (shot_lat-0.798_lon-67.941, worst 300+ m in
+census). Fixed by interior benches (underwater ground under the pool, never
+under existing water), pn-graded shore aprons (valley-gate included — the
+likely anatomy of Austin's similar-looking RIVER stretch, unconfirmed until
+he finds it again), and three spawn gates: calm relief (env0 < 0.13),
+coarse ground < 2% grade, never inside lake flood territory. Census sites
+52.9k -> 20.1k; every class below its pre-fix baseline. Five iterations
+were census-falsified before this landed (unconditional interior flooding
+measured 79.5k pond walls + 141k jumps — recorded in the commit so nobody
+retries it). WORLD-VISIBLE for Andrew: ponds vanish from craggy/high/
+sloped country and lake basins; pond interiors are shallow pools, not pits.
+
 ### F-16 The liquid water-wall family (Sol findings 1+3) — 072a512
 Shore aprons + 2.6 r flood bound + carve-wide river ownership in the shared
 sample(); census -90% findings, worst 143 m wall at 4.377 39.078 now a
