@@ -1,0 +1,31 @@
+# Visual read of the flooded river-bank pool at 3.7259 63.0658 (BUGS.md W-6).
+sun 50 63
+
+# straight down onto the water-filled pit — reads as water, not a dry hole
+teleport 3.725916 63.065764 0.010
+look 0 -89
+shot pool_topdown
+
+# low oblique: the pool sitting in the bank, water surface at the river table
+teleport 3.725916 63.065860 0.006
+look 250 -20
+shot pool_oblique
+
+# wider context from 25 m: the river thread and its flooded bank pockets
+teleport 3.7259 63.0658 0.025
+look 200 -30
+shot pool_context
+
+# underwater: drop in and look around while submerged (blue water tint)
+teleport 3.725916 63.065764 0.003
+mode walk
+wait 4
+look 30 -8
+shot pool_underwater
+
+# the original waterline-pit coordinate (photographed DRY at 0707a2f): from a
+# low oblique it must now read as WATER pockets in the bank, not a dry hole
+mode fly
+teleport 3.726 63.065 0.012
+look 20 -40
+shot pit_site_reshot

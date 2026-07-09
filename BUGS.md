@@ -32,10 +32,22 @@ below a river/lake water table render dry with the water surface above them
 — walk in and the physics/visuals disagree with the hydrology. Flood cave
 cells whose ceiling sits below the local water level (needs care with the
 walkable-ice and cave-darkness paths). Noted by Austin 2026-07-08.
-MITIGATED 0707a2f: the cave band now keeps clear of river corridors and
+MITIGATED 0707a2f: the cave band kept clear of river corridors and
 near-waterline lake shores entirely (a mouth breached a river bank at
-3.726 63.065 — dry pit below the water table, photographed). True flooded
-caves remain the open feature; this entry stays open for that.
+3.726 63.065 — dry pit below the water table, photographed).
+RESOLVED (feat/flooded-caves): true flooded caves. The 0707a2f suppression
+is lifted; instead ColCtx carries a per-column `cave_water` table (river
+graph level within a bank band, lake spill level within its shore band, or
+sea level on the coast, never perched above the column's own surface).
+Carved cave cells at/below it render as water (free top surface under an air
+pocket / open pit, side faces only into dry cave passages — never a wall over
+lower dry ground) and `water_surface_km` reports the sub-surface pool so a
+player swims (verify: scripts/flooded-caves.play — underwater, has_water, no
+fall-through, swim-up-and-out, and digging a shaft down floods it; frames in
+scripts/flooded-caves-visual.play). Cave water is always LIQUID (underground,
+never the walkable-ice path); the single-surface model still can't show an
+air pocket that a player must reach through a fully-submerged passage — such
+a pocket reports as submerged. The old dry pit at 3.726 63.065 now floods.
 
 ### W-5b Frozen summit-lake ice cliffs (residual of W-5, remote + frozen)
 After the W-5 bake fixes (8047b27) the wall family's residual is ~600 m ice

@@ -22,7 +22,7 @@ if [ -f output/seed42_r8/planet_data.npz ]; then
 fi
 
 fail=0
-for s in physics-regressions water-regressions lake-regressions invariant-survey auto-survey camera-controls; do
+for s in physics-regressions water-regressions lake-regressions flooded-caves invariant-survey auto-survey camera-controls; do
   printf "  %-22s " "$s"
   if "$BIN" "viewer/scripts/$s.play" >/dev/null 2>&1; then
     echo "PASS"

@@ -171,9 +171,10 @@ fn main() -> anyhow::Result<()> {
             triangulum_viewer::terrain::VOXEL_OCTAVES,
         );
         let feet = camera.ground_km;
+        let eye = feet + camera.altitude_km;
         let support = support_below_km(&planet, edits, d, feet + 1e-7, exagg);
         let ceil = ceiling_above_km(&planet, edits, d, feet + player::EYE_KM, exagg);
-        let water = water_surface_km(&planet, edits, d, exagg);
+        let water = water_surface_km(&planet, edits, d, eye, exagg);
         let js = serde_json::json!({
             "lat_deg": camera.lat.to_degrees(),
             "lon_deg": camera.lon.to_degrees(),
@@ -364,11 +365,12 @@ fn main() -> anyhow::Result<()> {
                 };
                 let dir = camera.position().normalize();
                 let feet = camera.ground_km;
+                let eye = feet + camera.altitude_km;
                 let actual = match field.as_str() {
                     "grounded" => V::B(ps.grounded),
                     "underwater" => V::B(ps.underwater),
                     "has_water" => {
-                        V::B(water_surface_km(&planet, &edits, dir, exagg).is_some())
+                        V::B(water_surface_km(&planet, &edits, dir, eye, exagg).is_some())
                     }
                     "mode" => V::S(if ps.mode == Mode::Walk { "walk" } else { "fly" }),
                     "alt_km" => V::N(camera.altitude_km),
@@ -385,7 +387,7 @@ fn main() -> anyhow::Result<()> {
                     "support_below_km" => {
                         V::N(support_below_km(&planet, &edits, dir, feet + 1e-7, exagg))
                     }
-                    "water_surface_km" => match water_surface_km(&planet, &edits, dir, exagg) {
+                    "water_surface_km" => match water_surface_km(&planet, &edits, dir, eye, exagg) {
                         Some(w) => V::N(w),
                         None => V::None,
                     },

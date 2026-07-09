@@ -130,6 +130,13 @@ pub struct ColCtx {
     pub h_km: f32,
     pub water: i64,     // water surface block; i64::MIN = dry column
     pub cave_bits: u32, // bit k set = block at z = ground0 - k carved out
+    /// Local water table for FLOODED CAVES (BUGS.md W-6): any carved cave cell
+    /// at z <= cave_water fills with water instead of air. Set only for dry-
+    /// surface columns whose caves pass below a nearby river/lake/sea water
+    /// table; i64::MIN when the caves (if any) stay dry. Distinct from `water`
+    /// (the ONE open-air surface body) — this is an underground pool under
+    /// solid rock, which the single-surface model can't otherwise express.
+    pub cave_water: i64,
     pub koppen: u8,
     pub e_raw: f32,
     pub temp: f32,
@@ -170,6 +177,13 @@ impl ColCtx {
 
     pub fn has_water(&self) -> bool {
         self.water != i64::MIN && self.water > self.top_solid()
+    }
+
+    /// Is block z a flooded-cave WATER cell? True for a carved void (cave air
+    /// or a dug shaft) at or below the local cave water table — false for solid
+    /// rock, for dry cave air above the table, and for open sky above ground.
+    pub fn cave_flooded(&self, z: i64) -> bool {
+        self.cave_water != i64::MIN && z <= self.cave_water && !self.filled(z)
     }
 
     /// A below-freezing water column renders as a solid ICE sheet (Mat::Ice,
@@ -251,17 +265,8 @@ pub fn col_ctx(planet: &Planet, edits: &Edits, face: usize, ci: u64, cj: u64) ->
     // caves: tubes along the intersection of two noise level-sets, in dry
     // land only. The radial offset gives the noise true vertical variation.
     // Anchored to the natural ground so edits don't drag the cave band.
-    // NOT near open water (BUGS.md W-6): a mouth breaching a river bank or
-    // lake shore opens a bone-dry pit with its floor below the water table
-    // two columns away (photographed at 3.726 63.065). Until caves can
-    // flood, they keep clear of river corridors and near-waterline lake
-    // shores entirely.
-    let near_river = s.river_dist_km.is_finite()
-        && s.river_dist_km < s.river_hw_km * 2.0 + 0.025;
-    let near_lake_shore =
-        s.lake_level_km.is_finite() && s.h_km < s.lake_level_km + 0.006;
     let mut cave_bits = 0u32;
-    if water == i64::MIN && ground0 > 4 && !near_river && !near_lake_shore {
+    if water == i64::MIN && ground0 > 4 {
         let dir = face_dir(face, u, v);
         let seed = planet.seed;
         let region = crate::noise::gradient_noise(dir * 90.0, seed.wrapping_add(40961));
@@ -285,12 +290,50 @@ pub fn col_ctx(planet: &Planet, edits: &Edits, face: usize, ci: u64, cj: u64) ->
         }
     }
 
+    // Flooded caves (BUGS.md W-6): where a carved cave passes below a nearby
+    // water table its submerged cells fill with water. The earlier fix instead
+    // SUPPRESSED caves near rivers/lakes, because a mouth breaching a bank
+    // opened a bone-dry pit with its floor below the water table (photographed
+    // at 3.726 63.065). Flooding those cells turns that pit into water, so the
+    // suppression is lifted here. The table is a LATERAL groundwater level read
+    // from the sample even on a dry bank: the river's graph level within a
+    // bank-influence band, a lake's spill level within its shore band, or sea
+    // level right on the coast. Groundwater beyond that influence is out of
+    // scope (caves there stay dry). Only dry-surface columns carry caves (gate
+    // above), so cave water never collides with the single open-air `water`.
+    let mut cave_water = i64::MIN;
+    if cave_bits != 0 {
+        let mut table_km = f64::NEG_INFINITY;
+        if s.river_level_km.is_finite() && s.river_dist_km < s.river_hw_km * 3.0 + 0.05 {
+            table_km = table_km.max(s.river_level_km);
+        }
+        if s.lake_level_km.is_finite() && s.h_km < s.lake_level_km + 0.010 {
+            table_km = table_km.max(s.lake_level_km);
+        }
+        if !s.sea && s.e_raw < 0.02 && planet.ocean(face, u, v) as f64 > 0.5 {
+            table_km = table_km.max(0.0);
+        }
+        if table_km.is_finite() {
+            let wt = (table_km * 1000.0).floor() as i64;
+            // never perch the table ABOVE this column's own surface — a dry
+            // column standing below the water line is the sample's perch case,
+            // and flooding it would stand water over dry land. Flood only when
+            // some carved cell actually sits at/below the (sub-surface) table.
+            let floods =
+                wt <= ground0 && (0..CAVE_DEPTH).any(|k| (cave_bits >> k) & 1 == 1 && ground0 - k <= wt);
+            if floods {
+                cave_water = wt;
+            }
+        }
+    }
+
     ColCtx {
         ground,
         ground0,
         h_km: s.h_km as f32,
         water,
         cave_bits,
+        cave_water,
         koppen: planet.koppen(face, u, v),
         e_raw: s.e_raw as f32,
         temp: s.temp_c as f32,
@@ -624,24 +667,40 @@ pub fn ceiling_above_km(
     f64::INFINITY
 }
 
-/// Water surface height (km, exaggerated, incl. lift) under a direction,
-/// if this column holds water. For the wading/underwater check.
+/// Water surface height (km, exaggerated, incl. lift) the point `at_km` in the
+/// column under `dir` is submerged beneath, if any — for wading/underwater.
+///
+/// The OPEN-AIR body (sea/river/lake/pond) is reported whenever the column
+/// holds one, height-independent (so a camera hovering just above a lake still
+/// reads "water here", as the surveys assert). A FLOODED CAVE (BUGS.md W-6) is
+/// an underground pool capped by rock, so it is reported only when `at_km`
+/// actually sits at/below its table — otherwise a player standing on dry land
+/// over a flooded tunnel would read as swimming, and a dry bank near a lake
+/// would spuriously gain a water surface.
 pub fn water_surface_km(
     planet: &Planet,
     edits: &Edits,
     dir: DVec3,
+    at_km: f64,
     exaggeration: f64,
 ) -> Option<f64> {
     let (face, u, v) = crate::planet::face_from_dir(dir);
     let (ci, cj) = column_of(u, v);
     let c = col_ctx(planet, edits, face, ci, cj);
+    let scale = VOXEL_KM * exaggeration;
+    let lift = lift_km(exaggeration);
     // frozen columns are solid ice (walkable, handled by support_below_km),
     // NOT liquid — so wading/underwater physics must not see water here.
     if c.has_water() && c.frozen_ice().is_none() {
-        Some(c.water as f64 * VOXEL_KM * exaggeration + lift_km(exaggeration))
-    } else {
-        None
+        return Some(c.water as f64 * scale + lift);
     }
+    if c.cave_water != i64::MIN {
+        let surf = c.cave_water as f64 * scale + lift;
+        if at_km < surf {
+            return Some(surf);
+        }
+    }
+    None
 }
 
 /// March along the look ray until it dips below the walkable surface;
@@ -1157,6 +1216,59 @@ pub fn build_chunk(
                             [wside; 4],
                             1.0,
                         );
+                    }
+                }
+            }
+
+            // ---- flooded caves (BUGS.md W-6): carved cave cells at/below the
+            // local water table hold water. A dry-surface column only (col_ctx
+            // never sets cave_water where the open-air `water` exists), so this
+            // never overlaps the block above. The rock walls/floor/ceiling are
+            // already opaque from the solid pass; here we add the water itself:
+            // a free TOP surface wherever dry air sits above the pool (an air
+            // pocket to dive from, or an open water-filled pit), and SIDE faces
+            // only where the pool meets a DRY cave passage in a neighbour.
+            // Faces are NOT drawn against open sky over lower ground — that
+            // would stand a wall of water above a dry neighbour (the very W-1/
+            // shore-lip family we avoid); an open pit is instead enclosed by
+            // its own rock walls and read from above through the top surface.
+            if c.cave_water != i64::MIN {
+                let cw = c.cave_water;
+                let base = Mat::Water.color(tint);
+                let wz_lo = c.ground0 - CAVE_DEPTH;
+                for z in wz_lo..=cw {
+                    if !c.cave_flooded(z) {
+                        continue;
+                    }
+                    // cave darkness (torch-relightable), same depth ramp as the
+                    // rock: a shallow pit pool stays lit, a deep flood goes dark
+                    let dim =
+                        (1.0 - 0.20 * (c.top_solid() - z).max(0) as f32).clamp(0.25, 1.0);
+                    // tint toward deep water with depth below the surface
+                    let t = ((cw - z) as f32 / 2000.0).clamp(0.0, 1.0);
+                    let deep = [0.004, 0.013, 0.055];
+                    let wcol = [
+                        base[0] + (deep[0] - base[0]) * t,
+                        base[1] + (deep[1] - base[1]) * t,
+                        base[2] + (deep[2] - base[2]) * t,
+                    ];
+                    // free surface: cell above is dry air (not water, not rock)
+                    if !c.filled(z + 1) && !c.cave_flooded(z + 1) {
+                        let r = shell(z);
+                        quad([d00 * r, d10 * r, d11 * r, d01 * r], up, [wcol; 4], dim);
+                    }
+                    // sides: only into a DRY cave passage (carved air within the
+                    // neighbour's own band), never open sky above lower ground
+                    let wside = vary(wcol, 0.93);
+                    for (nbi, da, db) in sides {
+                        let nb = nbs[nbi];
+                        let nb_dry_cave =
+                            z <= nb.ground && !nb.filled(z) && !nb.cave_flooded(z);
+                        if nb_dry_cave {
+                            let n_side = (out_dirs[nbi] * 0.18 + up).normalize();
+                            let (r0, r1) = (shell(z - 1), shell(z));
+                            quad([da * r1, db * r1, db * r0, da * r0], n_side, [wside; 4], dim);
+                        }
                     }
                 }
             }
