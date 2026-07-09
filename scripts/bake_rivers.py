@@ -97,8 +97,18 @@ for _ in range(2):
     for i in touched:
         up, dn = main_up[i], rcv[i]
         if up >= 0 and dn >= 0 and dn != i:
-            nxyz[i] = 0.5 * sxyz[i] + 0.25 * sxyz[up] + 0.25 * sxyz[dn]
-            nlevel[i] = min(slevel[i], 0.5 * slevel[i] + 0.25 * slevel[up] + 0.25 * slevel[dn])
+            if ocean[dn]:
+                # a MOUTH node stays anchored at its own cell: smoothing
+                # dragged it toward an ocean receiver up to ~40 km offshore,
+                # so the great river's course missed its own mouth cell by
+                # 10+ km and the documented mouth sat bone dry (round-6
+                # hunt). The unsmoothed final kink is what deltas look like
+                # anyway; the segment to the ocean cell still carries the
+                # river into the sea.
+                pass
+            else:
+                nxyz[i] = 0.5 * sxyz[i] + 0.25 * sxyz[up] + 0.25 * sxyz[dn]
+                nlevel[i] = min(slevel[i], 0.5 * slevel[i] + 0.25 * slevel[up] + 0.25 * slevel[dn])
     sxyz, slevel = nxyz, nlevel
 sxyz /= np.linalg.norm(sxyz, axis=1, keepdims=True)
 # smoothing moved nodes off their source cells (up to ~7 km): re-anchor
