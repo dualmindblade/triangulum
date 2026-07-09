@@ -937,6 +937,22 @@ pub fn build_chunk(
                     quad([d00 * r, d01 * r, d11 * r, d10 * r], -up, [cdark; 4], cave);
                 }
             }
+            // True horizontal axes of THIS column, for face normals. The old
+            // `(da+db) - up` derivation left the face's POSITION relative to
+            // the chunk center, not its orientation: the ~0.7 m face offset
+            // drowned under up to ~28 m of column offset, so side normals
+            // swept radially away from each chunk's center — same-orientation
+            // faces lit differently by where they sat (Austin's annotated
+            // one-block step), patterns repeating on the 32-column chunk
+            // grid, and water/tree faces erratic for the same reason.
+            let ei_dir = {
+                let d = d10 - d00;
+                (d - up * d.dot(up)).normalize_or_zero()
+            };
+            let ej_dir = {
+                let d = d01 - d00;
+                (d - up * d.dot(up)).normalize_or_zero()
+            };
             // sides: contiguous exposed runs per neighbor, split by material
             let sides = [
                 (0usize, d10, d11), // +i
@@ -944,10 +960,10 @@ pub fn build_chunk(
                 (2usize, d11, d01), // +j
                 (3usize, d00, d10), // -j
             ];
+            let out_dirs = [ei_dir, -ei_dir, ej_dir, -ej_dir];
             for (nbi, da, db) in sides {
                 let nb = nbs[nbi];
-                let out_n = (da + db).normalize() - up * (da + db).normalize().dot(up);
-                let n_cube = (out_n.normalize_or_zero() + up * 0.85).normalize();
+                let n_cube = (out_dirs[nbi] + up * 0.85).normalize();
                 let mut run_start: Option<(i64, Mat)> = None;
                 let mut z = z_lo;
                 while z <= c.ground + 1 {
@@ -1097,8 +1113,9 @@ pub fn build_chunk(
                         i64::MIN
                     });
                     if nb_surf < w {
-                        let out_n = (da + db).normalize() - up * (da + db).normalize().dot(up);
-                        let n_side = (out_n.normalize_or_zero() * 0.18 + up).normalize();
+                        // true face direction (see ei_dir/ej_dir above) — the
+                        // old position-derived out_n corrupted these too
+                        let n_side = (out_dirs[nbi] * 0.18 + up).normalize();
                         let (r0, r1) = (shell(nb_surf.max(c.top_solid())), shell(w));
                         quad(
                             [da * r1, db * r1, db * r0, da * r0],
@@ -1177,16 +1194,26 @@ pub fn build_chunk(
             let r = shell(tz - 1);
             quad([d00 * r, d01 * r, d11 * r, d10 * r], -up, [vary(col, 0.6); 4], 1.0);
         }
+        // true face directions (not position-derived — see the terrain
+        // sides): tree faces were erratically lit by where the tree stood
+        // in its chunk, which is what made twin shrubs read bright vs black
+        let ei_dir = {
+            let d = d10 - d00;
+            (d - up * d.dot(up)).normalize_or_zero()
+        };
+        let ej_dir = {
+            let d = d01 - d00;
+            (d - up * d.dot(up)).normalize_or_zero()
+        };
         let sides = [
-            (1i64, 0i64, d10, d11),
-            (-1, 0, d01, d00),
-            (0, 1, d11, d01),
-            (0, -1, d00, d10),
+            (1i64, 0i64, d10, d11, ei_dir),
+            (-1, 0, d01, d00, -ei_dir),
+            (0, 1, d11, d01, ej_dir),
+            (0, -1, d00, d10, -ej_dir),
         ];
-        for (di, dj, da, db) in sides {
+        for (di, dj, da, db, out_dir) in sides {
             if !solid_at(di, dj, tz) {
-                let out_n = (da + db).normalize() - up * (da + db).normalize().dot(up);
-                let n_side = (out_n.normalize_or_zero() + up * 0.85).normalize();
+                let n_side = (out_dir + up * 0.85).normalize();
                 let (r0, r1) = (shell(tz - 1), shell(tz));
                 quad([da * r1, db * r1, db * r0, da * r0], n_side, [vary(col, 0.8); 4], 1.0);
             }
