@@ -1333,3 +1333,62 @@ desert river reaching the sea, lake 414 unchanged. REBAKE REQUIRED
   native-exe args get mangled (keep commit messages quote-free), and a
   Get-Content/Set-Content round-trip mojibakes UTF-8 (use IO.File with
   UTF8Encoding(false) or dedicated file tools).
+
+## Phase 8f - the shading saga ends at the normals; the rivers find their shores (2026-07-08, evening)
+
+A day-long duet: Austin flying and photographing on a hash-verified build,
+each report falsifying the previous explanation until only the truth was
+left. Two long threads closed at their roots.
+
+### The shading saga (seven layers, one root)
+
+"Banding" turned out to be SEVEN stacked artifacts: fall-line stripes
+(F-2), terrace rings (F-5), lee-face collapse (F-8), riser bake (F-11),
+near-black dirt palette, low-moon inversion (flat night floor), and -
+found when Austin asked "those two faces have the SAME orientation,
+right?" - the root: side-face normals were POSITION-derived. The
+out_n = normalize(da+db) - up*dot(...) formula left the face's offset from
+the CHUNK CENTER (~28 m) rather than its orientation (~0.7 m), so every
+side normal in the world swept radially away from its chunk's middle:
+same-orientation faces lit by where they sat, patterns repeating on the
+32-column chunk grid, twin shrubs bright vs black, erratic water teeth.
+Fixed with true per-column horizontal axes at all three face sites
+(terrain risers, water sides, tree faces). Then the last asymmetry: wall
+faces got the missing half of the corner AO (tops darkened toward walls,
+walls gave nothing back - creases now shade continuously around the fold).
+
+Austin's method note, worth keeping: he annotated screenshots with arrows
+and labels, counted nothing but refused every explanation that did not
+cover his evidence, and was right four times in a row. The census and
+sidecar repro pipeline turned each of his photos into a deterministic
+experiment within minutes.
+
+### The shoreline saga (clamps were treating a data disease)
+
+The one-block river lip was STRUCTURAL: water was only assigned inside the
+channel (riv_d < hw) while the bank blend carves banks ~1.2 m BELOW the
+water level - every river ringed by dry land under its own waterline. Two
+rendering clamps (4- then 8-neighbour) could only mask it. The real fix:
+carved-below-the-waterline columns flood (same perch guard) - the
+shoreline lands where the carved profile crosses the level, which rounds
+flush by construction, and rivers now render at their TRUE carved width.
+Voxel lip survey (census --lips, built this evening on Austin's
+suggestion): raw findings -66%; remaining river entries are frozen shores
+(walkable ice, exempt by design) and W-5 lake-seam residuals.
+
+### Also landed today, same session
+
+Photo-map teleport UI (egui + hand-rolled wgpu paint backend; markers/
+list/preview, bulk delete to trash, opt-in time travel from sidecar
+day-cycle time), build stamps in title + sidecars (option_env, never
+fails the build), cave suppression near water tables (W-6 mitigation,
+after Austin photographed his own morning prediction), dirt as dry loam,
+sky-shaped night floor.
+
+### Open, in recommended order
+
+W-5 (knife-ridge lakes - bake-level whole-lake footprint; the census
+holds the finish line), fresh discovery round against the now-clean
+baseline (the big families were masking whatever is underneath), W-6
+proper (flooded caves as a feature), W-3 (rapids/waterfalls art), V-1 +
+texturing (the "better than Minecraft" conversation - Andrew's call).
