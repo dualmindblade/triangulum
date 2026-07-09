@@ -961,6 +961,16 @@ pub fn build_chunk(
                 (3usize, d00, d10), // -j
             ];
             let out_dirs = [ei_dir, -ei_dir, ej_dir, -ej_dir];
+            // air-side column offsets per side: the facing column, and the
+            // lateral columns diagonal to the da/db corners — the occluders
+            // for wall-face ambient occlusion (below)
+            let nb_off = [(1i64, 0i64), (-1, 0), (0, 1), (0, -1)];
+            let lat_off: [[(i64, i64); 2]; 4] = [
+                [(1, -1), (1, 1)],   // +i: da is the lower-j corner
+                [(-1, 1), (-1, -1)], // -i: da is the upper-j corner
+                [(1, 1), (-1, 1)],   // +j: da is the upper-i corner
+                [(-1, -1), (1, -1)], // -j: da is the lower-i corner
+            ];
             for (nbi, da, db) in sides {
                 let nb = nbs[nbi];
                 let n_cube = (out_dirs[nbi] + up * 0.85).normalize();
@@ -1002,7 +1012,31 @@ pub fn build_chunk(
                                 let k = (0.85 - 0.28 * depth).clamp(0.0, 0.85);
                                 (top_n * k + n_cube * (1.0 - k)).normalize()
                             };
-                            quad([da * r1, db * r1, db * r0, da * r0], n_side, [col; 4], cave);
+                            // Wall ambient occlusion — the missing half of
+                            // the tops' corner shadow. Without it a crease
+                            // darkens only on the floor side and the shadow
+                            // stops dead at the crease line (Austin,
+                            // 2026-07-08 late). Same occluder rule and
+                            // falloff as the top faces: for each vertex,
+                            // the air-side cells beyond the edge, lateral
+                            // to the corner, and diagonal.
+                            let (ox, oy) = nb_off[nbi];
+                            let ao = |corner: usize, ze: i64, zr: i64| -> f32 {
+                                let (lx, ly) = lat_off[nbi][corner];
+                                let s1 = at(i + ox, j + oy).filled(ze) as i32;
+                                let s2 = at(i + lx, j + ly).filled(zr) as i32;
+                                let dd = at(i + lx, j + ly).filled(ze) as i32;
+                                let lvl = if s1 + s2 == 2 { 3 } else { s1 + s2 + dd };
+                                1.0 - 0.15 * lvl as f32
+                            };
+                            let (zt, zb) = (z - 1, z0);
+                            let cols = [
+                                vary(col, ao(0, zt + 1, zt)), // da, top
+                                vary(col, ao(1, zt + 1, zt)), // db, top
+                                vary(col, ao(1, zb - 1, zb)), // db, bottom
+                                vary(col, ao(0, zb - 1, zb)), // da, bottom
+                            ];
+                            quad([da * r1, db * r1, db * r0, da * r0], n_side, cols, cave);
                             run_start = other.map(|mm| (z, mm));
                         }
                         _ => {}
