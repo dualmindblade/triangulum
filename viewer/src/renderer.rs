@@ -80,6 +80,18 @@ struct Globals {
 /// How many placed torches can light a frame at once (nearest win).
 pub const MAX_LIGHTS: usize = 16;
 
+fn torch_phase(face: u8, ci: u64, cj: u64) -> f64 {
+    let mut x = ci
+        ^ cj.rotate_left(21)
+        ^ (face as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+    x ^= x >> 30;
+    x = x.wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    x ^= x >> 27;
+    x = x.wrapping_mul(0x94D0_49BB_1331_11EB);
+    x ^= x >> 31;
+    (x as f64 / u64::MAX as f64) * std::f64::consts::TAU
+}
+
 struct GpuTile {
     origin_km: DVec3,
     vertex_buf: wgpu::Buffer,
@@ -125,7 +137,7 @@ pub struct Renderer {
     pub day_len_s: f64,
     /// Longitude (radians) that starts the cycle at mid-morning.
     pub sun_ref_lon: f64,
-    start: std::time::Instant,
+    render_time_s: f64,
     /// Voxel patch radius multiplier (--patch): 1.0 = the classic
     /// 200–500 m disc, 2.0 = twice the radius (4x the chunks — streaming
     /// makes that affordable).
@@ -148,6 +160,11 @@ pub struct Renderer {
     chunk_epoch: u64,
     chunk_tx: mpsc::Sender<(ChunkKey, u64, TileMesh)>,
     chunk_rx: mpsc::Receiver<(ChunkKey, u64, TileMesh)>,
+    /// Immutable world-state snapshots shared by in-flight chunk builders.
+    /// Refreshed only when edits/torches change, so queuing many chunks does
+    /// not clone the whole edited world per request.
+    edit_snapshot: Arc<Edits>,
+    torch_snapshot: Arc<Torches>,
 }
 
 impl Renderer {
@@ -322,12 +339,14 @@ impl Renderer {
             torches: Torches::default(),
             day_len_s: 0.0,
             sun_ref_lon: 0.0,
-            start: std::time::Instant::now(),
+            render_time_s: 0.0,
             patch_scale: 1.0,
             chunk_pending: HashMap::new(),
             chunk_epoch: 0,
             chunk_tx: tx,
             chunk_rx: rx,
+            edit_snapshot: Arc::new(Edits::default()),
+            torch_snapshot: Arc::new(Torches::default()),
         }
     }
 
@@ -353,8 +372,34 @@ impl Renderer {
         }
     }
 
+    pub fn set_render_time_s(&mut self, t_s: f64) {
+        if t_s.is_finite() {
+            self.render_time_s = t_s.max(0.0);
+        }
+    }
+
+    pub fn advance_render_time_s(&mut self, dt_s: f64) {
+        if dt_s.is_finite() && dt_s > 0.0 {
+            self.render_time_s += dt_s;
+        }
+    }
+
+    pub fn refresh_edits_snapshot(&mut self, edits: &Edits) {
+        self.edit_snapshot = Arc::new(edits.clone());
+    }
+
+    pub fn refresh_world_snapshot(&mut self, edits: &Edits) {
+        self.refresh_edits_snapshot(edits);
+        self.torch_snapshot = Arc::new(self.torches.clone());
+    }
+
+    pub fn set_torches(&mut self, torches: Torches) {
+        self.torch_snapshot = Arc::new(torches.clone());
+        self.torches = torches;
+    }
+
     pub fn sun_state(&self, cam_pos: DVec3) -> SunState {
-        let t_s = self.start.elapsed().as_secs_f64();
+        let t_s = self.render_time_s;
         let dir = self.sun_dir.unwrap_or_else(|| {
             if self.day_len_s > 0.0 {
                 // the sun hangs in space and the planet turns under it:
@@ -383,12 +428,7 @@ impl Renderer {
     /// No-op when the sun is pinned or the cycle is off.
     pub fn set_day_time_s(&mut self, t_s: f64) {
         if self.day_len_s > 0.0 && self.sun_dir.is_none() {
-            let t = t_s.rem_euclid(self.day_len_s);
-            if let Some(start) =
-                std::time::Instant::now().checked_sub(std::time::Duration::from_secs_f64(t))
-            {
-                self.start = start;
-            }
+            self.render_time_s = t_s.rem_euclid(self.day_len_s);
         }
     }
 
@@ -444,7 +484,7 @@ impl Renderer {
         // upload globals (camera-relative view-projection, f64 -> f32 at the end)
         let vp = camera.view_proj(self.size.0 as f64 / self.size.1 as f64);
         let vp32 = Mat4::from_cols_array(&vp.to_cols_array().map(|x| x as f32));
-        let t_s = self.start.elapsed().as_secs_f64();
+        let t_s = self.render_time_s;
         let sun = self.sun_state(cam_pos).dir;
         // the moon rides opposite the sun (rises at sunset, near-full), tilted
         // ~18 deg off the solar path about the world X axis so it isn't a
@@ -468,24 +508,24 @@ impl Renderer {
         let mut n_lights = 0usize;
         if camera.altitude_km < VOXEL_MAX_ALT_KM && !self.torches.is_empty() {
             let nn = crate::voxel::COLUMNS_PER_FACE as f64;
-            let mut ranked: Vec<(f64, DVec3)> = self
+            let mut ranked: Vec<(f64, (u8, u64, u64), DVec3)> = self
                 .torches
                 .iter()
                 .map(|&(f, ci, cj)| {
                     let u = -1.0 + 2.0 * (ci as f64 + 0.5) / nn;
                     let v = -1.0 + 2.0 * (cj as f64 + 0.5) / nn;
                     let dir = crate::planet::face_dir(f as usize, u, v);
-                    ((dir * cam_pos.length() - cam_pos).length_squared(), dir)
+                    ((dir * cam_pos.length() - cam_pos).length_squared(), (f, ci, cj), dir)
                 })
                 .collect();
             ranked.sort_by(|a, b| a.0.total_cmp(&b.0));
-            for &(_, dir) in ranked.iter().take(MAX_LIGHTS) {
+            for &(_, (f, ci, cj), dir) in ranked.iter().take(MAX_LIGHTS) {
                 let top = crate::voxel::surface_height_km(planet, edits, dir, self.exaggeration);
                 let pos = dir * (planet.radius_km + top + 0.55 * crate::voxel::VOXEL_KM * self.exaggeration)
                     - cam_pos;
                 // each flame breathes on its own phase
                 let flicker =
-                    (0.88 + 0.18 * (t_s * 9.0 + n_lights as f64 * 2.4).sin()) as f32;
+                    (0.88 + 0.18 * (t_s * 9.0 + torch_phase(f, ci, cj)).sin()) as f32;
                 lights[n_lights] = [pos.x as f32, pos.y as f32, pos.z as f32, flicker];
                 n_lights += 1;
             }
@@ -543,11 +583,11 @@ impl Renderer {
                     self.chunk_stale.remove(k); // rebuilt with the current edits
                     let tx = self.chunk_tx.clone();
                     let planet = Arc::clone(planet);
-                    let edits = edits.clone();
-                    let torches = self.torches.clone();
+                    let edits = Arc::clone(&self.edit_snapshot);
+                    let torches = Arc::clone(&self.torch_snapshot);
                     let key = *k;
                     rayon::spawn(move || {
-                        let mesh = build_chunk(&planet, &edits, &torches, key, exagg);
+                        let mesh = build_chunk(&planet, edits.as_ref(), torches.as_ref(), key, exagg);
                         let _ = tx.send((key, epoch, mesh));
                     });
                 }

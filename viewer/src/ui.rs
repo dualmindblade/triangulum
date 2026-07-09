@@ -209,6 +209,7 @@ impl PhotoMap {
         if self.open {
             self.photos = scan_photos(&self.interchange);
             self.selected = None;
+            self.preview = None;
             self.checked.clear();
             self.custom_dest = None;
             self.confirm_delete = false;
@@ -245,23 +246,63 @@ impl PhotoMap {
         self.preview = Some((idx, tex));
     }
 
+    fn trash_pair_paths(trash: &Path, png: &Path) -> Option<(PathBuf, PathBuf)> {
+        let stem = png.file_stem()?.to_string_lossy();
+        let ext = png.extension().and_then(|e| e.to_str()).unwrap_or("png");
+        for suffix in 0usize.. {
+            let base = if suffix == 0 {
+                stem.to_string()
+            } else {
+                format!("{stem}-{suffix}")
+            };
+            let png_dest = trash.join(format!("{base}.{ext}"));
+            let json_dest = trash.join(format!("{base}.json"));
+            if !png_dest.exists() && !json_dest.exists() {
+                return Some((png_dest, json_dest));
+            }
+        }
+        None
+    }
+
     fn delete_checked(&mut self) {
         let trash = self.interchange.join("trash");
-        let _ = std::fs::create_dir_all(&trash);
-        let mut moved = 0usize;
+        if let Err(e) = std::fs::create_dir_all(&trash) {
+            self.status = format!("trash unavailable: {e}");
+            return;
+        }
+        let mut moved_files = 0usize;
+        let mut failed_files = 0usize;
         for &i in &self.checked {
             if let Some(p) = self.photos.get(i) {
-                let dest = trash.join(p.path.file_name().unwrap_or_default());
-                if std::fs::rename(&p.path, &dest).is_ok() {
-                    moved += 1;
+                let Some((png_dest, json_dest)) = Self::trash_pair_paths(&trash, &p.path) else {
+                    failed_files += 1;
+                    continue;
+                };
+                if std::fs::rename(&p.path, &png_dest).is_err() {
+                    failed_files += 1;
+                    continue;
                 }
+                moved_files += 1;
                 let sc = p.path.with_extension("json");
                 if sc.exists() {
-                    let _ = std::fs::rename(&sc, trash.join(sc.file_name().unwrap_or_default()));
+                    match std::fs::rename(&sc, &json_dest) {
+                        Ok(()) => moved_files += 1,
+                        Err(_) => {
+                            failed_files += 1;
+                            moved_files -= 1;
+                            if std::fs::rename(&png_dest, &p.path).is_err() {
+                                failed_files += 1;
+                            }
+                        }
+                    }
                 }
             }
         }
-        self.status = format!("moved {moved} to interchange/trash/");
+        self.status = if failed_files == 0 {
+            format!("moved {moved_files} file(s) to interchange/trash/")
+        } else {
+            format!("moved {moved_files} file(s); {failed_files} file failure(s)")
+        };
         self.checked.clear();
         self.selected = None;
         self.preview = None;

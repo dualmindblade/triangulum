@@ -211,6 +211,7 @@ fn main() -> anyhow::Result<()> {
     // assertions that failed: a run with any failure exits non-zero, so a
     // .play script doubles as a self-checking regression/discovery test.
     let mut assert_fails: u32 = 0;
+    let mut sim_ticks: u64 = 0;
     for (ln, raw) in script.lines().enumerate() {
         let line = raw.split('#').next().unwrap_or("").trim();
         if line.is_empty() {
@@ -271,6 +272,7 @@ fn main() -> anyhow::Result<()> {
                 let steps = (secs / DT).round().max(1.0) as usize;
                 for _ in 0..steps {
                     ps.update(&planet, &edits, &mut camera, &input, exagg, DT);
+                    sim_ticks += 1;
                 }
                 trace!("[{}] hold {keys} {secs}s -> lat {:.6} lon {:.6} alt {:.5} grounded {}",
                     ln + 1, camera.lat.to_degrees(), camera.lon.to_degrees(),
@@ -281,6 +283,7 @@ fn main() -> anyhow::Result<()> {
                 let input = Input::default();
                 for _ in 0..steps {
                     ps.update(&planet, &edits, &mut camera, &input, exagg, DT);
+                    sim_ticks += 1;
                 }
                 trace!("[{}] wait {}s -> alt {:.4} grounded {}",
                     ln + 1, f(1)?, camera.altitude_km, ps.grounded);
@@ -293,6 +296,7 @@ fn main() -> anyhow::Result<()> {
                         if let Some(dirty) =
                             player::edit_block(&planet, &mut edits, &camera, ps.mode, dh, exagg)
                         {
+                            renderer.refresh_edits_snapshot(&edits);
                             renderer.invalidate_chunks(&dirty);
                             // the ground under the player may have moved
                             ps.refresh_after_edit(&planet, &edits, &camera, exagg);
@@ -304,7 +308,7 @@ fn main() -> anyhow::Result<()> {
                         if let Some(dirty) = player::toggle_torch(
                             &planet, &edits, &mut torches, &camera, ps.mode, exagg,
                         ) {
-                            renderer.torches = torches.clone();
+                            renderer.set_torches(torches.clone());
                             renderer.invalidate_chunks(&dirty);
                         } else {
                             trace!("[{}] tap r hit nothing in reach", ln + 1);
@@ -325,6 +329,7 @@ fn main() -> anyhow::Result<()> {
             }
             "shot" => {
                 let name = toks.get(1).copied().unwrap_or("frame");
+                renderer.set_render_time_s(sim_ticks as f64 * DT);
                 renderer.underwater = ps.underwater;
                 let n = renderer.capture(&planet, &camera, &edits, &format!("{dir}/{name}.png"))?;
                 write_state(name, &camera, &ps, &edits, &dir)?;
@@ -363,6 +368,9 @@ fn main() -> anyhow::Result<()> {
                 } else {
                     (toks.get(2).copied().unwrap_or("=="), toks.get(3).copied().unwrap_or(""))
                 };
+                if toks.len() > 5 {
+                    anyhow::bail!("line {}: assert: too many tokens", ln + 1);
+                }
                 let dir = camera.position().normalize();
                 let feet = camera.ground_km;
                 let eye = feet + camera.altitude_km;
@@ -408,7 +416,14 @@ fn main() -> anyhow::Result<()> {
                 };
                 let (pass, shown) = match &actual {
                     V::B(b) => {
-                        let w = want.eq_ignore_ascii_case("true") || want == "1";
+                        let w = match want.to_ascii_lowercase().as_str() {
+                            "true" | "1" => true,
+                            "false" | "0" => false,
+                            _ => anyhow::bail!(
+                                "line {}: assert bool: expected true/1/false/0, got `{want}`",
+                                ln + 1
+                            ),
+                        };
                         let p = match op {
                             "==" => *b == w,
                             "!=" => *b != w,
@@ -440,11 +455,36 @@ fn main() -> anyhow::Result<()> {
                             let w: f64 = want.parse().map_err(|_| {
                                 anyhow::anyhow!("line {}: assert: bad number `{want}`", ln + 1)
                             })?;
-                            let tol = toks.get(4).and_then(|s| s.parse().ok()).unwrap_or(0.01);
+                            if !w.is_finite() {
+                                anyhow::bail!(
+                                    "line {}: assert: non-finite number `{want}`",
+                                    ln + 1
+                                );
+                            }
+                            let eq = (n - w).abs() <= 1e-6 + w.abs() * 1e-4;
                             let p = match op {
-                                "==" => (n - w).abs() <= 1e-6 + w.abs() * 1e-4,
-                                "~" => (n - w).abs() <= tol,
-                                "!=" => (n - w).abs() > 1e-9,
+                                "==" => eq,
+                                "~" => {
+                                    let tol = if let Some(raw_tol) = toks.get(4) {
+                                        let tol: f64 = raw_tol.parse().map_err(|_| {
+                                            anyhow::anyhow!(
+                                                "line {}: assert: bad tolerance `{raw_tol}`",
+                                                ln + 1
+                                            )
+                                        })?;
+                                        if !tol.is_finite() || tol < 0.0 {
+                                            anyhow::bail!(
+                                                "line {}: assert: bad tolerance `{raw_tol}`",
+                                                ln + 1
+                                            );
+                                        }
+                                        tol
+                                    } else {
+                                        0.01
+                                    };
+                                    (n - w).abs() <= tol
+                                }
+                                "!=" => !eq,
                                 "<" => *n < w,
                                 "<=" => *n <= w,
                                 ">" => *n > w,

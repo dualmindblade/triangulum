@@ -4,7 +4,7 @@
 //! from above) or a BURIED flooded run. Usage:
 //!   cargo run --release --example caveprobe -- LAT LON [HALF]
 use triangulum_viewer::planet::{face_dir, face_from_dir, Planet};
-use triangulum_viewer::voxel::{col_ctx, ColCtx, COLUMNS_PER_FACE};
+use triangulum_viewer::voxel::{canonical_column, col_ctx_ext, ColCtx, COLUMNS_PER_FACE};
 
 const CAVE_DEPTH: i64 = 26;
 
@@ -49,9 +49,11 @@ fn main() {
     let edits = Default::default();
 
     // center column report
-    let cc = col_ctx(&planet, &edits, face, ci0 as u64, cj0 as u64);
+    let (center_face, center_ci, center_cj) = canonical_column(face, ci0, cj0);
+    let cc = col_ctx_ext(&planet, &edits, face, ci0, cj0);
     println!(
-        "CENTER {lat:.4} {lon:.4}: ground0={} ground={} top_solid={} water={} cave_water={} cave_bits={:026b}",
+        "CENTER {lat:.4} {lon:.4}: face={} ci={} cj={} ground0={} ground={} top_solid={} water={} cave_water={} cave_bits={:026b}",
+        center_face, center_ci, center_cj,
         cc.ground0, cc.ground, cc.top_solid(),
         if cc.water == i64::MIN { "dry".into() } else { cc.water.to_string() },
         if cc.cave_water == i64::MIN { "none".into() } else { cc.cave_water.to_string() },
@@ -61,12 +63,13 @@ fn main() {
     let mut pits = 0;
     let mut buried = 0;
     // swimmable pits: open to sky (top_solid < ground0), by water depth
-    let mut cands: Vec<(i64, u64, u64, ColCtx)> = Vec::new();
+    let mut cands: Vec<(i64, u8, u64, u64, ColCtx)> = Vec::new();
     for dj in -half..=half {
         for di in -half..=half {
-            let ci = (ci0 + di) as u64;
-            let cj = (cj0 + dj) as u64;
-            let c = col_ctx(&planet, &edits, face, ci, cj);
+            let i_ext = ci0 + di;
+            let j_ext = cj0 + dj;
+            let (canon_face, ci, cj) = canonical_column(face, i_ext, j_ext);
+            let c = col_ctx_ext(&planet, &edits, face, i_ext, j_ext);
             if c.cave_water == i64::MIN {
                 continue;
             }
@@ -75,7 +78,7 @@ fn main() {
                 pits += 1;
                 let depth = c.cave_water - c.top_solid(); // water column blocks
                 if flooded_cells(&c) >= 2 {
-                    cands.push((depth, ci, cj, c));
+                    cands.push((depth, canon_face, ci, cj, c));
                 }
             } else {
                 buried += 1;
@@ -84,43 +87,44 @@ fn main() {
     }
     println!("window +-{half}: {pits} open pits, {buried} buried flooded columns");
     cands.sort_by_key(|(d, ..)| -d);
-    for (depth, ci, cj, c) in cands.iter().take(8) {
-        let (blat, blon) = latlon(face, *ci, *cj);
+    for (depth, canon_face, ci, cj, c) in cands.iter().take(8) {
+        let (blat, blon) = latlon(*canon_face as usize, *ci, *cj);
         println!(
-            "PIT {blat:.5} {blon:.5}: water_depth={depth}  top_solid={} cave_water={} ground0={} flooded={}",
+            "PIT {blat:.5} {blon:.5}: face={canon_face} ci={ci} cj={cj} water_depth={depth}  top_solid={} cave_water={} ground0={} flooded={}",
             c.top_solid(), c.cave_water, c.ground0, flooded_cells(c),
         );
     }
     // buried dig target: SOLID surface (top_solid==ground0) with the flooded
     // water table only a few blocks down, so a short dig shaft reaches water
-    let mut dig: Option<(i64, u64, u64, ColCtx)> = None;
+    let mut dig: Option<(i64, u8, u64, u64, ColCtx)> = None;
     for dj in -half..=half {
         for di in -half..=half {
-            let ci = (ci0 + di) as u64;
-            let cj = (cj0 + dj) as u64;
-            let c = col_ctx(&planet, &edits, face, ci, cj);
+            let i_ext = ci0 + di;
+            let j_ext = cj0 + dj;
+            let (canon_face, ci, cj) = canonical_column(face, i_ext, j_ext);
+            let c = col_ctx_ext(&planet, &edits, face, i_ext, j_ext);
             if c.cave_water == i64::MIN || c.top_solid() != c.ground0 {
                 continue;
             }
             let gap = c.ground0 - c.cave_water; // rock thickness above the table
             if gap >= 1 && gap <= 8 && flooded_cells(&c) >= 3 && c.cave_flooded(c.cave_water) {
                 if dig.as_ref().map(|(g, ..)| gap < *g).unwrap_or(true) {
-                    dig = Some((gap, ci, cj, c));
+                    dig = Some((gap, canon_face, ci, cj, c));
                 }
             }
         }
     }
-    if let Some((gap, ci, cj, c)) = &dig {
-        let (dlat, dlon) = latlon(face, *ci, *cj);
+    if let Some((gap, canon_face, ci, cj, c)) = &dig {
+        let (dlat, dlon) = latlon(*canon_face as usize, *ci, *cj);
         println!(
-            "\nBURIED DIG TARGET {dlat:.6} {dlon:.6}: rock_cap={gap} blocks  ground0={} cave_water={} flooded={}",
+            "\nBURIED DIG TARGET {dlat:.6} {dlon:.6}: face={canon_face} ci={ci} cj={cj} rock_cap={gap} blocks  ground0={} cave_water={} flooded={}",
             c.ground0, c.cave_water, flooded_cells(c),
         );
     }
 
-    if let Some((_, ci, cj, c)) = cands.first() {
-        let (blat, blon) = latlon(face, *ci, *cj);
-        println!("\nBEST PIT PROFILE {blat:.6} {blon:.6}:");
+    if let Some((_, canon_face, ci, cj, c)) = cands.first() {
+        let (blat, blon) = latlon(*canon_face as usize, *ci, *cj);
+        println!("\nBEST PIT PROFILE {blat:.6} {blon:.6}: face={canon_face} ci={ci} cj={cj}");
         for z in ((c.ground0 - CAVE_DEPTH)..=(c.ground0 + 1)).rev() {
             let kind = if c.filled(z) {
                 "ROCK"
