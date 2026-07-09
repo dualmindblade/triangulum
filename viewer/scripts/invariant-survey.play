@@ -74,3 +74,24 @@ mode fly
 wait 2
 assert alt_km > 0.0
 state fly_follow
+
+# ---- frozen sea ice is solid to EVERY world query (Sol review #4,
+# 2026-07-09): the generic solid surface (aiming/placing/torch height) must
+# agree with the walkable support on the ice sheet, and the sheet must be a
+# ceiling from below — not a phantom you edit through and swim up through.
+log sea ice: surface agrees with support, ice is a ceiling from below
+teleport 83.997 40.220 0.02
+mode walk
+wait 4
+assert grounded true
+assert ground_km ~ 0.0016 0.0008
+assert surface_height_km ~ 0.0016 0.0008
+state ice_top
+# spawn with feet under the sheet (mesh-ground here is the seabed): the ice
+# underside is a finite ceiling overhead
+teleport 83.997 40.220 0.003
+mode walk
+wait 3
+assert grounded true
+assert ceiling_above_km ~ 0.0006 0.0005
+state ice_under

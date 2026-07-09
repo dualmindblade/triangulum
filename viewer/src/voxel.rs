@@ -630,7 +630,11 @@ pub fn surface_height_km(planet: &Planet, edits: &Edits, dir: DVec3, exaggeratio
     let (face, u, v) = crate::planet::face_from_dir(dir);
     let (ci, cj) = column_of(u, v);
     let c = col_ctx(planet, edits, face, ci, cj);
-    c.top_solid() as f64 * VOXEL_KM * exaggeration + lift_km(exaggeration)
+    // a frozen sheet is solid to EVERY world query, same rule as
+    // support_below_km: aiming, placing, and torch height must see the ice
+    // a player stands on, not the seabed beneath it
+    let top = c.top_solid().max(c.frozen_ice().unwrap_or(i64::MIN));
+    top as f64 * VOXEL_KM * exaggeration + lift_km(exaggeration)
 }
 
 /// Highest solid block top at or below `at_km` in the column under `dir`
@@ -693,13 +697,18 @@ pub fn ceiling_above_km(
     let trunk_top = tree_here(planet, edits, face, ci, cj)
         .filter(|(k, _)| *k != TreeKind::Shrub)
         .map(|(_, t)| c.ground + t);
-    let solid = |z: i64| c.filled(z) || trunk_top.is_some_and(|t| z > c.ground && z <= t);
+    // frozen ice is a ceiling too: swimming up under a frozen sheet must
+    // collide with it, not pass through into the "solid" ice
+    let ice = c.frozen_ice();
+    let solid = |z: i64| {
+        c.filled(z) || trunk_top.is_some_and(|t| z > c.ground && z <= t) || ice == Some(z)
+    };
     let scale = VOXEL_KM * exaggeration;
     let lift = lift_km(exaggeration);
     // first block whose span could sit above at_km
     let mut z = (((at_km - lift) / scale) - 1e-7).floor() as i64 + 1;
     z = z.max(c.ground - CAVE_DEPTH);
-    let z_top = trunk_top.unwrap_or(c.ground).max(c.ground);
+    let z_top = trunk_top.unwrap_or(c.ground).max(c.ground).max(ice.unwrap_or(i64::MIN));
     while z <= z_top {
         if solid(z) {
             return (z - 1) as f64 * scale + lift;
@@ -1457,7 +1466,9 @@ pub fn build_chunk(
             continue;
         }
         let c = at(ti, tj);
-        let top = c.top_solid();
+        // walkable top, ice included — a torch on a frozen lake stands on
+        // the ice sheet, not drowned on the seabed below it
+        let top = c.top_solid().max(c.frozen_ice().unwrap_or(i64::MIN));
         let (u0, u1) = (u_of(base_i + ti), u_of(base_i + ti + 1));
         let (v0, v1) = (v_of(base_j + tj), v_of(base_j + tj + 1));
         let d00 = face_dir(face, u0, v0);

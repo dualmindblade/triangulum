@@ -49,7 +49,7 @@ use triangulum_viewer::planet::{face_from_dir, Planet};
 use triangulum_viewer::player::{self, Input, Mode, PlayerState};
 use triangulum_viewer::renderer::Renderer;
 use triangulum_viewer::voxel::{
-    ceiling_above_km, support_below_km, water_surface_km, Edits, Torches,
+    ceiling_above_km, support_below_km, surface_height_km, water_surface_km, Edits, Torches,
 };
 
 const DT: f64 = 1.0 / 60.0; // fixed timestep: scripts are deterministic
@@ -386,6 +386,13 @@ fn main() -> anyhow::Result<()> {
                     "pitch_deg" => V::N(camera.pitch.to_degrees()),
                     "support_below_km" => {
                         V::N(support_below_km(&planet, &edits, dir, feet + 1e-7, exagg))
+                    }
+                    // the generic solid surface (aiming/placing/torches);
+                    // on a frozen sheet it must AGREE with the walkable
+                    // support — regressing to the seabed re-opens the
+                    // edit-through-ice family (Sol review, 2026-07-09)
+                    "surface_height_km" => {
+                        V::N(surface_height_km(&planet, &edits, dir, exagg))
                     }
                     "water_surface_km" => match water_surface_km(&planet, &edits, dir, eye, exagg) {
                         Some(w) => V::N(w),
