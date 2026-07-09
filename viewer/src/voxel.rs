@@ -16,7 +16,7 @@
 //! node, any depth" property as the tiles: a chunk needs nothing but its key.
 
 use crate::planet::{face_dir, ground_tint, Planet};
-use crate::terrain::{sample, TileMesh, Vertex, VOXEL_OCTAVES};
+use crate::terrain::{sample, Sample, TileMesh, Vertex, VOXEL_OCTAVES};
 use glam::DVec3;
 use std::collections::{HashMap, HashSet};
 
@@ -111,6 +111,15 @@ fn hash_u64(face: u8, ci: u64, cj: u64, salt: u64) -> u64 {
 
 fn hash01(face: u8, ci: u64, cj: u64, salt: u64) -> f64 {
     ((hash_u64(face, ci, cj, salt) >> 11) & 0xFFFF_FFFF) as f64 / 4294967296.0
+}
+
+fn mix_color(a: [f32; 3], b: [f32; 3], t: f32) -> [f32; 3] {
+    let t = t.clamp(0.0, 1.0);
+    [
+        a[0] + (b[0] - a[0]) * t,
+        a[1] + (b[1] - a[1]) * t,
+        a[2] + (b[2] - a[2]) * t,
+    ]
 }
 
 // ---------------------------------------------------------------- columns
@@ -242,11 +251,44 @@ pub fn col_ctx(planet: &Planet, edits: &Edits, face: usize, ci: u64, cj: u64) ->
     let s = sample(planet, face, u, v, VOXEL_OCTAVES);
     let ground0 = (s.h_km * 1000.0).floor() as i64;
     let ground = ground0 + edits.get(&(face as u8, ci, cj)).copied().unwrap_or(0);
-    let water = if s.water_km > s.h_km {
+    let mut water = if s.water_km > s.h_km {
         (s.water_km * 1000.0).floor() as i64
     } else {
         i64::MIN
     };
+    let creek_film_sample = |ss: &Sample| {
+        ss.water_km > ss.h_km
+            && ss.temp_c >= -4.0
+            && ss.river_hw_km > 0.0
+            && ss.river_hw_km < 0.0015
+            && ss.river_dist_km < ss.river_hw_km
+            && !ss.sea
+            && !ss.lake
+    };
+    let mut creek_film = creek_film_sample(&s);
+    if !creek_film
+        && s.temp_c >= -4.0
+        && s.river_hw_km > 0.0
+        && s.river_hw_km < 0.0015
+        && s.river_dist_km < s.river_hw_km + 0.0010
+    {
+        let step = 2.0 / nn;
+        'subcell: for ov in [-0.42, 0.0, 0.42] {
+            for ou in [-0.42, 0.0, 0.42] {
+                if ou == 0.0 && ov == 0.0 {
+                    continue;
+                }
+                let ss = sample(planet, face, u + ou * step, v + ov * step, VOXEL_OCTAVES);
+                if creek_film_sample(&ss) {
+                    creek_film = true;
+                    break 'subcell;
+                }
+            }
+        }
+    }
+    if creek_film && water <= ground && ground == ground0 {
+        water = ground + 1;
+    }
 
     // caves: tubes along the intersection of two noise level-sets, in dry
     // land only. The radial offset gives the noise true vertical variation.
@@ -1133,10 +1175,43 @@ pub fn build_chunk(
                 // frozen tops take the same per-column brightness checker as
                 // land so the flat sheet reads as tiled ground, not a plane
                 let wtop = if frozen { vary(wcol, bright(w)) } else { wcol };
-                quad([d00 * r, d10 * r, d11 * r, d01 * r], up, [wtop; 4], 1.0);
-                let wside = vary(wtop, 0.93);
                 // same order as `nbs`: +i, -i, +j, -j
                 let nb_off = [(1i64, 0i64), (-1, 0), (0, 1), (0, -1)];
+                let foam = [0.70, 0.82, 0.78];
+                let foam_strength = |diff: i64, salt: u64| -> f32 {
+                    let d = diff.clamp(1, 4) as f32;
+                    let base = 0.10 + 0.06 * (d - 1.0);
+                    let shimmer = 0.88 + 0.24 * hash01(face as u8, ci, cj, salt) as f32;
+                    (base * shimmer).clamp(0.08, 0.30)
+                };
+                let lower_liquid_step = |nbi: usize| -> Option<f32> {
+                    let nb = nbs[nbi];
+                    if frozen || nb.temp < -4.0 || !nb.has_water() {
+                        return None;
+                    }
+                    let (di, dj) = nb_off[nbi];
+                    let nb_w = w_eff(i + di, j + dj);
+                    (nb_w < w).then(|| {
+                        foam_strength(w - nb_w, 0xF04Du64 ^ ((nbi as u64) << 8) ^ w as u64)
+                    })
+                };
+                let mut wtop_cols = [wtop; 4];
+                let top_edge: [[usize; 2]; 4] = [
+                    [1, 2], // +i: d10, d11
+                    [3, 0], // -i: d01, d00
+                    [2, 3], // +j: d11, d01
+                    [0, 1], // -j: d00, d10
+                ];
+                for nbi in 0..4 {
+                    if let Some(strength) = lower_liquid_step(nbi) {
+                        for &corner in &top_edge[nbi] {
+                            wtop_cols[corner] =
+                                mix_color(wtop_cols[corner], foam, strength * 0.55);
+                        }
+                    }
+                }
+                quad([d00 * r, d10 * r, d11 * r, d01 * r], up, wtop_cols, 1.0);
+                let wside = vary(wtop, 0.93);
                 for (nbi, da, db) in sides {
                     let nb = nbs[nbi];
                     // the neighbour's water top must be ITS clamped value, or
@@ -1151,10 +1226,13 @@ pub fn build_chunk(
                         // old position-derived out_n corrupted these too
                         let n_side = (out_dirs[nbi] * 0.18 + up).normalize();
                         let (r0, r1) = (shell(nb_surf.max(c.top_solid())), shell(w));
+                        let col = lower_liquid_step(nbi)
+                            .map(|strength| mix_color(wside, foam, strength))
+                            .unwrap_or(wside);
                         quad(
                             [da * r1, db * r1, db * r0, da * r0],
                             n_side,
-                            [wside; 4],
+                            [col; 4],
                             1.0,
                         );
                     }
