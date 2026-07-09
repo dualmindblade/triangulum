@@ -89,6 +89,7 @@ fn main() -> anyhow::Result<()> {
         prev_keys = Some(keys);
         let path = dir.join(format!("{mode}_{k:03}.png"));
         let path = path.to_str().unwrap();
+        renderer.set_render_time_s(k as f64 / 60.0);
         renderer.capture(&planet, &camera, &edits, path)?;
         let raw = load_png(path)?;
         if let Some(p) = prev.as_ref() {

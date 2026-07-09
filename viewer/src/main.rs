@@ -210,7 +210,8 @@ fn capture(planet: Arc<Planet>, camera: Camera, args: Args, path: &str) -> Resul
     renderer.patch_scale = args.patch;
     // headless shots see the same edited world the game saves
     let edits = load_edits(planet.seed);
-    renderer.torches = load_torches(planet.seed);
+    renderer.set_torches(load_torches(planet.seed));
+    renderer.refresh_world_snapshot(&edits);
     let eye_km = camera.ground_km + camera.altitude_km;
     renderer.underwater = triangulum_viewer::voxel::water_surface_km(
         &planet,
@@ -485,6 +486,7 @@ impl App {
             self.args.exaggeration,
         ) {
             if let Some(gfx) = self.gfx.as_mut() {
+                gfx.renderer.refresh_edits_snapshot(&self.edits);
                 gfx.renderer.invalidate_chunks(&dirty);
             }
             self.player.refresh_after_edit(
@@ -508,7 +510,7 @@ impl App {
             self.args.exaggeration,
         ) {
             if let Some(gfx) = self.gfx.as_mut() {
-                gfx.renderer.torches = self.torches.clone();
+                gfx.renderer.set_torches(self.torches.clone());
                 gfx.renderer.invalidate_chunks(&dirty);
             }
             save_torches(self.planet.seed, &self.torches);
@@ -627,6 +629,9 @@ impl App {
             self.last_frame = now;
             dt.min(0.1)
         };
+        if let Some(gfx) = self.gfx.as_mut() {
+            gfx.renderer.advance_render_time_s(dt);
+        }
         // an open photo map owns the keyboard: no movement input
         let input = if self.photo_map.open {
             triangulum_viewer::player::Input::default()
@@ -737,7 +742,8 @@ impl ApplicationHandler for App {
         renderer.day_len_s = self.args.day_len;
         renderer.sun_ref_lon = self.args.lon.to_radians();
         renderer.patch_scale = self.args.patch;
-        renderer.torches = self.torches.clone();
+        renderer.set_torches(self.torches.clone());
+        renderer.refresh_world_snapshot(&self.edits);
         self.egui_state = Some(egui_winit::State::new(
             self.egui_ctx.clone(),
             egui::ViewportId::ROOT,
@@ -754,6 +760,9 @@ impl ApplicationHandler for App {
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
         if self.gfx.is_none() {
             return;
+        }
+        if matches!(&event, WindowEvent::Focused(false)) {
+            self.keys.clear();
         }
         // an open photo map owns the pointer and keyboard: events go to egui,
         // not the game (Esc closes the popup; frame/window events pass on)
@@ -799,22 +808,24 @@ impl ApplicationHandler for App {
                     match event.state {
                         ElementState::Pressed => {
                             self.keys.insert(code);
-                            match code {
-                                K::KeyG => self.player.set_walk(&mut self.camera),
-                                K::KeyF => self.player.set_fly(&mut self.camera),
-                                K::Space => self.player.jump(),
-                                K::KeyQ => self.edit_block(-1),
-                                K::KeyE => self.edit_block(1),
-                                K::KeyR => self.toggle_torch(),
-                                K::KeyT => {
-                                    // the photo map owns input while open, so
-                                    // release the pointer and stop movement
-                                    self.set_mouse_lock(false);
-                                    self.keys.clear();
-                                    self.photo_map.toggle();
+                            if !event.repeat {
+                                match code {
+                                    K::KeyG => self.player.set_walk(&mut self.camera),
+                                    K::KeyF => self.player.set_fly(&mut self.camera),
+                                    K::Space => self.player.jump(),
+                                    K::KeyQ => self.edit_block(-1),
+                                    K::KeyE => self.edit_block(1),
+                                    K::KeyR => self.toggle_torch(),
+                                    K::KeyT => {
+                                        // the photo map owns input while open, so
+                                        // release the pointer and stop movement
+                                        self.set_mouse_lock(false);
+                                        self.keys.clear();
+                                        self.photo_map.toggle();
+                                    }
+                                    K::KeyP => self.save_screenshot(),
+                                    _ => {}
                                 }
-                                K::KeyP => self.save_screenshot(),
-                                _ => {}
                             }
                         }
                         ElementState::Released => {
