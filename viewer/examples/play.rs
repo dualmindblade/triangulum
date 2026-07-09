@@ -136,6 +136,14 @@ fn main() -> anyhow::Result<()> {
         pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default()))?;
     let mut renderer = Renderer::new(device, queue, wgpu::TextureFormat::Rgba8UnormSrgb, size, exagg);
     renderer.patch_scale = patch;
+    // living weather: deterministic here BY CONSTRUCTION — render time is
+    // the fixed sim clock (F-20), so even `weather live` scripts reproduce
+    // byte-identical frames. weather.bin missing just means clear skies.
+    match triangulum_viewer::weather::WeatherField::load(assets) {
+        Ok(f) => renderer.weather_field = Some(f),
+        Err(e) => eprintln!("weather off ({e})"),
+    }
+    renderer.weather_tuning = triangulum_viewer::weather::WeatherTuning::load(assets);
     // deterministic by default: no day cycle (always day where you stand);
     // the `sun` command pins an exact sun for lighting-specific scripts
 
@@ -327,6 +335,29 @@ fn main() -> anyhow::Result<()> {
                 ));
                 trace!("[{}] sun pinned at lat {} lon {}", ln + 1, f(1)?, f(2)?);
             }
+            // weather off | live | pin COVER PRECIP — pin or disable the
+            // living weather (WEATHER.md), mirroring `sun`. Weather rides
+            // the fixed sim clock here, so even `live` is byte-identical
+            // across runs; scripts pin it when a scene needs an exact sky.
+            "weather" => match toks.get(1).copied() {
+                Some("off") => {
+                    renderer.weather_on = false;
+                    trace!("[{}] weather off", ln + 1);
+                }
+                Some("live") => {
+                    renderer.weather_on = true;
+                    renderer.weather_pin = None;
+                    trace!("[{}] weather live", ln + 1);
+                }
+                Some("pin") => {
+                    let (c, p) = (f(2)?, f(3)?);
+                    renderer.weather_on = true;
+                    renderer.weather_pin =
+                        Some((c.clamp(0.0, 1.0) as f32, p.clamp(0.0, 1.0) as f32));
+                    trace!("[{}] weather pin cover {c:.2} precip {p:.2}", ln + 1);
+                }
+                _ => anyhow::bail!("line {}: weather off|live|pin COVER PRECIP", ln + 1),
+            },
             "shot" => {
                 let name = toks.get(1).copied().unwrap_or("frame");
                 renderer.set_render_time_s(sim_ticks as f64 * DT);

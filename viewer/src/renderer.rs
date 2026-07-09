@@ -73,6 +73,19 @@ struct Globals {
     center: [f32; 4],
     // x = number of active torch lights; rest spare
     misc: [f32; 4],
+    // weather at the camera (WEATHER.md Layer 3): x cloud cover 0..1,
+    // y precip 0..1, z snow fraction 0..1, w air temp (C)
+    weather: [f32; 4],
+    // xyz = cloud-domain drift (the synoptic advection, precomputed on the
+    // CPU so the shader's deck scrolls with the same wind as the field),
+    // w = fraction of direct sun surviving full overcast
+    weather2: [f32; 4],
+    // x = rain ground-darkening cap, y = full-dusting cold depth (C),
+    // z = cloud shell altitude (km), w = shell fade-out camera height (km)
+    weather3: [f32; 4],
+    // xyz = instantaneous wind (km/s, camera-relative frame) for particle
+    // slant; w spare
+    weather4: [f32; 4],
     // placed-torch point lights: xyz camera-relative (km), w intensity
     lights: [[f32; 4]; MAX_LIGHTS],
 }
@@ -111,6 +124,7 @@ pub struct Renderer {
     pub queue: wgpu::Queue,
     pipeline: wgpu::RenderPipeline,
     sky_pipeline: wgpu::RenderPipeline,
+    precip_pipeline: wgpu::RenderPipeline,
     bind_group: wgpu::BindGroup,
     globals_buf: wgpu::Buffer,
     tiles_buf: wgpu::Buffer,
@@ -165,6 +179,17 @@ pub struct Renderer {
     /// not clone the whole edited world per request.
     edit_snapshot: Arc<Edits>,
     torch_snapshot: Arc<Torches>,
+    /// Living weather (WEATHER.md). None = no weather.bin, sky stays clear.
+    pub weather_field: Option<crate::weather::WeatherField>,
+    pub weather_tuning: crate::weather::WeatherTuning,
+    /// Master switch (--weather off, `weather off` in scripts).
+    pub weather_on: bool,
+    /// Some((cover, precip)) pins the sky for art shots and regression
+    /// scripts, overriding the live field (like `sun` pins the sun).
+    pub weather_pin: Option<(f32, f32)>,
+    /// Last frame's camera weather sample — photo sidecars record it so a
+    /// storm shot is a coordinate you can teleport back into.
+    pub last_weather: crate::weather::Weather,
 }
 
 impl Renderer {
@@ -318,11 +343,47 @@ impl Renderer {
 
         let depth = Self::make_depth(&device, size);
         let (tx, rx) = mpsc::channel();
+        // precipitation: instanced quads with no vertex buffers (positions
+        // are hashed from the instance index in vs_precip), alpha-blended,
+        // depth-TESTED against the terrain but never written
+        let precip_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("precip"),
+            layout: Some(&layout),
+            vertex: wgpu::VertexState {
+                module: &shader,
+                entry_point: Some("vs_precip"),
+                compilation_options: Default::default(),
+                buffers: &[],
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &shader,
+                entry_point: Some("fs_precip"),
+                compilation_options: Default::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format,
+                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            primitive: wgpu::PrimitiveState { cull_mode: None, ..Default::default() },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: wgpu::TextureFormat::Depth32Float,
+                depth_write_enabled: Some(false),
+                depth_compare: Some(wgpu::CompareFunction::Greater),
+                stencil: Default::default(),
+                bias: Default::default(),
+            }),
+            multisample: Default::default(),
+            multiview_mask: None,
+            cache: None,
+        });
+
         Self {
             device,
             queue,
             pipeline,
             sky_pipeline,
+            precip_pipeline,
             bind_group,
             globals_buf,
             tiles_buf,
@@ -347,6 +408,11 @@ impl Renderer {
             chunk_rx: rx,
             edit_snapshot: Arc::new(Edits::default()),
             torch_snapshot: Arc::new(Torches::default()),
+            weather_field: None,
+            weather_tuning: crate::weather::WeatherTuning::default(),
+            weather_on: true,
+            weather_pin: None,
+            last_weather: crate::weather::Weather::default(),
         }
     }
 
@@ -376,6 +442,12 @@ impl Renderer {
         if t_s.is_finite() {
             self.render_time_s = t_s.max(0.0);
         }
+    }
+
+    /// The deterministic render clock (photo sidecars record it so weather
+    /// and sun state are replayable).
+    pub fn render_time_s(&self) -> f64 {
+        self.render_time_s
     }
 
     pub fn advance_render_time_s(&mut self, dt_s: f64) {
@@ -613,6 +685,63 @@ impl Renderer {
         }
         hole_up[3] = if self.underwater { 1.0 } else { 0.0 };
 
+        // living weather: ONE field sample per frame, at the camera. The
+        // shaders add per-pixel detail from the same uniforms, so weather
+        // stays a pure function of (seed, position, render time) — the
+        // determinism contract in WEATHER.md.
+        let wx = if self.weather_on
+            && let Some(field) = &self.weather_field
+        {
+            let mut w = crate::weather::weather_at(
+                field,
+                planet,
+                cam_pos.normalize(),
+                self.render_time_s,
+                self.day_len_s,
+                &self.weather_tuning,
+            );
+            if let Some((c, p)) = self.weather_pin {
+                w.cloud_cover = c as f64;
+                w.precip = p as f64;
+            }
+            w
+        } else {
+            // temp 999 = the shader sentinel for "weather off": no ground
+            // dusting, no darkening (a real 999 C never happens)
+            crate::weather::Weather { temp_c: 999.0, ..Default::default() }
+        };
+        self.last_weather = wx;
+        // the cloud deck scrolls with the same advection the field uses:
+        // precompute the domain drift here so shader noise and CPU weather
+        // agree on where the storm is. The instantaneous wind vector drives
+        // particle slant.
+        let (drift, wind_kms) = {
+            let dirn = cam_pos.normalize();
+            let east0 = glam::DVec3::Z.cross(dirn);
+            let east =
+                if east0.length_squared() < 1e-9 { glam::DVec3::Y } else { east0.normalize() };
+            let north = dirn.cross(east);
+            let wind = east * wx.wind_e + north * wx.wind_n;
+            (
+                wind * (self.weather_tuning.synoptic_speed * self.render_time_s
+                    / (1000.0 * planet.radius_km)),
+                wind * 0.001,
+            )
+        };
+        // precipitation particles live in a volume around the camera; none
+        // underwater, and they thin away as the camera climbs through the
+        // cloud deck (same fade as the W1 shell)
+        let precip_fade = {
+            let t = (cam_h_km - self.weather_tuning.shell_alt_km)
+                / (self.weather_tuning.shell_fade_km - self.weather_tuning.shell_alt_km).max(1e-6);
+            1.0 - t.clamp(0.0, 1.0)
+        };
+        let n_precip = if self.underwater {
+            0u32
+        } else {
+            (wx.precip * precip_fade * self.weather_tuning.particles_max as f64) as u32
+        };
+
         let globals = Globals {
             view_proj: vp32.to_cols_array_2d(),
             inv_view_proj: inv32.to_cols_array_2d(),
@@ -636,6 +765,25 @@ impl Renderer {
                 (voxel_radius_m / 1000.0) as f32,
                 0.0,
             ],
+            weather: [
+                wx.cloud_cover as f32,
+                wx.precip as f32,
+                wx.snow_frac as f32,
+                wx.temp_c as f32,
+            ],
+            weather2: [
+                drift.x as f32,
+                drift.y as f32,
+                drift.z as f32,
+                self.weather_tuning.overcast_sun_floor as f32,
+            ],
+            weather3: [
+                self.weather_tuning.rain_darken as f32,
+                self.weather_tuning.dust_full_c as f32,
+                self.weather_tuning.shell_alt_km as f32,
+                self.weather_tuning.shell_fade_km as f32,
+            ],
+            weather4: [wind_kms.x as f32, wind_kms.y as f32, wind_kms.z as f32, 0.0],
             lights,
         };
         self.queue.write_buffer(&self.globals_buf, 0, bytemuck::bytes_of(&globals));
@@ -747,6 +895,13 @@ impl Renderer {
             pass.set_pipeline(&self.sky_pipeline);
             pass.set_bind_group(0, &self.bind_group, &[0]);
             pass.draw(0..3, 0..1);
+            // precipitation: instanced rain streaks / snow flakes around the
+            // camera, alpha-blended over everything, occluded by terrain
+            if n_precip > 0 {
+                pass.set_pipeline(&self.precip_pipeline);
+                pass.set_bind_group(0, &self.bind_group, &[0]);
+                pass.draw(0..6, 0..n_precip);
+            }
         }
         self.queue.submit([encoder.finish()]);
         draws.len()

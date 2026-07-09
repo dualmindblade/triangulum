@@ -36,6 +36,9 @@ struct Args {
     /// eases the view pitch toward the planet. Default OFF so scroll never
     /// touches pitch and the camera is entirely yours (request C-3).
     auto_tilt: bool,
+    /// Living weather (WEATHER.md): "live" (default), "off", or
+    /// "COVER,PRECIP" to pin the sky (each 0..1) for art shots.
+    weather: String,
 }
 
 fn parse_args() -> Args {
@@ -52,6 +55,7 @@ fn parse_args() -> Args {
         day_len: 1200.0,
         patch: 1.0,
         auto_tilt: false,
+        weather: "live".into(),
     };
     let argv: Vec<String> = std::env::args().collect();
     let mut i = 1;
@@ -111,6 +115,10 @@ fn parse_args() -> Args {
                 i += 1;
             }
             "--auto-tilt" => a.auto_tilt = true,
+            "--weather" => {
+                a.weather = next(i);
+                i += 1;
+            }
             other => eprintln!("unknown arg: {other}"),
         }
         i += 1;
@@ -124,6 +132,31 @@ fn assets_dir() -> String {
         "viewer/assets".into()
     } else {
         "assets".into()
+    }
+}
+
+/// Wire the living weather into a renderer per the --weather arg
+/// (WEATHER.md). Missing weather.bin degrades to a clear sky, loudly.
+fn apply_weather(renderer: &mut Renderer, spec: &str) {
+    match triangulum_viewer::weather::WeatherField::load(&assets_dir()) {
+        Ok(f) => renderer.weather_field = Some(f),
+        Err(e) => eprintln!("weather off ({e}) - run scripts/bake_weather.py"),
+    }
+    renderer.weather_tuning = triangulum_viewer::weather::WeatherTuning::load(&assets_dir());
+    match spec {
+        "off" => renderer.weather_on = false,
+        "" | "live" => {}
+        s => {
+            if let Some((c, p)) = s.split_once(',')
+                && let (Ok(c), Ok(p)) = (c.parse::<f32>(), p.parse::<f32>())
+                && c.is_finite()
+                && p.is_finite()
+            {
+                renderer.weather_pin = Some((c.clamp(0.0, 1.0), p.clamp(0.0, 1.0)));
+            } else {
+                eprintln!("--weather expects off | live | COVER,PRECIP");
+            }
+        }
     }
 }
 
@@ -212,6 +245,7 @@ fn capture(planet: Arc<Planet>, camera: Camera, args: Args, path: &str) -> Resul
     let edits = load_edits(planet.seed);
     renderer.set_torches(load_torches(planet.seed));
     renderer.refresh_world_snapshot(&edits);
+    apply_weather(&mut renderer, &args.weather);
     let eye_km = camera.ground_km + camera.altitude_km;
     renderer.underwater = triangulum_viewer::voxel::water_surface_km(
         &planet,
@@ -223,7 +257,9 @@ fn capture(planet: Arc<Planet>, camera: Camera, args: Args, path: &str) -> Resul
     .is_some_and(|w| eye_km < w - 0.0003);
     let (n, sun, sun_pinned, day_len_s) =
         capture_with_recorded_sun(&mut renderer, &planet, &camera, &edits, path)?;
-    write_shot_sidecar(path, &planet, &camera, &args, "fly", sun, sun_pinned, day_len_s)?;
+    write_shot_sidecar(
+        path, &planet, &camera, &args, "fly", sun, sun_pinned, day_len_s, &renderer,
+    )?;
     println!(
         "captured {path} ({} tiles, lat {:.1} lon {:.1} alt {:.0} km)",
         n,
@@ -274,8 +310,27 @@ fn write_shot_sidecar(
     sun: SunState,
     sun_pinned: bool,
     day_len_s: f64,
+    renderer: &Renderer,
 ) -> Result<()> {
     let (sun_lat, sun_lon) = sun_lat_lon(sun);
+    // the weather this photo was taken in (WEATHER.md): weather is a pure
+    // function of (seed, position, time), so these fields make a storm
+    // shot exactly reproducible like the sun already is
+    let wx = renderer.last_weather;
+    let weather_js = serde_json::json!({
+        "on": renderer.weather_on,
+        "pinned": renderer.weather_pin.map(|(c, p)| vec![c, p]),
+        "t_s": renderer.render_time_s(),
+        "season_frac": triangulum_viewer::weather::season_frac(
+            renderer.render_time_s(),
+            renderer.day_len_s,
+            &renderer.weather_tuning,
+        ),
+        "cloud_cover": wx.cloud_cover,
+        "precip": wx.precip,
+        "snow_frac": wx.snow_frac,
+        "temp_c": wx.temp_c,
+    });
     let js = serde_json::json!({
         "lat_deg": camera.lat.to_degrees(),
         "lon_deg": camera.lon.to_degrees(),
@@ -300,6 +355,7 @@ fn write_shot_sidecar(
         "seed": planet.seed,
         "world": world_source(),
         "mode": mode,
+        "weather": weather_js,
         // which build took this photo — the first triage question after a
         // day of rapid pushes (a long-lived session outlives many commits).
         // option_env: a build-script hiccup must never fail the build.
@@ -558,6 +614,7 @@ impl App {
                 sun,
                 sun_pinned,
                 day_len_s,
+                &gfx.renderer,
             ) {
                 Ok(()) => format!("saved {path}"),
                 Err(e) => format!("saved {path}; sidecar failed: {e}"),
@@ -773,6 +830,7 @@ impl ApplicationHandler for App {
         renderer.patch_scale = self.args.patch;
         renderer.set_torches(self.torches.clone());
         renderer.refresh_world_snapshot(&self.edits);
+        apply_weather(&mut renderer, &self.args.weather);
         self.egui_state = Some(egui_winit::State::new(
             self.egui_ctx.clone(),
             egui::ViewportId::ROOT,

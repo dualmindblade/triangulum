@@ -1,0 +1,41 @@
+# Living weather demo reel (WEATHER.md W1) — pins and live field, all
+# deterministic: weather rides the fixed sim clock, so this script produces
+# byte-identical frames every run (the double-run gate proves it).
+
+# savanna site, live field (whatever the climate + synoptic sim says today)
+teleport 6.974 33.203 0.15
+look -50 -8
+weather live
+shot live_savanna
+
+# the same sky, pinned through its gradations
+weather pin 0.08 0.0
+shot clear
+weather pin 0.45 0.0
+shot scattered
+weather pin 0.75 0.15
+shot broken_drizzle
+weather pin 0.97 0.9
+shot storm
+
+# rain at eye level (streaks against the sky)
+teleport 6.974 33.203 0.02
+look -50 6
+shot rain_eye
+
+# cold plateau: the same pin falls as snow (snow_frac from air temp)
+teleport 16.45 -32.30 0.02
+look -60 4
+shot snowfall
+
+# weather off = the pre-weather clear sky, byte-stable for old comparisons
+weather off
+shot weather_off
+
+# state checks: weather must never touch physics (W1 contract)
+weather pin 1.0 1.0
+teleport 6.974 33.203 0.05
+mode walk
+wait 6
+assert grounded true
+state storm_walk

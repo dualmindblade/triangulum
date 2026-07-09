@@ -2499,6 +2499,7 @@ dependencies = [
  "png",
  "pollster",
  "rayon",
+ "serde",
  "serde_json",
  "wgpu",
  "winit",

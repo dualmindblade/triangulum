@@ -18,6 +18,16 @@ struct Globals {
     center: vec4<f32>,
     // x = number of active torch lights, y = time (s, wraps hourly)
     misc: vec4<f32>,
+    // weather at the camera: x cloud cover, y precip, z snow fraction,
+    // w air temp C (999 = weather off, disables ground responses)
+    weather: vec4<f32>,
+    // xyz = cloud-domain drift (synoptic advection), w = overcast sun floor
+    weather2: vec4<f32>,
+    // x rain darkening cap, y full-dusting cold depth (C),
+    // z cloud shell altitude (km), w shell fade-out camera height (km)
+    weather3: vec4<f32>,
+    // xyz = instantaneous wind (km/s, camera-relative) for particle slant
+    weather4: vec4<f32>,
     // placed-torch point lights: xyz camera-relative (km), w intensity
     lights: array<vec4<f32>, 16>,
 };
@@ -129,14 +139,37 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
             wet = step(0.55, in.water.a);
         }
     }
-    let base = mix(in.color, in.water.rgb, clamp(wet, 0.0, 1.0));
-    let n = normalize(in.normal);
+    // ---- weather on the ground (WEATHER.md Layer 3) ----
+    // Dust and darken the GROUND color before the water mix so lakes and
+    // rivers stay water. Pixels lapse-colder than the camera's air whiten
+    // first (~6.5 C/km), the line broken up by a world-anchored hash so it
+    // reads organic instead of contoured; dusting deepens while snow
+    // actually falls. Rain soaks the ground toward dark.
+    var ground = in.color;
     let up = globals.sky.xyz;
     let day = smoothstep(-0.08, 0.15, dot(globals.sun_dir.xyz, up));
+    if (globals.weather.w < 500.0) {
+        let wp = in.rel_flag.xyz - globals.center.xyz;
+        let r_sphere = length(globals.center.xyz) - max(globals.sky.w, 0.0);
+        let elev_km = length(wp) - r_sphere;
+        let t_pix = globals.weather.w - 6.5 * (elev_km - max(globals.sky.w, 0.0));
+        let dith = hash31(floor(wp * 40.0)) * 1.8 - 0.9;
+        let cold = 1.0 - smoothstep(-globals.weather3.y, 1.0, t_pix + dith);
+        let dust = cold * (0.45 + 0.55 * globals.weather.z * globals.weather.y);
+        ground = mix(ground, vec3<f32>(0.88, 0.90, 0.94), dust);
+        let rain = globals.weather.y * (1.0 - globals.weather.z);
+        ground = ground * (1.0 - globals.weather3.x * rain);
+    }
+    let base = mix(ground, in.water.rgb, clamp(wet, 0.0, 1.0));
+    let n = normalize(in.normal);
     let light = max(dot(n, globals.sun_dir.xyz), 0.0);
     let sky_hemi = clamp(0.5 + 0.5 * dot(n, up), 0.0, 1.0);
-    let ambient = 0.10 + 0.40 * day * sky_hemi;
-    let sun_coeff = mix(1.0, 0.60, day);
+    // overcast: direct sun dims toward its tunable floor and the ambient
+    // flattens a touch — a grey day, not a dark one (night is untouched:
+    // the dimming scales with `day`)
+    let odim = mix(1.0, globals.weather2.w, globals.weather.x * day);
+    let ambient = (0.10 + 0.40 * day * sky_hemi) * mix(1.0, 0.85, globals.weather.x * day);
+    let sun_coeff = mix(1.0, 0.60, day) * odim;
     var c = base * (ambient + sun_coeff * light);
     if (in.rel_flag.w < 0.5) {
         if (in.water.a > 1.5) {
@@ -204,6 +237,51 @@ fn hash31(p: vec3<f32>) -> f32 {
     return fract((q.x + q.y) * q.z);
 }
 
+// integer-lattice hash (PCG-style mixing): float hashes built on fract()
+// lose their low bits at large coordinates — the cloud domain reaches the
+// thousands and hash31 there degenerates into straight diagonal shards
+fn hash3i(p: vec3<i32>) -> f32 {
+    var v = bitcast<vec3<u32>>(p) * vec3<u32>(1664525u, 1013904223u, 2654435769u);
+    v.x += v.y * v.z;
+    v.y += v.z * v.x;
+    v.z += v.x * v.y;
+    v ^= v >> vec3<u32>(16u);
+    v.x += v.y * v.z;
+    return f32(v.x & 0xFFFFFFu) / 16777216.0;
+}
+
+// trilinear value noise + a 4-octave fbm — the cloud deck's fabric
+fn vnoise(p: vec3<f32>) -> f32 {
+    let i = vec3<i32>(floor(p));
+    let f = fract(p);
+    let u = f * f * (3.0 - 2.0 * f);
+    let c000 = hash3i(i);
+    let c100 = hash3i(i + vec3<i32>(1, 0, 0));
+    let c010 = hash3i(i + vec3<i32>(0, 1, 0));
+    let c110 = hash3i(i + vec3<i32>(1, 1, 0));
+    let c001 = hash3i(i + vec3<i32>(0, 0, 1));
+    let c101 = hash3i(i + vec3<i32>(1, 0, 1));
+    let c011 = hash3i(i + vec3<i32>(0, 1, 1));
+    let c111 = hash3i(i + vec3<i32>(1, 1, 1));
+    let x00 = mix(c000, c100, u.x);
+    let x10 = mix(c010, c110, u.x);
+    let x01 = mix(c001, c101, u.x);
+    let x11 = mix(c011, c111, u.x);
+    return mix(mix(x00, x10, u.y), mix(x01, x11, u.y), u.z);
+}
+
+fn cloud_fbm(p: vec3<f32>) -> f32 {
+    var v = 0.0;
+    var amp = 0.5;
+    var q = p;
+    for (var i = 0; i < 4; i = i + 1) {
+        v += amp * vnoise(q);
+        q = q * 2.13 + vec3<f32>(31.7, 17.3, 51.1);
+        amp *= 0.5;
+    }
+    return v;
+}
+
 // procedural star field: hash the view direction into cells on a cube
 // lattice; a sparse subset of cells hold one star each, rendered as a tiny
 // smooth disc with hashed brightness/temperature. Purely directional, so
@@ -256,6 +334,11 @@ fn fs_sky(in: SkyOut) -> @location(0) vec4<f32> {
     let zen = vec3<f32>(0.10, 0.28, 0.62);
     let hor = vec3<f32>(0.55, 0.70, 0.88);
     var c = mix(hor, zen, pow(clamp(h, 0.0, 1.0), 0.55)) * (0.03 + 0.97 * day);
+    // heavy weather greys the whole vault, not just where the deck draws:
+    // the blue between clouds desaturates and sinks toward overcast murk
+    let wcover = globals.weather.x;
+    let murk = wcover * (0.35 + 0.45 * globals.weather.y);
+    c = mix(c, vec3<f32>(0.52, 0.56, 0.62) * (0.05 + 0.95 * day), murk * day);
     // a low sun warms the sky around it
     let toward = pow(max(dot(dir, sun), 0.0), 6.0);
     let low = 1.0 - smoothstep(0.05, 0.35, sunh);
@@ -312,6 +395,46 @@ fn fs_sky(in: SkyOut) -> @location(0) vec4<f32> {
         // tight halo hugging the disc (not a broad blob)
         c += vec3<f32>(0.55, 0.62, 0.80) * pow(max(dm, 0.0), 2600.0) * 0.30 * moon_vis;
     }
+    // ---- W1 cloud deck (WEATHER.md): a wind-scrolled noise shell a few
+    // km up. Drawn after the sun/moon (clouds cover them) and before the
+    // stars (which dim behind lit cloud via sky_lum). Fades out entirely
+    // by weather3.w camera altitude: W1 renders NO clouds from space — the
+    // capped-opacity orbital layer is W3's job, so the "never obscure the
+    // ground from orbit" constraint holds trivially for now.
+    let cover = globals.weather.x;
+    let deck_fade =
+        1.0 - smoothstep(globals.weather3.z, globals.weather3.w, max(globals.sky.w, 0.0));
+    if (cover > 0.004 && deck_fade > 0.003) {
+        let ctr = globals.center.xyz;
+        let r_shell = length(ctr) - max(globals.sky.w, 0.0) + globals.weather3.z;
+        let b2 = dot(ctr, dir);
+        let qd = dot(ctr, ctr) - r_shell * r_shell; // < 0 while under the deck
+        let disc2 = b2 * b2 - qd;
+        if (disc2 > 0.0 && qd < 0.0) {
+            let t_hit = b2 + sqrt(disc2);
+            let sdir = normalize(dir * t_hit - ctr); // deck point on its sphere
+            // the deck scrolls with the same synoptic drift the weather
+            // field advects by — the storm you see IS the storm you get
+            let den = cloud_fbm((sdir - globals.weather2.xyz) * 900.0);
+            let a_thr = 0.68 - 0.40 * cover;
+            var alpha = smoothstep(a_thr, a_thr + 0.18, den);
+            // grazing rays pack more deck toward the horizon, then the
+            // deck fades below it and thins away to space with the air
+            alpha = min(alpha * (1.0 + 0.7 * (1.0 - clamp(h, 0.0, 1.0))), 1.0);
+            alpha = alpha * smoothstep(-0.02, 0.08, h) * deck_fade * atm;
+            // bright lit tops; heavy rain bellies go slate; a low sun warms
+            // the deck the way it warms the sky
+            let heavy = clamp(globals.weather.y * 0.9 + cover * 0.45, 0.0, 1.0);
+            var ccol = mix(
+                vec3<f32>(0.96, 0.97, 1.00),
+                vec3<f32>(0.36, 0.39, 0.46),
+                clamp(heavy * (0.35 + 0.85 * den), 0.0, 1.0),
+            );
+            ccol = ccol * (0.10 + 0.95 * day);
+            ccol = mix(ccol, vec3<f32>(0.98, 0.62, 0.38), toward * low * 0.4 * day * (1.0 - heavy));
+            c = mix(c, ccol, alpha);
+        }
+    }
     // stars own the dark: night ground and open space alike. They dim away
     // wherever the sky itself has light, so daylight hides them.
     let sky_lum = dot(c, vec3<f32>(0.35, 0.45, 0.20));
@@ -320,4 +443,91 @@ fn fs_sky(in: SkyOut) -> @location(0) vec4<f32> {
         c = mix(c, vec3<f32>(0.02, 0.07, 0.16), 0.6);
     }
     return vec4<f32>(c, 1.0);
+}
+
+// --------------------------------------------------------- precipitation
+
+struct PrecipOut {
+    @builtin(position) clip: vec4<f32>,
+    @location(0) uv: vec2<f32>,
+    @location(1) @interpolate(flat) kind: f32, // 0 = rain streak, 1 = flake
+    @location(2) alpha: f32,
+};
+
+// integer hash for particle identity — stable at any instance count
+fn hash1u(n: u32) -> f32 {
+    var x = n * 1664525u + 1013904223u;
+    x ^= x >> 16u;
+    x *= 2246822519u;
+    x ^= x >> 13u;
+    return f32(x & 0xFFFFFFu) / 16777216.0;
+}
+
+// Instanced rain/snow around the camera: identity is hashed from the
+// instance index, motion is a pure function of the (wrapping) frame clock,
+// so captures reproduce exactly. Rain falls as wind-slanted streaks; snow
+// drifts down as swaying flakes. The volume rides with the camera (W1;
+// world-anchoring at f32 precision on a 6371 km sphere jitters worse than
+// the ride-along reads — revisit in W2 with camera-local anchoring).
+@vertex
+fn vs_precip(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> PrecipOut {
+    var out: PrecipOut;
+    let up = globals.sky.xyz;
+    let t = globals.misc.y;
+    let h0 = hash1u(ii * 3u + 0u);
+    let h1 = hash1u(ii * 3u + 1u);
+    let h2 = hash1u(ii * 3u + 2u);
+    let snow = select(0.0, 1.0, h2 < globals.weather.z);
+    let box_r = 0.045; // km around the camera
+    let box_h = 0.038;
+    var e1 = cross(up, vec3<f32>(0.0, 0.0, 1.0));
+    if (dot(e1, e1) < 0.01) {
+        e1 = cross(up, vec3<f32>(0.0, 1.0, 0.0));
+    }
+    e1 = normalize(e1);
+    let e2 = normalize(cross(up, e1));
+    let speed = mix(0.0095, 0.0016, snow); // km/s straight-down component
+    let phase = fract(h1 - t * speed / box_h);
+    let sway = (vnoise(vec3<f32>(t * 0.6 + h0 * 23.0, h1 * 17.0, h2 * 11.0)) - 0.5)
+        * mix(0.0004, 0.0035, snow);
+    let center = e1 * ((h0 - 0.5) * 2.0 * box_r + sway)
+        + e2 * ((fract(h2 * 7.31) - 0.5) * 2.0 * box_r)
+        + up * ((phase - 0.5) * 2.0 * box_h);
+    // fall direction bends with the wind; streaks align to it
+    let fall = normalize(-up * speed + globals.weather4.xyz * 0.4);
+    let to_p = center / max(length(center), 0.0015);
+    let across = normalize(cross(to_p, fall));
+    let half_len = mix(0.00040, 0.00006, snow);
+    let half_wid = mix(0.000040, 0.00006, snow);
+    // vi 0..5 -> two triangles of a quad
+    var cid = vi;
+    if (vi == 3u) { cid = 2u; }
+    if (vi == 4u) { cid = 1u; }
+    if (vi == 5u) { cid = 3u; }
+    let cx = f32(cid & 1u) * 2.0 - 1.0;
+    let cy = f32(cid >> 1u) * 2.0 - 1.0;
+    let pos = center + across * (cx * half_wid) + fall * (cy * half_len);
+    out.clip = globals.view_proj * vec4<f32>(pos, 1.0);
+    out.uv = vec2<f32>(cx, cy);
+    out.kind = snow;
+    let d = length(center);
+    let fade = smoothstep(0.0018, 0.0060, d) * (1.0 - smoothstep(box_r * 0.7, box_r, d));
+    out.alpha = fade * mix(0.16, 0.85, snow);
+    return out;
+}
+
+@fragment
+fn fs_precip(in: PrecipOut) -> @location(0) vec4<f32> {
+    var a = in.alpha;
+    if (in.kind > 0.5) {
+        // soft round flake
+        a *= 1.0 - smoothstep(0.45, 1.0, length(in.uv));
+    } else {
+        // streak with soft ends and edges
+        a *= (1.0 - smoothstep(0.55, 1.0, abs(in.uv.y))) * (1.0 - abs(in.uv.x) * 0.45);
+    }
+    let day = smoothstep(-0.08, 0.15, dot(globals.sun_dir.xyz, globals.sky.xyz));
+    let col = mix(vec3<f32>(0.72, 0.78, 0.88), vec3<f32>(0.97, 0.98, 1.00), in.kind)
+        * (0.30 + 0.70 * day);
+    return vec4<f32>(col, a);
 }

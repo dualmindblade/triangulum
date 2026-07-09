@@ -12,3 +12,4 @@ pub mod rivers;
 pub mod terrain;
 pub mod ui;
 pub mod voxel;
+pub mod weather;

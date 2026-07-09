@@ -1488,3 +1488,30 @@ liquid lake walls -64%. Since the pre-Sol baseline this morning: sites
 this session that was shipped without a probe first turned out wrong;
 every probe-first fix survived. Ponds visibly change for Andrew (gone
 from crags, slopes, lake basins; interiors are shallow pools) — F-22.
+
+## Phase 9 — living weather, W1 (2026-07-09, night)
+
+Austin greenlit the weather thread: use the 12-month climate fields, real
+gradations of sky and precipitation, landscape response, "some kind of
+real-time sim if feasible", everything tunable, reproducibility intact,
+zero contact with the transitions program. WEATHER.md is the contract;
+Phase W1 shipped in one evening because the determinism work paid off
+twice: render time is already the sim clock (F-20), so a weather system
+built as a PURE FUNCTION of (seed, position, time) — climatology harmonics
+from weather.bin + synoptic noise advected along the climatological wind —
+is a real moving-fronts sim with no mutable state at all. The double-run
+gate proves byte-identical frames WITH live weather; every suite stays
+green untouched because W1 never enters sample().
+
+Landed: scripts/bake_weather.py (harmonic fit: 0.63 C RMS residual vs a
+9.35 C mean seasonal swing; Cartesian a/b coefficients because amp/phase
+cannot be blended across texels), viewer/src/weather.rs (field + tuning
+knobs + optional weather_tuning.json), cloud deck in fs_sky (integer-hash
+value noise after float-hash fract() precision collapsed into diagonal
+shards at big lattice coords), overcast dimming + sky murk, snow dusting
+and rain darkening in the SHARED fragment shader (mesh and voxels get
+identical weather by construction — the transitions boundary), instanced
+rain/snow particles, `--weather off|live|C,P` CLI, `weather` play command,
+weather state in photo sidecars, weather-visual.play demo. Reference
+frames: wx_*.png in interchange (savanna storm, plateau deep winter,
+rain streaks, snowfall).
