@@ -280,6 +280,10 @@ fn write_shot_sidecar(
         "lat_deg": camera.lat.to_degrees(),
         "lon_deg": camera.lon.to_degrees(),
         "alt_km": camera.altitude_km,
+        // absolute ground height under the camera: alt_km alone can't
+        // reproduce a shot (photo-map restore otherwise re-derives ground
+        // from the far terrain surface — wrong in caves and on ice)
+        "ground_km": camera.ground_km,
         "yaw_deg": camera.yaw.to_degrees(),
         "pitch_deg": camera.pitch.to_degrees(),
         "sun_lat_deg": sun_lat,
@@ -582,6 +586,23 @@ impl App {
             act.alt_km.filter(|a| a.is_finite()),
             self.args.exaggeration,
         );
+        // exact photo restore: put the camera back on the PHOTOGRAPHED
+        // ground (a cave floor, an ice sheet — not the generic far-terrain
+        // surface the teleport derives) and back in the photographed mode.
+        // Seed-gated: a recorded ground height on a different world would
+        // embed the camera in rock. Walk physics then re-settles feet on
+        // the real support, so a stale-but-same-seed height self-corrects.
+        if act.seed == Some(self.planet.seed)
+            && let Some(g) = act.ground_km.filter(|v| v.is_finite())
+        {
+            self.camera.ground_km = g;
+            if let Some(a) = act.alt_km.filter(|v| v.is_finite()) {
+                self.camera.altitude_km = a;
+            }
+            if act.walk {
+                self.player.set_walk(&mut self.camera);
+            }
+        }
         if let Some(y) = act.yaw_deg.filter(|v| v.is_finite()) {
             self.camera.yaw = y.to_radians();
         }
@@ -590,6 +611,14 @@ impl App {
         }
         if let (Some(t), Some(gfx)) = (act.day_time_s.filter(|v| v.is_finite()), self.gfx.as_mut())
         {
+            // the recorded seconds are a PHASE of the recorded day length;
+            // replay that phase under the current cycle
+            let t = match act.day_len_s.filter(|v| *v > 0.0) {
+                Some(len) if self.args.day_len > 0.0 => {
+                    t.rem_euclid(len) / len * self.args.day_len
+                }
+                _ => t,
+            };
             gfx.renderer.set_day_time_s(t);
         }
     }

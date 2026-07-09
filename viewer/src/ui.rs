@@ -34,6 +34,15 @@ pub struct Photo {
     pub yaw_deg: f64,
     pub pitch_deg: f64,
     pub day_time_s: Option<f64>,
+    // exact-restore state (newer sidecars only; older photos fall back to
+    // the generic fly-mode teleport): the photographed ground height, mode,
+    // day length, and seed let restore reproduce the shot instead of
+    // hovering 2.5 m over the far terrain surface in fly mode with the sun
+    // at the wrong phase
+    pub ground_km: Option<f64>,
+    pub mode: Option<String>,
+    pub day_len_s: Option<f64>,
+    pub seed: Option<i64>,
 }
 
 fn parse_filename(name: &str) -> Option<(f64, f64, f64, f64, f64)> {
@@ -81,6 +90,10 @@ pub fn scan_photos(interchange: &Path) -> Vec<Photo> {
                     yaw_deg: f("yaw_deg").unwrap_or(0.0),
                     pitch_deg: f("pitch_deg").unwrap_or(-20.0),
                     day_time_s: f("day_cycle_time_s"),
+                    ground_km: f("ground_km"),
+                    mode: js.get("mode").and_then(|v| v.as_str()).map(str::to_owned),
+                    day_len_s: f("day_len_s").filter(|v| *v > 0.0),
+                    seed: js.get("seed").and_then(|v| v.as_i64()),
                 });
             }
         }
@@ -96,6 +109,10 @@ pub fn scan_photos(interchange: &Path) -> Vec<Photo> {
                 yaw_deg: yaw,
                 pitch_deg: pitch,
                 day_time_s: None,
+                ground_km: None,
+                mode: None,
+                day_len_s: None,
+                seed: None,
             });
         }
         if let Some(p) = photo {
@@ -167,6 +184,18 @@ pub struct TeleportAction {
     /// Some(seconds into the day cycle) when "restore time of day" is on
     /// and the photo recorded it.
     pub day_time_s: Option<f64>,
+    /// Day length the photo was taken under: day_time_s is meaningful only
+    /// as a PHASE of it (t=600 of a 1200 s day is noon, not dusk of a 600 s
+    /// day) — the app rescales to the current cycle.
+    pub day_len_s: Option<f64>,
+    /// Exact-restore state from the sidecar (photo destinations only): the
+    /// photographed ground height and mode reproduce the shot instead of
+    /// hovering in fly mode 2.5 m over the far terrain surface. The app
+    /// honors these only when `seed` matches the loaded planet — restoring
+    /// a recorded ground height onto a different world embeds the camera.
+    pub ground_km: Option<f64>,
+    pub walk: bool,
+    pub seed: Option<i64>,
 }
 
 pub struct PhotoMap {
@@ -588,6 +617,10 @@ impl PhotoMap {
                 yaw_deg: Some(p.yaw_deg),
                 pitch_deg: Some(p.pitch_deg),
                 day_time_s: if self.restore_time { p.day_time_s } else { None },
+                day_len_s: if self.restore_time { p.day_len_s } else { None },
+                ground_km: p.ground_km,
+                walk: p.mode.as_deref() == Some("walk"),
+                seed: p.seed,
             });
         }
         if let Some((lat, lon)) = self.custom_dest {
@@ -598,6 +631,10 @@ impl PhotoMap {
                 yaw_deg: None,
                 pitch_deg: None,
                 day_time_s: None,
+                day_len_s: None,
+                ground_km: None,
+                walk: false,
+                seed: None,
             });
         }
         // manual "lat lon [alt]" text, the old prompt's grammar — strict:
@@ -618,6 +655,10 @@ impl PhotoMap {
                     yaw_deg: None,
                     pitch_deg: None,
                     day_time_s: None,
+                    day_len_s: None,
+                    ground_km: None,
+                    walk: false,
+                    seed: None,
                 });
             }
         }
