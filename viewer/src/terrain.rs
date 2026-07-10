@@ -165,13 +165,18 @@ pub fn ground_height_km(planet: &Planet, dir: DVec3, exaggeration: f64) -> f64 {
 
 /// The full octave depth used for voxel block heights (~3 m floor).
 pub const VOXEL_OCTAVES: u32 = 12;
-/// A lake needs this much water over continuous ground before it exists.
-/// Shared with the mesh shore field so both renderers step the same class.
-const LAKE_WATER_CLEARANCE_KM: f64 = 0.0005;
 /// Octave depth of the river wet/dry reference surface: every LOD reads the
 /// perch decision at this depth so mesh and voxels always agree about which
 /// reaches carry water.
 pub const RIVER_REF_OCTAVES: u32 = 8;
+
+/// Signed distance to the block-quantized lake boundary. Lake level is
+/// constant within a lake, so flooring only that level leaves this a smooth
+/// function of position (`h_km`) whose zero agrees with the voxel predicate.
+/// The 1 mm ground bias is the established F-23 boundary convention.
+fn lake_shore_delta_km(level_km: f64, h_km: f64) -> f64 {
+    (level_km * 1000.0).floor() / 1000.0 - (h_km + 1e-6)
+}
 
 fn smoothstep(a: f64, b: f64, x: f64) -> f64 {
     let t = ((x - a) / (b - a)).clamp(0.0, 1.0);
@@ -568,13 +573,22 @@ pub fn sample(planet: &Planet, face: usize, u: f64, v: f64, octaves: u32) -> Sam
             && wl.is_finite()
             && wl < lvl - 0.008
             && (riv_d < hw * 1.5 || out.carve_km > 0.0005);
-        if lvl > h + LAKE_WATER_CLEARANCE_KM && !river_owns {
+        // Match the one-metre column lattice, exactly as F-23 does for
+        // rivers: a lake exists when its surface block is above the biased
+        // ground block. An analog 0.5 m clearance left already-submerged
+        // ground dry whenever the two values straddled a block boundary.
+        // Temperature is deliberately absent; the existing temp < -4 C
+        // consumers still turn every flooded frozen-lake column into the
+        // same solid, walkable ice class.
+        if (lvl * 1000.0).floor() > ((h + 1e-6) * 1000.0).floor() && !river_owns {
             out.water_km = out.water_km.max(lvl);
             out.lake = true;
             out.salt = salt;
+            // Preserve the old 3 m feather width, but anchor its zero to the
+            // new block boundary instead of an analog 0.5 m clearance.
             out.wet_soft = out
                 .wet_soft
-                .max(smoothstep(LAKE_WATER_CLEARANCE_KM, 0.0035, lvl - h));
+                .max(smoothstep(0.0, 0.003, lake_shore_delta_km(lvl, h)));
         }
     }
 
@@ -612,7 +626,10 @@ pub fn sample(planet: &Planet, face: usize, u: f64, v: f64, octaves: u32) -> Sam
     // blends an escarpment over ~12 km, so e_raw at a basin's rim can read
     // 55 m above the actual lake level — a pond anchored to it is fiction
     // hanging over the lake basin (census: pond@556 over lake@503.8 at
-    // 9.27 -76.81, pond@130 over dry@30 at -21.11 -108.41)
+    // 9.27 -76.81, pond@130 over dry@30 at -21.11 -108.41). Lake block
+    // quantization does not relax this Phase-8h cut line: `lake_flood` still
+    // excludes the whole eligible territory before the pond mask, and the
+    // interior `out.water_km <= h` bench guard remains a second defense.
     if octaves >= 8
         && precip > 550.0
         && rough_r < 0.45
@@ -788,7 +805,7 @@ fn needs_voxel_shore_reference(s: &Sample, octaves: u32) -> bool {
     let count = VOXEL_OCTAVES.saturating_sub(octaves) as i32;
     let missing_weight = 2f64.powi(-first) * 2.0 * (1.0 - 0.5f64.powi(count));
     let omitted_detail_bound = envelope * missing_weight * 2.0;
-    let lake_delta = s.lake_level_km - s.h_km - LAKE_WATER_CLEARANCE_KM;
+    let lake_delta = lake_shore_delta_km(s.lake_level_km, s.h_km);
     lake_delta.abs() <= SHORE_CLAMP_KM + omitted_detail_bound
 }
 
@@ -838,7 +855,8 @@ fn voxel_shore_reference(
                     );
             let mut out = *s;
             out.h_km = (s.h_km + envelope * detail).max(h_floor);
-            let lake = s.lake_level_km > out.h_km + LAKE_WATER_CLEARANCE_KM;
+            let lake = (s.lake_level_km * 1000.0).floor()
+                > ((out.h_km + 1e-6) * 1000.0).floor();
             // A dry->wet transition needs the lake hit's salt bit, which a
             // dry Sample intentionally does not retain.
             if lake && !s.lake {
@@ -867,11 +885,10 @@ fn shore_field(planet: &Planet, face: usize, u: f64, v: f64, s: &Sample) -> f32 
         f64::NEG_INFINITY
     };
     let shore_lake = if s.lake_level_km.is_finite() && s.temp_c >= -4.0 {
-        // `sample` deliberately requires 0.5 m of clearance before a lake
-        // exists (line 561). Use that same predicate boundary here: stepping
-        // raw level-ground at zero paints broad sub-threshold shoals as water
-        // even though voxel columns correctly materialize them as dry land.
-        s.lake_level_km - s.h_km - LAKE_WATER_CLEARANCE_KM
+        // Floor the per-lake constant level, never the position-varying
+        // ground. This stays smooth across triangles while its zero crossing
+        // lands exactly where `sample`'s block predicate flips wet/dry.
+        lake_shore_delta_km(s.lake_level_km, s.h_km)
     } else {
         f64::NEG_INFINITY
     };
@@ -1432,6 +1449,37 @@ mod tests {
         })
     }
 
+    /// Independent V-5 oracle: keep the block boundary literal here so
+    /// restoring the retired analog lake clearance fails the vertex gate.
+    fn block_quantized_shore_reference(
+        planet: &Planet,
+        face: usize,
+        u: f64,
+        v: f64,
+        s: &Sample,
+    ) -> f32 {
+        let sea = if s.sea || planet.ocean(face, u, v) > 0.02 {
+            -s.e_raw
+        } else {
+            f64::NEG_INFINITY
+        };
+        let lake = if s.lake_level_km.is_finite() && s.temp_c >= -4.0 {
+            (s.lake_level_km * 1000.0).floor() / 1000.0 - (s.h_km + 1e-6)
+        } else {
+            f64::NEG_INFINITY
+        };
+        let river = if s.river_level_km.is_finite()
+            && s.river_wet > 0.5
+            && s.temp_c >= -4.0
+            && s.river_dist_km < s.river_hw_km * 3.0
+        {
+            s.river_level_km - s.h_km
+        } else {
+            f64::NEG_INFINITY
+        };
+        sea.max(lake).max(river).clamp(-SHORE_CLAMP_KM, SHORE_CLAMP_KM) as f32
+    }
+
     fn mesh_world(mesh: &TileMesh, i: usize, j: usize) -> DVec3 {
         mesh_world_index(mesh, j * (TILE_QUADS + 1) + i)
     }
@@ -1545,24 +1593,44 @@ mod tests {
     }
 
     #[test]
-    fn lake_shore_field_matches_sample_clearance_boundary() {
+    fn lake_shore_field_matches_block_quantized_boundary() {
         let planet = test_planet();
         let lat = 13.346f64.to_radians();
-        let lon = -4.806f64.to_radians();
+        let lon = -4.807f64.to_radians();
         let dir = DVec3::new(lat.cos() * lon.cos(), lat.cos() * lon.sin(), lat.sin());
         let (face, u, v) = crate::planet::face_from_dir(dir);
         let mut s = sample(planet, face, u, v, VOXEL_OCTAVES);
         assert!(s.lake_level_km.is_finite() && s.temp_c >= -4.0);
-
-        s.h_km = s.lake_level_km - LAKE_WATER_CLEARANCE_KM;
-        assert!(shore_field(planet, face, u, v, &s).abs() < 1e-9);
-        s.h_km = s.lake_level_km;
+        assert!(s.lake, "Difficulty Lake dead-band column must now flood");
         assert!(
-            (f64::from(shore_field(planet, face, u, v, &s))
-                + LAKE_WATER_CLEARANCE_KM)
-                .abs()
-                < 1e-9
+            (s.lake_level_km * 1000.0).floor() > ((s.h_km + 1e-6) * 1000.0).floor()
         );
+        assert!(
+            s.lake_level_km <= s.h_km + 0.0005,
+            "Difficulty Lake site no longer distinguishes block and analog predicates"
+        );
+
+        // Synthetic fractional level makes the old 0.5 m analog boundary
+        // differ from the voxel boundary by 0.1 m. Only the water level is
+        // floored: the resulting field remains continuous in ground height.
+        s.lake_level_km = 0.1224;
+        let boundary_h = (s.lake_level_km * 1000.0).floor() / 1000.0 - 1e-6;
+        s.h_km = boundary_h;
+        assert!(shore_field(planet, face, u, v, &s).abs() < 1e-9);
+
+        let wet_h = boundary_h - 0.000_000_5;
+        assert!((s.lake_level_km * 1000.0).floor() > ((wet_h + 1e-6) * 1000.0).floor());
+        assert!(
+            s.lake_level_km <= wet_h + 0.0005,
+            "the retired analog predicate must leave this visibly submerged block dry"
+        );
+        s.h_km = wet_h;
+        assert!(shore_field(planet, face, u, v, &s) > 0.0);
+
+        let dry_h = boundary_h + 0.000_000_5;
+        assert!((s.lake_level_km * 1000.0).floor() <= ((dry_h + 1e-6) * 1000.0).floor());
+        s.h_km = dry_h;
+        assert!(shore_field(planet, face, u, v, &s) < 0.0);
     }
 
     #[test]
@@ -1606,7 +1674,13 @@ mod tests {
                 let voxel = sample(planet, key.face as usize, u, v, VOXEL_OCTAVES);
                 let vertex = mesh.vertices[index];
 
-                let expected_shore = shore_field(planet, key.face as usize, u, v, &voxel);
+                let expected_shore =
+                    block_quantized_shore_reference(planet, key.face as usize, u, v, &voxel);
+                assert!(
+                    (shore_field(planet, key.face as usize, u, v, &voxel) - expected_shore).abs()
+                        < 1e-7,
+                    "({i},{j}) shore field disagrees with block-quantized voxel oracle"
+                );
                 assert!(
                     (vertex.shore - expected_shore).abs() < 1e-7,
                     "({i},{j}) shore {} != voxel reference {expected_shore}",
