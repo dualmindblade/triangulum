@@ -356,7 +356,18 @@ fn main() -> anyhow::Result<()> {
                         Some((c.clamp(0.0, 1.0) as f32, p.clamp(0.0, 1.0) as f32));
                     trace!("[{}] weather pin cover {c:.2} precip {p:.2}", ln + 1);
                 }
-                _ => anyhow::bail!("line {}: weather off|live|pin COVER PRECIP", ln + 1),
+                // jump the year: seasons are a phase of the weather clock,
+                // so a script can shoot the same forest in deep winter and
+                // high summer without simulating months of ticks
+                Some("season") => {
+                    let frac = f(2)?.rem_euclid(1.0);
+                    renderer.weather_tuning.epoch_frac = frac;
+                    trace!("[{}] weather season {frac:.2}", ln + 1);
+                }
+                _ => anyhow::bail!(
+                    "line {}: weather off|live|pin COVER PRECIP|season FRAC",
+                    ln + 1
+                ),
             },
             "shot" => {
                 let name = toks.get(1).copied().unwrap_or("frame");

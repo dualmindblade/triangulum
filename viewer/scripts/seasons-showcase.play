@@ -1,0 +1,37 @@
+# The year on Neisor — one conifer forest through four seasons, then the
+# weather's moods. Deterministic (weather rides the sim clock; season is a
+# scripted phase), so this reel reproduces byte-identically forever.
+# For Andrew: this is W1 weather + forest impostors together.
+
+teleport 51.851 4.809 0.12
+look 30 -8
+
+weather season 0.02
+weather pin 0.85 0.75
+shot 1_deep_winter_snowfall
+
+weather season 0.27
+weather pin 0.35 0.0
+shot 2_spring_scattered
+
+weather season 0.52
+weather pin 0.05 0.0
+shot 3_high_summer_clear
+
+weather season 0.52
+weather pin 0.97 0.9
+shot 4_summer_storm
+
+weather season 0.77
+weather pin 0.55 0.25
+shot 5_autumn_showers
+
+# the same year from 2 km up: impostor forests + seasonal ground
+teleport 51.851 4.809 2.0
+look 30 -20
+weather season 0.02
+weather pin 0.6 0.4
+shot 6_winter_from_2km
+weather season 0.52
+weather pin 0.15 0.0
+shot 7_summer_from_2km
