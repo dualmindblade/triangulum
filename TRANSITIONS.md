@@ -196,13 +196,8 @@ match; there is one function evaluated twice.
 
 ## Questions for Andrew
 
-1. How visible should the rim be? (C is a dial: invisible ↔ soft speckle
-   annulus ↔ deliberate shimmer. Austin votes "trace of it = quaint".)
-2. Texture energy: how strong should block-scale mottling be at range?
-   (A's distance fade curve is an art knob.)
-3. Biome edge width: crisp ecotones (~200 m) or long gradients (~2 km)?
-   Per-pair overrides (desert/oasis crisp; steppe/savanna long)?
-4. Foam/rapids palette (codex is prototyping W-3 white-water now) — how
-   lively should steep water be?
-5. Does he want a hand in the climate→tint ramp? (It is essentially the
-   planet's color grade — very much a creative-director artifact.)
+Moved to DECISIONS.md (repo root) - the dedicated living decision-points
+document. This program's entries there: D-1 rim dial, D-2 texture
+energy, D-3 per-pair ecotone widths, D-10 slope shading truth, D-15 the
+texture/palette pass. The 2026-07-09 verdicts that shaped this program
+are recorded in its Answered section.

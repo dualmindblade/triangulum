@@ -132,15 +132,9 @@ knob, not a constant.
 
 ## Decision points for Andrew (none block W1)
 
-1. Year length (spectacle vs realism) and starting season.
-2. Cloud art direction: soft painterly masses vs crisp cumulus cells —
-   the shell noise is swappable; W1 ships painterly-soft.
-3. How gloomy may an overcast day get? (sun_dim cap; W1 default keeps
-   ~35% direct light so screenshots stay readable.)
-4. Storm frequency: how often should a given valley see rain? (storminess
-   bias; W1 default makes weather an event, not wallpaper.)
-5. W4 scope: is seasonal ice/melt a world we want? (It's the biggest
-   gameplay consequence — paths that only exist in winter.)
+Moved to DECISIONS.md (repo root): D-5 year length/starting season,
+D-6 cloud art direction, D-7 overcast gloom cap, D-8 storm frequency,
+D-9 W4 seasonal ice/melt scope.
 
 ## Data format: weather.bin
 
