@@ -9,7 +9,7 @@
 //! consistent averages of finer ones.
 
 use crate::noise::{fbm_band, ridged_band};
-use crate::planet::{face_dir, ground_tint, Planet};
+use crate::planet::{climate_surface, face_dir, MainBlock, Planet};
 use glam::DVec3;
 
 pub const TILE_QUADS: usize = 32; // 32x32 quads, 33x33 vertices per tile
@@ -1043,24 +1043,22 @@ fn shade_ground(
     s: &Sample,
     slope: f64,
 ) -> [f32; 3] {
-    let koppen = planet.koppen(face, u, v);
-    let mut c = ground_tint(koppen);
+    let climate = climate_surface(planet, face, u, v, s.temp_c, s.precip);
+    let mut c = climate.tint(climate.main_block);
     // forested biomes read darker from afar (canopy self-shadowing), so the
-    // tree-covered voxel patch doesn't pop out of a flat bright lawn
-    let forest = match koppen {
-        0 | 1 => 0.85f32,
-        10..=15 | 20 | 21 | 24 | 25 => 0.5,
-        22 | 23 | 26 | 27 => 0.6,
-        16..=19 => 0.4,
-        7..=9 => 0.3,
-        2 => 0.15,
-        _ => 0.0,
+    // tree-covered voxel patch doesn't pop out of a flat bright lawn. The
+    // shared context blends this weight so it cannot restore a class line.
+    let forest = if climate.main_block == MainBlock::Grass {
+        climate.forest
+    } else {
+        0.0
     };
     let dark = 1.0 - 0.22 * forest;
     c = [c[0] * dark, c[1] * dark, c[2] * dark];
     // beach sand in the first ~10 m over sea level
     let sandy = (1.0 - (s.e_raw / 0.012).clamp(0.0, 1.0)) as f32;
-    c = mix3(c, [0.55, 0.47, 0.27], sandy * 0.9);
+    let sand = climate.tint(MainBlock::Sand);
+    c = mix3(c, sand, sandy * 0.9);
     // bare rock only where the ground is actually steep (like the blocks,
     // which rock by per-column steepness) — jagged-map areas rock sooner.
     // Blanket-graying whole rough biomes made the far mesh a different
@@ -1069,17 +1067,11 @@ fn shade_ground(
     let rocky = ((rough_r * 0.9 - 0.05).clamp(0.0, 0.65)
         * smoothstep(0.25, 0.60, slope)) as f32;
     c = mix3(c, [0.23, 0.22, 0.21], rocky);
-    // snow by annual temperature — on the SAME threshold as the voxel
-    // materials (blocks whiten below -9 C, dithered +-1.5). The mesh used to
-    // start whitening at +1 C, so everywhere between -2 and -9 the far mesh
-    // read as snowfield against olive blocks and the patch edge looked like
-    // the world was missing beyond it.
-    let snowy = if koppen == 29 {
-        1.0
-    } else {
-        ((-7.5 - s.temp_c) / 3.0).clamp(0.0, 1.0) as f32
-    };
-    c = mix3(c, [0.82, 0.85, 0.90], snowy);
+    // Snow uses the same world-column hash and threshold as the voxels.
+    // Re-apply after rock/beach because voxel surface_mat gives snow priority.
+    if climate.main_block == MainBlock::Snow {
+        c = climate.tint(MainBlock::Snow);
+    }
     // Lake shore sand on dry ground just above the local lake level. Apply
     // after rock/snow for liquid-temperature lakes so barely-emergent shoals
     // read as sandbars instead of steep dark holes in the water.
@@ -1089,6 +1081,6 @@ fn shade_ground(
         } else {
             0.0
         };
-    c = mix3(c, [0.55, 0.47, 0.27], lake_shore * 0.9);
+    c = mix3(c, sand, lake_shore * 0.9);
     c
 }

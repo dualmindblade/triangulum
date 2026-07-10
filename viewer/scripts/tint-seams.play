@@ -1,0 +1,29 @@
+# Visual reference for climate tint and dual-range biome transitions.
+# Weather stays off so these frames isolate the material/vertex base color.
+
+weather off
+mode fly
+
+# BWk sand (south) <-> BSk grass (north), centered on the baked raster edge.
+sun 18 -90
+teleport 0.336040 -90.168022 2.0
+look 90 -62
+shot sand_grass_2km
+
+# Cfb <-> Cwb: both classes keep grass, so only the long climate ramp shows.
+sun 22 -29
+teleport 5.013911 -29.381680 2.0
+look 0 -62
+shot grass_grass_2km
+
+# README scenic table: savanna acacias.
+sun 18 40
+teleport 1.510000 40.490000 2.0
+look -50 -38
+shot scenic_savanna_2km
+
+# Low along the sand/grass edge: voxel foreground and far mesh share the frame.
+sun 18 -90
+teleport 0.336040 -90.168022 0.12
+look 90 -18
+shot sand_grass_straddle
