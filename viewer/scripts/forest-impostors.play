@@ -11,6 +11,6 @@ shot conifer_2km
 teleport 6.974 33.203 0.35
 look -50 -10
 shot broadleaf_low
-teleport 15.942 -78.364 1.0
-look 0 -15
+teleport 15.942 -78.364 0.4
+look 0 -22
 shot jungle_1km
