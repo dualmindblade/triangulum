@@ -9,6 +9,17 @@ are `teleport LAT LON [ALT_KM]` viewer args at `--exagg 1` unless noted.
 
 ## OPEN
 
+### V-7 Lake-shore sand band disagrees between renderers (territory-wide)
+shade_ground paints lake-shore sand from the VERTEX rule (lake_level
+raster band — kilometers wide across a lake's territory, e.g. the lagoon
+country at 47.80 14.42 renders the whole mesh tan) while voxels sand only
+columns near the waterline (ColCtx.lake_shore). Pre-existing double
+implementation (the ledger already records this overlay landing twice);
+tonight's unified greener grass raised the contrast so the patch reads as
+a green disk on tan. Fix direction: extract ONE shared lake-shore rule
+(climate_surface-style) consumed by both — a clean follow-up mission in
+the D/B family.
+
 ### W-7 Residual liquid walls at merged mega-lakes (upstream of W-5b)
 After the shore-apron + bounded-flood fix (072a512) the liquid wall census
 fell 114,421 findings/683 lakes -> 11,659/556 (median 21.2 m -> 5.9 m, max

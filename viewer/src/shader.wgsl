@@ -120,7 +120,12 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     // see-through crack at the patch boundary (a black void underwater).
     // Leaving the water plane under the patch backs any crack with water;
     // the opaque blocks still draw over it, so nothing double-shows.
-    if (in.rel_flag.w > 0.5 && globals.hole.w > 0.0 && in.wflag < 0.5) {
+    // The exemption needs wflag ~ 1: it interpolates across a triangle, so
+    // a MIXED shore triangle (two sea verts + one land vert) kept its
+    // wflag>0.5 half alive inside the patch — a floating pale shore-ramp
+    // fragment over the block water (photographed at 9.20 114.05). Only
+    // all-water triangles (wflag 1 at every vertex) may skip the cut.
+    if (in.rel_flag.w > 0.5 && globals.hole.w > 0.0 && in.wflag < 0.98) {
         let q = in.rel_flag.xyz - globals.hole.xyz;
         let vert = dot(q, globals.hole_up.xyz);
         let horiz = q - globals.hole_up.xyz * vert;
@@ -496,7 +501,15 @@ fn vs_precip(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -
     // fall direction bends with the wind; streaks align to it
     let fall = normalize(-up * speed + globals.weather4.xyz * 0.4);
     let to_p = center / max(length(center), 0.0015);
-    let across = normalize(cross(to_p, fall));
+    // a particle straight below a down-looking camera has to_p parallel to
+    // fall: cross() collapses and normalize() exploded the quad into a
+    // ~100 m garbage slab (photographed at 9.20 114.05 in heavy snowfall,
+    // pitch -82). Fall back to a horizontal frame axis when degenerate.
+    var cr = cross(to_p, fall);
+    if (dot(cr, cr) < 1e-6) {
+        cr = cross(fall, e1);
+    }
+    let across = normalize(cr);
     let half_len = mix(0.00040, 0.00006, snow);
     let half_wid = mix(0.000040, 0.00006, snow);
     // vi 0..5 -> two triangles of a quad

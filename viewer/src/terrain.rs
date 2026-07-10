@@ -872,7 +872,10 @@ pub fn build_tile(planet: &Planet, key: TileKey, exaggeration: f64) -> TileMesh 
         _ => 0,
     };
     if impostor_stride > 0 {
-        const IMPOSTOR_CAP: usize = 4000; // trees per tile (vertex budget knob)
+        // trees per tile: the vertex/fill budget knob. Austin measured the
+        // frame rate sagging at mid distance on the RTX 2060 at 4000/4000;
+        // level 11 (whose trees are 1-3 px) carries a lighter load
+        let impostor_cap: usize = if key.level == 12 { 2600 } else { 1400 };
         let s = impostor_stride;
         let nn = crate::voxel::COLUMNS_PER_FACE;
         let nnf = nn as f64;
@@ -902,10 +905,10 @@ pub fn build_tile(planet: &Planet, key: TileKey, exaggeration: f64) -> TileMesh 
                 cands.push((ci, cj, kind, lot));
             }
         }
-        let keep_every = cands.len().div_ceil(IMPOSTOR_CAP).max(1);
+        let keep_every = cands.len().div_ceil(impostor_cap).max(1);
         // decimation past the cap keeps visual mass by growing the kept
         // trees (area-conserving sqrt, capped before they read as blobs)
-        let boost = (keep_every as f64).sqrt().min(3.0);
+        let boost = (keep_every as f64).sqrt().min(2.2);
         for (ci, cj, kind, lot) in cands.into_iter().step_by(keep_every) {
             let u = -1.0 + 2.0 * (ci as f64 + 0.5) / nnf;
             let v = -1.0 + 2.0 * (cj as f64 + 0.5) / nnf;
@@ -923,20 +926,23 @@ pub fn build_tile(planet: &Planet, key: TileKey, exaggeration: f64) -> TileMesh 
             // width/taper give each species its silhouette: conifers pinch
             // to spires, broadleaf/jungle round off, acacias flare into the
             // umbrella crown — flat rectangles read as a picket fence
+            // sizes ~15% under the voxel canopy footprint: billboards fill
+            // their whole quad while voxel canopies are airy block piles, so
+            // equal dimensions read LARGER (Austin's field report)
             let (canopy_km, half_w_km, taper, leaf) = match kind {
-                TreeKind::Jungle => (0.0060, 0.0028, 0.75, Mat::LeavesJungle),
-                TreeKind::Conifer => (0.0050, 0.0019, 0.12, Mat::LeavesConifer),
-                TreeKind::Broadleaf => (0.0045, 0.0022, 0.65, Mat::LeavesBroad),
-                TreeKind::Acacia => (0.0035, 0.0020, 1.60, Mat::LeavesAcacia),
+                TreeKind::Jungle => (0.0052, 0.0023, 0.75, Mat::LeavesJungle),
+                TreeKind::Conifer => (0.0043, 0.0016, 0.12, Mat::LeavesConifer),
+                TreeKind::Broadleaf => (0.0038, 0.0018, 0.65, Mat::LeavesBroad),
+                TreeKind::Acacia => (0.0030, 0.0017, 1.60, Mat::LeavesAcacia),
                 TreeKind::Shrub => continue,
             };
             let dir = face_dir(face, u, v);
             // sink slightly so slopes don't leave floating root gaps
             let root = dir * (radius + smp.render_h_km() * exaggeration - 0.0008) - origin;
-            // decimation boost conserves canopy AREA mostly via width —
-            // heights stay near-true so the rim handoff keeps its skyline
-            let hgt = (trunk as f64 * 0.001 + canopy_km) * exaggeration * boost.powf(0.35);
-            let wid = half_w_km * boost.powf(1.3);
+            // decimation boost conserves canopy AREA via width only —
+            // heights stay true so the rim handoff keeps its skyline
+            let hgt = (trunk as f64 * 0.001 + canopy_km) * exaggeration * boost.powf(0.25);
+            let wid = half_w_km * boost;
             let ax = if dir.z.abs() < 0.9 { DVec3::Z } else { DVec3::Y };
             let e1 = (ax - dir * ax.dot(dir)).normalize();
             let e2 = dir.cross(e1);
