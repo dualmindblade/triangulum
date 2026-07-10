@@ -1,5 +1,23 @@
 # One world, two renderers: the transitions design note
 
+## VERDICTS (Andrew, 2026-07-09 evening — these are now design constraints)
+
+- **Direction: seamless-first.** "Less visible is ideal unless it
+  introduces more complications." The quaint-rim option (C) survives only
+  as a KNOB that defaults to invisible; engineer every seam to disappear.
+- **E is greenlit as described**: tree billboard impostors at mid
+  distance, vegetation coloring at high distance. (Austin: we fly at
+  medium altitude a lot — this is important.)
+- **D gains a dual-range rule**: long-range climate blending for biome
+  pairs sharing the same main block (grass↔grass: kilometers-long tint
+  gradients), SHORT-range blending between different-block pairs
+  (sand↔grass: a crisp dithered ecotone band). Category dither is for
+  cross-block boundaries; same-block boundaries are pure tint.
+- **Climate-tint ramp colors are provisional**: whatever the ramp picks is
+  fine for now; final colors come AFTER texturing, by taking each
+  texture's average color as its tint anchor. (So: build the ramp
+  machinery, don't gold-plate the palette.)
+
 For the texturing/transitions summit (Austin + Andrew + AI crew), 2026-07-09.
 Covers BUGS.md V-1 (voxel patch reads as a disk against the far mesh), V-5
 (lake shores alias into polygons at coarse LOD), and biome transitions.
