@@ -134,6 +134,12 @@ pub struct ColCtx {
     pub rough: f32,
     pub carved: bool, // river/pond carving touched this column
     pub salt: bool,   // water here belongs to a salt lake
+    /// TRUE ocean (the map's ocean mask), not merely e_raw < 0: dry basins
+    /// and river mouths sit below sea level on purpose. The water color
+    /// call must pass the same sea class the mesh does, or a below-sea-
+    /// level river mouth renders a pale sea-tinted slab inside the patch
+    /// against fresh mesh water (field hunt 3, 7.042 33.477).
+    pub sea: bool,
     /// Shared liquid-lake shore fraction; surface blocks dither on it.
     pub lake_shore_frac: f64,
     /// A finite local lake level makes the shared lake rule, rather than the
@@ -371,6 +377,7 @@ pub fn col_ctx(planet: &Planet, edits: &Edits, face: usize, ci: u64, cj: u64) ->
         rough: s.rough as f32,
         carved: s.carve_km > 0.001,
         salt: s.salt,
+        sea: s.sea,
         lake_shore_frac: crate::terrain::lake_shore_frac(
             s.temp_c,
             s.h_km,
@@ -1256,12 +1263,12 @@ pub fn build_chunk(
                     // ONE ramp with the mesh (terrain::water_surface_color,
                     // TRANSITIONS.md F): true ocean depth for the sea,
                     // carved depth for rivers/lakes/ponds
-                    let depth_km = if c.e_raw < 0.0 {
+                    let depth_km = if c.sea {
                         -c.e_raw as f64
                     } else {
                         (w - c.top_solid()) as f64 / 1000.0
                     };
-                    wcol = crate::terrain::water_surface_color(depth_km, c.e_raw < 0.0, c.salt);
+                    wcol = crate::terrain::water_surface_color(depth_km, c.sea, c.salt);
                 }
                 let r = shell(w);
                 // frozen tops take the same per-column brightness checker as
