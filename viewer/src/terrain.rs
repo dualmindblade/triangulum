@@ -896,8 +896,16 @@ fn shore_field(planet: &Planet, face: usize, u: f64, v: f64, s: &Sample) -> f32 
     // may sit below zero), and both values are octave-independent. Using it
     // also preserves the smooth, stable coastal crossing without re-running
     // the full sampler throughout open ocean.
-    let shore_sea = if s.sea || planet.ocean(face, u, v) > 0.02 {
-        -s.e_raw
+    // The SIGN must follow the sea CLASS, with -e_raw only as magnitude:
+    // bilinear e_raw dips a few metres below zero on LAND all along the
+    // coasts (the documented dry-basin quirk), and a raw -e_raw term
+    // painted those pockets as water - whole-triangle navy plates on sandy
+    // coasts at orbital LOD (Andrew's first field report, 15.238 150.848;
+    // probed land at +2.0 m with e_raw -1.0, ofrac 0.56).
+    let shore_sea = if s.sea {
+        (-s.e_raw).max(0.0001)
+    } else if planet.ocean(face, u, v) > 0.02 {
+        (-s.e_raw).min(-0.0001)
     } else {
         f64::NEG_INFINITY
     };
@@ -1475,8 +1483,10 @@ mod tests {
         v: f64,
         s: &Sample,
     ) -> f32 {
-        let sea = if s.sea || planet.ocean(face, u, v) > 0.02 {
-            -s.e_raw
+        let sea = if s.sea {
+            (-s.e_raw).max(0.0001)
+        } else if planet.ocean(face, u, v) > 0.02 {
+            (-s.e_raw).min(-0.0001)
         } else {
             f64::NEG_INFINITY
         };
