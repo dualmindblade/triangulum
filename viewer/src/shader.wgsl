@@ -525,20 +525,30 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
                         * (1.0 - smoothstep(0.076, 0.085, a2))
                         * smoothstep(-0.05, -0.02, region)
                         * kfade;
-                    // flooded only if the lake table reaches ABOVE the
-                    // pit floor - and the floor is only deep where the
-                    // TUBE ITSELF continues downward: probe the same field
-                    // 2.5 m deeper. A deep-running tube may flood from a
-                    // table up to ~3 m below ground; a surface graze only
-                    // from a table right at ground. (A cross-section
-                    // "core depth" proxy still painted false pools on
-                    // high ground - Austin's diff at 13.349 -4.798; the
-                    // deep probe is the blocks' actual geometry question.)
-                    let deep = max(
-                        abs(kgnoise(dirp * (90000.0 + (zm - 2.5) / 12.0), globals.karst.y)),
-                        abs(kgnoise(dirp * (76000.0 + (zm - 2.5) / 9.0), globals.karst.z)),
-                    ) < 0.085;
-                    if (in.shore > select(-0.0008, -0.0030, deep)) {
+                    // flooded iff the pit reaches below the water table.
+                    // The pit's depth is a DEPTH LADDER of the tube field:
+                    // any breach carves at least its surface block (floods
+                    // a table within ~1.5 m); a tube still open ~1.5 m
+                    // down makes a 2-3 block pit (table to ~3 m); open
+                    // ~3 m down, a shaft (table to the -5 m shore clamp,
+                    // which doubles as the visibility cap - deeper pools
+                    // hide behind their pit walls). One fixed probe depth
+                    // either invented pools on high ground (13.349 -4.798)
+                    // or dried shallow-table channels (the k150 field).
+                    var flooded = in.shore > -0.0015;
+                    if (!flooded && in.shore > -0.0028) {
+                        flooded = max(
+                            abs(kgnoise(dirp * (90000.0 + (zm - 1.5) / 12.0), globals.karst.y)),
+                            abs(kgnoise(dirp * (76000.0 + (zm - 1.5) / 9.0), globals.karst.z)),
+                        ) < 0.085;
+                    }
+                    if (!flooded && in.shore > -0.0049) {
+                        flooded = max(
+                            abs(kgnoise(dirp * (90000.0 + (zm - 3.0) / 12.0), globals.karst.y)),
+                            abs(kgnoise(dirp * (76000.0 + (zm - 3.0) / 9.0), globals.karst.z)),
+                        ) < 0.085;
+                    }
+                    if (flooded) {
                         wet = max(wet, t); // pool: the water pipeline colors it
                     } else {
                         // dry pit mouth: the blocks expose DIRT walls

@@ -218,6 +218,12 @@ pub struct Sample {
     /// caves passing under a river bank (flooded-caves feature) reads this.
     /// f64::NEG_INFINITY when no river is near.
     pub river_level_km: f64,
+    /// Pond pool level (km) when the noise-pond machinery wet this column,
+    /// else NEG_INFINITY. Ponds are not lakes (no graph cell, no wflag
+    /// plane) and were invisible to the per-pixel shore field — the karst
+    /// hint classified a real pond breach as a dry pit ("this one isn't
+    /// exactly a cave", Difficulty Lake survey).
+    pub pond_level_km: f64,
     /// Flooding lake is a salt lake (mineral-pale water).
     pub salt: bool,
     /// True open ocean. NOT the same as e_raw <= 0: the map has genuine dry
@@ -275,6 +281,7 @@ pub fn sample(planet: &Planet, face: usize, u: f64, v: f64, octaves: u32) -> Sam
         carve_km: 0.0,
         lake: false,
         lake_level_km: f64::NEG_INFINITY,
+        pond_level_km: f64::NEG_INFINITY,
         lake_boundary_dist_km: f64::INFINITY,
         river_dist_km: f64::INFINITY,
         river_hw_km: 0.0,
@@ -657,9 +664,16 @@ pub fn sample(planet: &Planet, face: usize, u: f64, v: f64, octaves: u32) -> Sam
             // the downhill terrain as a standing wall (census: 20 m pond
             // walls at 4.999 -29.391). Water that would drain does not
             // exist.
-            if wl > h && wl <= h + pd + 0.002 {
-                out.water_km = out.water_km.max(wl);
-                out.wet_soft = out.wet_soft.max(smoothstep(0.0, 0.004, pd));
+            if wl <= h + pd + 0.002 {
+                // candidate level even on dry columns (edges, islands): the
+                // shore field interpolates its zero crossing through them.
+                // NOT recorded in the perched-drain case above the guard -
+                // blocks hold no water there and the mesh must agree.
+                out.pond_level_km = wl;
+                if wl > h {
+                    out.water_km = out.water_km.max(wl);
+                    out.wet_soft = out.wet_soft.max(smoothstep(0.0, 0.004, pd));
+                }
             }
         } else if out.carve_km <= 0.0 && riv_d > hw * 1.5 {
             // pond shore apron, the lake apron's little sibling: where
@@ -874,12 +888,23 @@ fn shore_field(planet: &Planet, face: usize, u: f64, v: f64, s: &Sample) -> f32 
     } else {
         f64::NEG_INFINITY
     };
+    // ponds are the same field: the pool level is recorded across the pond
+    // mask (wet and dry-edge columns alike, never the perched-drain case),
+    // so pond edges render per-pixel and the karst breach hint sees pond
+    // water tables instead of misreading pond breaches as dry pits
+    // (Difficulty Lake survey: "this one isn't exactly a cave").
+    let shore_pond = if s.pond_level_km.is_finite() && s.temp_c >= -4.0 {
+        s.pond_level_km - s.h_km
+    } else {
+        f64::NEG_INFINITY
+    };
     // Clamp TIGHT (±5 m): a vertex without water data must sit at a gentle
     // -5 m rather than a remote sentinel. A large negative jump skews the
     // interpolated crossing toward that vertex and cuts vertex-scale notches.
     shore_sea
         .max(shore_lake)
         .max(shore_river)
+        .max(shore_pond)
         .clamp(-SHORE_CLAMP_KM, SHORE_CLAMP_KM) as f32
 }
 
