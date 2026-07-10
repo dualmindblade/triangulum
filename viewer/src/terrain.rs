@@ -853,6 +853,135 @@ pub fn build_tile(planet: &Planet, key: TileKey, exaggeration: f64) -> TileMesh 
         }
     }
 
+    // ---- forest impostors (TRANSITIONS.md E, Andrew-greenlit) ----
+    // The same trees the voxel patch grows, as crossed billboard quads on
+    // the two finest mesh levels: the SAME placement lottery, species mix,
+    // trunk heights, and leaf palette (voxel::tree_* / Mat::color), so a
+    // forest keeps its density, color, and silhouettes from the patch rim
+    // out to ~5-10 km, then hands off to the vegetation tint. Inside the
+    // voxel patch the fragment shader's hole cut discards them — blocks own
+    // the near trees, no double-draw, and the handoff line is the same
+    // feathered rim the terrain already uses. Enumeration rides a strided
+    // column lattice with density scaled by stride² (statistically the same
+    // forest at a mesh vertex budget; per-tree identity only matters where
+    // blocks take over, and there the hole owns the view). Two phases so
+    // the expensive terrain sample runs only on budget survivors.
+    let impostor_stride: u64 = match key.level {
+        12 => 4,
+        11 => 8,
+        _ => 0,
+    };
+    if impostor_stride > 0 {
+        const IMPOSTOR_CAP: usize = 4000; // trees per tile (vertex budget knob)
+        let s = impostor_stride;
+        let nn = crate::voxel::COLUMNS_PER_FACE;
+        let nnf = nn as f64;
+        let to_col = |x: f64| (((x + 1.0) * 0.5 * nnf).floor().clamp(0.0, nnf - 1.0)) as u64;
+        let (ci0, ci1) = (to_col(u0), to_col(u0 + size));
+        let (cj0, cj1) = (to_col(v0), to_col(v0 + size));
+        let seed = planet.seed;
+        let comp = (s * s) as f64; // stride density compensation
+        let mut cands: Vec<(u64, u64, crate::voxel::TreeKind, f64)> = Vec::new();
+        for ci in (ci0..=ci1).step_by(s as usize) {
+            for cj in (cj0..=cj1).step_by(s as usize) {
+                let lot = crate::voxel::tree_hash01(face as u8, ci, cj, seed);
+                if lot >= 0.011 * comp {
+                    continue; // cheapest gate: above every biome's density
+                }
+                let u = -1.0 + 2.0 * (ci as f64 + 0.5) / nnf;
+                let v = -1.0 + 2.0 * (cj as f64 + 0.5) / nnf;
+                let Some((kind, density)) =
+                    crate::voxel::tree_kind_density(planet.koppen(face, u, v))
+                else {
+                    continue;
+                };
+                // shrubs are ground texture, not a silhouette at range
+                if kind == crate::voxel::TreeKind::Shrub || lot >= density * comp {
+                    continue;
+                }
+                cands.push((ci, cj, kind, lot));
+            }
+        }
+        let keep_every = cands.len().div_ceil(IMPOSTOR_CAP).max(1);
+        // decimation past the cap keeps visual mass by growing the kept
+        // trees (area-conserving sqrt, capped before they read as blobs)
+        let boost = (keep_every as f64).sqrt().min(3.0);
+        for (ci, cj, kind, lot) in cands.into_iter().step_by(keep_every) {
+            let u = -1.0 + 2.0 * (ci as f64 + 0.5) / nnf;
+            let v = -1.0 + 2.0 * (cj as f64 + 0.5) / nnf;
+            // one real sample per survivor: correct rooting on THIS tile's
+            // surface (same octave budget) + the guards tree_at applies
+            let smp = sample(planet, face, u, v, octaves);
+            if smp.has_water() || smp.e_raw < 0.010 || smp.carve_km > 0.0005 {
+                continue;
+            }
+            if smp.temp_c < -6.0 || smp.temp_c < -11.0 {
+                continue;
+            }
+            let trunk = crate::voxel::tree_trunk(kind, face as u8, ci, cj);
+            use crate::voxel::{Mat, TreeKind};
+            // width/taper give each species its silhouette: conifers pinch
+            // to spires, broadleaf/jungle round off, acacias flare into the
+            // umbrella crown — flat rectangles read as a picket fence
+            let (canopy_km, half_w_km, taper, leaf) = match kind {
+                TreeKind::Jungle => (0.0060, 0.0028, 0.75, Mat::LeavesJungle),
+                TreeKind::Conifer => (0.0050, 0.0019, 0.12, Mat::LeavesConifer),
+                TreeKind::Broadleaf => (0.0045, 0.0022, 0.65, Mat::LeavesBroad),
+                TreeKind::Acacia => (0.0035, 0.0020, 1.60, Mat::LeavesAcacia),
+                TreeKind::Shrub => continue,
+            };
+            let dir = face_dir(face, u, v);
+            // sink slightly so slopes don't leave floating root gaps
+            let root = dir * (radius + smp.render_h_km() * exaggeration - 0.0008) - origin;
+            // decimation boost conserves canopy AREA mostly via width —
+            // heights stay near-true so the rim handoff keeps its skyline
+            let hgt = (trunk as f64 * 0.001 + canopy_km) * exaggeration * boost.powf(0.35);
+            let wid = half_w_km * boost.powf(1.3);
+            let ax = if dir.z.abs() < 0.9 { DVec3::Z } else { DVec3::Y };
+            let e1 = (ax - dir * ax.dot(dir)).normalize();
+            let e2 = dir.cross(e1);
+            // per-tree brightness variation, like the voxel canopy speckle.
+            // NO bark: a distant forest is a canopy sea (a bark-bottomed
+            // gradient made whole rim bands read brown — overlapping
+            // billboards stack far trees' bark above near trees' crowns).
+            // The darkened base fakes the under-canopy shadow instead.
+            let shade = 0.82 + 0.36 * (lot * 97.31).fract() as f32;
+            let lc = leaf.color([0.0; 3]);
+            let canopy = [lc[0] * shade * 1.08, lc[1] * shade * 1.08, lc[2] * shade * 1.08];
+            let under = [lc[0] * shade * 0.45, lc[1] * shade * 0.45, lc[2] * shade * 0.45];
+            let nrm = [dir.x as f32, dir.y as f32, dir.z as f32];
+            for axis in [e1, e2] {
+                let base_i = vertices.len() as u32;
+                let wt = wid * taper;
+                let quad = [
+                    (root - axis * wid, under),
+                    (root + axis * wid, under),
+                    (root + axis * wt + dir * hgt, canopy),
+                    (root - axis * wt + dir * hgt, canopy),
+                ];
+                for (p, col) in quad {
+                    vertices.push(Vertex {
+                        pos: [p.x as f32, p.y as f32, p.z as f32],
+                        normal: nrm,
+                        color: col,
+                        water: [0.0; 4],
+                        morph_dh: 0.0,
+                        morph_wet: 0.0,
+                        wflag: 0.0,
+                    });
+                }
+                indices.extend_from_slice(&[
+                    base_i,
+                    base_i + 1,
+                    base_i + 2,
+                    base_i,
+                    base_i + 2,
+                    base_i + 3,
+                ]);
+            }
+        }
+    }
+
     TileMesh { origin_km: origin, vertices, indices }
 }
 

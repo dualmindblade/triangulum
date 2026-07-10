@@ -67,8 +67,10 @@ pub enum Mat {
 }
 
 impl Mat {
-    /// Base linear-RGB color; Grass takes the biome ground tint.
-    fn color(self, tint: [f32; 3]) -> [f32; 3] {
+    /// Base linear-RGB color; Grass takes the biome ground tint. Public so
+    /// the mesh-tile tree impostors wear EXACTLY the voxel palette
+    /// (TRANSITIONS.md: one truth, two renderers).
+    pub fn color(self, tint: [f32; 3]) -> [f32; 3] {
         match self {
             Mat::Grass => tint,
             // dry loam, not wet cellar soil: the old [0.23,0.15,0.085] was
@@ -466,6 +468,45 @@ pub enum TreeKind {
     Shrub,
 }
 
+/// Species + closed-canopy density per Köppen class — the ONE tree
+/// distribution both renderers draw from (voxel trees here, mesh-tile
+/// billboard impostors in terrain::build_tile; TRANSITIONS.md E).
+/// Densities are per-column; one canopy covers ~25 columns, so 0.010 is
+/// already a closed-canopy forest.
+pub fn tree_kind_density(koppen: u8) -> Option<(TreeKind, f64)> {
+    match koppen {
+        0 | 1 => Some((TreeKind::Jungle, 0.011)),
+        2 => Some((TreeKind::Acacia, 0.0012)),
+        5 => Some((TreeKind::Acacia, 0.0005)),
+        6 => Some((TreeKind::Shrub, 0.0015)),
+        7 | 8 | 9 => Some((TreeKind::Broadleaf, 0.0025)),
+        10..=15 | 20 | 21 | 24 | 25 => Some((TreeKind::Broadleaf, 0.005)),
+        16..=19 => Some((TreeKind::Conifer, 0.003)),
+        22 | 23 | 26 | 27 => Some((TreeKind::Conifer, 0.007)),
+        28 => Some((TreeKind::Shrub, 0.002)),
+        _ => None, // deserts, ice cap, ocean
+    }
+}
+
+/// The placement lottery ticket for a column (uniform 0..1, compared
+/// against the biome density). Public so impostors run the SAME lottery.
+pub fn tree_hash01(face: u8, ci: u64, cj: u64, seed: i64) -> f64 {
+    hash01(face, ci, cj, seed as u64 ^ 0x7255)
+}
+
+/// Trunk height for a winning column — shared with impostors so a tree's
+/// silhouette height survives the voxel<->billboard handoff.
+pub fn tree_trunk(kind: TreeKind, face: u8, ci: u64, cj: u64) -> i64 {
+    let h_var = (hash01(face, ci, cj, 0x9E11) * 3.0) as i64;
+    match kind {
+        TreeKind::Conifer => 4 + h_var,
+        TreeKind::Broadleaf => 3 + h_var,
+        TreeKind::Jungle => 6 + h_var,
+        TreeKind::Acacia => 3 + (h_var).min(1),
+        TreeKind::Shrub => 0,
+    }
+}
+
 /// Deterministic tree placement: species + density by biome, no trees on
 /// steep ground, water, beaches, or beyond the cold treeline.
 pub fn tree_at(c: &ColCtx, face: u8, ci: u64, cj: u64, seed: i64) -> Option<(TreeKind, i64)> {
@@ -474,19 +515,8 @@ pub fn tree_at(c: &ColCtx, face: u8, ci: u64, cj: u64, seed: i64) -> Option<(Tre
     if c.has_water() || c.water != i64::MIN || c.e_raw < 0.010 || c.lake_shore || c.carved {
         return None;
     }
-    // densities are per-column; one canopy covers ~25 columns, so 0.010
-    // is already a closed-canopy forest
-    let (kind, density) = match c.koppen {
-        0 | 1 => (TreeKind::Jungle, 0.011),
-        2 => (TreeKind::Acacia, 0.0012),
-        5 => (TreeKind::Acacia, 0.0005),
-        6 => (TreeKind::Shrub, 0.0015),
-        7 | 8 | 9 => (TreeKind::Broadleaf, 0.0025),
-        10..=15 | 20 | 21 | 24 | 25 => (TreeKind::Broadleaf, 0.005),
-        16..=19 => (TreeKind::Conifer, 0.003),
-        22 | 23 | 26 | 27 => (TreeKind::Conifer, 0.007),
-        28 => (TreeKind::Shrub, 0.002),
-        _ => return None, // deserts, ice cap, ocean
+    let Some((kind, density)) = tree_kind_density(c.koppen) else {
+        return None;
     };
     // treeline: shrubs shiver on, trees give up
     if c.temp < -6.0 && kind != TreeKind::Shrub {
@@ -495,18 +525,10 @@ pub fn tree_at(c: &ColCtx, face: u8, ci: u64, cj: u64, seed: i64) -> Option<(Tre
     if c.temp < -11.0 {
         return None;
     }
-    if hash01(face, ci, cj, seed as u64 ^ 0x7255) >= density {
+    if tree_hash01(face, ci, cj, seed) >= density {
         return None;
     }
-    let h_var = (hash01(face, ci, cj, 0x9E11) * 3.0) as i64;
-    let trunk = match kind {
-        TreeKind::Conifer => 4 + h_var,
-        TreeKind::Broadleaf => 3 + h_var,
-        TreeKind::Jungle => 6 + h_var,
-        TreeKind::Acacia => 3 + (h_var).min(1),
-        TreeKind::Shrub => 0,
-    };
-    Some((kind, trunk))
+    Some((kind, tree_trunk(kind, face, ci, cj)))
 }
 
 /// The full-block cells of a tree, relative to its anchor column's ground.

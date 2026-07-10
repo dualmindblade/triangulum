@@ -1,0 +1,16 @@
+# Forest impostor reference shots (TRANSITIONS.md E): the rim handoff and
+# the mid-altitude forest texture. Visual reference suite, weather pinned
+# clear so tree rendering is the only variable.
+weather pin 0.1 0.0
+teleport 51.851 4.809 0.08
+look 30 -6
+shot conifer_rim
+teleport 51.851 4.809 2.0
+look 30 -20
+shot conifer_2km
+teleport 6.974 33.203 0.35
+look -50 -10
+shot broadleaf_low
+teleport 15.942 -78.364 1.0
+look 0 -15
+shot jungle_1km
