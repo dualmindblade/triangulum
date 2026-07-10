@@ -637,6 +637,32 @@ fn main() -> anyhow::Result<()> {
         nl += g.lip;
     }
     let _ = writeln!(report, "class totals: WALL {nw}  JUMP {nj}  SEAJUMP {ns}  LIP {nl}\n");
+    if lips {
+        // Keep the dead-band signal separate from frozen-lake cliffs and
+        // unrelated river/pond lips. `mag_km` is an integer block count for
+        // LIP findings, so this is the exact one-block liquid-lake cohort.
+        let liquid_lake_lips = findings
+            .iter()
+            .filter(|f| {
+                f.class == Class::Lip
+                    && ((f.a.lake && f.a.temp_c >= -4.0)
+                        || (f.b.lake && f.b.temp_c >= -4.0))
+            })
+            .count();
+        let liquid_lake_one_block_lips = findings
+            .iter()
+            .filter(|f| {
+                f.class == Class::Lip
+                    && f.mag_km <= 0.001 + f64::EPSILON
+                    && ((f.a.lake && f.a.temp_c >= -4.0)
+                        || (f.b.lake && f.b.temp_c >= -4.0))
+            })
+            .count();
+        let _ = writeln!(
+            report,
+            "lip detail: LIQUID_LAKE {liquid_lake_lips}  LIQUID_LAKE_1_BLOCK {liquid_lake_one_block_lips}\n"
+        );
+    }
     for g in &groups {
         let (lat, lon) = lat_lon(g.center);
         let cls = [
