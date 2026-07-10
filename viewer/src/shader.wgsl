@@ -61,6 +61,9 @@ struct VsIn {
     // cut these, so the mesh water plane stays under the voxel patch and
     // backs any perimeter crack with water instead of the (void) sky.
     @location(6) wflag: f32,
+    // signed water-minus-ground delta (km): its interpolated zero crossing
+    // IS the shoreline, stepped per fragment (-1 = no standing water)
+    @location(7) shore: f32,
 };
 struct VsOut {
     @builtin(position) clip: vec4<f32>,
@@ -71,6 +74,7 @@ struct VsOut {
     @location(3) rel_flag: vec4<f32>,
     @location(4) water: vec4<f32>,
     @location(5) wflag: f32,
+    @location(6) shore: f32,
 };
 
 @vertex
@@ -107,6 +111,7 @@ fn vs_main(in: VsIn) -> VsOut {
     out.rel_flag = vec4<f32>(rel, tile.offset.w);
     out.water = vec4<f32>(in.water.rgb, wet);
     out.wflag = in.wflag;
+    out.shore = in.shore;
     return out;
 }
 
@@ -143,6 +148,14 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         if (in.rel_flag.w > 1.5) {
             wet = step(0.55, in.water.a);
         }
+        // per-pixel shorelines (TRANSITIONS.md B, kills V-5): the signed
+        // water-minus-ground field interpolates smoothly across triangles;
+        // stepping its zero crossing per fragment with derivative AA draws
+        // the sea/lake edge at pixel resolution instead of vertex
+        // resolution — no more angular lake polygons or orphan blue cells.
+        // Rivers keep their own wetness paint (water.a) untouched.
+        let e = max(fwidth(in.shore), 1e-5);
+        wet = max(wet, smoothstep(-e, e, in.shore));
     }
     // ---- weather on the ground (WEATHER.md Layer 3) ----
     // Dust and darken the GROUND color before the water mix so lakes and

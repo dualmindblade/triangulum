@@ -92,7 +92,15 @@ upstream fix is in PLANETGEN: don't merge depression chains into single
 lake ids (then delete the bake-side peel). Backlog; census-w5d.md is the
 inventory.
 
-### V-5 Lake footprints alias into angular polygons at coarse LOD (promoted)
+### V-5 Lake footprints alias into angular polygons at coarse LOD (MOSTLY RETIRED)
+FIXED IN COLOR (TRANSITIONS B): vertices now carry a signed water-minus-
+ground field whose interpolated zero crossing is stepped per fragment
+with derivative AA — shorelines render at pixel resolution (organic
+curves, no orphan blue cells; flagship 13.357 -4.861 verified at 1 km
+and 4 km, v5-check.play). Residual: the lifted water-plane GEOMETRY
+still ends at vertex resolution, a faint silhouette wiggle at glancing
+angles from low altitude. Field clamps +-5 m (a -1 km sentinel skewed
+crossings into notches — first-build lesson). Original entry follows.
 Round-6 hunt: from ~1 km up, big-lake shores and islands render as broad
 straight-edged polygons with orphan blue cells inland (13.357 -4.861; frame
 in interchange/runs/round6-findings-repro/). The Phase-7 roadmap item

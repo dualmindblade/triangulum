@@ -56,6 +56,13 @@ pub struct Vertex {
     /// the sky (a black void underwater). Keeping the water plane under the
     /// patch backs any perimeter crack with water instead of void.
     pub wflag: f32,
+    /// Signed water-minus-ground delta (km, clamped ±0.05) for sea and lake
+    /// shorelines — the fragment shader steps its interpolated zero crossing
+    /// with derivative AA, so the shoreline lives at PIXEL resolution
+    /// instead of vertex resolution (TRANSITIONS.md B; V-5's angular lake
+    /// polygons and orphan blue cells). -1.0 = no standing water nearby
+    /// (also on voxel chunks and impostors, which are already exact).
+    pub shore: f32,
 }
 
 pub struct TileMesh {
@@ -823,6 +830,28 @@ pub fn build_tile(planet: &Planet, key: TileKey, exaggeration: f64) -> TileMesh 
             } else {
                 0.0
             };
+            // signed shoreline field (see Vertex::shore): sea level minus
+            // raster ground on ocean-influenced coasts, lake level minus
+            // ground across flood territory. Both are SMOOTH fields, so the
+            // fragment shader's zero crossing is the true shoreline curve.
+            // ofrac gates the sea term: interior dry basins sit below sea
+            // level on purpose and must not read as water.
+            let shore_sea = if s.sea || planet.ocean(face, uu, vv) > 0.02 {
+                -s.e_raw
+            } else {
+                f64::NEG_INFINITY
+            };
+            let shore_lake = if s.lake_level_km.is_finite() && s.temp_c >= -4.0 {
+                s.lake_level_km - s.h_km
+            } else {
+                f64::NEG_INFINITY
+            };
+            // clamp TIGHT (±5 m): the field only matters near its zero
+            // crossing, and a vertex without lake data must sit at a gentle
+            // -5 m rather than a -1 km sentinel — a huge jump on one vertex
+            // skews the interpolated crossing toward it and re-cuts the
+            // shoreline into vertex-scale notches (seen on the first build)
+            let shore = shore_sea.max(shore_lake).clamp(-0.005, 0.005) as f32;
             vertices.push(Vertex {
                 pos: [p.x as f32, p.y as f32, p.z as f32],
                 normal: [nrm.x as f32, nrm.y as f32, nrm.z as f32],
@@ -831,6 +860,7 @@ pub fn build_tile(planet: &Planet, key: TileKey, exaggeration: f64) -> TileMesh 
                 morph_dh: dh,
                 morph_wet: wet_parent as f32,
                 wflag: if s.sea || s.lake { 1.0 } else { 0.0 },
+                shore,
             });
         }
     }
@@ -865,6 +895,7 @@ pub fn build_tile(planet: &Planet, key: TileKey, exaggeration: f64) -> TileMesh 
             morph_dh: v.morph_dh,
             morph_wet: v.morph_wet,
             wflag: v.wflag,
+            shore: v.shore,
         });
     }
     let skirt_base = (n * n) as u32;
@@ -1000,6 +1031,7 @@ pub fn build_tile(planet: &Planet, key: TileKey, exaggeration: f64) -> TileMesh 
                         morph_dh: 0.0,
                         morph_wet: 0.0,
                         wflag: 0.0,
+                        shore: -1.0,
                     });
                 }
                 indices.extend_from_slice(&[

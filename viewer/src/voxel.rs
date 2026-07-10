@@ -933,6 +933,7 @@ pub fn build_chunk(
                 morph_dh: 0.0, // blocks don't geomorph (they rim-sink instead)
                 morph_wet: dim,
                 wflag: 0.0, // chunks are never hole-cut, so this is unused here
+                shore: -1.0, // blocks ARE the exact shoreline already
             });
         }
         indices.extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);

@@ -1,0 +1,7 @@
+weather off
+teleport 13.357 -4.861 1.0
+look 0 -55
+shot v5_lake
+teleport 13.357 -4.861 4.0
+look 0 -70
+shot v5_lake_4km
