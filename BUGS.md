@@ -87,7 +87,16 @@ in interchange/runs/round6-findings-repro/). The Phase-7 roadmap item
 ("needs a soft distance-to-shore signal from the lake index") is now the
 most visible artifact from altitude. Walking-height is fine.
 
-### V-1 Far-mesh color does not match the voxel landscape
+### V-1 Far-mesh color does not match the voxel landscape (MOSTLY RETIRED)
+MAJOR IMPROVEMENT 76ed4aa (TRANSITIONS A+F): the mesh now carries the
+blocks' block-scale brightness fabric per fragment (fading by ~2 km), the
+liquid water ramp is one shared function (the copies had drifted 0.28 vs
+0.30 blue), and the beach is one shared fraction (blocks dither on it,
+mesh mixes by it — the v1_color pose's sand-disk-on-grass is gone).
+Remaining residuals: (1) at partial beach/ecotone fractions blocks
+speckle while the mesh blends — per-PIXEL categorical dither riding the
+A shader cells is the follow-up; (2) V-7 lake-shore band (own entry);
+(3) final texture pass still pending (Andrew). Original entry follows.
 shot_lat0.569_lon68.915_alt0.263km_yaw-149_pitch-25.png: the mesh beyond the
 voxel patch renders visibly darker/flatter green than the blocky near field.
 Long-term probably texturing/material unification (roadmap may absorb this);
