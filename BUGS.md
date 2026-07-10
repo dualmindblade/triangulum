@@ -136,13 +136,16 @@ stair-stepping too. Last stair source closed 8eea348: the painted vertex
 wetness (widened for sub-vertex threads) smeared past the field's crossing
 on WIDE rivers — tile_wet now hands ownership to the field once
 hw/spacing crosses 0.9-2.0 (river-zoom-2.png teeth gone, re-shot both
-poses). Remaining residual: shoreline POSITION differs
-between mesh (8-octave h at 26 m tiles, the honest spacing cap) and
-blocks (12 octaves) by up to tens of meters on gentle shores — visible
-only in with/without-patch A/B comparison; closing it needs LOD 15+ or
-an octave-stable shoreline reference. Now MEASURED: sync-diff lake_shore
-pose mean delta 50.6 (4-6x every healthy pose), heatmap shows whole-lobe
-water/land class flips — the top target the meter tracks. Original entry
+poses). OCTAVE/CLASS RESIDUAL FIXED on sol/v5-shore-octaves: the shore
+color channel now completes eligible non-deep vertices to the voxel octave
+depth while positions/normals/water-plane ownership remain spacing-capped.
+The same change exposed and closed the larger measured error: Sample's lake
+predicate requires 0.5 m of water clearance, but the old shore field stepped
+raw level-ground at zero and painted those sub-threshold shoals as water.
+Sharing that predicate removed the heatmap's whole-lobe class flips:
+sync-diff lake_shore mean 50.6 -> 15.39 (divergent 29.0% -> 24.8%), with
+sea_calib still 0 and no pose regression. The lifted water-plane GEOMETRY
+silhouette residual above remains intentionally separate. Original entry
 follows.
 Round-6 hunt: from ~1 km up, big-lake shores and islands render as broad
 straight-edged polygons with orphan blue cells inland (13.357 -4.861; frame

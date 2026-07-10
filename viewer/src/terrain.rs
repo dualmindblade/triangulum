@@ -60,7 +60,7 @@ pub struct Vertex {
     /// the sky (a black void underwater). Keeping the water plane under the
     /// patch backs any perimeter crack with water instead of void.
     pub wflag: f32,
-    /// Signed water-minus-ground delta (km, clamped ±0.05) for sea and lake
+    /// Signed water-minus-ground delta (km, clamped ±0.005) for sea/lake/river
     /// shorelines — the fragment shader steps its interpolated zero crossing
     /// with derivative AA, so the shoreline lives at PIXEL resolution
     /// instead of vertex resolution (TRANSITIONS.md B; V-5's angular lake
@@ -165,6 +165,9 @@ pub fn ground_height_km(planet: &Planet, dir: DVec3, exaggeration: f64) -> f64 {
 
 /// The full octave depth used for voxel block heights (~3 m floor).
 pub const VOXEL_OCTAVES: u32 = 12;
+/// A lake needs this much water over continuous ground before it exists.
+/// Shared with the mesh shore field so both renderers step the same class.
+const LAKE_WATER_CLEARANCE_KM: f64 = 0.0005;
 /// Octave depth of the river wet/dry reference surface: every LOD reads the
 /// perch decision at this depth so mesh and voxels always agree about which
 /// reaches carry water.
@@ -558,11 +561,13 @@ pub fn sample(planet: &Planet, face: usize, u: f64, v: f64, octaves: u32) -> Sam
             && wl.is_finite()
             && wl < lvl - 0.008
             && (riv_d < hw * 1.5 || out.carve_km > 0.0005);
-        if lvl > h + 0.0005 && !river_owns {
+        if lvl > h + LAKE_WATER_CLEARANCE_KM && !river_owns {
             out.water_km = out.water_km.max(lvl);
             out.lake = true;
             out.salt = salt;
-            out.wet_soft = out.wet_soft.max(smoothstep(0.0005, 0.0035, lvl - h));
+            out.wet_soft = out
+                .wet_soft
+                .max(smoothstep(LAKE_WATER_CLEARANCE_KM, 0.0035, lvl - h));
         }
     }
 
@@ -739,6 +744,145 @@ fn tile_wet(s: &Sample, spacing_km: f64) -> f64 {
     (s.wet_soft * pond_cov).max(wide * 0.9)
 }
 
+const SHORE_CLAMP_KM: f64 = 0.005;
+
+/// Whether this vertex's liquid lake/river classification can depend on the
+/// procedural ground octave budget. Sea is deliberately absent: ocean
+/// samples return before detail noise, while the dry side of a coast is
+/// classified by the octave-independent raster coastline and elevation.
+fn needs_voxel_shore_reference(s: &Sample, octaves: u32) -> bool {
+    if s.temp_c < -4.0 {
+        return false;
+    }
+    let river = s.river_level_km.is_finite()
+        && s.river_wet > 0.5
+        && s.river_dist_km < s.river_hw_km * 3.0;
+    if river || !s.lake_level_km.is_finite() {
+        return river;
+    }
+
+    // Bound the omitted lake-ground detail from the same local relief
+    // envelope used by `sample`. Valley damping can only make it smaller.
+    // Two is deliberately conservative for one band's roughly [-1, 1]
+    // blended noise. Sampling outside this margin cannot change either the
+    // lake predicate or the already-clamped shore value.
+    let rough_r = s.rough * smoothstep(0.02, 0.30, s.e_raw);
+    let mut envelope = (0.06 + rough_r * 0.85 + s.e_raw * 0.10).clamp(0.05, 1.7);
+    let submerge = smoothstep(-0.005, 0.012, s.lake_level_km - s.e_raw);
+    envelope *= 1.0 - 0.88 * submerge;
+    let first = octaves.min(VOXEL_OCTAVES) as i32;
+    let count = VOXEL_OCTAVES.saturating_sub(octaves) as i32;
+    let missing_weight = 2f64.powi(-first) * 2.0 * (1.0 - 0.5f64.powi(count));
+    let omitted_detail_bound = envelope * missing_weight * 2.0;
+    let lake_delta = s.lake_level_km - s.h_km - LAKE_WATER_CLEARANCE_KM;
+    lake_delta.abs() <= SHORE_CLAMP_KM + omitted_detail_bound
+}
+
+/// Complete a lake-only geometry sample to voxel octave depth without
+/// repeating its raster, lake-index, and already-computed noise work. Within
+/// flood territory and away from rivers, `sample` applies no later ground
+/// transform (ponds are excluded), so adding bands [octaves, 12) is exact
+/// apart from irrelevant floating-point reassociation. River overlap and a
+/// newly-wet salt lake fall back to the authoritative full sampler.
+fn voxel_shore_reference(
+    planet: &Planet,
+    face: usize,
+    u: f64,
+    v: f64,
+    octaves: u32,
+    s: &Sample,
+) -> Sample {
+    if s.lake_level_km.is_finite() && !s.river_dist_km.is_finite() {
+        let ofrac = planet.ocean(face, u, v) as f64;
+        let h_floor = if ofrac > 0.02 { 0.002 } else { -9.0 };
+        // A capped value pinned to the coastal floor has lost the underlying
+        // sum, so it cannot be completed incrementally.
+        if octaves == 0 || s.h_km > h_floor + f64::EPSILON {
+            let dir = face_dir(face, u, v);
+            let rough_r = s.rough * smoothstep(0.02, 0.30, s.e_raw);
+            let mut envelope =
+                (0.06 + rough_r * 0.85 + s.e_raw * 0.10).clamp(0.05, 1.7);
+            let submerge = smoothstep(-0.005, 0.012, s.lake_level_km - s.e_raw);
+            envelope *= 1.0 - 0.88 * submerge;
+            let rw = (0.30 + rough_r * 0.50).clamp(0.30, 0.72);
+            let missing = VOXEL_OCTAVES.saturating_sub(octaves);
+            let detail = rw
+                * ridged_band(
+                    dir,
+                    octaves,
+                    missing,
+                    DETAIL_BASE_FREQ,
+                    planet.seed.wrapping_add(1013),
+                )
+                + (0.95 - rw)
+                    * fbm_band(
+                        dir,
+                        octaves,
+                        missing,
+                        DETAIL_BASE_FREQ,
+                        planet.seed.wrapping_add(2027),
+                    );
+            let mut out = *s;
+            out.h_km = (s.h_km + envelope * detail).max(h_floor);
+            let lake = s.lake_level_km > out.h_km + LAKE_WATER_CLEARANCE_KM;
+            // A dry->wet transition needs the lake hit's salt bit, which a
+            // dry Sample intentionally does not retain.
+            if lake && !s.lake {
+                return sample(planet, face, u, v, VOXEL_OCTAVES);
+            }
+            out.lake = lake;
+            out.water_km = if lake { s.lake_level_km } else { f64::NEG_INFINITY };
+            out.salt = lake && s.salt;
+            return out;
+        }
+    }
+    sample(planet, face, u, v, VOXEL_OCTAVES)
+}
+
+/// The color/class shoreline field. `s` is the voxel-octave reference for
+/// liquid lakes and rivers, but may be the geometry sample when that sample
+/// is already full-depth or when the reference cannot affect this vertex.
+fn shore_field(planet: &Planet, face: usize, u: f64, v: f64, s: &Sample) -> f32 {
+    // The raster/mask is the actual sea-side authority (interior dry basins
+    // may sit below zero), and both values are octave-independent. Using it
+    // also preserves the smooth, stable coastal crossing without re-running
+    // the full sampler throughout open ocean.
+    let shore_sea = if s.sea || planet.ocean(face, u, v) > 0.02 {
+        -s.e_raw
+    } else {
+        f64::NEG_INFINITY
+    };
+    let shore_lake = if s.lake_level_km.is_finite() && s.temp_c >= -4.0 {
+        // `sample` deliberately requires 0.5 m of clearance before a lake
+        // exists (line 561). Use that same predicate boundary here: stepping
+        // raw level-ground at zero paints broad sub-threshold shoals as water
+        // even though voxel columns correctly materialize them as dry land.
+        s.lake_level_km - s.h_km - LAKE_WATER_CLEARANCE_KM
+    } else {
+        f64::NEG_INFINITY
+    };
+    // The carve puts the bed below wl inside an active channel and the banks
+    // above it outside, so wl - h crosses at the rendered river edge. The
+    // fixed river_wet perch decision and 3 hw bound keep dry washes and
+    // unrelated terrain dips out of the field.
+    let shore_river = if s.river_level_km.is_finite()
+        && s.river_wet > 0.5
+        && s.temp_c >= -4.0
+        && s.river_dist_km < s.river_hw_km * 3.0
+    {
+        s.river_level_km - s.h_km
+    } else {
+        f64::NEG_INFINITY
+    };
+    // Clamp TIGHT (±5 m): a vertex without water data must sit at a gentle
+    // -5 m rather than a remote sentinel. A large negative jump skews the
+    // interpolated crossing toward that vertex and cuts vertex-scale notches.
+    shore_sea
+        .max(shore_lake)
+        .max(shore_river)
+        .clamp(-SHORE_CLAMP_KM, SHORE_CLAMP_KM) as f32
+}
+
 /// Build the mesh for one tile. Positions are computed on a grid with one
 /// ghost ring so normals use central differences everywhere — one-sided
 /// normals at tile borders leave visible lighting seams between tiles.
@@ -830,7 +974,17 @@ pub fn build_tile(planet: &Planet, key: TileKey, exaggeration: f64) -> TileMesh 
             // surface slope for rock exposure: radial up vs mesh normal
             let up = world[gj * np2 + gi].normalize();
             let slope = 1.0 - nrm.dot(up).clamp(0.0, 1.0);
-            let wc = water_color(s);
+            // Shore is a COLOR/CLASS channel, so liquid lake/river crossings
+            // read the same full-octave ground as voxel columns even though
+            // this tile's positions, normals, paint, water plane, and morph
+            // data remain honestly spacing-capped. Restrict the extra sample
+            // to vertices where those fields can participate; doing it for
+            // every vertex would defeat the geometry octave cap's cost bound.
+            let shore_reference = (octaves != VOXEL_OCTAVES
+                && needs_voxel_shore_reference(s, octaves))
+            .then(|| voxel_shore_reference(planet, face, uu, vv, octaves, s));
+            let class_s = shore_reference.as_ref().unwrap_or(s);
+            let wc = water_color(class_s);
             // deep tiles resolve water: binary flag, crisp step in the
             // shader. Far tiles get the continuous feathered wetness. The
             // sea carries NO wet paint: its geometry+ground color already
@@ -849,62 +1003,23 @@ pub fn build_tile(planet: &Planet, key: TileKey, exaggeration: f64) -> TileMesh 
             // the sea is real geometry at its surface — its "ground" color
             // is the water color so the wetness blend is a no-op there and
             // it stays fully blue at every distance
-            let ground = if s.sea || s.lake {
+            let ground = if class_s.sea || class_s.lake {
                 // a frozen sheet is solid walkable ice — give it a snow-dusted,
                 // LOD-stable surface so it reads as ground, not a flat plane
-                if s.temp_c < -4.0 {
+                if class_s.temp_c < -4.0 {
                     frost_color(world[gj * np2 + gi])
                 } else {
                     wc
                 }
             } else {
-                shade_ground(planet, face, uu, vv, s, slope)
+                shade_ground(planet, face, uu, vv, class_s, slope)
             };
             let dh = if key.level > 0 {
                 ((parent_value(&hp, i, j) - s.render_h_km()) * exaggeration) as f32
             } else {
                 0.0
             };
-            // signed shoreline field (see Vertex::shore): sea level minus
-            // raster ground on ocean-influenced coasts, lake level minus
-            // ground across flood territory. Both are SMOOTH fields, so the
-            // fragment shader's zero crossing is the true shoreline curve.
-            // ofrac gates the sea term: interior dry basins sit below sea
-            // level on purpose and must not read as water.
-            let shore_sea = if s.sea || planet.ocean(face, uu, vv) > 0.02 {
-                -s.e_raw
-            } else {
-                f64::NEG_INFINITY
-            };
-            let shore_lake = if s.lake_level_km.is_finite() && s.temp_c >= -4.0 {
-                s.lake_level_km - s.h_km
-            } else {
-                f64::NEG_INFINITY
-            };
-            // rivers are the SAME field: the carve puts the bed below wl
-            // inside the channel and the banks above it outside, so wl - h
-            // crosses zero exactly where the carved profile meets the
-            // waterline — river edges render per-pixel like lakes and sea
-            // instead of stair-stepping at vertex resolution (Austin's
-            // river-mesh-zoom.png). river_wet carries the octave-stable
-            // perch decision, so perched dry washes stay dry; the 3 hw gate
-            // keeps the field from claiming unrelated terrain dips.
-            let shore_river = if s.river_level_km.is_finite()
-                && s.river_wet > 0.5
-                && s.temp_c >= -4.0
-                && s.river_dist_km < s.river_hw_km * 3.0
-            {
-                s.river_level_km - s.h_km
-            } else {
-                f64::NEG_INFINITY
-            };
-            // clamp TIGHT (±5 m): the field only matters near its zero
-            // crossing, and a vertex without lake data must sit at a gentle
-            // -5 m rather than a -1 km sentinel — a huge jump on one vertex
-            // skews the interpolated crossing toward it and re-cuts the
-            // shoreline into vertex-scale notches (seen on the first build)
-            let shore =
-                shore_sea.max(shore_lake).max(shore_river).clamp(-0.005, 0.005) as f32;
+            let shore = shore_field(planet, face, uu, vv, class_s);
             vertices.push(Vertex {
                 pos: [p.x as f32, p.y as f32, p.z as f32],
                 normal: [nrm.x as f32, nrm.y as f32, nrm.z as f32],
@@ -1280,6 +1395,18 @@ fn shade_ground(
 mod tests {
     use super::*;
 
+    fn test_planet() -> &'static Planet {
+        static PLANET: std::sync::OnceLock<Planet> = std::sync::OnceLock::new();
+        PLANET.get_or_init(|| {
+            let assets = if std::path::Path::new("assets/meta.json").exists() {
+                "assets"
+            } else {
+                "viewer/assets"
+            };
+            Planet::load(assets).expect("terrain mesh gates require the baked viewer assets")
+        })
+    }
+
     fn mesh_world(mesh: &TileMesh, i: usize, j: usize) -> DVec3 {
         mesh_world_index(mesh, j * (TILE_QUADS + 1) + i)
     }
@@ -1393,13 +1520,118 @@ mod tests {
     }
 
     #[test]
+    fn lake_shore_field_matches_sample_clearance_boundary() {
+        let planet = test_planet();
+        let lat = 13.346f64.to_radians();
+        let lon = -4.806f64.to_radians();
+        let dir = DVec3::new(lat.cos() * lon.cos(), lat.cos() * lon.sin(), lat.sin());
+        let (face, u, v) = crate::planet::face_from_dir(dir);
+        let mut s = sample(planet, face, u, v, VOXEL_OCTAVES);
+        assert!(s.lake_level_km.is_finite() && s.temp_c >= -4.0);
+
+        s.h_km = s.lake_level_km - LAKE_WATER_CLEARANCE_KM;
+        assert!(shore_field(planet, face, u, v, &s).abs() < 1e-9);
+        s.h_km = s.lake_level_km;
+        assert!(
+            (f64::from(shore_field(planet, face, u, v, &s))
+                + LAKE_WATER_CLEARANCE_KM)
+                .abs()
+                < 1e-9
+        );
+    }
+
+    #[test]
+    fn v5_shore_uses_voxel_ground_without_moving_capped_mesh() {
+        let planet = test_planet();
+        // A spacing-capped level-14 tile two kilometres from the measured
+        // lake_shore camera. Its gentle shoals contain both 8<->12 octave
+        // shore shifts and lake-class flips.
+        let key = TileKey { face: 0, level: 14, ix: 7501, iy: 10141, deep: false };
+        let octaves = octave_count(key.level, planet.radius_km);
+        assert_eq!(octaves, MAX_DETAIL_OCTAVES);
+        let mesh = build_tile(planet, key, 1.0);
+        let n = TILE_QUADS + 1;
+        let np2 = n + 2;
+        let (u0, v0, size) = key.uv_range();
+        let spacing = key.size_km(planet.radius_km) / TILE_QUADS as f64;
+
+        // Reconstruct the geometry source independently at the capped budget,
+        // including the ghost ring that owns vertex normals.
+        let mut capped_world = vec![DVec3::ZERO; np2 * np2];
+        for gj in 0..np2 {
+            for gi in 0..np2 {
+                let u = u0 + size * (gi as f64 - 1.0) / TILE_QUADS as f64;
+                let v = v0 + size * (gj as f64 - 1.0) / TILE_QUADS as f64;
+                let s = sample(planet, key.face as usize, u, v, octaves);
+                capped_world[gj * np2 + gi] =
+                    face_dir(key.face as usize, u, v) * (planet.radius_km + s.render_h_km());
+            }
+        }
+
+        let mut shifted_fields = 0usize;
+        let mut class_flips = 0usize;
+        let mut distinct_heights = 0usize;
+        for j in 0..n {
+            for i in 0..n {
+                let index = j * n + i;
+                let (gi, gj) = (i + 1, j + 1);
+                let u = u0 + size * i as f64 / TILE_QUADS as f64;
+                let v = v0 + size * j as f64 / TILE_QUADS as f64;
+                let capped = sample(planet, key.face as usize, u, v, octaves);
+                let voxel = sample(planet, key.face as usize, u, v, VOXEL_OCTAVES);
+                let vertex = mesh.vertices[index];
+
+                let expected_shore = shore_field(planet, key.face as usize, u, v, &voxel);
+                assert!(
+                    (vertex.shore - expected_shore).abs() < 1e-7,
+                    "({i},{j}) shore {} != voxel reference {expected_shore}",
+                    vertex.shore
+                );
+                if (shore_field(planet, key.face as usize, u, v, &capped) - expected_shore).abs()
+                    > 1e-7
+                {
+                    shifted_fields += 1;
+                }
+                class_flips += (capped.lake != voxel.lake) as usize;
+                distinct_heights +=
+                    ((capped.render_h_km() - voxel.render_h_km()).abs() > 1e-7) as usize;
+
+                if needs_voxel_shore_reference(&capped, octaves) {
+                    let optimized =
+                        voxel_shore_reference(planet, key.face as usize, u, v, octaves, &capped);
+                    assert!((optimized.h_km - voxel.h_km).abs() < 1e-12);
+                    assert_eq!(optimized.lake, voxel.lake);
+                    assert_eq!(optimized.salt, voxel.salt);
+                }
+
+                // Positions, normals, paint, and water-plane ownership must
+                // remain tied to the capped geometry Sample.
+                let world = mesh_world(&mesh, i, j);
+                let expected_world = capped_world[gj * np2 + gi];
+                assert!(world.distance(expected_world) < 0.000_001);
+                let expected_normal = (capped_world[gj * np2 + gi + 1]
+                    - capped_world[gj * np2 + gi - 1])
+                    .cross(
+                        capped_world[(gj + 1) * np2 + gi]
+                            - capped_world[(gj - 1) * np2 + gi],
+                    )
+                    .normalize_or_zero();
+                assert!(
+                    DVec3::from_array(vertex.normal.map(f64::from)).distance(expected_normal)
+                        < 0.000_001
+                );
+                assert!((f64::from(vertex.water[3]) - tile_wet(&capped, spacing)).abs() < 1e-6);
+                assert_eq!(vertex.wflag, if capped.sea || capped.lake { 1.0 } else { 0.0 });
+            }
+        }
+        assert!(shifted_fields > 0, "V-5 tile no longer exercises an octave shore shift");
+        assert!(class_flips > 0, "V-5 tile no longer exercises a lake-class flip");
+        assert!(distinct_heights > 0, "V-5 tile no longer distinguishes capped geometry");
+    }
+
+    #[test]
     fn full_morph_reproduces_parent_triangle_at_v6_sites() {
-        let assets = if std::path::Path::new("assets/meta.json").exists() {
-            "assets"
-        } else {
-            "viewer/assets"
-        };
-        let planet = Planet::load(assets).expect("V-6 mesh gate requires the baked viewer assets");
+        let planet = test_planet();
         let sites = [
             (
                 "peak",
@@ -1411,7 +1643,7 @@ mod tests {
             ),
         ];
         for (name, key) in sites {
-            let (position_km, wet) = full_morph_residuals(&planet, key);
+            let (position_km, wet) = full_morph_residuals(planet, key);
             assert!(
                 position_km < 0.000_25,
                 "{name} fully-morphed child misses its parent by {:.3} m",
