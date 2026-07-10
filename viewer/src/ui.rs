@@ -832,7 +832,10 @@ impl PhotoMap {
                                     continue;
                                 }
                                 let (f, u, v) = face_from_dir(l.center);
-                                let frozen = planet.temp(f, u, v) < 0.0;
+                                // -4 C, matching every WORLD consumer (walkable-ice class in
+                                // terrain + voxel + physics): 0 C painted 1,700+ liquid
+                                // lakes pale on the map (review #2 finding 11)
+                                let frozen = planet.temp(f, u, v) < -4.0;
                                 let fill = if frozen {
                                     Color32::from_rgb(206, 224, 236)
                                 } else {

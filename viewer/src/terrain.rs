@@ -788,8 +788,11 @@ fn needs_voxel_shore_reference(s: &Sample, octaves: u32) -> bool {
     let river = s.river_level_km.is_finite()
         && s.river_wet > 0.5
         && s.river_dist_km < s.river_hw_km * 3.0;
-    if river || !s.lake_level_km.is_finite() {
-        return river;
+    if river {
+        return true;
+    }
+    if !s.lake_level_km.is_finite() && !s.pond_level_km.is_finite() {
+        return false;
     }
 
     // Bound the omitted lake-ground detail from the same local relief
@@ -799,11 +802,25 @@ fn needs_voxel_shore_reference(s: &Sample, octaves: u32) -> bool {
     // lake predicate or the already-clamped shore value.
     let rough_r = s.rough * smoothstep(0.02, 0.30, s.e_raw);
     let mut envelope = (0.06 + rough_r * 0.85 + s.e_raw * 0.10).clamp(0.05, 1.7);
-    let submerge = smoothstep(-0.005, 0.012, s.lake_level_km - s.e_raw);
-    envelope *= 1.0 - 0.88 * submerge;
     let first = octaves.min(VOXEL_OCTAVES) as i32;
     let count = VOXEL_OCTAVES.saturating_sub(octaves) as i32;
     let missing_weight = 2f64.powi(-first) * 2.0 * (1.0 - 0.5f64.powi(count));
+    // ponds sit outside lake territory and their wet predicate rides the
+    // detailed h too — without completion a pond edge changes class at the
+    // mesh/deep-tile handoff (review #2 finding 6 measured 13 Vertex::shore
+    // sign flips at -0.798 -67.941). No submerge damping here: the larger
+    // envelope only makes the gate more conservative.
+    if s.pond_level_km.is_finite() {
+        let bound = envelope * missing_weight * 2.0;
+        if (s.pond_level_km - s.h_km).abs() <= SHORE_CLAMP_KM + bound {
+            return true;
+        }
+    }
+    if !s.lake_level_km.is_finite() {
+        return false;
+    }
+    let submerge = smoothstep(-0.005, 0.012, s.lake_level_km - s.e_raw);
+    envelope *= 1.0 - 0.88 * submerge;
     let omitted_detail_bound = envelope * missing_weight * 2.0;
     let lake_delta = lake_shore_delta_km(s.lake_level_km, s.h_km);
     lake_delta.abs() <= SHORE_CLAMP_KM + omitted_detail_bound

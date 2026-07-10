@@ -574,12 +574,22 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         let wp = in.rel_flag.xyz - globals.center.xyz;
         let r_sphere = length(globals.center.xyz) - max(globals.sky.w, 0.0);
         let elev_km = length(wp) - r_sphere;
-        let t_pix = globals.weather.w - 6.5 * (elev_km - max(globals.sky.w, 0.0));
+        // lapse from the WEATHER SAMPLE's ground elevation (misc.w), not
+        // the eye: the sample is surface air under the camera, and lapsing
+        // from eye height warmed the ground 6.5 C per km of climb (review
+        // #2 finding 1 - the snow line receded as the camera rose)
+        let t_pix = globals.weather.w - 6.5 * (elev_km - globals.misc.w);
         let dith = hash31(floor(wp * 40.0)) * 1.8 - 0.9;
         let cold = 1.0 - smoothstep(-globals.weather3.y, 1.0, t_pix + dith);
-        let dust = cold * (0.45 + 0.55 * globals.weather.z * globals.weather.y) * wcam;
+        // x(1-wflag): open water takes neither snow dusting nor rain
+        // soaking - on mesh tiles the wet mix already masked this, but
+        // block water quads went through the ground path and whitened
+        // while the mesh sea stayed liquid (a +4 lum whole-sea split)
+        let dry_px = 1.0 - clamp(in.wflag, 0.0, 1.0);
+        let dust =
+            cold * (0.45 + 0.55 * globals.weather.z * globals.weather.y) * wcam * dry_px;
         ground = mix(ground, vec3<f32>(0.88, 0.90, 0.94), dust);
-        let rain = globals.weather.y * (1.0 - globals.weather.z) * wcam;
+        let rain = globals.weather.y * (1.0 - globals.weather.z) * wcam * dry_px;
         ground = ground * (1.0 - globals.weather3.x * rain);
     }
     let base = mix(ground, in.water.rgb, clamp(wet, 0.0, 1.0));

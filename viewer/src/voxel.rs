@@ -952,7 +952,7 @@ pub fn build_chunk(
     // `dim` is the cave-darkness factor (1 = open sky): blocks carry it in
     // the water attribute's alpha so the shader — not the bake — applies
     // it, letting the player's torch light the rock back up near them.
-    let mut quad = |corners: [DVec3; 4], normal: DVec3, cols: [[f32; 3]; 4], dim: f32| {
+    let mut quad = |corners: [DVec3; 4], normal: DVec3, cols: [[f32; 3]; 4], dim: f32, wflag: f32| {
         let base = vertices.len() as u32;
         for (k, c) in corners.iter().enumerate() {
             let p = *c - origin;
@@ -963,7 +963,11 @@ pub fn build_chunk(
                 water: [0.0, 0.0, 0.0, dim],
                 morph_dh: 0.0, // blocks don't geomorph (they rim-sink instead)
                 morph_wet: dim,
-                wflag: 0.0, // chunks are never hole-cut, so this is unused here
+                // 1.0 marks OPEN WATER surfaces: the shader's cold-dusting and
+                // rain-darkening skip them (snow does not settle on liquid) -
+                // block water dusted while the mesh's wet-mix masked it, a
+                // +4 lum whole-sea divergence (review #2 aftermath)
+                wflag,
                 shore: -1.0, // blocks ARE the exact shoreline already
             });
         }
@@ -1096,12 +1100,12 @@ pub fn build_chunk(
                     // slope-lit only on the real surface top; buried exposed-up
                     // faces (cave floors) keep the radial normal
                     let n_top = if z == c.top_solid() { top_n } else { up };
-                    quad([d00 * r, d10 * r, d11 * r, d01 * r], n_top, cols, cave);
+                    quad([d00 * r, d10 * r, d11 * r, d01 * r], n_top, cols, cave, 0.0);
                 }
                 if z > z_lo && !c.filled(z - 1) {
                     let r = shell(z - 1);
                     let cdark = vary(col, 0.55);
-                    quad([d00 * r, d01 * r, d11 * r, d10 * r], -up, [cdark; 4], cave);
+                    quad([d00 * r, d01 * r, d11 * r, d10 * r], -up, [cdark; 4], cave, 0.0);
                 }
             }
             // True horizontal axes of THIS column, for face normals. The old
@@ -1203,7 +1207,7 @@ pub fn build_chunk(
                                 vary(col, ao(1, zb - 1, zb)), // db, bottom
                                 vary(col, ao(0, zb - 1, zb)), // da, bottom
                             ];
-                            quad([da * r1, db * r1, db * r0, da * r0], n_side, cols, cave);
+                            quad([da * r1, db * r1, db * r0, da * r0], n_side, cols, cave, 0.0);
                             run_start = other.map(|mm| (z, mm));
                         }
                         _ => {}
@@ -1309,7 +1313,7 @@ pub fn build_chunk(
                         }
                     }
                 }
-                quad([d00 * r, d10 * r, d11 * r, d01 * r], up, wtop_cols, 1.0);
+                quad([d00 * r, d10 * r, d11 * r, d01 * r], up, wtop_cols, 1.0, 1.0);
                 let wside = vary(wtop, 0.93);
                 for (nbi, da, db) in sides {
                     let nb = nbs[nbi];
@@ -1332,6 +1336,7 @@ pub fn build_chunk(
                             [da * r1, db * r1, db * r0, da * r0],
                             n_side,
                             [col; 4],
+                            1.0,
                             1.0,
                         );
                     }
@@ -1373,7 +1378,7 @@ pub fn build_chunk(
                     // free surface: cell above is dry air (not water, not rock)
                     if !c.filled(z + 1) && !c.cave_flooded(z + 1) {
                         let r = shell(z);
-                        quad([d00 * r, d10 * r, d11 * r, d01 * r], up, [wcol; 4], dim);
+                        quad([d00 * r, d10 * r, d11 * r, d01 * r], up, [wcol; 4], dim, 1.0);
                     }
                     // sides: only into a DRY cave passage (carved air within the
                     // neighbour's own band), never open sky above lower ground
@@ -1385,7 +1390,7 @@ pub fn build_chunk(
                         if nb_dry_cave {
                             let n_side = (out_dirs[nbi] * 0.18 + up).normalize();
                             let (r0, r1) = (shell(z - 1), shell(z));
-                            quad([da * r1, db * r1, db * r0, da * r0], n_side, [wside; 4], dim);
+                            quad([da * r1, db * r1, db * r0, da * r0], n_side, [wside; 4], dim, 1.0);
                         }
                     }
                 }
@@ -1453,11 +1458,11 @@ pub fn build_chunk(
         };
         if !solid_at(0, 0, tz + 1) {
             let r = shell(tz);
-            quad([d00 * r, d10 * r, d11 * r, d01 * r], up, [col; 4], 1.0);
+            quad([d00 * r, d10 * r, d11 * r, d01 * r], up, [col; 4], 1.0, 0.0);
         }
         if !solid_at(0, 0, tz - 1) {
             let r = shell(tz - 1);
-            quad([d00 * r, d01 * r, d11 * r, d10 * r], -up, [vary(col, 0.6); 4], 1.0);
+            quad([d00 * r, d01 * r, d11 * r, d10 * r], -up, [vary(col, 0.6); 4], 1.0, 0.0);
         }
         // true face directions (not position-derived — see the terrain
         // sides): tree faces were erratically lit by where the tree stood
@@ -1480,7 +1485,7 @@ pub fn build_chunk(
             if !solid_at(di, dj, tz) {
                 let n_side = (out_dir + up * 0.85).normalize();
                 let (r0, r1) = (shell(tz - 1), shell(tz));
-                quad([da * r1, db * r1, db * r0, da * r0], n_side, [vary(col, 0.8); 4], 1.0);
+                quad([da * r1, db * r1, db * r0, da * r0], n_side, [vary(col, 0.8); 4], 1.0, 0.0);
             }
         }
     }
@@ -1521,6 +1526,7 @@ pub fn build_chunk(
                 up,
                 [wood, wood, flame, flame],
                 2.0,
+                0.0,
             );
         }
     }

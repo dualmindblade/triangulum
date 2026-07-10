@@ -705,14 +705,33 @@ impl App {
                     .map(|(v, &c)| v as f64 * c as f64)
                     .sum::<f64>()
                     / div.max(1) as f64;
-                let (mut p95, mut acc) = (0usize, 0u64);
-                for v in 3..256 {
-                    acc += hist[v];
-                    if acc * 20 >= div * 19 {
-                        p95 = v;
-                        break;
+                // numpy-compatible p95 (linear interpolation between order
+                // statistics, truncated like the Python meter): the old
+                // nearest-rank histogram walk disagreed with sync_diff.py
+                // by a bin and reported 3 on IDENTICAL frames (its first
+                // test was 0 >= 0) - review #2 finding 14
+                let p95 = if div == 0 {
+                    0
+                } else {
+                    let pos = (div - 1) as f64 * 0.95;
+                    let (lo_rank, frac) = (pos.floor() as u64, pos.fract());
+                    let (mut acc, mut lo_val, mut hi_val) = (0u64, 0usize, 0usize);
+                    for v in 3..256 {
+                        let start = acc;
+                        acc += hist[v];
+                        if lo_val == 0 && start <= lo_rank && lo_rank < acc {
+                            lo_val = v;
+                        }
+                        if start <= lo_rank + 1 && lo_rank + 1 < acc {
+                            hi_val = v;
+                            break;
+                        }
                     }
-                }
+                    if hi_val == 0 {
+                        hi_val = lo_val;
+                    }
+                    (lo_val as f64 + frac * (hi_val as f64 - lo_val as f64)) as usize
+                };
                 let div_frac = div as f64 / total as f64;
                 let signed_lum = lum / div.max(1) as f64;
                 let vox_path = format!("{dir}/{base}_vox.png");

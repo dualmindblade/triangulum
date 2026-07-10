@@ -49,11 +49,31 @@ fn main() -> anyhow::Result<()> {
     );
 
     let ctx = |di: i64, dj: i64| -> ColCtx { col_ctx_ext(&planet, &edits, face, ci + di, cj + dj) };
+    // a real great-circle disc, not the index square: gnomonic columns are
+    // anisotropic (~1.7 x 1.0 m), so the [-half,half]^2 lattice both
+    // over-reaches on one axis and would attribute corner findings to a
+    // radius the user never asked for (review #2 finding 5 measured the
+    // square at 3.5x the disc's column count)
+    let radius_km_2 = radius_km * radius_km;
+    let center_dir = triangulum_viewer::planet::face_dir(
+        face,
+        -1.0 + 2.0 * (ci as f64 + 0.5) / nn,
+        -1.0 + 2.0 * (cj as f64 + 0.5) / nn,
+    );
+    let in_disc = |di: i64, dj: i64| -> bool {
+        let u = -1.0 + 2.0 * ((ci + di) as f64 + 0.5) / nn;
+        let v = -1.0 + 2.0 * ((cj + dj) as f64 + 0.5) / nn;
+        let d = triangulum_viewer::planet::face_dir(face, u, v);
+        (d - center_dir).length_squared() * planet.radius_km * planet.radius_km <= radius_km_2
+    };
     let rows: Vec<Vec<Hit>> = (-half..=half)
         .into_par_iter()
         .map(|dj| {
             let mut out = Vec::new();
             for di in -half..=half {
+                if !in_disc(di, dj) {
+                    continue;
+                }
                 let c = ctx(di, dj);
                 // neighbor ground tops (walk surface, ignoring trees)
                 let n = [ctx(di + 1, dj), ctx(di - 1, dj), ctx(di, dj + 1), ctx(di, dj - 1)];

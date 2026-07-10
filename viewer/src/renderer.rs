@@ -801,7 +801,13 @@ impl Renderer {
                 // the (coverage-dependent) hole, so the patch edge stays
                 // feathered even while chunks are still streaming in
                 (voxel_radius_m / 1000.0) as f32,
-                0.0,
+                // elevation of the ground under the camera (km above the
+                // sphere) - the weather sample's REFERENCE altitude. The
+                // shader lapses pixel temperature from here, not from the
+                // eye: lapsing from sky.w made the ground 6.5 C warmer per
+                // km of camera CLIMB (Sol review #2 finding 1 - zooming
+                // out melted the snow line).
+                (cam_h_km - camera.altitude_km).max(0.0) as f32,
             ],
             weather: [
                 wx.cloud_cover as f32,
