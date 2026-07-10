@@ -39,6 +39,9 @@ struct Args {
     /// Living weather (WEATHER.md): "live" (default), "off", or
     /// "COVER,PRECIP" to pin the sky (each 0..1) for art shots.
     weather: String,
+    /// --no-voxels: pure heightfield-mesh render (no chunk streaming, no
+    /// hole). The eyeball twin of the sync-diff harness's `voxels off`.
+    voxels: bool,
 }
 
 fn parse_args() -> Args {
@@ -56,6 +59,7 @@ fn parse_args() -> Args {
         patch: 1.0,
         auto_tilt: false,
         weather: "live".into(),
+        voxels: true,
     };
     let argv: Vec<String> = std::env::args().collect();
     let mut i = 1;
@@ -115,6 +119,7 @@ fn parse_args() -> Args {
                 i += 1;
             }
             "--auto-tilt" => a.auto_tilt = true,
+            "--no-voxels" => a.voxels = false,
             "--weather" => {
                 a.weather = next(i);
                 i += 1;
@@ -241,6 +246,7 @@ fn capture(planet: Arc<Planet>, camera: Camera, args: Args, path: &str) -> Resul
     renderer.day_len_s = args.day_len;
     renderer.sun_ref_lon = args.lon.to_radians();
     renderer.patch_scale = args.patch;
+    renderer.voxels_on = args.voxels;
     // headless shots see the same edited world the game saves
     let edits = load_edits(planet.seed);
     renderer.set_torches(load_torches(planet.seed));
@@ -828,6 +834,7 @@ impl ApplicationHandler for App {
         renderer.day_len_s = self.args.day_len;
         renderer.sun_ref_lon = self.args.lon.to_radians();
         renderer.patch_scale = self.args.patch;
+        renderer.voxels_on = self.args.voxels;
         renderer.set_torches(self.torches.clone());
         renderer.refresh_world_snapshot(&self.edits);
         apply_weather(&mut renderer, &self.args.weather);

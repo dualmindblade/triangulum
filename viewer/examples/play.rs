@@ -335,6 +335,21 @@ fn main() -> anyhow::Result<()> {
                 ));
                 trace!("[{}] sun pinned at lat {} lon {}", ln + 1, f(1)?, f(2)?);
             }
+            // voxels on | off — master switch for the voxel near-field.
+            // `off` renders the pure heightfield mesh (no chunks, no hole
+            // cut), which is what the sync-diff harness diffs against the
+            // normal frame to measure mesh<->voxel appearance divergence.
+            "voxels" => match toks.get(1).copied() {
+                Some("on") => {
+                    renderer.voxels_on = true;
+                    trace!("[{}] voxels on", ln + 1);
+                }
+                Some("off") => {
+                    renderer.voxels_on = false;
+                    trace!("[{}] voxels off", ln + 1);
+                }
+                _ => anyhow::bail!("line {}: voxels on|off", ln + 1),
+            },
             // weather off | live | pin COVER PRECIP — pin or disable the
             // living weather (WEATHER.md), mirroring `sun`. Weather rides
             // the fixed sim clock here, so even `live` is byte-identical

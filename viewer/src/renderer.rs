@@ -156,6 +156,13 @@ pub struct Renderer {
     /// 200–500 m disc, 2.0 = twice the radius (4x the chunks — streaming
     /// makes that affordable).
     pub patch_scale: f64,
+    /// Master switch for the voxel near-field (`voxels off` in scripts,
+    /// --no-voxels). False = pure heightfield-mesh render: no chunk
+    /// streaming, no hole cut, no rim sink. The mesh keeps its focus
+    /// refinement so this shows the BEST mesh-only frame — the sync-diff
+    /// harness diffs it against the normal render to measure exactly what
+    /// appearance the voxel patch changes.
+    pub voxels_on: bool,
     /// Chunks being built on background threads right now, mapped to the
     /// epoch of the request that spawned them. A build's result is accepted
     /// only if its epoch still matches (see `chunk_epoch`): invalidation
@@ -402,6 +409,7 @@ impl Renderer {
             sun_ref_lon: 0.0,
             render_time_s: 0.0,
             patch_scale: 1.0,
+            voxels_on: true,
             chunk_pending: HashMap::new(),
             chunk_epoch: 0,
             chunk_tx: tx,
@@ -626,7 +634,7 @@ impl Renderer {
         // shows mesh terrain, never a hole to the sky.
         let mut chunk_keys: Vec<ChunkKey> = Vec::new();
         let mut unbuilt_min_km = f64::INFINITY;
-        if camera.altitude_km < VOXEL_MAX_ALT_KM {
+        if self.voxels_on && camera.altitude_km < VOXEL_MAX_ALT_KM {
             self.drain_chunks();
             chunk_keys = select_chunks(cam_pos, planet, voxel_radius_m);
             let center = cam_pos.normalize() * planet.radius_km;
@@ -673,7 +681,7 @@ impl Renderer {
         // freshly teleported -> no hole, mesh shows while blocks stream in.
         let mut hole = [0.0f32; 4];
         let mut hole_up = [0.0f32; 4];
-        if focus.is_some() {
+        if focus.is_some() && self.voxels_on {
             let r_km = crate::voxel::safe_hole_radius_km(voxel_radius_m)
                 .min((unbuilt_min_km - 0.096).max(0.0));
             // center + up are set whenever the patch exists (the rim-sink
