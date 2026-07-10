@@ -21,7 +21,12 @@ taper the extra octaves across the deep ring instead of stepping, or
 gate bank-dirt exposure by an octave-stable reference like the perch
 rule. Low urgency: visible only under ~2.5 km looking near-straight down.
 
-### V-7 Lake-shore sand band disagrees between renderers (territory-wide)
+### V-7 Lake-shore sand band disagrees between renderers (FIXED 984efc8)
+Fixed by GPT-5.6 Sol: terrain::lake_shore_frac is the one lake-beach rule
+(1.5 m height band x 100-300 m of the lake/rim Voronoi-bisector edge,
+liquid only); mesh mixes by it, blocks dither on it, coastal beach_frac
+yields inside lake territory (the repaint trap). Lagoon province is grass
+with a true shore rim. Unit-tested; suites green. Original entry follows.
 shade_ground paints lake-shore sand from the VERTEX rule (lake_level
 raster band — kilometers wide across a lake's territory, e.g. the lagoon
 country at 47.80 14.42 renders the whole mesh tan) while voxels sand only

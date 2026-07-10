@@ -1544,3 +1544,22 @@ determinism, 8 hashed before/after captures — and documented its cut
 lines honestly (per-vertex far dither awaits A's shader pass). Razor
 biome lines are gone. Also this phase: weather `season` play command +
 the seasons-showcase reel (one forest, four seasons, storms).
+
+## Phase 11 — blending endgame (2026-07-10, small hours)
+
+Austin field-tested continuously and the program closed out its spine in
+one night: A shared micro-texture (+ the beach rule the V-1 reshoot
+exposed), F one water ramp (the hand-synced copies had already drifted),
+B per-pixel shorelines (V-5's angular lake polygons became curved shores
+with beach rims; lesson: keep the signed shore field tight around zero —
+a -1 km sentinel skews interpolated crossings into notches), E impostor
+tuning per field feedback, D's v1 already in. Field finds fixed same-
+session: the sun kept shining below the horizon (backwards night trees),
+a hole-cut wflag interpolation leak (floating shore-ramp slab), river
+shoreline dead-band pits + the river bay/apron family (census total
+findings 140.9k -> 40.8k — rivers were hiding a wall family as big as
+the lakes'). Sol shipped V-7 (one lake-shore rule, Voronoi-bisector edge
+distance, caught the coastal-beach repaint trap); Opus shipped the photo
+map relayering (bases + rivers/lakes/clouds-now overlays, pan/zoom with
+region re-synthesis). Remaining blending: per-pixel category dither,
+E far fade, V-8 deep disc, C knob + palette with Andrew.
