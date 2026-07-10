@@ -340,13 +340,19 @@ fn main() -> anyhow::Result<()> {
             let m = sample(&planet, f, u, v, 5);
             let (plat, plon) = lat_lon(p);
             println!(
-                "({dx:+},{dy:+}) lat {plat:.4} lon {plon:.4}  h={:.1}m e_raw={:.1}m water={} sea={} lake={} riv_d={} wet={:.2} rwet={:.2} | mesh5 water={} wet={:.2} rwet={:.2} | ofrac={:.2} wmask={:.2} rough={:.2}",
+                "({dx:+},{dy:+}) lat {plat:.4} lon {plon:.4}  h={:.1}m e_raw={:.1}m water={} sea={} lake={} riv_d={} hw={:.3}km rlvl={} wet={:.2} rwet={:.2} | mesh5 water={} wet={:.2} rwet={:.2} | ofrac={:.2} wmask={:.2} rough={:.2}",
                 s.h_km * 1000.0,
                 s.e_raw * 1000.0,
                 if s.has_water() { format!("{:.1}m", s.water_km * 1000.0) } else { "-".into() },
                 s.sea,
                 s.lake,
                 if s.river_dist_km.is_finite() { format!("{:.2}km", s.river_dist_km) } else { "-".into() },
+                s.river_hw_km,
+                if s.river_level_km.is_finite() {
+                    format!("{:.1}m", s.river_level_km * 1000.0)
+                } else {
+                    "-".into()
+                },
                 s.wet_soft,
                 s.river_wet,
                 if m.has_water() { format!("{:.1}m", m.water_km * 1000.0) } else { "-".into() },

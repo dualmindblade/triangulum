@@ -123,6 +123,22 @@ texturing conversation with Andrew.
 
 ## FIXED
 
+### F-23 River shoreline dead-band pits + the river bay/apron family
+Austin photographed dry blocks sunk below the water surface against a
+river channel (0.630 69.024). Two stacked causes, both fixed: (1) the
+flood test's 20 cm epsilon (`wl > h + 0.0002`) left columns carved to
+within 20 cm of the waterline dry, while block quantization renders them
+a FULL block below the water top — analytic hairline, visible pit. Flood
+tests are now block-quantized (ground block below water block => water).
+(2) Rivers had no equivalent of the lake aprons: natural dips below the
+waterline just outside the carve stayed dry pits (under the census's 2 m
+wall threshold — caught by eye). A bounded bay band floods them (natural
+irregular bays, free aesthetics) and a 3% bank apron floors the ground
+beyond, mirroring the lake solution. Planet census: total findings
+140,873 -> 40,753, WALL 138.7k -> 39.6k, JUMP halved, LIP still 0.
+SEAJUMP 25 -> 34: nine new mouth-area film-vs-sea sites, magnitude
+small, noted for the next sweep.
+
 ### F-22 Pond water walls (Austin's photographed 18 m wall) — d97527e
 The noise-pond mask ended mid-relief exactly like lake territories did:
 pond water in walls over dips (shot_lat-0.798_lon-67.941, worst 300+ m in

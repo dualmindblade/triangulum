@@ -465,7 +465,7 @@ pub fn sample(planet: &Planet, face: usize, u: f64, v: f64, octaves: u32) -> Sam
                 let target = bed.min(h);
                 out.carve_km += h - target;
                 h = target;
-                if perch < 0.5 && wl > h + 0.0002 {
+                if perch < 0.5 && (wl * 1000.0).floor() > ((h + 1e-6) * 1000.0).floor() {
                     out.water_km = wl;
                 }
             } else {
@@ -481,12 +481,38 @@ pub fn sample(planet: &Planet, face: usize, u: f64, v: f64, octaves: u32) -> Sam
                 // shoreline lip (Austin, shot at 15.650 28.794). Flooding
                 // them puts the shoreline exactly where the carved profile
                 // crosses the level, which also rounds flush.
-                if perch < 0.5 && wl > h + 0.0002 {
+                if perch < 0.5 && (wl * 1000.0).floor() > ((h + 1e-6) * 1000.0).floor() {
                     out.water_km = wl;
                 }
             }
             out.wet_soft =
                 (1.0 - smoothstep(hw, (hw * 1.8).max(0.28), riv_d)) * (1.0 - perch);
+        } else if wl.is_finite() {
+            // beside the carve zone, natural relief dips below the waterline
+            // are the river's own bathymetry — a dry pit sunk under the
+            // water surface right against the channel (photographed at
+            // 0.630 69.024; under the census's 2 m wall threshold, caught
+            // by eye). A bounded bay band floods them — which also gives
+            // banks natural irregular bays — and past it the bank apron
+            // floors the ground at the waterline, falling away at the same
+            // 3% grade the lake aprons use, so the flood edge always meets
+            // a shore. Perch-gated like all river water: dry washes stay dry.
+            let perch = smoothstep(0.002, 0.006, wl - h_river_ref);
+            if perch < 0.5 {
+                let edge = hw + bank_w;
+                let bay_reach = edge * 0.6 + 0.010;
+                if riv_d < edge + bay_reach {
+                    if (wl * 1000.0).floor() > ((h + 1e-6) * 1000.0).floor() {
+                        out.water_km = out.water_km.max(wl);
+                    }
+                } else {
+                    let floor = wl - 0.001 - 0.030 * (riv_d - edge - bay_reach);
+                    if h < floor {
+                        h = floor;
+                        h_river_ref = h_river_ref.max(floor);
+                    }
+                }
+            }
         }
     }
 
