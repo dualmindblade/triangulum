@@ -7,6 +7,7 @@ viewer/assets/meta.json
 # Transition missions keep only their explicitly named review evidence.
 viewer/interchange/*
 !viewer/interchange/tint_*.png
+!viewer/interchange/v7_*.png
 
 # build artifacts
 __pycache__/

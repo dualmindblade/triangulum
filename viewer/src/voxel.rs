@@ -134,7 +134,14 @@ pub struct ColCtx {
     pub rough: f32,
     pub carved: bool, // river/pond carving touched this column
     pub salt: bool,   // water here belongs to a salt lake
-    pub lake_shore: bool, // dry ground within the lake beach band
+    /// Shared liquid-lake shore fraction; surface blocks dither on it.
+    pub lake_shore_frac: f64,
+    /// A finite local lake level makes the shared lake rule, rather than the
+    /// generic low coastal beach rule, own surface sand in this territory.
+    pub lake_material_region: bool,
+    /// Preserve the pre-V-7 vegetation exclusion exactly. This is not a
+    /// material decision: narrowing sand must not change tree placement.
+    pub lake_level_band: bool,
 }
 
 impl ColCtx {
@@ -364,7 +371,14 @@ pub fn col_ctx(planet: &Planet, edits: &Edits, face: usize, ci: u64, cj: u64) ->
         rough: s.rough as f32,
         carved: s.carve_km > 0.001,
         salt: s.salt,
-        lake_shore: s.lake_level_km.is_finite()
+        lake_shore_frac: crate::terrain::lake_shore_frac(
+            s.temp_c,
+            s.h_km,
+            s.lake_level_km,
+            s.lake_boundary_dist_km,
+        ),
+        lake_material_region: s.lake_level_km.is_finite(),
+        lake_level_band: s.lake_level_km.is_finite()
             && s.h_km >= s.lake_level_km
             && s.h_km - s.lake_level_km <= 0.0015,
     }
@@ -374,13 +388,15 @@ pub fn col_ctx(planet: &Planet, edits: &Edits, face: usize, ci: u64, cj: u64) ->
 /// Climate-owned grass/sand/snow selection is shared with the far mesh;
 /// hydrology and local slope remain higher-priority local facts. The beach
 /// is shared too: `beach_jitter` (a per-column hash) dithers the column on
-/// terrain::beach_frac, the same fraction the mesh mixes its tint by.
+/// terrain::beach_frac, the same fraction the mesh mixes its tint by. A lake
+/// territory yields generic beach ownership to the shared lake-shore fraction
+/// so a near-sea-level lake cannot fall through and become a sand province.
 fn surface_mat(c: &ColCtx, steep: i64, climate_block: MainBlock, beach_jitter: f64) -> Mat {
     // underwater floors
     if c.water != i64::MIN && c.ground < c.water {
         return if c.water - c.ground > 4 { Mat::Gravel } else { Mat::Sand };
     }
-    if c.lake_shore && c.temp >= -4.0 {
+    if beach_jitter < c.lake_shore_frac {
         return Mat::Sand;
     }
     if climate_block == MainBlock::Snow {
@@ -394,7 +410,10 @@ fn surface_mat(c: &ColCtx, steep: i64, climate_block: MainBlock, beach_jitter: f
     }
     // beaches: low ground near sea level, dithered on the SHARED fraction
     // (natural ground: a tower built on a beach stays a sand tower)
-    if beach_jitter < crate::terrain::beach_frac(c.e_raw as f64, c.ground0 as f64 / 1000.0) {
+    if !c.lake_material_region
+        && beach_jitter
+            < crate::terrain::beach_frac(c.e_raw as f64, c.ground0 as f64 / 1000.0)
+    {
         return Mat::Sand;
     }
     match climate_block {
@@ -502,7 +521,12 @@ pub fn tree_trunk(kind: TreeKind, face: u8, ci: u64, cj: u64) -> i64 {
 pub fn tree_at(c: &ColCtx, face: u8, ci: u64, cj: u64, seed: i64) -> Option<(TreeKind, i64)> {
     // no trees in water, on beaches, or in river/pond carved ground (a
     // canopy anchored in a gully pokes out at rim level as leaf shards)
-    if c.has_water() || c.water != i64::MIN || c.e_raw < 0.010 || c.lake_shore || c.carved {
+    if c.has_water()
+        || c.water != i64::MIN
+        || c.e_raw < 0.010
+        || c.lake_level_band
+        || c.carved
+    {
         return None;
     }
     let Some((kind, density)) = tree_kind_density(c.koppen) else {

@@ -49,6 +49,12 @@ pub struct LakeHit {
     pub d_lake_km: f64,
     pub lake_center: DVec3,
     pub radius_km: f64,
+    /// Distance to the baked lake footprint's actual edge: the bisector
+    /// between the nearest true lake cell and nearest dry rim cell. Unlike
+    /// `past_boundary_km`, this is symmetric, so it stays meaningful on dry
+    /// islands and shoals inside the flood-eligible territory as well as in
+    /// the rim territory outside it.
+    pub boundary_dist_km: f64,
     /// whether the nearest cell overall (lake AND rim competing) is a lake
     /// cell — i.e. the query is inside the lake's own Voronoi territory
     pub in_lake_voronoi: bool,
@@ -276,6 +282,7 @@ impl RiverIndex {
         }
         let p = dir * self.radius_km;
         let mut best_lake: Option<(f64, &LakeCell)> = None; // nearest true lake cell
+        let mut best_rim: Option<(f64, &LakeCell)> = None; // nearest dry rim cell
         let mut d_any = f64::INFINITY; // nearest cell of either kind
         let mut any_is_lake = false;
         let mut any_rim_elev = f64::NEG_INFINITY; // rim rows carry elevation
@@ -290,6 +297,9 @@ impl RiverIndex {
             if !l.rim && best_lake.as_ref().is_none_or(|b| d < b.0) {
                 best_lake = Some((d, l));
             }
+            if l.rim && best_rim.as_ref().is_none_or(|b| d < b.0) {
+                best_rim = Some((d, l));
+            }
         }
         match best_lake {
             // 3.4 r: hit coverage must OUTLAST the flood (bounded at 2.6 r in
@@ -297,6 +307,15 @@ impl RiverIndex {
             // its bank get clipped mid-basin by the search radius itself —
             // that truncation stood as a 170 m wall at 16.569 -32.262
             Some((d, l)) if d < l.radius_km as f64 * 3.4 => {
+                // Exact distance to the perpendicular bisector of the two
+                // cells that define the lake-vs-rim Voronoi decision. Chord
+                // space is already lake_at's metric; at ~30 km cells on an
+                // 8,660 km planet its difference from surface distance is
+                // negligible. This is color/material metadata only.
+                let boundary_dist = best_rim.map_or(f64::INFINITY, |(dr, r)| {
+                    let centers_km = (l.center - r.center).length() * self.radius_km;
+                    ((dr * dr - d * d).abs() / (2.0 * centers_km.max(1e-9))).max(0.0)
+                });
                 let past_boundary = if any_is_lake { 0.0 } else { (d - d_any).max(0.0) };
                 // distance past every dam rim's shore band, minimized: each
                 // dam rim floods its own 1.15 r disc, so the apron must cone
@@ -333,6 +352,7 @@ impl RiverIndex {
                     d_lake_km: d,
                     lake_center: l.center,
                     radius_km: l.radius_km as f64,
+                    boundary_dist_km: boundary_dist,
                     in_lake_voronoi: any_is_lake,
                     past_boundary_km: past_boundary,
                     apron_past_km: apron_past,
