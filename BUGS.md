@@ -109,6 +109,31 @@ upstream fix is in PLANETGEN: don't merge depression chains into single
 lake ids (then delete the bake-side peel). Backlog; census-w5d.md is the
 inventory.
 
+### V-10 Flooded-cave surface breaches are voxel-only water (patch-boundary pop)
+Austin's V-key survey find (2026-07-10, sync_lat13.346_lon-4.807 heatmap
+"satellites"). Around lake 582 (13.346 -4.807), dozens of pond- and
+channel-shaped water bodies render in the voxel patch and vanish in the
+mesh render. Diagnosis (a long hunt — see examples/colmap.rs, born of it):
+they are NOT ponds and NOT rivers; terrain::sample has NO open-air water
+there. They are FLOODED CAVES (the W-6 feature): cave tubes within the
+lake's groundwater band (h < lake_level + 10 m) fill to the lake table,
+and where a tube grazes the surface the carve opens it into a blue pit —
+elongated snakes and blobs that read as ponds/creeks from altitude. Three
+consequences: (1) the mesh cannot render them (caves live only in
+col_ctx), so they pop in/out at the patch boundary — a transitions seam
+in the V-1/V-5 family but structurally unfixable by color sync; (2)
+census/sample tooling is blind to them (T-1's cousin: cave water is not
+in Sample); (3) water_surface_km reports the pool only at/below its
+table (correct for wading), so surveys of the RIM read dry — colmap's
+'C' channel is currently the only inventory. Their density near this
+lake is a world-design signature in itself (a karst pond field).
+Fix directions, all Andrew-gated: (a) suppress near-surface breaches in
+the flooded band (world change: keep tubes >N m under open terrain); (b)
+accept them as karst and give the mesh a shared breach predicate so far
+tiles paint a hint of them (expensive: per-vertex cave noise taps); (c)
+accept the pop as-is and let the rim knob C own it. Gate for (a)/(b):
+the sync-diff satellites at this pose disappear or match.
+
 ### V-9 Quantified shading biases: polar ice +12, steep slopes -8 (sync-diff)
 Found by the sync-diff meter (scripts/sync_diff.py, 2026-07-10 overnight).
 Two systematic mesh-vs-block brightness disagreements, in 8-bit luminance
