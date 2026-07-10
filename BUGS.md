@@ -97,6 +97,19 @@ upstream fix is in PLANETGEN: don't merge depression chains into single
 lake ids (then delete the bake-side peel). Backlog; census-w5d.md is the
 inventory.
 
+### V-9 Quantified shading biases: polar ice +12, steep slopes -8 (sync-diff)
+Found by the sync-diff meter (scripts/sync_diff.py, 2026-07-10 overnight).
+Two systematic mesh-vs-block brightness disagreements, in 8-bit luminance
+over the divergent region: (1) ice_top pose (83.997 40.22): +12.0 bias
+across 61% of frame — block ice/snow renders much BRIGHTER than the mesh
+ice sheet; (2) steep slopes (peak pose -8.1, both river poses ~-8): block
+slope self-shade (F-16 fix) darkens harder than the mesh's continuous
+diffuse. Neither is a bug in isolation — they are the two renderers
+disagreeing about material brightness, and which side is RIGHT is an
+Andrew taste call (does he prefer the brighter block ice or the duller
+mesh?). Fix shape: share one slope-shade/ice-albedo rule like
+water_surface_color/beach_frac. Gate: the poses' lum bias trends to ~0.
+
 ### V-5 Lake footprints alias into angular polygons at coarse LOD (MOSTLY RETIRED)
 FIXED IN COLOR (TRANSITIONS B): vertices now carry a signed water-minus-
 ground field whose interpolated zero crossing is stepped per fragment
@@ -107,11 +120,18 @@ still ends at vertex resolution, a faint silhouette wiggle at glancing
 angles from low altitude. Field clamps +-5 m (a -1 km sentinel skewed
 crossings into notches — first-build lesson). RIVERS joined the field
 (wl - h crosses zero at the carved waterline) so their edges stopped
-stair-stepping too. Remaining residual: shoreline POSITION differs
+stair-stepping too. Last stair source closed 8eea348: the painted vertex
+wetness (widened for sub-vertex threads) smeared past the field's crossing
+on WIDE rivers — tile_wet now hands ownership to the field once
+hw/spacing crosses 0.9-2.0 (river-zoom-2.png teeth gone, re-shot both
+poses). Remaining residual: shoreline POSITION differs
 between mesh (8-octave h at 26 m tiles, the honest spacing cap) and
 blocks (12 octaves) by up to tens of meters on gentle shores — visible
 only in with/without-patch A/B comparison; closing it needs LOD 15+ or
-an octave-stable shoreline reference. Original entry follows.
+an octave-stable shoreline reference. Now MEASURED: sync-diff lake_shore
+pose mean delta 50.6 (4-6x every healthy pose), heatmap shows whole-lobe
+water/land class flips — the top target the meter tracks. Original entry
+follows.
 Round-6 hunt: from ~1 km up, big-lake shores and islands render as broad
 straight-edged polygons with orphan blue cells inland (13.357 -4.861; frame
 in interchange/runs/round6-findings-repro/). The Phase-7 roadmap item

@@ -153,6 +153,29 @@ Voxel water color and mesh water color share ramps by copy-paste today.
 Extract one shared function (depth → color, shallows → teal, salt → pale,
 frozen → ice) so they cannot drift. Small, do alongside A.
 
+## The meter: sync-diff (landed 2026-07-10, Austin's idea)
+
+`viewer/scripts/sync_diff.py` renders every pose in a standing 14-pose
+table twice — normal, and with the voxel near-field forced off (`voxels
+off` play command / `--no-voxels`; toggle round-trip byte-identical) —
+and image-diffs the pairs. Outside the patch the frames match exactly
+(open-sea calibration pose: 0.0%), so the divergence region IS the
+mesh->voxel handoff, with per-pose numbers (divergent fraction, mean/p95
+delta, signed luminance bias) and red heatmaps in
+interchange/runs/sync-diff/. First fruits: the V-5 octave shoreline
+offset measured at mean 50.6 (4-6x anything else), and two systematic
+shading biases ledgered as V-9 (polar ice +12, steep slopes -8).
+
+RULES OF USE: this is a measuring instrument and a regression gate, not
+an optimization target. A change that "improves the number" by muting
+detail on both sides is a regression in disguise (Goodhart); a change
+can also be a big win the meter barely sees (per-pixel normal detail
+moved river poses ~0.1 — because it fixes SHADING CHARACTER, not class
+flips). Eyes — Austin's and Andrew's — stay the judges of better;
+the meter's job is worst-pose ranking, did-it-move-together checks
+after material edits, and catching regressions (sea_calib must stay 0,
+no pose may jump without a named cause).
+
 ## Suggested sequencing
 
 1. **B** first: self-contained shader work, kills V-5 outright, no art

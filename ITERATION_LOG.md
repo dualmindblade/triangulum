@@ -1563,3 +1563,27 @@ distance, caught the coastal-beach repaint trap); Opus shipped the photo
 map relayering (bases + rivers/lakes/clouds-now overlays, pan/zoom with
 region re-synthesis). Remaining blending: per-pixel category dither,
 E far fade, V-8 deep disc, C knob + palette with Andrew.
+
+## Phase 12 — the night shift (2026-07-10, pre-dawn)
+
+Austin signed off ("anything and everything, your call") and the night
+went to work he wouldn't need to witness. The river staircase's LAST
+source fell first: the painted vertex wetness — widened so sub-vertex
+threads survive at distance — was smearing past the per-pixel field's
+crossing on wide rivers; tile_wet now hands bank ownership to the field
+once the channel out-resolves the vertex grid (hw/spacing 0.9-2.0).
+Then Austin's own late idea became the program's instrument: sync-diff
+(voxels on|off toggle + scripts/sync_diff.py) renders 14 poses with and
+without the near-field and diffs the pairs — it independently ranked
+the lake octave offset worst on the planet (mean 50.6), proved itself
+on an open-sea zero, and put numbers on two shading biases nobody had
+articulated (polar ice +12, steep slopes -8, ledgered V-9). Per-pixel
+normal detail landed on its watch: mesh slopes now shade like stepped
+columns (slope-scaled hash normals, water excluded, 2 km fade) and the
+river cut banks fused with the patch grain. Frame times became data
+(title-bar fps + frame_ms in sidecars) after Austin's "really you can't
+gauge that?". Sol ran the V-6 morph mission in parallel. Lesson worth
+keeping: the swarm-refinement idea Austin floated at 5 a.m. was half
+right — scouting poses with the meter is cheap and good; CLOSING THE
+LOOP on the meter is Goodhart's trap, so the meter measures and people
+judge.
