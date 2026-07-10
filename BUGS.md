@@ -55,7 +55,19 @@ bank floor can step tens of metres — DIRT steps (census-invisible, natural
 looking), traded for standing water cliffs; revisit with Andrew alongside
 the planetgen fix.
 
-### V-6 A fully morphed LOD child does not reproduce its parent mesh (pop)
+### V-6 A fully morphed LOD child does not reproduce its parent mesh (FIXED 1e2a40b)
+FIXED by Sol (2026-07-10 overnight, its own review finding): morph targets
+now interpolate over the parent's ACTUAL rendered triangle (same fixed
+diagonal as the index buffer — the twist term is gone), and morph_wet
+interpolates the parent triangle's real paint. Measured: 62.37 m -> 0.127 m
+(peak), 14.73 m -> 0.110 m (valley), wet 0.364 -> <1e-6. The exact vec3
+target (~1 mm) was evaluated and REJECTED: +8 bytes on every shared vertex
+(+11.8% bandwidth) for 0.13 m at swap distance. Sol also removed the
+equal-octave zero-delta shortcut (never a valid parent reproduction).
+Permanent gate: terrain::tests::full_morph_reproduces_parent_triangle_at_
+v6_sites (topology-aware — reads the parent index buffer; old code fails
+250x over); examples/morph_probe.rs reproduces the numbers. Original
+entry follows.
 Sol review finding 5 (2026-07-09, confirmed by code read + Sol's mesh probe).
 terrain.rs build_tile: odd child vertices morph toward a BILINEAR blend of 4
 parent heights, but the parent renders two triangles split on a fixed
