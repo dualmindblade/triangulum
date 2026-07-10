@@ -1,0 +1,26 @@
+# Repro and visual regression poses for cross-block Koppen texel corners.
+# Weather is disabled so the frames isolate the deterministic surface dither.
+
+weather off
+mode fly
+
+# Andrew's field report: class 4 occupies one quadrant and class 28 the other
+# three around face-0 raster corner (290.5, 678.5).
+sun 16 -38
+teleport 16.684000 -23.367000 0.414
+look -91 -80
+shot reported_corner
+
+# Independent grass/sand 1:3 corner: face 0, raster corner (74.5, 629.5),
+# classes [[6, 4], [6, 6]].
+sun 10 -56
+teleport 9.948359 -40.508919 0.414
+look -91 -80
+shot west_corner
+
+# Independent grass/sand 1:3 corner: face 3, raster corner (904.5, 369.5),
+# classes [[4, 4], [6, 4]].
+sun -12 -67
+teleport -12.415078 -52.463902 0.414
+look -91 -80
+shot south_corner

@@ -312,18 +312,27 @@ impl Planet {
         )
     }
 
-    /// Select the neighbor class only inside the short band around a
-    /// DIFFERENT-main-block edge. The probability is 1/2 at the exact edge
-    /// and eases to zero at either outer edge; same-block pairs return the
-    /// nearest class without hashing at all.
-    fn dithered_koppen(&self, face: usize, u: f64, v: f64, hash: f64) -> u8 {
+    /// Continuous main-block weights for the short cross-material band.
+    ///
+    /// The categorical texels live at integer raster coordinates and their
+    /// nearest-sample boundaries at half-integers. Each axis gets a smooth
+    /// 0..1 ramp only within 150 m of its nearest boundary; the tensor product
+    /// of those two ramps weights all four surrounding texels. Unlike choosing
+    /// one of the nearest texel's four edges, the resulting probabilities have
+    /// the same limit from every quadrant of a texel corner.
+    ///
+    /// Returns the nearest class (for the no-blend fast path), accumulated
+    /// weights in Grass/Sand/Snow order, and one representative class per
+    /// block. The representative is immaterial to rendering: callers use its
+    /// main block, while the long-range Koppen tint signal remains separately
+    /// bilinear in `koppen_signature`.
+    fn koppen_block_weights(&self, face: usize, u: f64, v: f64) -> (u8, [f64; 3], [u8; 3]) {
         let r = &self.faces[face];
         let d = (r.res - 1) as f64;
         let x = ((u * 0.5 + 0.5) * d).clamp(0.0, d);
         let y = ((v * 0.5 + 0.5) * d).clamp(0.0, d);
         let (xi, yi) = (x.round() as i64, y.round() as i64);
         let here = self.koppen_texel(face, xi, yi);
-        let here_block = koppen_main_block(here);
 
         // Gnomonic metric: angular derivative of normalize([u,v,1]). This
         // keeps the artist-facing width in kilometres across face centers,
@@ -332,32 +341,64 @@ impl Planet {
         let texel_uv = 2.0 / d;
         let km_x = self.radius_km * texel_uv * (1.0 + v * v).sqrt() / denom;
         let km_y = self.radius_km * texel_uv * (1.0 + u * u).sqrt() / denom;
-        let candidates = [
-            (xi - 1, yi, (x - (xi as f64 - 0.5)).max(0.0) * km_x),
-            (xi + 1, yi, ((xi as f64 + 0.5) - x).max(0.0) * km_x),
-            (xi, yi - 1, (y - (yi as f64 - 0.5)).max(0.0) * km_y),
-            (xi, yi + 1, ((yi as f64 + 0.5) - y).max(0.0) * km_y),
+        let half = CROSS_BLOCK_ECOTONE_KM * 0.5;
+        let axis_weight = |coord: f64, edge: f64, km_per_texel: f64| {
+            let t = (0.5 + (coord - edge) * km_per_texel / (2.0 * half)).clamp(0.0, 1.0);
+            t * t * (3.0 - 2.0 * t)
+        };
+        let (x0, y0) = (x.floor() as i64, y.floor() as i64);
+        let wx = axis_weight(x, x0 as f64 + 0.5, km_x);
+        let wy = axis_weight(y, y0 as f64 + 0.5, km_y);
+        let samples = [
+            (self.koppen_texel(face, x0, y0), (1.0 - wx) * (1.0 - wy)),
+            (self.koppen_texel(face, x0 + 1, y0), wx * (1.0 - wy)),
+            (self.koppen_texel(face, x0, y0 + 1), (1.0 - wx) * wy),
+            (self.koppen_texel(face, x0 + 1, y0 + 1), wx * wy),
         ];
-        let mut nearest: Option<(f64, u8)> = None;
-        for (nx, ny, dist_km) in candidates {
-            let other = self.koppen_texel(face, nx, ny);
-            if koppen_main_block(other) == here_block {
+
+        let block_index = |block| match block {
+            MainBlock::Grass => 0,
+            MainBlock::Sand => 1,
+            MainBlock::Snow => 2,
+        };
+        let mut weights = [0.0; 3];
+        let mut representatives = [here; 3];
+        let mut seen = [false; 3];
+        for (class, weight) in samples {
+            let slot = block_index(koppen_main_block(class));
+            weights[slot] += weight;
+            if weight > 0.0 && !seen[slot] {
+                representatives[slot] = class;
+                seen[slot] = true;
+            }
+        }
+        (here, weights, representatives)
+    }
+
+    /// Dither against the continuous four-texel weights in a stable block
+    /// order. Same-block neighborhoods return the nearest class exactly and
+    /// therefore retain all climate/material statistics outside ecotones.
+    fn dithered_koppen(&self, face: usize, u: f64, v: f64, hash: f64) -> u8 {
+        let (here, weights, representatives) = self.koppen_block_weights(face, u, v);
+        if weights.iter().filter(|&&weight| weight > 0.0).count() <= 1 {
+            return here;
+        }
+
+        let mut cumulative = 0.0;
+        let mut last = here;
+        for (weight, class) in weights.into_iter().zip(representatives) {
+            if weight == 0.0 {
                 continue;
             }
-            if nearest.is_none_or(|(best, _)| dist_km < best) {
-                nearest = Some((dist_km, other));
+            cumulative += weight;
+            last = class;
+            if hash < cumulative {
+                return class;
             }
         }
-        let Some((dist_km, other)) = nearest else {
-            return here;
-        };
-        let half = CROSS_BLOCK_ECOTONE_KM * 0.5;
-        if dist_km >= half {
-            return here;
-        }
-        let t = (dist_km / half).clamp(0.0, 1.0);
-        let ease = 1.0 - t * t * (3.0 - 2.0 * t);
-        if hash < 0.5 * ease { other } else { here }
+        // `hash01` is strictly below one. This only covers a caller-supplied
+        // hash of exactly one or a final-ULP accumulation shortfall.
+        last
     }
 }
 
@@ -727,11 +768,12 @@ mod tests {
     #[test]
     fn category_dither_only_crosses_main_blocks() {
         // In a 4x4 raster the class edge is x=1.5 -> u=0. Just inside the
-        // left cell, hash 0 selects the neighbor and hash 1 keeps the owner.
+        // left cell, cumulative Grass/Sand weights select the two blocks at
+        // opposite ends of the hash interval.
         let cross = climate_test_planet(4);
         let u_near = -0.006;
-        assert_eq!(cross.dithered_koppen(0, u_near, 0.0, 0.0), 4);
-        assert_eq!(cross.dithered_koppen(0, u_near, 0.0, 0.999), 6);
+        assert_eq!(cross.dithered_koppen(0, u_near, 0.0, 0.0), 6);
+        assert_eq!(cross.dithered_koppen(0, u_near, 0.0, 0.999), 4);
         // More than half the 300 m band away, no hash can cross the edge.
         assert_eq!(cross.dithered_koppen(0, -0.30, 0.0, 0.0), 6);
 
@@ -748,6 +790,40 @@ mod tests {
         let b = climate_surface(&same, 0, 1e-6, 0.0, 8.0, 900.0)
             .tint(MainBlock::Grass);
         assert!(a.into_iter().zip(b).all(|(x, y)| (x - y).abs() < 1e-5));
+    }
+
+    #[test]
+    fn category_dither_fraction_is_continuous_at_texel_corner() {
+        // Around the x=1.5, y=1.5 corner, sand occupies only the lower-left
+        // quadrant. The old four-edge query reported ~1/2 sand on the two
+        // adjacent grass sides and exactly zero in the diagonal grass texel.
+        let mut corner = climate_test_planet(6);
+        for face in &mut corner.faces {
+            face.koppen[1 * face.res + 1] = 4;
+        }
+
+        let epsilon = 1e-12;
+        let quantum = 1.0 / 4294967296.0; // hash01's 32-bit dither quantum
+        let mut fractions = Vec::new();
+        for (u, v) in [
+            (-epsilon, -epsilon),
+            (epsilon, -epsilon),
+            (-epsilon, epsilon),
+            (epsilon, epsilon),
+        ] {
+            let (_, weights, _) = corner.koppen_block_weights(0, u, v);
+            fractions.push(weights[1]); // Sand in Grass/Sand/Snow order.
+        }
+        let lo = fractions.iter().copied().fold(f64::INFINITY, f64::min);
+        let hi = fractions.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+        assert!(
+            hi - lo <= quantum,
+            "corner limits differ by {} (> one hash quantum): {fractions:?}",
+            hi - lo
+        );
+
+        let (_, at_corner, _) = corner.koppen_block_weights(0, 0.0, 0.0);
+        assert!((at_corner[1] - 0.25).abs() < 1e-12);
     }
 
     /// Project a world direction onto a specific face's gnomonic plane.
