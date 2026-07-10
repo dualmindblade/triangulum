@@ -44,6 +44,10 @@ POSES = [
     ("jungle",         -0.906000, -67.804000,  0.094, -210.0, -17.0, "dense forest + impostors"),
     ("taiga",          47.861000,  14.399000,  0.592,  -49.0, -62.0, "snowline, high pitch-down"),
     ("desert",          0.870000, -89.800000,  0.120,  -35.0, -30.0, "dune field"),
+    ("peak",           69.000000, 122.000000,  0.350,   20.0, -35.0, "steep alpine slopes"),
+    ("valley",          4.990000, -29.403000,  0.250,  -10.0, -40.0, "carved valley walls"),
+    ("groves",          3.960000, -32.560000,  0.150,   60.0, -25.0, "open groves, scattered trees"),
+    ("ice_top",        83.997000,  40.220000,  0.200,    0.0, -35.0, "polar ice sheet"),
     ("sea_calib",      24.482000,  24.967000,  0.120,  -35.0, -30.0, "open sea: must stay ~0 (calibration)"),
 ]
 
