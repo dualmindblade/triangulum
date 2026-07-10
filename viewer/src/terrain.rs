@@ -718,9 +718,17 @@ fn tile_wet(s: &Sample, spacing_km: f64) -> f64 {
         // Big rivers (hw ~ spacing) still paint at full strength, and the
         // geomorph wet-lerp fades threads smoothly across LOD switches.
         let coverage = (s.river_hw_km / paint_w).min(1.0).sqrt();
+        // hand-off to the per-pixel shore field (Vertex::shore): once the
+        // channel out-resolves the vertex grid the field draws the bank at
+        // pixel precision, and the paint's vertex-interpolated edge only
+        // smears past it in triangle-shaped teeth (Austin's
+        // river-zoom-2.png). Wide rivers mute the paint and let the field
+        // own the water; the paint's remaining job is sub-vertex threads.
+        let field_owns = smoothstep(0.9, 2.0, s.river_hw_km / spacing_km);
         (1.0 - smoothstep(s.river_hw_km, paint_w, s.river_dist_km))
             * s.river_wet
             * coverage
+            * (1.0 - field_owns)
     } else {
         0.0
     };
