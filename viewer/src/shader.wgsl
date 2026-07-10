@@ -37,7 +37,7 @@ struct Tile {
     // voxel chunks.
     offset: vec4<f32>,
     // x, y = geomorph band start/end distances (km); vertices slide toward
-    // the parent level's geometry across [x, y] so LOD swaps never pop.
+    // the parent triangle across [x, y] to retire the visible LOD pop.
     // Zero for voxel chunks and level-0 tiles.
     morph: vec4<f32>,
 };
@@ -52,10 +52,10 @@ struct VsIn {
     // rgb = water color, a = wetness flag on mesh tiles / cave-darkness
     // factor on voxel chunks
     @location(3) water: vec4<f32>,
-    // radial delta (km) to the parent LOD level's height here (geomorphing)
+    // radial delta (km) to the parent triangle's interpolated height here
     @location(4) morph_dh: f32,
-    // wetness the parent LOD level paints here (the river-thread width is
-    // level-dependent, so unmorphed paint pops at every tile split)
+    // wetness the parent triangle actually interpolates here (the thread
+    // width is level-dependent, so unmorphed paint pops at every tile split)
     @location(5) morph_wet: f32,
     // 1.0 on a sea/lake water-surface vertex: the heightfield hole does NOT
     // cut these, so the mesh water plane stays under the voxel patch and
@@ -84,9 +84,9 @@ fn vs_main(in: VsIn) -> VsOut {
     let d = length(rel);
     var wet = in.water.a;
     if (tile.morph.y > 0.0) {
-        // geomorphing: slide toward the parent level's geometry (and its
-        // river paint) as this vertex nears the tile's merge distance — the
-        // LOD swap then exchanges identical tiles and nothing pops
+        // Geomorphing: slide to the parent triangle's height and its actual
+        // triangle-interpolated river paint. The scalar radial slide retains
+        // only the measured <= 0.13 m residual in the V-6 level-9 probes.
         let m = clamp((d - tile.morph.x) / (tile.morph.y - tile.morph.x), 0.0, 1.0);
         let radial = normalize(rel - globals.center.xyz);
         rel += radial * (in.morph_dh * m);

@@ -44,14 +44,14 @@ pub struct Vertex {
     /// coarse tiles whose triangles span the whole river.
     pub water: [f32; 4],
     /// Geomorphing: radial height delta (km, exaggerated) from this vertex
-    /// to the height the PARENT level would render here. The vertex shader
-    /// slides pos toward it as the vertex approaches the tile's merge
-    /// distance, so LOD swaps happen between identical geometries — no pop.
+    /// to the PARENT level's rendered triangle at this lattice point. The
+    /// radial-only slide leaves at most a measured 0.13 m parent-chord
+    /// residual in the V-6 level-9 probes, below the vec3 threshold.
     pub morph_dh: f32,
-    /// Geomorphing for the river paint: the wetness the PARENT level paints
-    /// here. The painted thread is widened to the vertex spacing, so a
-    /// split halves its width — the dominant visible LOD pop. Morphing the
-    /// wetness with the same factor retires it.
+    /// Geomorphing for the river paint: the wetness the PARENT level's actual
+    /// triangle interpolates here. The painted thread is widened to the
+    /// vertex spacing, so a split halves its width — the dominant visible
+    /// LOD pop. Morphing the wetness with the same factor retires it.
     pub morph_wet: f32,
     /// 1.0 on a sea/lake water *surface* vertex, else 0.0. The heightfield
     /// hole (which lets voxel blocks own the near disc) must NOT cut the
@@ -764,36 +764,54 @@ pub fn build_tile(planet: &Planet, key: TileKey, exaggeration: f64) -> TileMesh 
         }
     }
 
-    // geomorph targets: what the PARENT level renders here. Parent vertices
-    // sit on this tile's even lattice (grids nest); odd vertices bilerp
-    // between them, exactly like the parent's triangles do. Height is a pure
-    // function of (u, v, octave budget), so when the budgets match (coarse
-    // levels where no detail octaves fit yet) the delta is identically zero
-    // and the sampling pass is skipped.
+    // Geomorph targets: what the PARENT level renders here. Parent vertices
+    // sit on this tile's even lattice (grids nest). Interpolate their height
+    // and wetness across the same b-c diagonal as the index buffer below;
+    // bilerp would put the odd/odd child vertex on a different surface by the
+    // quad's twist term. When octave budgets match, reuse the child samples at
+    // the even vertices rather than re-sampling them.
     let parent_oct = if key.level == 0 {
         octaves
     } else {
         octave_count(key.level - 1, radius)
     };
+    let spacing = key.size_km(radius) / TILE_QUADS as f64;
     let half = TILE_QUADS / 2 + 1; // 17 parent-lattice points per axis
     let mut hp = vec![0.0f64; half * half];
-    if parent_oct != octaves {
+    let mut wp = vec![0.0f64; half * half];
+    if key.level > 0 {
         for pj in 0..half {
             for pi in 0..half {
-                let u = u0 + size * (2 * pi) as f64 / TILE_QUADS as f64;
-                let v = v0 + size * (2 * pj) as f64 / TILE_QUADS as f64;
-                hp[pj * half + pi] =
-                    sample(planet, face, u, v, parent_oct).render_h_km();
+                let k = pj * half + pi;
+                if parent_oct == octaves {
+                    let s = &samples[(2 * pj + 1) * np2 + 2 * pi + 1];
+                    hp[k] = s.render_h_km();
+                    wp[k] = tile_wet(s, spacing * 2.0);
+                } else {
+                    let u = u0 + size * (2 * pi) as f64 / TILE_QUADS as f64;
+                    let v = v0 + size * (2 * pj) as f64 / TILE_QUADS as f64;
+                    let s = sample(planet, face, u, v, parent_oct);
+                    hp[k] = s.render_h_km();
+                    wp[k] = tile_wet(&s, spacing * 2.0);
+                }
             }
         }
     }
-    let parent_h = |i: usize, j: usize| -> f64 {
+    let parent_value = |grid: &[f64], i: usize, j: usize| -> f64 {
         let (pi, fi) = (i / 2, (i % 2) as f64 * 0.5);
         let (pj, fj) = (j / 2, (j % 2) as f64 * 0.5);
         let (pi1, pj1) = ((pi + 1).min(half - 1), (pj + 1).min(half - 1));
-        let a = hp[pj * half + pi] * (1.0 - fi) + hp[pj * half + pi1] * fi;
-        let b = hp[pj1 * half + pi] * (1.0 - fi) + hp[pj1 * half + pi1] * fi;
-        a * (1.0 - fj) + b * fj
+        let (a, b, c, d) = (
+            grid[pj * half + pi],
+            grid[pj * half + pi1],
+            grid[pj1 * half + pi],
+            grid[pj1 * half + pi1],
+        );
+        if fi + fj <= 1.0 {
+            a * (1.0 - fi - fj) + b * fi + c * fj
+        } else {
+            b * (1.0 - fj) + d * (fi + fj - 1.0) + c * (1.0 - fi)
+        }
     };
 
     let mut vertices = Vec::with_capacity(n * n + 4 * n);
@@ -818,16 +836,16 @@ pub fn build_tile(planet: &Planet, key: TileKey, exaggeration: f64) -> TileMesh 
             // sea carries NO wet paint: its geometry+ground color already
             // are the water, and paint only bleeds navy bands onto the
             // beach triangles next door.
-            let spacing = key.size_km(radius) / TILE_QUADS as f64;
             let wet = if key.deep && !(s.sea || s.lake) {
                 s.has_water() as u32 as f64
             } else {
                 tile_wet(s, spacing)
             };
-            // what the parent level paints here: same sample, doubled
-            // spacing (the width term is the level-dependent part; the
-            // octave-driven residue in the sample fields is sub-threshold)
-            let wet_parent = tile_wet(s, spacing * 2.0);
+            let wet_parent = if key.level > 0 {
+                parent_value(&wp, i, j)
+            } else {
+                wet
+            };
             // the sea is real geometry at its surface — its "ground" color
             // is the water color so the wetness blend is a no-op there and
             // it stays fully blue at every distance
@@ -842,8 +860,8 @@ pub fn build_tile(planet: &Planet, key: TileKey, exaggeration: f64) -> TileMesh 
             } else {
                 shade_ground(planet, face, uu, vv, s, slope)
             };
-            let dh = if parent_oct != octaves {
-                ((parent_h(i, j) - s.render_h_km()) * exaggeration) as f32
+            let dh = if key.level > 0 {
+                ((parent_value(&hp, i, j) - s.render_h_km()) * exaggeration) as f32
             } else {
                 0.0
             };
@@ -1262,6 +1280,90 @@ fn shade_ground(
 mod tests {
     use super::*;
 
+    fn mesh_world(mesh: &TileMesh, i: usize, j: usize) -> DVec3 {
+        mesh_world_index(mesh, j * (TILE_QUADS + 1) + i)
+    }
+
+    fn mesh_world_index(mesh: &TileMesh, index: usize) -> DVec3 {
+        let v = mesh.vertices[index];
+        mesh.origin_km + DVec3::from_array(v.pos.map(f64::from))
+    }
+
+    /// Find the actual parent index-buffer triangle containing a child point.
+    /// Reading the indices makes this gate fail if the rendered diagonal ever
+    /// changes without the morph-target interpolation changing with it.
+    fn parent_triangle_weights(
+        parent: &TileMesh,
+        child: TileKey,
+        i: usize,
+        j: usize,
+    ) -> [(usize, f64); 3] {
+        let n = TILE_QUADS + 1;
+        let x = (child.ix as usize & 1) as f64 * (TILE_QUADS / 2) as f64
+            + i as f64 * 0.5;
+        let y = (child.iy as usize & 1) as f64 * (TILE_QUADS / 2) as f64
+            + j as f64 * 0.5;
+        let cell_i = (x.floor() as usize).min(TILE_QUADS - 1);
+        let cell_j = (y.floor() as usize).min(TILE_QUADS - 1);
+        let first = (cell_j * TILE_QUADS + cell_i) * 6;
+        for tri in 0..2 {
+            let indices = [
+                parent.indices[first + tri * 3] as usize,
+                parent.indices[first + tri * 3 + 1] as usize,
+                parent.indices[first + tri * 3 + 2] as usize,
+            ];
+            let uv = indices.map(|index| ((index % n) as f64, (index / n) as f64));
+            let ab = (uv[1].0 - uv[0].0, uv[1].1 - uv[0].1);
+            let ac = (uv[2].0 - uv[0].0, uv[2].1 - uv[0].1);
+            let ap = (x - uv[0].0, y - uv[0].1);
+            let cross = |a: (f64, f64), b: (f64, f64)| a.0 * b.1 - a.1 * b.0;
+            let den = cross(ab, ac);
+            let wb = cross(ap, ac) / den;
+            let wc = cross(ab, ap) / den;
+            let wa = 1.0 - wb - wc;
+            if wa >= -1e-12 && wb >= -1e-12 && wc >= -1e-12 {
+                return [(indices[0], wa), (indices[1], wb), (indices[2], wc)];
+            }
+        }
+        panic!("child point ({i}, {j}) is outside both parent cell triangles");
+    }
+
+    fn full_morph_residuals(planet: &Planet, key: TileKey) -> (f64, f64) {
+        let child = build_tile(planet, key, 1.0);
+        let parent = build_tile(
+            planet,
+            TileKey {
+                face: key.face,
+                level: key.level - 1,
+                ix: key.ix / 2,
+                iy: key.iy / 2,
+                deep: false,
+            },
+            1.0,
+        );
+        let mut max_position_km = 0.0f64;
+        let mut max_wet = 0.0f64;
+        for j in 0..=TILE_QUADS {
+            for i in 0..=TILE_QUADS {
+                let v = child.vertices[j * (TILE_QUADS + 1) + i];
+                let p = mesh_world(&child, i, j);
+                let morphed = p + p.normalize() * f64::from(v.morph_dh);
+                let weights = parent_triangle_weights(&parent, key, i, j);
+                let parent_position = weights
+                    .iter()
+                    .map(|&(index, w)| mesh_world_index(&parent, index) * w)
+                    .sum::<DVec3>();
+                let parent_wet = weights
+                    .iter()
+                    .map(|&(index, w)| f64::from(parent.vertices[index].water[3]) * w)
+                    .sum::<f64>();
+                max_position_km = max_position_km.max(morphed.distance(parent_position));
+                max_wet = max_wet.max((f64::from(v.morph_wet) - parent_wet).abs());
+            }
+        }
+        (max_position_km, max_wet)
+    }
+
     #[test]
     fn lake_shore_fraction_requires_height_edge_and_liquid_water() {
         let level = 0.070;
@@ -1288,5 +1390,34 @@ mod tests {
             (LAKE_SHORE_SOLID_KM + LAKE_SHORE_REACH_KM) * 0.5,
         );
         assert!((f - 0.25).abs() < 1e-12, "fraction={f}");
+    }
+
+    #[test]
+    fn full_morph_reproduces_parent_triangle_at_v6_sites() {
+        let assets = if std::path::Path::new("assets/meta.json").exists() {
+            "assets"
+        } else {
+            "viewer/assets"
+        };
+        let planet = Planet::load(assets).expect("V-6 mesh gate requires the baked viewer assets");
+        let sites = [
+            (
+                "peak",
+                TileKey { face: 4, level: 9, ix: 339, iy: 308, deep: false },
+            ),
+            (
+                "valley",
+                TileKey { face: 0, level: 9, ix: 111, iy: 281, deep: false },
+            ),
+        ];
+        for (name, key) in sites {
+            let (position_km, wet) = full_morph_residuals(&planet, key);
+            assert!(
+                position_km < 0.000_25,
+                "{name} fully-morphed child misses its parent by {:.3} m",
+                position_km * 1000.0
+            );
+            assert!(wet < 1e-6, "{name} fully-morphed wetness misses its parent by {wet}");
+        }
     }
 }

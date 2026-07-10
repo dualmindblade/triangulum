@@ -31,7 +31,10 @@ pub struct SunState {
 ///     ->  morph_start >= (1/tau + 0.71)*S
 /// With tau = 0.35 that window is [3.57, 4.30]*S — we use [3.61, 4.26]*S.
 /// Cross-level tile edges agree for free: the finer neighbor is fully
-/// morphed (= parent geometry) exactly where the coarser one is unmorphed.
+/// morphed to the same parent-triangle height exactly where the coarser one
+/// is unmorphed. The radial-only slide differs from the parent's 3-D chord by
+/// at most 0.13 m in the hostile level-9 V-6 probes (well below its swap
+/// distance); an exact vec3 target was not worth widening every vertex.
 const ERR_TARGET: f64 = 0.35;
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
