@@ -18,6 +18,21 @@
   texture's average color as its tint anchor. (So: build the ramp
   machinery, don't gold-plate the palette.)
 
+**Landed since the verdicts (2026-07-10 night):**
+- **E v1** — forest impostors (9781db5): billboard trees on levels 11-12
+  from the voxel placement lottery; reach ~3-6 km, then tint. Known
+  tells: X-cross within ~400 m, level-border density step, no far fade.
+- **D v1** — climate tint + dual-range ecotones (a65591f, by GPT-5.6
+  Sol): planet::climate_surface shared by both renderers, same-block =
+  pure km-scale ramp, cross-block = 300 m per-column dither with a true
+  gnomonic metric; snowline hash unified. Known cut: far-mesh dither is
+  per-VERTEX (sawtooth tongues at ~100 m spacing); per-pixel needs the
+  A-style shader pass. Palette provisional per the verdict.
+- Remaining, resequenced: B (per-pixel shorelines) -> A+F (shared
+  micro-texture + water color; A also upgrades D's dither to per-pixel)
+  -> C (rim knob, default invisible) -> E/D polish (far fade, sway,
+  per-pair band widths).
+
 For the texturing/transitions summit (Austin + Andrew + AI crew), 2026-07-09.
 Covers BUGS.md V-1 (voxel patch reads as a disk against the far mesh), V-5
 (lake shores alias into polygons at coarse LOD), and biome transitions.

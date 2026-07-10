@@ -1515,3 +1515,32 @@ rain/snow particles, `--weather off|live|C,P` CLI, `weather` play command,
 weather state in photo sidecars, weather-visual.play demo. Reference
 frames: wx_*.png in interchange (savanna storm, plateau deep winter,
 rain streaks, snowfall).
+
+## Phase 10 — transitions night: impostors + climate tint (2026-07-10)
+
+Andrew's verdicts landed (TRANSITIONS.md top block): seamless-first with
+a visibility knob, E greenlit, D gains the dual-range rule, palette
+provisional until textures. Two features shipped the same night:
+
+E v1 (Fable): forest impostors — mesh levels 11-12 grow crossed
+billboard quads from the SAME placement lottery/species/trunk-height/
+palette as voxel trees (tree_at refactored into shared parts); the hole
+cut hands off at the patch rim automatically. Two-phase enumeration
+(hash lottery on a strided lattice, terrain sample only on the ~4k/tile
+budget survivors). Measured wrong on the way: bark-bottomed billboards
+stack into brown bands via overlapping parallax (canopy-sea coloring
+instead); species need silhouettes (taper) or the band reads as a picket
+fence. Forests now hold from the rim to ~3-6 km, D's tint owns beyond.
+
+D v1 (GPT-5.6 Sol, first public-day feature mission): planet::
+climate_surface — continuous temp/precip ramps + smoothed Koppen hue
+nudge + shared main-block category, consumed by BOTH shade_ground and
+voxel surface_mat (grass/sand/snow tints and the snowline hash are now
+literally one implementation). Cross-block ecotones dither per canonical
+column over a 300 m band with a real gnomonic texel metric; same-block
+pairs are pure gradient (Andrew's rule, verbatim). Sol ran every gate
+unprompted — 7 suites, cargo test (+2 unit tests it wrote), double-run
+determinism, 8 hashed before/after captures — and documented its cut
+lines honestly (per-vertex far dither awaits A's shader pass). Razor
+biome lines are gone. Also this phase: weather `season` play command +
+the seasons-showcase reel (one forest, four seasons, storms).
