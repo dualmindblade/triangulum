@@ -15,12 +15,12 @@
 //! Chunks are 32x32 columns, keyed (face, cx, cy) — the same "independent
 //! node, any depth" property as the tiles: a chunk needs nothing but its key.
 
-use crate::planet::{face_dir, ground_tint, Planet};
+use crate::planet::{climate_surface, face_dir, hash01, hash_u64, MainBlock, Planet};
 use crate::terrain::{sample, Sample, TileMesh, Vertex, VOXEL_OCTAVES};
 use glam::DVec3;
 use std::collections::{HashMap, HashSet};
 
-pub const COLUMNS_PER_FACE: u64 = 10_000_000; // 1 m columns on a 10,000 km face
+pub use crate::planet::COLUMNS_PER_FACE;
 pub const CHUNK: u64 = 32;
 pub const VOXEL_KM: f64 = 0.001;
 /// How far below the nominal surface cave carving is evaluated (blocks).
@@ -67,21 +67,19 @@ pub enum Mat {
 }
 
 impl Mat {
-    /// Base linear-RGB color; Grass takes the biome ground tint.
+    /// Base linear-RGB color; main surface blocks take the shared climate tint.
     fn color(self, tint: [f32; 3]) -> [f32; 3] {
         match self {
-            Mat::Grass => tint,
+            Mat::Grass | Mat::Sand | Mat::Snow => tint,
             // dry loam, not wet cellar soil: the old [0.23,0.15,0.085] was
             // the darkest ground material in the palette (darker than
             // stone), so every 2-block step's exposed dirt stratum read as
             // a black hole against grass tops in low light (the arrowed
             // faces in shot_lat20.810_lon28.922).
             Mat::Dirt => [0.33, 0.235, 0.135],
-            Mat::Sand => [0.60, 0.51, 0.30],
             Mat::Gravel => [0.32, 0.31, 0.29],
             Mat::Stone => [0.30, 0.29, 0.28],
             Mat::Rock => [0.20, 0.195, 0.19],
-            Mat::Snow => [0.83, 0.86, 0.91],
             Mat::Ice => [0.60, 0.72, 0.85],
             Mat::Water => [0.055, 0.17, 0.30],
             Mat::Log => [0.16, 0.10, 0.05],
@@ -92,25 +90,6 @@ impl Mat {
             Mat::Shrub => [0.22, 0.25, 0.10],
         }
     }
-}
-
-fn hash_u64(face: u8, ci: u64, cj: u64, salt: u64) -> u64 {
-    // a linear combination alone has no avalanche: thresholding it puts
-    // trees in lattice stripes ("orchard rows"). Finalize splitmix64-style
-    // so nearby columns decorrelate.
-    let mut x = (ci ^ ((face as u64) << 60))
-        .wrapping_mul(0x9E37_79B9_7F4A_7C15)
-        .wrapping_add(cj.wrapping_mul(0x85EB_CA77_C2B2_AE63))
-        .wrapping_add(salt.wrapping_mul(0xC2B2_AE3D_27D4_EB4F));
-    x ^= x >> 30;
-    x = x.wrapping_mul(0xBF58_476D_1CE4_E5B9);
-    x ^= x >> 27;
-    x = x.wrapping_mul(0x94D0_49BB_1331_11EB);
-    x ^ (x >> 31)
-}
-
-fn hash01(face: u8, ci: u64, cj: u64, salt: u64) -> f64 {
-    ((hash_u64(face, ci, cj, salt) >> 11) & 0xFFFF_FFFF) as f64 / 4294967296.0
 }
 
 fn mix_color(a: [f32; 3], b: [f32; 3], t: f32) -> [f32; 3] {
@@ -390,9 +369,9 @@ pub fn col_ctx(planet: &Planet, edits: &Edits, face: usize, ci: u64, cj: u64) ->
 }
 
 /// Surface material given local steepness (max |height delta| to neighbors).
-/// `jitter` (hash01 of the column) dithers the snow line so blocks pepper in
-/// across the same -7.5..-10.5 C band the mesh's snow ramp covers.
-fn surface_mat(c: &ColCtx, steep: i64, jitter: f64) -> Mat {
+/// Climate-owned grass/sand/snow selection is shared with the far mesh;
+/// hydrology, local slope, and beaches remain higher-priority local facts.
+fn surface_mat(c: &ColCtx, steep: i64, climate_block: MainBlock) -> Mat {
     // underwater floors
     if c.water != i64::MIN && c.ground < c.water {
         return if c.water - c.ground > 4 { Mat::Gravel } else { Mat::Sand };
@@ -400,7 +379,7 @@ fn surface_mat(c: &ColCtx, steep: i64, jitter: f64) -> Mat {
     if c.lake_shore && c.temp >= -4.0 {
         return Mat::Sand;
     }
-    if c.koppen == 29 || (c.temp as f64) < -9.0 + (jitter - 0.5) * 3.0 {
+    if climate_block == MainBlock::Snow {
         return Mat::Snow;
     }
     if steep >= 5 {
@@ -414,10 +393,19 @@ fn surface_mat(c: &ColCtx, steep: i64, jitter: f64) -> Mat {
     if c.e_raw < 0.012 && c.ground0 < 14 {
         return Mat::Sand;
     }
-    match c.koppen {
-        3 | 4 => Mat::Sand, // deserts
-        255 => Mat::Sand,   // coastal strand: land under an ocean-class texel
-        _ => Mat::Grass,
+    match climate_block {
+        MainBlock::Sand => Mat::Sand,
+        MainBlock::Grass => Mat::Grass,
+        MainBlock::Snow => Mat::Snow, // handled above; exhaustive by contract
+    }
+}
+
+fn mat_main_block(mat: Mat, fallback: MainBlock) -> MainBlock {
+    match mat {
+        Mat::Grass => MainBlock::Grass,
+        Mat::Sand => MainBlock::Sand,
+        Mat::Snow => MainBlock::Snow,
+        _ => fallback,
     }
 }
 
@@ -939,7 +927,14 @@ pub fn build_chunk(
             let d11 = face_dir(face, u1, v1);
             let d01 = face_dir(face, u0, v1);
             let up = origin_dir;
-            let tint = ground_tint(c.koppen);
+            let climate = climate_surface(
+                planet,
+                face,
+                (u0 + u1) * 0.5,
+                (v0 + v1) * 0.5,
+                c.temp as f64,
+                c.precip as f64,
+            );
 
             // Per-column surface normal for the block top. Without slope
             // self-shading the only relief cue is the baked-dark terrace risers,
@@ -1000,7 +995,8 @@ pub fn build_chunk(
                 .map(|nb| (c.ground0 - nb.ground0).abs())
                 .max()
                 .unwrap_or(0);
-            let surf = surface_mat(c, steep, hash01(face as u8, ci, cj, 0x5A0E));
+            let surf = surface_mat(c, steep, climate.main_block);
+            let tint = climate.tint(mat_main_block(surf, climate.main_block));
 
             // per-block brightness hash: the subtle checkerboard that reads
             // "voxel" (keyed per column+height so sides vary too)
@@ -1193,7 +1189,7 @@ pub fn build_chunk(
                     // read as a featureless plane — indistinguishable from sky
                     // or liquid. Dust it with patchy snow per column so the
                     // solid surface reads as ground (brightness varied below).
-                    let snow = Mat::Snow.color(tint);
+                    let snow = Mat::Snow.color(climate.tint(MainBlock::Snow));
                     let f = hash01(face as u8, ci, cj, 0x1CE) as f32;
                     let s = f * f * 0.6;
                     wcol = [
@@ -1401,10 +1397,11 @@ pub fn build_chunk(
         if !(0..n).contains(&ti) || !(0..n).contains(&tj) {
             continue;
         }
-        let c = at(ti, tj);
         let ci = (base_i + ti) as u64;
         let cj = (base_j + tj) as u64;
-        let tint = ground_tint(c.koppen);
+        // Tree cells never use a ground-tinted material; keep their established
+        // species palette without another climate raster pass per leaf block.
+        let tint = [0.0; 3];
         let h = hash_u64(face as u8, ci, cj, tz as u64);
         let bright = 0.88 + 0.24 * ((h >> 13 & 0xFF) as f32 / 255.0);
         let col = vary(mat.color(tint), bright);

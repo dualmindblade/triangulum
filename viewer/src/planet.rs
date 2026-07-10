@@ -15,6 +15,81 @@ pub const FACES: [(DVec3, DVec3, DVec3); 6] = [
     (DVec3::new(0.0, 0.0, -1.0), DVec3::new(0.0, 1.0, 0.0), DVec3::new(1.0, 0.0, 0.0)),
 ];
 
+/// The canonical one-metre-ish column lattice. Biome dithering hashes this
+/// identity in both renderers; changing it would move every ecotone column.
+pub const COLUMNS_PER_FACE: u64 = 10_000_000;
+
+/// Total width of a cross-material ecotone (half on either side of the baked
+/// Koppen edge). Same-material classes never consult this band.
+pub const CROSS_BLOCK_ECOTONE_KM: f64 = 0.300;
+/// Koppen contributes a small, spatially blended hue memory; continuous
+/// temperature and precipitation remain the dominant color coordinates.
+pub const KOPPEN_HUE_NUDGE: f32 = 0.14;
+
+const ECOTONE_HASH_SALT: u64 = 0xEC07_0AE;
+const SNOW_HASH_SALT: u64 = 0x5A0E;
+const SNOWLINE_CENTER_C: f64 = -9.0;
+const SNOWLINE_HALF_RANGE_C: f64 = 1.5;
+
+/// The categories Koppen actually selects in today's surface material code.
+/// Rock and stone are local-slope overrides, not biome main blocks.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum MainBlock {
+    Grass,
+    Sand,
+    Snow,
+}
+
+pub fn koppen_main_block(id: u8) -> MainBlock {
+    match id {
+        3 | 4 | 255 => MainBlock::Sand,
+        29 => MainBlock::Snow,
+        _ => MainBlock::Grass,
+    }
+}
+
+/// The shared climate/material result evaluated once per mesh vertex or voxel
+/// column. All three tints are carried because a local beach/cliff rule may
+/// override the biome's main block without another raster pass.
+#[derive(Clone, Copy, Debug)]
+pub struct ClimateSurface {
+    pub main_block: MainBlock,
+    grass: [f32; 3],
+    sand: [f32; 3],
+    snow: [f32; 3],
+    /// Existing far-canopy approximation, spatially blended so it cannot put
+    /// a second hard line back across a smooth same-block transition.
+    pub forest: f32,
+}
+
+impl ClimateSurface {
+    pub fn tint(self, block: MainBlock) -> [f32; 3] {
+        match block {
+            MainBlock::Grass => self.grass,
+            MainBlock::Sand => self.sand,
+            MainBlock::Snow => self.snow,
+        }
+    }
+}
+
+/// Shared splitmix-style column hash. It intentionally preserves the exact
+/// voxel hash that already owns snowline statistics.
+pub fn hash_u64(face: u8, ci: u64, cj: u64, salt: u64) -> u64 {
+    let mut x = (ci ^ ((face as u64) << 60))
+        .wrapping_mul(0x9E37_79B9_7F4A_7C15)
+        .wrapping_add(cj.wrapping_mul(0x85EB_CA77_C2B2_AE63))
+        .wrapping_add(salt.wrapping_mul(0xC2B2_AE3D_27D4_EB4F));
+    x ^= x >> 30;
+    x = x.wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    x ^= x >> 27;
+    x = x.wrapping_mul(0x94D0_49BB_1331_11EB);
+    x ^ (x >> 31)
+}
+
+pub fn hash01(face: u8, ci: u64, cj: u64, salt: u64) -> f64 {
+    ((hash_u64(face, ci, cj, salt) >> 11) & 0xFFFF_FFFF) as f64 / 4294967296.0
+}
+
 /// Unit direction for face-local coordinates (u, v) in [-1, 1].
 pub fn face_dir(face: usize, u: f64, v: f64) -> DVec3 {
     let (axis, right, up) = FACES[face];
@@ -194,6 +269,96 @@ impl Planet {
         let y = (((v * 0.5 + 0.5) * (res - 1.0)).round().max(0.0) as usize).min(r.res - 1);
         r.koppen[y * r.res + x]
     }
+
+    /// Categorical texel access with a real neighbor across cube-face edges.
+    /// Interior transition checks are four direct byte reads; only the outer
+    /// raster ring pays for a direction remap.
+    fn koppen_texel(&self, face: usize, x: i64, y: i64) -> u8 {
+        let r = &self.faces[face];
+        if x >= 0 && x < r.res as i64 && y >= 0 && y < r.res as i64 {
+            return r.koppen[y as usize * r.res + x as usize];
+        }
+        let d = (r.res - 1) as f64;
+        let u = -1.0 + 2.0 * x as f64 / d;
+        let v = -1.0 + 2.0 * y as f64 / d;
+        let (f2, u2, v2) = face_from_dir(face_dir(face, u, v));
+        self.koppen(f2, u2, v2)
+    }
+
+    /// Smooth the old palette anchor and far-forest weight over the categorical
+    /// raster lattice. This signal is only a small nudge; unlike nearest-texel
+    /// Koppen it is continuous at cell edges.
+    fn koppen_signature(&self, face: usize, u: f64, v: f64) -> ([f32; 3], f32) {
+        let r = &self.faces[face];
+        let d = (r.res - 1) as f64;
+        let x = ((u * 0.5 + 0.5) * d).clamp(0.0, d);
+        let y = ((v * 0.5 + 0.5) * d).clamp(0.0, d);
+        let (x0, y0) = (x.floor() as usize, y.floor() as usize);
+        let (x1, y1) = ((x0 + 1).min(r.res - 1), (y0 + 1).min(r.res - 1));
+        let (fx, fy) = ((x - x0 as f64) as f32, (y - y0 as f64) as f32);
+        let sample = |xx: usize, yy: usize| {
+            let k = r.koppen[yy * r.res + xx];
+            (ground_tint(k), koppen_forest(k))
+        };
+        let (a, fa) = sample(x0, y0);
+        let (b, fb) = sample(x1, y0);
+        let (c, fc) = sample(x0, y1);
+        let (d, fd) = sample(x1, y1);
+        let top = mix3(a, b, fx);
+        let bottom = mix3(c, d, fx);
+        (
+            mix3(top, bottom, fy),
+            (fa + (fb - fa) * fx) * (1.0 - fy) + (fc + (fd - fc) * fx) * fy,
+        )
+    }
+
+    /// Select the neighbor class only inside the short band around a
+    /// DIFFERENT-main-block edge. The probability is 1/2 at the exact edge
+    /// and eases to zero at either outer edge; same-block pairs return the
+    /// nearest class without hashing at all.
+    fn dithered_koppen(&self, face: usize, u: f64, v: f64, hash: f64) -> u8 {
+        let r = &self.faces[face];
+        let d = (r.res - 1) as f64;
+        let x = ((u * 0.5 + 0.5) * d).clamp(0.0, d);
+        let y = ((v * 0.5 + 0.5) * d).clamp(0.0, d);
+        let (xi, yi) = (x.round() as i64, y.round() as i64);
+        let here = self.koppen_texel(face, xi, yi);
+        let here_block = koppen_main_block(here);
+
+        // Gnomonic metric: angular derivative of normalize([u,v,1]). This
+        // keeps the artist-facing width in kilometres across face centers,
+        // edges, and corners instead of treating a raster texel as constant.
+        let denom = 1.0 + u * u + v * v;
+        let texel_uv = 2.0 / d;
+        let km_x = self.radius_km * texel_uv * (1.0 + v * v).sqrt() / denom;
+        let km_y = self.radius_km * texel_uv * (1.0 + u * u).sqrt() / denom;
+        let candidates = [
+            (xi - 1, yi, (x - (xi as f64 - 0.5)).max(0.0) * km_x),
+            (xi + 1, yi, ((xi as f64 + 0.5) - x).max(0.0) * km_x),
+            (xi, yi - 1, (y - (yi as f64 - 0.5)).max(0.0) * km_y),
+            (xi, yi + 1, ((yi as f64 + 0.5) - y).max(0.0) * km_y),
+        ];
+        let mut nearest: Option<(f64, u8)> = None;
+        for (nx, ny, dist_km) in candidates {
+            let other = self.koppen_texel(face, nx, ny);
+            if koppen_main_block(other) == here_block {
+                continue;
+            }
+            if nearest.is_none_or(|(best, _)| dist_km < best) {
+                nearest = Some((dist_km, other));
+            }
+        }
+        let Some((dist_km, other)) = nearest else {
+            return here;
+        };
+        let half = CROSS_BLOCK_ECOTONE_KM * 0.5;
+        if dist_km >= half {
+            return here;
+        }
+        let t = (dist_km / half).clamp(0.0, 1.0);
+        let ease = 1.0 - t * t * (3.0 - 2.0 * t);
+        if hash < 0.5 * ease { other } else { here }
+    }
 }
 
 /// Separable box blur of the (koppen == 255) ocean mask, edge-clamped.
@@ -329,10 +494,9 @@ fn seam_exact_ocean(faces: &mut [FaceRaster], radius: i32) {
     }
 }
 
-/// Koppen class -> naturalistic ground tint (linear RGB). This is what the
-/// landscape *looks like*, as opposed to koppen_color's atlas false-color:
-/// rainforest greens, savanna golds, desert sands, taiga blue-greens,
-/// tundra greys, ice-cap white. Shared by mesh shading and block materials.
+/// Legacy Koppen palette anchor (linear RGB). The minimap still uses it
+/// directly; world surfaces only take a small, bilinearly-smoothed hue nudge
+/// from it through `climate_surface`.
 pub fn ground_tint(id: u8) -> [f32; 3] {
     match id {
         0 | 1 => [0.050, 0.230, 0.040],  // Af/Am tropical rainforest
@@ -359,6 +523,146 @@ pub fn ground_tint(id: u8) -> [f32; 3] {
     }
 }
 
+fn koppen_forest(id: u8) -> f32 {
+    match id {
+        0 | 1 => 0.85,
+        10..=15 | 20 | 21 | 24 | 25 => 0.5,
+        22 | 23 | 26 | 27 => 0.6,
+        16..=19 => 0.4,
+        7..=9 => 0.3,
+        2 => 0.15,
+        _ => 0.0,
+    }
+}
+
+fn mix3(a: [f32; 3], b: [f32; 3], t: f32) -> [f32; 3] {
+    let t = t.clamp(0.0, 1.0);
+    [
+        a[0] + (b[0] - a[0]) * t,
+        a[1] + (b[1] - a[1]) * t,
+        a[2] + (b[2] - a[2]) * t,
+    ]
+}
+
+fn smoothstepf(a: f32, b: f32, x: f32) -> f32 {
+    let t = ((x - a) / (b - a)).clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
+}
+
+/// Four temperature anchors for provisional climate colors. Smooth segments
+/// avoid putting a new contour at an anchor temperature.
+fn temperature_ramp(temp_c: f32, colors: [[f32; 3]; 4]) -> [f32; 3] {
+    const T: [f32; 4] = [-4.0, 4.0, 16.0, 26.0];
+    if temp_c <= T[1] {
+        return mix3(colors[0], colors[1], smoothstepf(T[0], T[1], temp_c));
+    }
+    if temp_c <= T[2] {
+        return mix3(colors[1], colors[2], smoothstepf(T[1], T[2], temp_c));
+    }
+    mix3(colors[2], colors[3], smoothstepf(T[2], T[3], temp_c))
+}
+
+fn climate_grass(temp_c: f32, precip_mm: f32) -> [f32; 3] {
+    // Annual rain must work harder in heat. This is deliberately a simple
+    // smooth 2-D ramp, not a second climate classifier; seasonal color waits
+    // for texture anchors as Andrew directed.
+    let dry_limit = 100.0 + temp_c.max(0.0) * 35.0;
+    let moisture = smoothstepf(dry_limit, dry_limit + 900.0, precip_mm.max(0.0));
+    let dry = temperature_ramp(
+        temp_c,
+        [
+            [0.220, 0.215, 0.150],
+            [0.260, 0.240, 0.110],
+            [0.180, 0.230, 0.070],
+            [0.205, 0.240, 0.055],
+        ],
+    );
+    let wet = temperature_ramp(
+        temp_c,
+        [
+            [0.070, 0.160, 0.070],
+            [0.075, 0.205, 0.060],
+            [0.090, 0.250, 0.050],
+            [0.050, 0.230, 0.040],
+        ],
+    );
+    mix3(dry, wet, moisture)
+}
+
+fn climate_sand(temp_c: f32, precip_mm: f32) -> [f32; 3] {
+    let heat = smoothstepf(-4.0, 26.0, temp_c);
+    let mut sand = mix3([0.545, 0.470, 0.290], [0.585, 0.485, 0.255], heat);
+    let damp = smoothstepf(250.0, 1400.0, precip_mm.max(0.0)) * 0.10;
+    sand = mix3(sand, [0.485, 0.430, 0.270], damp);
+    sand
+}
+
+fn climate_snow(temp_c: f32, precip_mm: f32) -> [f32; 3] {
+    let warmth = smoothstepf(-30.0, -4.0, temp_c);
+    let wet = smoothstepf(50.0, 900.0, precip_mm.max(0.0));
+    let snow = mix3([0.795, 0.835, 0.900], [0.835, 0.865, 0.905], warmth);
+    mix3(snow, [0.850, 0.875, 0.915], wet * 0.12)
+}
+
+fn hue_nudge(base: [f32; 3], anchor: [f32; 3]) -> [f32; 3] {
+    // Match luminance before mixing: Koppen remembers hue/chroma without
+    // regaining ownership of brightness (which belongs to climate + material).
+    let luma = |c: [f32; 3]| 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
+    let scale = luma(base) / luma(anchor).max(1e-4);
+    let same_value = [
+        (anchor[0] * scale).clamp(0.0, 1.0),
+        (anchor[1] * scale).clamp(0.0, 1.0),
+        (anchor[2] * scale).clamp(0.0, 1.0),
+    ];
+    mix3(base, same_value, KOPPEN_HUE_NUDGE)
+}
+
+/// One truth for the two ground renderers: continuous climate supplies all
+/// provisional material tints, smoothly sampled Koppen only nudges grass hue,
+/// and the shared world-column hashes choose cross-block and snow categories.
+/// This performs raster reads and hashes only; callers already own the terrain
+/// `Sample`, so no extra `terrain::sample` enters either hot path.
+pub fn climate_surface(
+    planet: &Planet,
+    face: usize,
+    u: f64,
+    v: f64,
+    temp_c: f64,
+    precip_mm: f64,
+) -> ClimateSurface {
+    // Only shared cube edges need canonical ownership. Voxel centers and tile
+    // interiors keep the cheap direct path.
+    let (face, u, v) = if u.abs() >= 1.0 || v.abs() >= 1.0 {
+        face_from_dir(face_dir(face, u, v))
+    } else {
+        (face, u, v)
+    };
+    let n = COLUMNS_PER_FACE as f64;
+    let ci = (((u + 1.0) * 0.5 * n).clamp(0.0, n - 1.0)) as u64;
+    let cj = (((v + 1.0) * 0.5 * n).clamp(0.0, n - 1.0)) as u64;
+    let edge_hash = hash01(face as u8, ci, cj, ECOTONE_HASH_SALT);
+    let snow_hash = hash01(face as u8, ci, cj, SNOW_HASH_SALT);
+
+    let (koppen_anchor, forest) = planet.koppen_signature(face, u, v);
+    let chosen = planet.dithered_koppen(face, u, v, edge_hash);
+    let mut main_block = koppen_main_block(chosen);
+    let snow_threshold =
+        SNOWLINE_CENTER_C + (snow_hash - 0.5) * (SNOWLINE_HALF_RANGE_C * 2.0);
+    if main_block == MainBlock::Snow || temp_c < snow_threshold {
+        main_block = MainBlock::Snow;
+    }
+
+    let temp = temp_c as f32;
+    let precip = precip_mm as f32;
+    ClimateSurface {
+        main_block,
+        grass: hue_nudge(climate_grass(temp, precip), koppen_anchor),
+        sand: climate_sand(temp, precip),
+        snow: climate_snow(temp, precip),
+        forest,
+    }
+}
+
 /// Koppen class -> base color (matches planetgen/biomes.py palette, linearized-ish).
 #[allow(dead_code)]
 pub fn koppen_color(id: u8) -> [f32; 3] {
@@ -381,6 +685,70 @@ pub fn koppen_color(id: u8) -> [f32; 3] {
 mod tests {
     use super::*;
     use crate::terrain;
+
+    fn climate_test_planet(right_class: u8) -> Planet {
+        let res = 4usize;
+        let n = res * res;
+        let koppen: Vec<u8> = (0..res)
+            .flat_map(|_| [6, 6, right_class, right_class])
+            .collect();
+        let face = || FaceRaster {
+            res,
+            elev_km: vec![0.2; n],
+            koppen: koppen.clone(),
+            rough_km: vec![0.0; n],
+            precip_mm_yr: vec![500.0; n],
+            temp_c: vec![8.0; n],
+            flow_log10: vec![0.0; n],
+            ocean: vec![0.0; n],
+            water: vec![0.0; n],
+        };
+        Planet {
+            radius_km: 1.0,
+            seed: 42,
+            faces: (0..6).map(|_| face()).collect(),
+            rivers: crate::rivers::RiverIndex::empty(1.0),
+        }
+    }
+
+    #[test]
+    fn koppen_main_blocks_match_surface_materials() {
+        for k in 0..=29 {
+            let expected = match k {
+                3 | 4 => MainBlock::Sand,
+                29 => MainBlock::Snow,
+                _ => MainBlock::Grass,
+            };
+            assert_eq!(koppen_main_block(k), expected, "Koppen class {k}");
+        }
+        assert_eq!(koppen_main_block(255), MainBlock::Sand);
+    }
+
+    #[test]
+    fn category_dither_only_crosses_main_blocks() {
+        // In a 4x4 raster the class edge is x=1.5 -> u=0. Just inside the
+        // left cell, hash 0 selects the neighbor and hash 1 keeps the owner.
+        let cross = climate_test_planet(4);
+        let u_near = -0.006;
+        assert_eq!(cross.dithered_koppen(0, u_near, 0.0, 0.0), 4);
+        assert_eq!(cross.dithered_koppen(0, u_near, 0.0, 0.999), 6);
+        // More than half the 300 m band away, no hash can cross the edge.
+        assert_eq!(cross.dithered_koppen(0, -0.30, 0.0, 0.0), 6);
+
+        // Classes 6 and 14 are both grass: even at the exact edge the
+        // category remains nearest-texel and no random decision is made.
+        let same = climate_test_planet(14);
+        assert_eq!(same.dithered_koppen(0, u_near, 0.0, 0.0), 6);
+        assert_eq!(same.dithered_koppen(0, u_near, 0.0, 0.999), 6);
+
+        // The hue nudge itself is bilinear, so same-block color is continuous
+        // across that nearest-class edge.
+        let a = climate_surface(&same, 0, -1e-6, 0.0, 8.0, 900.0)
+            .tint(MainBlock::Grass);
+        let b = climate_surface(&same, 0, 1e-6, 0.0, 8.0, 900.0)
+            .tint(MainBlock::Grass);
+        assert!(a.into_iter().zip(b).all(|(x, y)| (x - y).abs() < 1e-5));
+    }
 
     /// Project a world direction onto a specific face's gnomonic plane.
     /// `on` is true when the direction lies within this face's [-1,1]^2

@@ -3,8 +3,10 @@ output/
 viewer/assets/*.bin
 viewer/assets/meta.json
 
-# screenshots and visual-feedback exchange (session-local, often large)
-viewer/interchange/
+# screenshots and visual-feedback exchange (session-local, often large).
+# Transition missions keep only their explicitly named review evidence.
+viewer/interchange/*
+!viewer/interchange/tint_*.png
 
 # build artifacts
 __pycache__/
