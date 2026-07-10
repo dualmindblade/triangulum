@@ -1,0 +1,11 @@
+# TRANSITIONS A+F flagship checks (V-1 disk + color drift poses)
+weather off
+teleport 7.042 33.477 0.8
+look 0 -35
+shot v1_disk
+teleport 0.569 68.915 0.263
+look -149 -25
+shot v1_color
+teleport 51.851 4.809 0.08
+look 30 -6
+shot conifer_rim_tex

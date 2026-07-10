@@ -153,6 +153,22 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     var ground = in.color;
     let up = globals.sky.xyz;
     let day = smoothstep(-0.08, 0.15, dot(globals.sun_dir.xyz, up));
+    // ---- shared micro-texture (TRANSITIONS.md A, kills the V-1 disk) ----
+    // The far mesh evaluates the same ±10% block-brightness fabric the
+    // voxel columns bake, so the patch rim becomes a resolution change
+    // instead of a material change. STATISTICS match (amplitude, ~block
+    // scale); cell identity cannot — f32 world coordinates carry ~0.5 m of
+    // noise at planet radius, so the blocks' exact u64 lattice is out of
+    // reach: same fabric, not the same stitches. Fades over ~2 km so the
+    // far field keeps today's clean flat reading; blocks skip it (their
+    // hash is baked per column+height).
+    if (in.rel_flag.w > 0.5) {
+        let wp = in.rel_flag.xyz - globals.center.xyz;
+        let cell = vec3<i32>(floor(wp * 480.0)); // ~2 m cells (km units)
+        let tex = 0.9 + 0.2 * hash3i(cell);
+        let tex_fade = exp(-in.dist_km / 1.8);
+        ground = ground * mix(1.0, tex, tex_fade);
+    }
     if (globals.weather.w < 500.0) {
         let wp = in.rel_flag.xyz - globals.center.xyz;
         let r_sphere = length(globals.center.xyz) - max(globals.sky.w, 0.0);

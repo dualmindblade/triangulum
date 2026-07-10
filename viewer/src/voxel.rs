@@ -372,8 +372,10 @@ pub fn col_ctx(planet: &Planet, edits: &Edits, face: usize, ci: u64, cj: u64) ->
 
 /// Surface material given local steepness (max |height delta| to neighbors).
 /// Climate-owned grass/sand/snow selection is shared with the far mesh;
-/// hydrology, local slope, and beaches remain higher-priority local facts.
-fn surface_mat(c: &ColCtx, steep: i64, climate_block: MainBlock) -> Mat {
+/// hydrology and local slope remain higher-priority local facts. The beach
+/// is shared too: `beach_jitter` (a per-column hash) dithers the column on
+/// terrain::beach_frac, the same fraction the mesh mixes its tint by.
+fn surface_mat(c: &ColCtx, steep: i64, climate_block: MainBlock, beach_jitter: f64) -> Mat {
     // underwater floors
     if c.water != i64::MIN && c.ground < c.water {
         return if c.water - c.ground > 4 { Mat::Gravel } else { Mat::Sand };
@@ -390,9 +392,9 @@ fn surface_mat(c: &ColCtx, steep: i64, climate_block: MainBlock) -> Mat {
     if steep >= 3 {
         return Mat::Stone;
     }
-    // beaches: low ground near sea level (natural ground: a tower built on
-    // a beach stays a sand tower)
-    if c.e_raw < 0.012 && c.ground0 < 14 {
+    // beaches: low ground near sea level, dithered on the SHARED fraction
+    // (natural ground: a tower built on a beach stays a sand tower)
+    if beach_jitter < crate::terrain::beach_frac(c.e_raw as f64, c.ground0 as f64 / 1000.0) {
         return Mat::Sand;
     }
     match climate_block {
@@ -1017,7 +1019,12 @@ pub fn build_chunk(
                 .map(|nb| (c.ground0 - nb.ground0).abs())
                 .max()
                 .unwrap_or(0);
-            let surf = surface_mat(c, steep, climate.main_block);
+            let surf = surface_mat(
+                c,
+                steep,
+                climate.main_block,
+                hash01(face as u8, ci, cj, 0xBEAC),
+            );
             let tint = climate.tint(mat_main_block(surf, climate.main_block));
 
             // per-block brightness hash: the subtle checkerboard that reads
@@ -1221,41 +1228,15 @@ pub fn build_chunk(
                     ];
                 }
                 if !frozen {
-                    // same depth scale as the mesh's water_color, so the
-                    // patch boundary doesn't jump shade: true ocean depth
-                    // for the sea, carved depth (in km) for rivers/ponds
+                    // ONE ramp with the mesh (terrain::water_surface_color,
+                    // TRANSITIONS.md F): true ocean depth for the sea,
+                    // carved depth for rivers/lakes/ponds
                     let depth_km = if c.e_raw < 0.0 {
-                        -c.e_raw
+                        -c.e_raw as f64
                     } else {
-                        (w - c.top_solid()) as f32 / 1000.0
+                        (w - c.top_solid()) as f64 / 1000.0
                     };
-                    let deep = [0.004, 0.013, 0.055];
-                    let t = (depth_km / 2.5).clamp(0.0, 1.0);
-                    wcol = [
-                        wcol[0] + (deep[0] - wcol[0]) * t,
-                        wcol[1] + (deep[1] - wcol[1]) * t,
-                        wcol[2] + (deep[2] - wcol[2]) * t,
-                    ];
-                    if c.e_raw < 0.0 {
-                        // shallow sea shoals teal — same ramp as the mesh's
-                        // water_color so the patch boundary keeps its shade
-                        let sh = (1.0 - depth_km / 0.02).clamp(0.0, 1.0) * 0.7;
-                        let teal = [0.10, 0.32, 0.35];
-                        wcol = [
-                            wcol[0] + (teal[0] - wcol[0]) * sh,
-                            wcol[1] + (teal[1] - wcol[1]) * sh,
-                            wcol[2] + (teal[2] - wcol[2]) * sh,
-                        ];
-                    }
-                    if c.salt {
-                        // salt lakes: mineral-pale, matches the mesh tint
-                        let pale = [0.45, 0.55, 0.52];
-                        wcol = [
-                            wcol[0] + (pale[0] - wcol[0]) * 0.55,
-                            wcol[1] + (pale[1] - wcol[1]) * 0.55,
-                            wcol[2] + (pale[2] - wcol[2]) * 0.55,
-                        ];
-                    }
+                    wcol = crate::terrain::water_surface_color(depth_km, c.e_raw < 0.0, c.salt);
                 }
                 let r = shell(w);
                 // frozen tops take the same per-column brightness checker as

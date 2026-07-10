@@ -1016,24 +1016,49 @@ fn frost_color(p: glam::DVec3) -> [f32; 3] {
     ]
 }
 
+/// THE beach decision (TRANSITIONS.md): sand on low coastal ground, one
+/// fraction for both renderers — the mesh mixes its tint by it, the blocks
+/// dither their material on it — so the patch rim cannot disagree about
+/// where the beach is. The old pair disagreed by construction: blocks
+/// tested `e_raw < 12 m AND surface < 14 blocks` hard while the mesh
+/// ramped on e_raw alone capped at 90% — a full-sand voxel disk on mostly
+/// grass mesh at every low coast (the v1_color pose, 0.569 68.915).
+/// Bands feather over ~2 m so the dithered edge reads as an ecotone.
+pub fn beach_frac(e_raw_km: f64, h_km: f64) -> f64 {
+    let by_raster = 1.0 - smoothstep(0.010, 0.012, e_raw_km);
+    let by_surface = 1.0 - smoothstep(0.012, 0.014, h_km);
+    by_raster * by_surface
+}
+
+/// THE liquid water surface color (TRANSITIONS.md F): one ramp for both
+/// renderers. The mesh and the blocks each kept a copy "in sync" by hand,
+/// and they had already drifted (deep base 0.28 vs 0.30 blue — the exact
+/// failure mode this function retires). Depth in km (true ocean depth for
+/// the sea, carved/filled depth for rivers, lakes, ponds); `sea` widens
+/// the shallow teal shoal; salt goes mineral-pale. Frozen sheets are NOT
+/// this function's job (blocks use Mat::Ice + snow dusting, the mesh uses
+/// frost_color — unify those when a real need shows).
+pub fn water_surface_color(depth_km: f64, sea: bool, salt: bool) -> [f32; 3] {
+    let t = (depth_km / 2.5).clamp(0.0, 1.0) as f32;
+    let mut c = mix3([0.055, 0.17, 0.30], [0.004, 0.013, 0.055], t);
+    if sea {
+        // first ~20 m shoal to a lighter teal
+        let sh = (1.0 - depth_km / 0.02).clamp(0.0, 1.0) as f32;
+        c = mix3(c, [0.10, 0.32, 0.35], sh * 0.7);
+    }
+    if salt {
+        // salt lakes read mineral-pale, almost milky
+        c = mix3(c, [0.45, 0.55, 0.52], 0.55);
+    }
+    c
+}
+
 fn water_color(s: &Sample) -> [f32; 3] {
     if s.temp_c < -4.0 {
         return [0.60, 0.72, 0.85]; // frozen — matches Mat::Ice on the blocks
     }
     let depth = if s.sea { -s.e_raw } else { s.water_km - s.h_km };
-    let t = (depth / 2.5).clamp(0.0, 1.0) as f32;
-    let mut c = mix3([0.055, 0.17, 0.28], [0.004, 0.013, 0.055], t);
-    if s.sea {
-        // first ~20 m shoal to a lighter teal (keep in sync with the block
-        // water ramp in voxel.rs so the patch boundary doesn't jump shade)
-        let sh = (1.0 - depth / 0.02).clamp(0.0, 1.0) as f32;
-        c = mix3(c, [0.10, 0.32, 0.35], sh * 0.7);
-    }
-    if s.salt {
-        // salt lakes read mineral-pale, almost milky
-        c = mix3(c, [0.45, 0.55, 0.52], 0.55);
-    }
-    c
+    water_surface_color(depth, s.sea, s.salt)
 }
 
 /// Naturalistic ground shading for the far-field mesh: biome ground tint,
@@ -1061,10 +1086,12 @@ fn shade_ground(
     };
     let dark = 1.0 - 0.22 * forest;
     c = [c[0] * dark, c[1] * dark, c[2] * dark];
-    // beach sand in the first ~10 m over sea level
-    let sandy = (1.0 - (s.e_raw / 0.012).clamp(0.0, 1.0)) as f32;
+    // beach sand on low coastal ground — the SAME fraction the blocks
+    // dither their material on (beach_frac), mixed at full strength so a
+    // frac-1 beach is exactly the blocks' Mat::Sand tint
+    let sandy = beach_frac(s.e_raw, s.h_km) as f32;
     let sand = climate.tint(MainBlock::Sand);
-    c = mix3(c, sand, sandy * 0.9);
+    c = mix3(c, sand, sandy);
     // bare rock only where the ground is actually steep (like the blocks,
     // which rock by per-column steepness) — jagged-map areas rock sooner.
     // Blanket-graying whole rough biomes made the far mesh a different
