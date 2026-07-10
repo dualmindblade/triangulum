@@ -35,6 +35,10 @@
 //!                                 direction — far-longitude teleports then
 //!                                 render at NIGHT. OMIT sun for surveys: the
 //!                                 default lights every location at local noon.
+//!   probe LAT LON                 dump sampler + column truth at a point
+//!                                 into the transcript (h, water, lake/pond
+//!                                 levels, river, cave water) — the census
+//!                                 probe without leaving the run
 //!   log TEXT...                   annotate the transcript
 //!
 //! Navigation is deliberately absolute-first: scripts teleport to
@@ -334,6 +338,49 @@ fn main() -> anyhow::Result<()> {
                     la.sin(),
                 ));
                 trace!("[{}] sun pinned at lat {} lon {}", ln + 1, f(1)?, f(2)?);
+            }
+            // probe LAT LON — the block-truth spot check, in-run: dumps the
+            // full-octave sample plus the column's ground/water/cave-water
+            // so a hunt can correlate what it SEES with what the world IS
+            // without loading the census binary per question.
+            "probe" => {
+                let (pla, plo) = (f(1)?.to_radians(), f(2)?.to_radians());
+                let pdir = glam::DVec3::new(
+                    pla.cos() * plo.cos(),
+                    pla.cos() * plo.sin(),
+                    pla.sin(),
+                );
+                let (pf, pu, pv) = triangulum_viewer::planet::face_from_dir(pdir);
+                let s = triangulum_viewer::terrain::sample(
+                    &planet,
+                    pf,
+                    pu,
+                    pv,
+                    triangulum_viewer::terrain::VOXEL_OCTAVES,
+                );
+                let nn = triangulum_viewer::voxel::COLUMNS_PER_FACE as f64;
+                let ci = (((pu + 1.0) * 0.5) * nn).floor() as i64;
+                let cj = (((pv + 1.0) * 0.5) * nn).floor() as i64;
+                let c = triangulum_viewer::voxel::col_ctx_ext(&planet, &edits, pf, ci, cj);
+                let fmt_lvl = |x: f64| {
+                    if x.is_finite() { format!("{:.1}m", x * 1000.0) } else { "-".into() }
+                };
+                trace!(
+                    "[{}] probe {:.5} {:.5}: h={:.1}m water={} lake={} lake_lvl={} pond_lvl={} riv hw={:.1}m wet={:.2} | col ground={} water={} cave_water={}",
+                    ln + 1,
+                    f(1)?,
+                    f(2)?,
+                    s.h_km * 1000.0,
+                    fmt_lvl(s.water_km),
+                    s.lake,
+                    fmt_lvl(s.lake_level_km),
+                    fmt_lvl(s.pond_level_km),
+                    s.river_hw_km * 1000.0,
+                    s.river_wet,
+                    c.ground,
+                    if c.water == i64::MIN { "-".into() } else { c.water.to_string() },
+                    if c.cave_water == i64::MIN { "-".into() } else { c.cave_water.to_string() },
+                );
             }
             // voxels on | off — master switch for the voxel near-field.
             // `off` renders the pure heightfield mesh (no chunks, no hole

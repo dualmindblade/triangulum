@@ -104,7 +104,21 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--skip-render", action="store_true", help="diff existing frames only")
     ap.add_argument("--label", default="", help="tag stored in report.json (e.g. commit)")
+    ap.add_argument(
+        "--at",
+        nargs="+",
+        type=float,
+        metavar="N",
+        help="ad-hoc single pose: LAT LON ALT_KM [YAW PITCH] - renders and diffs "
+        "just this pose (hunt tool; agents can't press V)",
+    )
     args = ap.parse_args()
+    if args.at:
+        lat, lon, alt = args.at[0], args.at[1], args.at[2]
+        yaw = args.at[3] if len(args.at) > 3 else 0.0
+        pitch = args.at[4] if len(args.at) > 4 else -80.0
+        global POSES
+        POSES = [("adhoc", lat, lon, alt, yaw, pitch, f"--at {lat} {lon}")]
 
     viewer = Path(__file__).resolve().parent.parent
     run_dir = viewer / "interchange" / "runs" / "sync-diff"

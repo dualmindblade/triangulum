@@ -1,0 +1,110 @@
+//! Block-truth water census: walks the CANONICAL COLUMN lattice in a disc
+//! and reports block-scale water discontinuities the sample-level census
+//! cannot see (closes BUGS.md T-1). Every column's open-air water and
+//! cave-water pool is compared against its 4-neighborhood:
+//!   LIP   open-air water (2+ deep) standing above a neighbor's dry ground
+//!   EDGE  1-deep water standing above a dry neighbor - the shallow ring
+//!         Austin reported at Difficulty Lake (analog-clearance dead band;
+//!         includes creek films, which are 1-deep by construction)
+//!   CAVEP cave pool breaching the surface (pit open to sky, water below)
+//! Prints class totals, worst sites as teleport commands, and per-class
+//! coordinates for the play harness to re-shoot.
+//!
+//!   cargo run --release --example colcensus -- LAT LON [RADIUS_KM]
+use glam::DVec3;
+use rayon::prelude::*;
+use triangulum_viewer::planet::{face_from_dir, Planet};
+use triangulum_viewer::voxel::{col_ctx_ext, ColCtx, Edits, COLUMNS_PER_FACE};
+
+struct Hit {
+    class: &'static str,
+    di: i64,
+    dj: i64,
+    drop: i64,
+}
+
+fn main() -> anyhow::Result<()> {
+    let args: Vec<String> = std::env::args().collect();
+    let lat: f64 = args[1].parse()?;
+    let lon: f64 = args[2].parse()?;
+    let radius_km: f64 = args.get(3).map(|s| s.parse().unwrap_or(0.25)).unwrap_or(0.25);
+    let assets = if std::path::Path::new("viewer/assets/meta.json").exists() {
+        "viewer/assets"
+    } else {
+        "assets"
+    };
+    let planet = Planet::load(assets)?;
+    let edits = Edits::default();
+    let (la, lo) = (lat.to_radians(), lon.to_radians());
+    let dir = DVec3::new(la.cos() * lo.cos(), la.cos() * lo.sin(), la.sin());
+    let (face, u, v) = face_from_dir(dir);
+    let nn = COLUMNS_PER_FACE as f64;
+    let ci = (((u + 1.0) * 0.5) * nn).floor() as i64;
+    let cj = (((v + 1.0) * 0.5) * nn).floor() as i64;
+    // gnomonic columns are ~1.7 x 1.0 m at face centers; use the safe bound
+    let half = (radius_km * 1000.0).ceil() as i64;
+    eprintln!(
+        "column census: face {face} center ({ci},{cj}), +-{half} cols (~{radius_km} km), {} columns",
+        (2 * half + 1) * (2 * half + 1)
+    );
+
+    let ctx = |di: i64, dj: i64| -> ColCtx { col_ctx_ext(&planet, &edits, face, ci + di, cj + dj) };
+    let rows: Vec<Vec<Hit>> = (-half..=half)
+        .into_par_iter()
+        .map(|dj| {
+            let mut out = Vec::new();
+            for di in -half..=half {
+                let c = ctx(di, dj);
+                // neighbor ground tops (walk surface, ignoring trees)
+                let n = [ctx(di + 1, dj), ctx(di - 1, dj), ctx(di, dj + 1), ctx(di, dj - 1)];
+                if c.has_water() {
+                    let wtop = c.water;
+                    let film = wtop == c.ground + 1;
+                    // a healthy shore's dry bank stands AT or ABOVE the
+                    // water top; any dry neighbor below it means standing
+                    // water edge - Austin's Difficulty Lake ring is the
+                    // drop=1 case (the analog-clearance dead band)
+                    for nb in &n {
+                        if !nb.has_water() && wtop - nb.ground >= 1 {
+                            out.push(Hit {
+                                class: if film { "EDGE" } else { "LIP" },
+                                di,
+                                dj,
+                                drop: wtop - nb.ground,
+                            });
+                            break;
+                        }
+                    }
+                } else if c.cave_water != i64::MIN && !c.filled(c.ground) {
+                    // cave pool with the surface block carved away: a
+                    // breach pit. Not a defect by itself (karst is canon) -
+                    // counted so hunts can find dense fields and verify the
+                    // mesh hint against them.
+                    out.push(Hit { class: "CAVEP", di, dj, drop: c.ground - c.cave_water });
+                }
+            }
+            out
+        })
+        .collect();
+
+    let mut all: Vec<Hit> = rows.into_iter().flatten().collect();
+    for class in ["LIP", "EDGE", "CAVEP"] {
+        let mut hits: Vec<&Hit> = all.iter().filter(|h| h.class == class).collect();
+        hits.sort_by_key(|h| -h.drop);
+        println!("{class}: {} columns", hits.len());
+        for h in hits.iter().take(5) {
+            // column center back to lat/lon for teleport
+            let uu = -1.0 + 2.0 * ((ci + h.di) as f64 + 0.5) / nn;
+            let vv = -1.0 + 2.0 * ((cj + h.dj) as f64 + 0.5) / nn;
+            let d = triangulum_viewer::planet::face_dir(face, uu, vv);
+            let hlat = d.z.asin().to_degrees();
+            let hlon = d.y.atan2(d.x).to_degrees();
+            println!("  drop {} blocks  teleport {hlat:.5} {hlon:.5} 0.02", h.drop);
+        }
+    }
+    all.retain(|h| h.class == "LIP");
+    if !all.is_empty() {
+        std::process::exit(2); // LIPs are defects; FILM/CAVEP informational
+    }
+    Ok(())
+}

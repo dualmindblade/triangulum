@@ -83,7 +83,18 @@ triangle-interpolated attributes — belongs to the TRANSITIONS.md program
 (same "one truth, two renderers" family as V-1/V-5). Design-gated: pop
 visibility is a taste/priority call for Andrew.
 
-### T-1 The lip census cannot see creek films (verification blind spot)
+### T-1 The lip census cannot see creek films (CLOSED by colcensus)
+CLOSED 2026-07-10 (hunt-prep tooling): examples/colcensus.rs walks the
+canonical COLUMN lattice in a disc and classifies block-truth water
+against each column's 4-neighborhood — LIP (2+ deep water above dry
+ground), EDGE (1-deep standing edge: the analog-clearance dead band ring
+AND creek films), CAVEP (surface-breaching cave pools). It sees
+everything Sample-level tools cannot (films, cave water — the class that
+hid the whole karst saga). Baseline at Difficulty Lake 0.2 km: EDGE
+1,341 / CAVEP 3,909 / LIP 0 — the EDGE count is the numeric gate for the
+lake dead-band fix. Companions: the play harness `probe LAT LON` command
+(sampler + column truth in-run) and `sync_diff.py --at LAT LON ALT`
+(ad-hoc pose diff). Original entry follows.
 Sol review finding 13. census --lips finds wet/dry transitions from
 terrain::sample points ~60 m apart, then column-tests them; the F-15 creek
 film exists only after col_ctx's sub-cell samples, so a sub-1.5 m creek
