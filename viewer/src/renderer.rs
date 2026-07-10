@@ -134,6 +134,13 @@ pub struct Renderer {
     cache: HashMap<TileKey, GpuTile>,
     chunk_cache: HashMap<ChunkKey, GpuTile>,
     frame_counter: u64,
+    /// Frame cadence instrumentation: wall-clock intervals between draw()
+    /// calls and the CPU cost of each draw body (encode+submit), last ~4 s.
+    /// The title-bar HUD and shot sidecars read frame_stats() from these —
+    /// an objective framerate record instead of "feels smooth".
+    frame_mark: Option<std::time::Instant>,
+    frame_intervals_ms: std::collections::VecDeque<f32>,
+    draw_cost_ms: std::collections::VecDeque<f32>,
     pub exaggeration: f64,
     /// None = sun follows the camera (always day where you are);
     /// Some(dir) = fixed sun direction.
@@ -401,6 +408,9 @@ impl Renderer {
             chunk_cache: HashMap::new(),
             chunk_stale: HashSet::new(),
             frame_counter: 0,
+            frame_mark: None,
+            frame_intervals_ms: std::collections::VecDeque::new(),
+            draw_cost_ms: std::collections::VecDeque::new(),
             exaggeration,
             sun_dir: None,
             underwater: false,
@@ -553,6 +563,18 @@ impl Renderer {
         edits: &Edits,
     ) -> usize {
         self.frame_counter += 1;
+        let draw_start = std::time::Instant::now();
+        if let Some(prev) = self.frame_mark.replace(draw_start) {
+            let dt_ms = draw_start.duration_since(prev).as_secs_f32() * 1000.0;
+            // a pause (alt-tab, teleport prompt, capture wait) is not a
+            // frame-time signal — drop outliers past half a second
+            if dt_ms < 500.0 {
+                self.frame_intervals_ms.push_back(dt_ms);
+                if self.frame_intervals_ms.len() > 240 {
+                    self.frame_intervals_ms.pop_front();
+                }
+            }
+        }
         let cam_pos = camera.position();
         let voxel_radius_m =
             (200.0 + (VOXEL_MAX_ALT_KM - camera.altitude_km).max(0.0) * 120.0)
@@ -912,7 +934,28 @@ impl Renderer {
             }
         }
         self.queue.submit([encoder.finish()]);
+        let cost = draw_start.elapsed().as_secs_f32() * 1000.0;
+        self.draw_cost_ms.push_back(cost);
+        if self.draw_cost_ms.len() > 240 {
+            self.draw_cost_ms.pop_front();
+        }
         draws.len()
+    }
+
+    /// (avg frame ms, p95 frame ms, avg draw-body CPU ms) over the last
+    /// ~240 frames, or None until enough frames exist to mean anything.
+    /// Frame times include vsync waits — steady 16.7 = a locked 60 Hz,
+    /// and the p95 is where hitches (chunk builds, tile uploads) show.
+    pub fn frame_stats(&self) -> Option<(f32, f32, f32)> {
+        if self.frame_intervals_ms.len() < 30 {
+            return None;
+        }
+        let mut sorted: Vec<f32> = self.frame_intervals_ms.iter().copied().collect();
+        sorted.sort_by(|a, b| a.total_cmp(b));
+        let avg = sorted.iter().sum::<f32>() / sorted.len() as f32;
+        let p95 = sorted[((sorted.len() as f32 * 0.95) as usize).min(sorted.len() - 1)];
+        let cost = self.draw_cost_ms.iter().sum::<f32>() / self.draw_cost_ms.len().max(1) as f32;
+        Some((avg, p95, cost))
     }
 
     fn upload(&self, mesh: TileMesh) -> GpuTile {

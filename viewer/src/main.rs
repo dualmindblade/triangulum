@@ -366,6 +366,13 @@ fn write_shot_sidecar(
         // day of rapid pushes (a long-lived session outlives many commits).
         // option_env: a build-script hiccup must never fail the build.
         "build": option_env!("TRI_BUILD").unwrap_or("unstamped"),
+        // framerate at the moment of the shot (avg/p95 frame ms, avg draw
+        // CPU ms over ~4 s) — "the framerate suffered HERE" becomes data
+        "frame_ms": renderer.frame_stats().map(|(avg, p95, cost)| serde_json::json!({
+            "avg": (avg * 10.0).round() / 10.0,
+            "p95": (p95 * 10.0).round() / 10.0,
+            "draw_cpu": (cost * 10.0).round() / 10.0,
+        })),
     });
     let mut sidecar = std::path::PathBuf::from(path);
     sidecar.set_extension("json");
@@ -756,13 +763,22 @@ impl App {
                     Mode::Fly => "fly (click captures mouse, G walk, T teleport, P shot)",
                     Mode::Walk => "walk (F fly, space jump, T teleport, P shot)",
                 };
+                // objective framerate, not "feels smooth": avg cadence
+                // (vsync-locked 60 Hz reads 16.7), p95 where hitches live
+                let perf = match gfx.renderer.frame_stats() {
+                    Some((avg, p95, _)) => {
+                        format!(" | {:.0} fps ({avg:.1} ms, p95 {p95:.1})", 1000.0 / avg)
+                    }
+                    None => String::new(),
+                };
                 gfx.window.set_title(&format!(
-                    "Neisor [{}] — {} | lat {:.3} lon {:.3} alt {:.3} km",
+                    "Neisor [{}] — {} | lat {:.3} lon {:.3} alt {:.3} km{}",
                     option_env!("TRI_BUILD").unwrap_or("unstamped"),
                     mode,
                     self.camera.lat.to_degrees(),
                     self.camera.lon.to_degrees(),
-                    self.camera.altitude_km
+                    self.camera.altitude_km,
+                    perf
                 ));
             }
         }
