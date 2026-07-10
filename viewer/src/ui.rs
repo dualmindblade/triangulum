@@ -20,6 +20,13 @@ use glam::DVec3;
 
 use crate::planet::{face_from_dir, ground_tint, Planet};
 
+/// Deepest zoom the pan/zoom view allows (1 = whole planet). At 180x the map
+/// frames ~2 deg of longitude (~300 km on Neisor) across the widget — fine
+/// enough to trace a creek; the base rasters are ~10 km/texel near a face
+/// center, so terrain reads smooth-but-soft there while the vector rivers and
+/// lakes (exact geometry) stay razor sharp.
+const MAX_ZOOM: f64 = 180.0;
+
 // ------------------------------------------------------------- photo index
 
 /// One screenshot with a known pose. `day_time_s` comes from the sidecar
@@ -128,40 +135,270 @@ pub fn scan_photos(interchange: &Path) -> Vec<Photo> {
 }
 
 // ---------------------------------------------------------------- minimap
+//
+// The minimap is an equirectangular window on the planet, RE-SYNTHESIZED from
+// the baked rasters (and the seasonal weather field) for whatever lat/lon
+// rectangle the pan/zoom view currently frames — so zooming in shows real map
+// detail, not upscaled pixels. Rivers and lakes are drawn as vector overlays
+// straight from rivers.bin geometry (see `PhotoMap::ui`), staying crisp at any
+// zoom; only the smooth color fields (biome / temperature / precipitation /
+// cloud) are rasterized into the texture here.
 
-/// Equirectangular minimap from the baked rasters (bilinear elevation +
-/// koppen): ocean by depth, land by biome tint shaded with elevation.
-/// ~0.5 Mpx of raster reads — built once, on first open.
-fn build_minimap(planet: &Planet, w: usize, h: usize) -> egui::ColorImage {
+/// Which full-coverage color field paints the base of the map.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum BaseLayer {
+    Biomes,
+    Temperature,
+    Precipitation,
+}
+
+/// Everything the map needs from the app besides the photo roll: the planet
+/// rasters + rivers, the loaded weather climatology and its tuning, the
+/// current weather time (so temp/precip sample the CURRENT season and clouds
+/// show the CURRENT synoptic field), and the player's position for the "you
+/// are here" marker. All borrowed — the map owns none of it.
+pub struct MapEnv<'a> {
+    pub planet: &'a Planet,
+    pub weather_field: Option<&'a crate::weather::WeatherField>,
+    pub weather_tuning: &'a crate::weather::WeatherTuning,
+    pub render_time_s: f64,
+    pub day_len_s: f64,
+    pub cur_lat: f64,
+    pub cur_lon: f64,
+}
+
+/// A lat/lon rectangle (degrees) the view frames. `lat_top` is the larger
+/// latitude (north-up); longitude increases left→right.
+#[derive(Clone, Copy, PartialEq)]
+struct Bounds {
+    lat_top: f64,
+    lat_bot: f64,
+    lon_left: f64,
+    lon_right: f64,
+}
+
+impl Bounds {
+    fn project(&self, rect: egui::Rect, lat: f64, lon: f64) -> egui::Pos2 {
+        egui::pos2(
+            rect.left()
+                + ((lon - self.lon_left) / (self.lon_right - self.lon_left)) as f32 * rect.width(),
+            rect.top()
+                + ((self.lat_top - lat) / (self.lat_top - self.lat_bot)) as f32 * rect.height(),
+        )
+    }
+    /// Screen point -> (lat, lon) degrees.
+    fn unproject(&self, rect: egui::Rect, p: egui::Pos2) -> (f64, f64) {
+        let fx = ((p.x - rect.left()) / rect.width()) as f64;
+        let fy = ((p.y - rect.top()) / rect.height()) as f64;
+        (
+            self.lat_top + fy * (self.lat_bot - self.lat_top),
+            self.lon_left + fx * (self.lon_right - self.lon_left),
+        )
+    }
+    /// UV rect addressing THIS (live) window inside a texture synthesized for
+    /// `synth` — a pan/zoom translates/scales the existing pixels for one
+    /// frame (slippy-map feel) until the crisp re-synth for the new view lands.
+    fn uv_in(&self, synth: Bounds) -> egui::Rect {
+        let sx = |lon: f64| ((lon - synth.lon_left) / (synth.lon_right - synth.lon_left)) as f32;
+        let sy = |lat: f64| ((synth.lat_top - lat) / (synth.lat_top - synth.lat_bot)) as f32;
+        egui::Rect::from_min_max(
+            egui::pos2(sx(self.lon_left), sy(self.lat_top)),
+            egui::pos2(sx(self.lon_right), sy(self.lat_bot)),
+        )
+    }
+}
+
+/// The (resolution, layers, region) a synthesized base texture is valid for.
+/// f64 equality is exact here — the view only moves on deterministic user
+/// actions, never NaN.
+#[derive(Clone, PartialEq)]
+struct MapSig {
+    w: usize,
+    h: usize,
+    base: BaseLayer,
+    relief: bool,
+    clouds: bool,
+    bounds: Bounds,
+}
+
+fn dir_to_geo(d: DVec3) -> (f64, f64) {
+    (d.z.asin().to_degrees(), d.y.atan2(d.x).to_degrees())
+}
+
+/// Author a color in display sRGB; the map buffer works in the linear-ish
+/// space `ground_tint` uses (encoded to sRGB once at the end), so convert.
+fn disp(r: f32, g: f32, b: f32) -> [f32; 3] {
+    [r.powf(2.2), g.powf(2.2), b.powf(2.2)]
+}
+
+fn ramp(stops: &[(f32, [f32; 3])], x: f32) -> [f32; 3] {
+    if x <= stops[0].0 {
+        return stops[0].1;
+    }
+    for w in stops.windows(2) {
+        let (a, b) = (w[0], w[1]);
+        if x <= b.0 {
+            let t = ((x - a.0) / (b.0 - a.0)).clamp(0.0, 1.0);
+            return [
+                a.1[0] + (b.1[0] - a.1[0]) * t,
+                a.1[1] + (b.1[1] - a.1[1]) * t,
+                a.1[2] + (b.1[2] - a.1[2]) * t,
+            ];
+        }
+    }
+    stops[stops.len() - 1].1
+}
+
+// The ramp stops carry `disp` (a per-channel powf) — built ONCE per synth,
+// not per pixel, or the temperature/precip bases spend their whole budget on
+// pow. `synth_map` hoists these out of the pixel loop.
+
+/// Cold blue → hot red; pale temperate mid.
+fn temp_stops() -> [(f32, [f32; 3]); 5] {
+    [
+        (0.00, disp(0.13, 0.20, 0.62)),
+        (0.30, disp(0.25, 0.55, 0.85)),
+        (0.50, disp(0.80, 0.84, 0.58)),
+        (0.72, disp(0.90, 0.58, 0.24)),
+        (1.00, disp(0.72, 0.10, 0.08)),
+    ]
+}
+
+/// Dry tan → wet blue-green.
+fn precip_stops() -> [(f32, [f32; 3]); 4] {
+    [
+        (0.00, disp(0.78, 0.70, 0.47)),
+        (0.32, disp(0.72, 0.72, 0.42)),
+        (0.60, disp(0.34, 0.62, 0.45)),
+        (1.00, disp(0.08, 0.45, 0.55)),
+    ]
+}
+
+/// Span roughly -30..+35 C onto the cold→hot ramp.
+fn temp_color(t_c: f64, stops: &[(f32, [f32; 3])]) -> [f32; 3] {
+    let x = (((t_c + 30.0) / 65.0) as f32).clamp(0.0, 1.0);
+    ramp(stops, x)
+}
+
+/// Precip is heavily skewed, so compress with a power before the ramp
+/// (mm/month; the climatology's precip is per-month).
+fn precip_color(mm: f64, stops: &[(f32, [f32; 3])]) -> [f32; 3] {
+    let x = ((mm.max(0.0) / 300.0) as f32).clamp(0.0, 1.0).powf(0.7);
+    ramp(stops, x)
+}
+
+/// Biome base color at a cell — the legacy koppen tint (ocean by depth, land
+/// by class), optionally shaded by elevation + snow (the relief layer). With
+/// `relief` on this reproduces the original `build_minimap` land/sea look.
+fn biome_color(planet: &Planet, f: usize, u: f64, v: f64, relief: bool) -> [f32; 3] {
+    let e = planet.elevation(f, u, v) as f64;
+    let k = planet.koppen(f, u, v);
+    if k == 255 {
+        // sea: deep navy to shelf teal (bathymetry, kept regardless of relief)
+        let d = (-e / 4.0).clamp(0.0, 1.0) as f32;
+        [
+            0.10 + (0.02 - 0.10) * d,
+            0.32 + (0.08 - 0.32) * d,
+            0.42 + (0.22 - 0.42) * d,
+        ]
+    } else {
+        let g = ground_tint(k);
+        if relief {
+            let t = planet.temp(f, u, v);
+            let l = (e / 4.5).clamp(0.0, 1.0) as f32;
+            let snow = if t < -9.0 { 0.75f32 } else { 0.0 };
+            let m = l.max(snow);
+            [
+                g[0] + (0.93 - g[0]) * m,
+                g[1] + (0.90 - g[1]) * m,
+                g[2] + (0.88 - g[2]) * m,
+            ]
+        } else {
+            g
+        }
+    }
+}
+
+/// Rasterize the base color field for `b` at `w`x`h`. Rivers/lakes/markers are
+/// NOT drawn here (they are vector overlays); this is the biome / temperature
+/// / precipitation field, optionally relief-shaded, with the live cloud field
+/// alpha-composited on top. Cost is dominated by the cloud layer (per-pixel
+/// synoptic fbm via `weather_at`) — timed at the call site.
+fn synth_map(
+    env: &MapEnv,
+    base: BaseLayer,
+    relief: bool,
+    clouds: bool,
+    b: Bounds,
+    w: usize,
+    h: usize,
+) -> egui::ColorImage {
+    let planet = env.planet;
+    let season = crate::weather::season_frac(env.render_time_s, env.day_len_s, env.weather_tuning);
+    let (cs, sn) = (
+        (std::f64::consts::TAU * season).cos(),
+        (std::f64::consts::TAU * season).sin(),
+    );
+    let (tstops, pstops) = (temp_stops(), precip_stops());
     let mut px = vec![Color32::BLACK; w * h];
     for y in 0..h {
-        let lat = (90.0 - 180.0 * (y as f64 + 0.5) / h as f64).to_radians();
+        let lat =
+            (b.lat_top + (b.lat_bot - b.lat_top) * (y as f64 + 0.5) / h as f64).to_radians();
+        let (slat, clat) = (lat.sin(), lat.cos());
         for x in 0..w {
-            let lon = (-180.0 + 360.0 * (x as f64 + 0.5) / w as f64).to_radians();
-            let dir = DVec3::new(lat.cos() * lon.cos(), lat.cos() * lon.sin(), lat.sin());
+            let lon = (b.lon_left + (b.lon_right - b.lon_left) * (x as f64 + 0.5) / w as f64)
+                .to_radians();
+            let dir = DVec3::new(clat * lon.cos(), clat * lon.sin(), slat);
             let (f, u, v) = face_from_dir(dir);
-            let e = planet.elevation(f, u, v) as f64;
-            let k = planet.koppen(f, u, v);
-            let t = planet.temp(f, u, v);
-            let c = if k == 255 {
-                // sea: deep navy to shelf teal
-                let d = (-e / 4.0).clamp(0.0, 1.0) as f32;
-                [
-                    0.10 + (0.02 - 0.10) * d,
-                    0.32 + (0.08 - 0.32) * d,
-                    0.42 + (0.22 - 0.42) * d,
-                ]
-            } else {
-                let g = ground_tint(k);
-                // shade land by elevation so ranges read on the map
-                let l = (e / 4.5).clamp(0.0, 1.0) as f32;
-                let snow = if t < -9.0 { 0.75f32 } else { 0.0 };
-                [
-                    g[0] + (0.93 - g[0]) * l.max(snow),
-                    g[1] + (0.90 - g[1]) * l.max(snow),
-                    g[2] + (0.88 - g[2]) * l.max(snow),
-                ]
+            let mut c = match base {
+                BaseLayer::Biomes => biome_color(planet, f, u, v, relief),
+                BaseLayer::Temperature => {
+                    let t = match env.weather_field {
+                        Some(wf) => wf.climate_sample(planet, f, u, v, cs, sn).0,
+                        None => planet.temp(f, u, v) as f64,
+                    };
+                    temp_color(t, &tstops)
+                }
+                BaseLayer::Precipitation => {
+                    let p = match env.weather_field {
+                        Some(wf) => wf.climate_sample(planet, f, u, v, cs, sn).1,
+                        None => planet.precip(f, u, v) as f64 / 12.0,
+                    };
+                    precip_color(p, &pstops)
+                }
             };
+            // relief on the weather bases: a gentle hypsometric brightening of
+            // land only (biome relief is folded into biome_color above).
+            if relief && base != BaseLayer::Biomes && planet.water_frac(f, u, v) < 0.5 {
+                let e = planet.elevation(f, u, v) as f64;
+                let l = (e / 6.0).clamp(-0.25, 0.85) as f32;
+                let m = 0.82 + 0.32 * l;
+                c = [c[0] * m, c[1] * m, c[2] * m];
+            }
+            // clouds NOW: the live synoptic field, white wisps grading to grey
+            // storm as cover rises, alpha-composited over the base.
+            if clouds
+                && let Some(wf) = env.weather_field
+            {
+                let cover = crate::weather::weather_at(
+                    wf,
+                    planet,
+                    dir,
+                    env.render_time_s,
+                    env.day_len_s,
+                    env.weather_tuning,
+                )
+                .cloud_cover as f32;
+                if cover > 0.01 {
+                    let a = cover.powf(1.1) * 0.9;
+                    let cl = disp(0.95 - 0.42 * cover, 0.95 - 0.40 * cover, 0.97 - 0.36 * cover);
+                    c = [
+                        c[0] * (1.0 - a) + cl[0] * a,
+                        c[1] * (1.0 - a) + cl[1] * a,
+                        c[2] * (1.0 - a) + cl[2] * a,
+                    ];
+                }
+            }
             px[y * w + x] = Color32::from_rgb(
                 (c[0].clamp(0.0, 1.0).powf(1.0 / 2.2) * 255.0) as u8,
                 (c[1].clamp(0.0, 1.0).powf(1.0 / 2.2) * 255.0) as u8,
@@ -203,6 +440,10 @@ pub struct PhotoMap {
     interchange: PathBuf,
     photos: Vec<Photo>,
     map_tex: Option<egui::TextureHandle>,
+    /// The (res, layers, region) `map_tex` was synthesized for — a mismatch
+    /// with the live view triggers a re-synth (except mid-drag, which
+    /// slippy-pans the stale texture until the drag settles).
+    map_built: Option<MapSig>,
     preview: Option<(usize, egui::TextureHandle)>,
     selected: Option<usize>,
     checked: HashSet<usize>,
@@ -212,6 +453,17 @@ pub struct PhotoMap {
     coord_input: String,
     scroll_to_selected: bool,
     status: String,
+    // ---- layer toggles (persist across opens) ----
+    base_layer: BaseLayer,
+    show_relief: bool,
+    show_rivers: bool,
+    show_lakes: bool,
+    show_clouds: bool,
+    show_markers: bool,
+    // ---- pan/zoom view (equirectangular); zoom 1 = whole planet ----
+    view_zoom: f64,
+    view_center_lat: f64,
+    view_center_lon: f64,
 }
 
 impl PhotoMap {
@@ -221,6 +473,7 @@ impl PhotoMap {
             interchange,
             photos: Vec::new(),
             map_tex: None,
+            map_built: None,
             preview: None,
             selected: None,
             checked: HashSet::new(),
@@ -230,6 +483,15 @@ impl PhotoMap {
             coord_input: String::new(),
             scroll_to_selected: false,
             status: String::new(),
+            base_layer: BaseLayer::Biomes,
+            show_relief: true,
+            show_rivers: true,
+            show_lakes: true,
+            show_clouds: false,
+            show_markers: true,
+            view_zoom: 1.0,
+            view_center_lat: 0.0,
+            view_center_lon: 0.0,
         }
     }
 
@@ -242,7 +504,39 @@ impl PhotoMap {
             self.checked.clear();
             self.custom_dest = None;
             self.confirm_delete = false;
+            // fresh orientation each open: whole planet, and force a re-synth
+            // so temperature/precip pick up the current season and clouds the
+            // current synoptic field.
+            self.reset_view();
+            self.map_built = None;
             self.status = format!("{} photos", self.photos.len());
+        }
+    }
+
+    fn reset_view(&mut self) {
+        self.view_zoom = 1.0;
+        self.view_center_lat = 0.0;
+        self.view_center_lon = 0.0;
+    }
+
+    /// Keep the view within the planet: zoom in range, and the framed
+    /// rectangle inside [-180,180]x[-90,90] (so zoom 1 centers the globe).
+    fn clamp_view(&mut self) {
+        self.view_zoom = self.view_zoom.clamp(1.0, MAX_ZOOM);
+        let hl = 180.0 / self.view_zoom;
+        let hla = 90.0 / self.view_zoom;
+        self.view_center_lon = self.view_center_lon.clamp(-180.0 + hl, 180.0 - hl);
+        self.view_center_lat = self.view_center_lat.clamp(-90.0 + hla, 90.0 - hla);
+    }
+
+    fn bounds(&self) -> Bounds {
+        let hl = 180.0 / self.view_zoom;
+        let hla = 90.0 / self.view_zoom;
+        Bounds {
+            lat_top: self.view_center_lat + hla,
+            lat_bot: self.view_center_lat - hla,
+            lon_left: self.view_center_lon - hl,
+            lon_right: self.view_center_lon + hl,
         }
     }
 
@@ -340,15 +634,11 @@ impl PhotoMap {
 
     /// Build the popup for this frame. Returns a teleport action when the
     /// player commits (the caller closes the popup by our `open` flag).
-    pub fn ui(&mut self, ctx: &egui::Context, planet: &Planet) -> Option<TeleportAction> {
+    pub fn ui(&mut self, ctx: &egui::Context, env: &MapEnv) -> Option<TeleportAction> {
         if !self.open {
             return None;
         }
-        if self.map_tex.is_none() {
-            let img = build_minimap(planet, 1024, 512);
-            self.map_tex =
-                Some(ctx.load_texture("planet-minimap", img, egui::TextureOptions::LINEAR));
-        }
+        let planet = env.planet;
         let mut action: Option<TeleportAction> = None;
         let screen = ctx.content_rect();
         egui::Window::new("Photo map — teleport")
@@ -361,8 +651,31 @@ impl PhotoMap {
                 ui.horizontal(|ui| {
                     ui.label(&self.status);
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.label("Esc closes · click map = set destination · click marker/list = pick photo");
+                        ui.label("Esc closes · scroll = zoom · drag = pan · double-click = reset · click = destination");
                     });
+                });
+                // ---- layer controls ----
+                ui.horizontal_wrapped(|ui| {
+                    ui.label("Base:");
+                    ui.radio_value(&mut self.base_layer, BaseLayer::Biomes, "Biomes");
+                    ui.radio_value(&mut self.base_layer, BaseLayer::Temperature, "Temp");
+                    ui.radio_value(&mut self.base_layer, BaseLayer::Precipitation, "Precip");
+                    ui.separator();
+                    ui.checkbox(&mut self.show_relief, "Relief")
+                        .on_hover_text("elevation + snow shading of the base");
+                    ui.checkbox(&mut self.show_rivers, "Rivers")
+                        .on_hover_text("river courses from rivers.bin — thicker/brighter by flow; creeks appear as you zoom in");
+                    ui.checkbox(&mut self.show_lakes, "Lakes")
+                        .on_hover_text("liquid lakes blue, frozen ones pale");
+                    ui.checkbox(&mut self.show_clouds, "Clouds now")
+                        .on_hover_text("the live synoptic cloud field at the current weather time");
+                    ui.checkbox(&mut self.show_markers, "Markers")
+                        .on_hover_text("photo markers");
+                    ui.separator();
+                    if ui.button("Reset view").clicked() {
+                        self.reset_view();
+                    }
+                    ui.label(format!("{:.0}×", self.view_zoom));
                 });
                 ui.separator();
                 let list_w = 340.0;
@@ -374,62 +687,271 @@ impl PhotoMap {
                         let map_h = map_w * 0.5;
                         let (rect, resp) = ui.allocate_exact_size(
                             egui::vec2(map_w, map_h),
-                            egui::Sense::click(),
+                            egui::Sense::click_and_drag(),
                         );
-                        if let Some(tex) = &self.map_tex {
-                            ui.painter().image(
-                                tex.id(),
-                                rect,
-                                egui::Rect::from_min_max(
-                                    egui::pos2(0.0, 0.0),
-                                    egui::pos2(1.0, 1.0),
-                                ),
-                                Color32::WHITE,
-                            );
+
+                        // --- interpret reset / pan / zoom BEFORE deriving the
+                        // bounds, so this frame's texture and overlays already
+                        // reflect the new view (no one-frame lag) ---
+                        // `view_animating` means a pan or a (smoothed) zoom is
+                        // in progress this frame: skip the expensive re-synth
+                        // and let `uv_in` translate/scale the existing texture
+                        // for a smooth feel; the crisp rebuild lands the frame
+                        // it settles.
+                        let mut did_reset = false;
+                        let mut view_animating = false;
+                        if resp.double_clicked() {
+                            self.reset_view();
+                            did_reset = true;
                         }
-                        let project = |lat: f64, lon: f64| -> egui::Pos2 {
-                            egui::pos2(
-                                rect.left() + ((lon + 180.0) / 360.0) as f32 * rect.width(),
-                                rect.top() + ((90.0 - lat) / 180.0) as f32 * rect.height(),
-                            )
+                        if resp.dragged() {
+                            let live = self.bounds();
+                            let d = resp.drag_delta();
+                            self.view_center_lon -= d.x as f64 / rect.width() as f64
+                                * (live.lon_right - live.lon_left);
+                            self.view_center_lat += d.y as f64 / rect.height() as f64
+                                * (live.lat_top - live.lat_bot);
+                            self.clamp_view();
+                            view_animating = true;
+                        }
+                        if resp.hovered() {
+                            let scroll = ui.input(|i| i.smooth_scroll_delta.y) as f64;
+                            if scroll.abs() > 0.0
+                                && let Some(cur) = resp.hover_pos()
+                            {
+                                // keep the geo point under the cursor fixed
+                                let live = self.bounds();
+                                let (glat, glon) = live.unproject(rect, cur);
+                                let fx = ((cur.x - rect.left()) / rect.width()).clamp(0.0, 1.0)
+                                    as f64;
+                                let fy = ((cur.y - rect.top()) / rect.height()).clamp(0.0, 1.0)
+                                    as f64;
+                                self.view_zoom =
+                                    (self.view_zoom * (scroll * 0.003).exp()).clamp(1.0, MAX_ZOOM);
+                                let hl = 180.0 / self.view_zoom;
+                                let hla = 90.0 / self.view_zoom;
+                                self.view_center_lon = glon + hl * (1.0 - 2.0 * fx);
+                                self.view_center_lat = glat + hla * (2.0 * fy - 1.0);
+                                self.clamp_view();
+                                view_animating = true;
+                            }
+                        }
+
+                        let bounds = self.bounds();
+
+                        // --- (re)synthesize the base texture when the view or
+                        // the rasterized layers changed and we're not mid-drag
+                        // (a drag slippy-pans the existing pixels; the crisp
+                        // rebuild lands when it settles) ---
+                        let ppp = ui.ctx().pixels_per_point();
+                        // resolution cap keeps every re-synth well under ~200 ms
+                        // (measured; see the commit message). Cost per pixel:
+                        // clouds carry a synoptic fbm (dear), the temp/precip
+                        // climatology two harmonic bilinears (~2x biomes), and
+                        // biomes are cheapest — so the crisp cap tracks the base.
+                        // Below the cap the map is native; above it LINEAR-
+                        // upscales (soft, but clouds/temp are soft fields).
+                        let (cap_w, cap_h) = if self.show_clouds {
+                            (512, 256)
+                        } else if self.base_layer == BaseLayer::Biomes {
+                            (1280, 640)
+                        } else {
+                            (960, 480)
                         };
-                        // markers
-                        for (i, p) in self.photos.iter().enumerate() {
-                            let pos = project(p.lat, p.lon);
-                            let sel = self.selected == Some(i);
-                            let checkedc = self.checked.contains(&i);
-                            let fill = if sel {
-                                Color32::from_rgb(255, 230, 90)
-                            } else if checkedc {
-                                Color32::from_rgb(255, 120, 90)
-                            } else {
-                                Color32::from_rgb(80, 200, 255)
-                            };
-                            ui.painter().circle_filled(pos, if sel { 6.0 } else { 4.0 }, fill);
-                            ui.painter().circle_stroke(
-                                pos,
-                                if sel { 8.0 } else { 5.5 },
-                                egui::Stroke::new(1.5, Color32::from_black_alpha(160)),
+                        let tw = ((map_w * ppp).round() as usize).clamp(64, cap_w);
+                        let th = ((map_h * ppp).round() as usize).clamp(32, cap_h);
+                        let sig = MapSig {
+                            w: tw,
+                            h: th,
+                            base: self.base_layer,
+                            relief: self.show_relief,
+                            clouds: self.show_clouds,
+                            bounds,
+                        };
+                        if self.map_tex.is_none()
+                            || (self.map_built.as_ref() != Some(&sig) && !view_animating)
+                        {
+                            let t0 = std::time::Instant::now();
+                            let img = synth_map(
+                                env,
+                                self.base_layer,
+                                self.show_relief,
+                                self.show_clouds,
+                                bounds,
+                                tw,
+                                th,
                             );
+                            self.map_tex = Some(ui.ctx().load_texture(
+                                "planet-minimap",
+                                img,
+                                egui::TextureOptions::LINEAR,
+                            ));
+                            // profiling aid (house rule: keep map synth under
+                            // ~200 ms even with the per-pixel cloud fbm).
+                            eprintln!(
+                                "map synth {tw}x{th} base={:?} relief={} clouds={}: {:.1} ms",
+                                self.base_layer,
+                                self.show_relief,
+                                self.show_clouds,
+                                t0.elapsed().as_secs_f64() * 1000.0
+                            );
+                            self.map_built = Some(sig);
+                        }
+
+                        // everything geographic is drawn through a painter
+                        // clipped to the map, so an edge lake/river/marker
+                        // can't bleed into the panel around it.
+                        let paint = ui.painter_at(rect);
+
+                        // paint the base texture, addressing the live window
+                        // inside whatever region the texture was built for
+                        if let (Some(tex), Some(built)) = (&self.map_tex, &self.map_built) {
+                            paint.image(tex.id(), rect, bounds.uv_in(built.bounds), Color32::WHITE);
+                        }
+
+                        // ---- vector overlays (crisp geometry at any zoom) ----
+                        let deg_per_km = 360.0 / (std::f64::consts::TAU * planet.radius_km);
+                        let px_per_deg =
+                            rect.width() as f64 / (bounds.lon_right - bounds.lon_left);
+
+                        // lakes: liquid blue, frozen pale (skip dry rim rows)
+                        if self.show_lakes {
+                            for l in &planet.rivers.lakes {
+                                if l.rim {
+                                    continue;
+                                }
+                                let (la, lo) = dir_to_geo(l.center);
+                                let pos = bounds.project(rect, la, lo);
+                                let r_px = (l.radius_km as f64 * deg_per_km * px_per_deg)
+                                    .max(1.5) as f32;
+                                if pos.x + r_px < rect.left()
+                                    || pos.x - r_px > rect.right()
+                                    || pos.y + r_px < rect.top()
+                                    || pos.y - r_px > rect.bottom()
+                                {
+                                    continue;
+                                }
+                                let (f, u, v) = face_from_dir(l.center);
+                                let frozen = planet.temp(f, u, v) < 0.0;
+                                let fill = if frozen {
+                                    Color32::from_rgb(206, 224, 236)
+                                } else {
+                                    Color32::from_rgb(42, 108, 196)
+                                };
+                                paint.circle_filled(pos, r_px, fill);
+                            }
+                        }
+
+                        // rivers: polylines from rivers.bin. Big rivers pop;
+                        // the flow gate drops as you zoom so creeks fade in.
+                        if self.show_rivers {
+                            // rivers.bin's flow_log floor is ~2.1 and its ceil
+                            // ~4.8; at the whole planet show only the major
+                            // network (~gate 3.8), dropping the gate ~0.85 per
+                            // zoom-doubling so the full drainage (creeks and
+                            // all) is visible by ~4x.
+                            let min_flow =
+                                (3.8 - 0.85 * self.view_zoom.log2()).clamp(2.0, 6.0) as f32;
+                            let m = 4.0f32;
+                            for s in &planet.rivers.segments {
+                                if s.flow_log < min_flow {
+                                    continue;
+                                }
+                                let (la, loa) = dir_to_geo(s.a);
+                                let (lb, lob) = dir_to_geo(s.b);
+                                // a segment straddling the ±180 seam (or a pole)
+                                // projects to a spurious full-width streak — drop
+                                if (loa - lob).abs() > 90.0 {
+                                    continue;
+                                }
+                                let pa = bounds.project(rect, la, loa);
+                                let pb = bounds.project(rect, lb, lob);
+                                let (minx, maxx) = (pa.x.min(pb.x), pa.x.max(pb.x));
+                                let (miny, maxy) = (pa.y.min(pb.y), pa.y.max(pb.y));
+                                if maxx < rect.left() - m
+                                    || minx > rect.right() + m
+                                    || maxy < rect.top() - m
+                                    || miny > rect.bottom() + m
+                                {
+                                    continue;
+                                }
+                                let width = (0.5 + (s.flow_log - 2.5) * 1.0).clamp(0.6, 3.5);
+                                let bright = (0.30 + (s.flow_log - 2.0) * 0.26).clamp(0.4, 1.0);
+                                let col = Color32::from_rgb(
+                                    (55.0 * bright) as u8,
+                                    (118.0 * bright) as u8,
+                                    (232.0 * bright) as u8,
+                                );
+                                paint.line_segment([pa, pb], egui::Stroke::new(width, col));
+                            }
+                        }
+
+                        // markers, "you are here", custom destination (top)
+                        let in_rect = |p: egui::Pos2| rect.expand(2.0).contains(p);
+                        if self.show_markers {
+                            for (i, p) in self.photos.iter().enumerate() {
+                                let pos = bounds.project(rect, p.lat, p.lon);
+                                if !in_rect(pos) {
+                                    continue;
+                                }
+                                let sel = self.selected == Some(i);
+                                let checkedc = self.checked.contains(&i);
+                                let fill = if sel {
+                                    Color32::from_rgb(255, 230, 90)
+                                } else if checkedc {
+                                    Color32::from_rgb(255, 120, 90)
+                                } else {
+                                    Color32::from_rgb(80, 200, 255)
+                                };
+                                paint.circle_filled(pos, if sel { 6.0 } else { 4.0 }, fill);
+                                paint.circle_stroke(
+                                    pos,
+                                    if sel { 8.0 } else { 5.5 },
+                                    egui::Stroke::new(1.5, Color32::from_black_alpha(160)),
+                                );
+                            }
+                        }
+                        // current player position
+                        {
+                            let pos = bounds.project(rect, env.cur_lat, env.cur_lon);
+                            if in_rect(pos) {
+                                paint.circle_filled(pos, 4.0, Color32::from_rgb(120, 255, 140));
+                                paint.circle_stroke(
+                                    pos,
+                                    6.5,
+                                    egui::Stroke::new(2.0, Color32::from_rgb(20, 90, 30)),
+                                );
+                            }
                         }
                         if let Some((la, lo)) = self.custom_dest {
-                            let pos = project(la, lo);
-                            let s = 7.0;
-                            let st = egui::Stroke::new(2.0, Color32::from_rgb(255, 90, 90));
-                            ui.painter()
-                                .line_segment([pos - egui::vec2(s, 0.0), pos + egui::vec2(s, 0.0)], st);
-                            ui.painter()
-                                .line_segment([pos - egui::vec2(0.0, s), pos + egui::vec2(0.0, s)], st);
+                            let pos = bounds.project(rect, la, lo);
+                            if in_rect(pos) {
+                                let s = 7.0;
+                                let st = egui::Stroke::new(2.0, Color32::from_rgb(255, 90, 90));
+                                paint.line_segment(
+                                    [pos - egui::vec2(s, 0.0), pos + egui::vec2(s, 0.0)],
+                                    st,
+                                );
+                                paint.line_segment(
+                                    [pos - egui::vec2(0.0, s), pos + egui::vec2(0.0, s)],
+                                    st,
+                                );
+                            }
                         }
-                        // clicks: nearest marker within 10 px, else custom dest
+                        // clicks (a real click, not a drag/double-click): pick
+                        // the nearest photo marker, else set a free destination
+                        // — both through the LIVE view transform
                         if resp.clicked()
+                            && !did_reset
                             && let Some(click) = resp.interact_pointer_pos()
                         {
                             let mut best: Option<(usize, f32)> = None;
-                            for (i, p) in self.photos.iter().enumerate() {
-                                let d = project(p.lat, p.lon).distance(click);
-                                if d < 10.0 && best.is_none_or(|(_, bd)| d < bd) {
-                                    best = Some((i, d));
+                            if self.show_markers {
+                                for (i, p) in self.photos.iter().enumerate() {
+                                    let d = bounds.project(rect, p.lat, p.lon).distance(click);
+                                    if d < 10.0 && best.is_none_or(|(_, bd)| d < bd) {
+                                        best = Some((i, d));
+                                    }
                                 }
                             }
                             match best {
@@ -439,19 +961,19 @@ impl PhotoMap {
                                     self.scroll_to_selected = true;
                                 }
                                 None => {
-                                    let lon = -180.0
-                                        + 360.0 * ((click.x - rect.left()) / rect.width()) as f64;
-                                    let lat = 90.0
-                                        - 180.0 * ((click.y - rect.top()) / rect.height()) as f64;
-                                    self.custom_dest = Some((lat, lon));
+                                    let (lat, lon) = bounds.unproject(rect, click);
+                                    self.custom_dest =
+                                        Some((lat.clamp(-90.0, 90.0), lon.clamp(-180.0, 180.0)));
                                     self.selected = None;
                                 }
                             }
                         }
                         // hover label, painted beside the cursor
-                        if let Some(hp) = resp.hover_pos() {
+                        if self.show_markers
+                            && let Some(hp) = resp.hover_pos()
+                        {
                             for p in &self.photos {
-                                if project(p.lat, p.lon).distance(hp) < 10.0 {
+                                if bounds.project(rect, p.lat, p.lon).distance(hp) < 10.0 {
                                     let font = egui::FontId::proportional(12.0);
                                     let galley = ui.painter().layout_no_wrap(
                                         p.name.clone(),

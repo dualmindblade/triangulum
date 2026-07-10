@@ -186,6 +186,32 @@ impl WeatherField {
         let b = at(x0, y1) * (1.0 - fx) + at(x1, y1) * fx;
         a * (1.0 - fy) + b * fy
     }
+
+    /// Climatology-only sample (Layer 1, no synoptic noise): seasonal 2 m air
+    /// temperature (C) and precipitation (mm/month) at a face coordinate.
+    /// `cs`/`sn` are cos/sin of the season angle (TAU * season_frac),
+    /// precomputed once by the caller so a whole-map sweep pays no per-pixel
+    /// trig. This is the cheap path the photo map's temperature/precipitation
+    /// layers use — the cloud layer wants the full `weather_at` (its synoptic
+    /// field is the whole point). Adds a read path only; changes no behavior.
+    pub fn climate_sample(
+        &self,
+        planet: &Planet,
+        face: usize,
+        u: f64,
+        v: f64,
+        cs: f64,
+        sn: f64,
+    ) -> (f64, f64) {
+        let temp_c = planet.temp(face, u, v) as f64
+            + self.at(face, L_TEMP_A, u, v) * cs
+            + self.at(face, L_TEMP_B, u, v) * sn;
+        let precip = (self.at(face, L_PRC_MEAN, u, v)
+            + self.at(face, L_PRC_A, u, v) * cs
+            + self.at(face, L_PRC_B, u, v) * sn)
+            .max(0.0);
+        (temp_c, precip)
+    }
 }
 
 /// Season fraction [0,1) at weather time `t_s` (0 = January).
