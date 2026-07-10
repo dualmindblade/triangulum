@@ -26,7 +26,8 @@ struct Globals {
     // x rain darkening cap, y full-dusting cold depth (C),
     // z cloud shell altitude (km), w shell fade-out camera height (km)
     weather3: vec4<f32>,
-    // xyz = instantaneous wind (km/s, camera-relative) for particle slant
+    // xyz = instantaneous wind (km/s, camera-relative) for particle slant,
+    // w = absolute weather time (s, wraps hourly) for particle motion
     weather4: vec4<f32>,
     // premultiplied cave-noise seeds (low 32 bits of
     // (seed+K).wrapping_mul(0x9E37_79B1)) for the karst breach hint:
@@ -926,7 +927,7 @@ fn hash1u(n: u32) -> f32 {
 }
 
 // Instanced rain/snow around the camera: identity is hashed from the
-// instance index, motion is a pure function of the (wrapping) frame clock,
+// instance index, motion is a pure function of the (wrapping) weather clock,
 // so captures reproduce exactly. Rain falls as wind-slanted streaks; snow
 // drifts down as swaying flakes. The volume rides with the camera (W1;
 // world-anchoring at f32 precision on a 6371 km sphere jitters worse than
@@ -935,7 +936,7 @@ fn hash1u(n: u32) -> f32 {
 fn vs_precip(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> PrecipOut {
     var out: PrecipOut;
     let up = globals.sky.xyz;
-    let t = globals.misc.y;
+    let t = globals.weather4.w;
     let h0 = hash1u(ii * 3u + 0u);
     let h1 = hash1u(ii * 3u + 1u);
     let h2 = hash1u(ii * 3u + 2u);

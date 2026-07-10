@@ -39,6 +39,9 @@ struct Args {
     /// Living weather (WEATHER.md): "live" (default), "off", or
     /// "COVER,PRECIP" to pin the sky (each 0..1) for art shots.
     weather: String,
+    /// Seek only the absolute weather clock. The day/night clock remains at
+    /// its deterministic capture/session phase.
+    weather_time: Option<f64>,
     /// --no-voxels: pure heightfield-mesh render (no chunk streaming, no
     /// hole). The eyeball twin of the sync-diff harness's `voxels off`.
     voxels: bool,
@@ -59,6 +62,7 @@ fn parse_args() -> Args {
         patch: 1.0,
         auto_tilt: false,
         weather: "live".into(),
+        weather_time: None,
         voxels: true,
     };
     let argv: Vec<String> = std::env::args().collect();
@@ -124,6 +128,13 @@ fn parse_args() -> Args {
                 a.weather = next(i);
                 i += 1;
             }
+            "--weather-time" => {
+                a.weather_time = next(i)
+                    .parse::<f64>()
+                    .ok()
+                    .filter(|v| v.is_finite() && *v >= 0.0);
+                i += 1;
+            }
             other => eprintln!("unknown arg: {other}"),
         }
         i += 1;
@@ -149,14 +160,21 @@ fn apply_weather(renderer: &mut Renderer, spec: &str) {
     }
     renderer.weather_tuning = triangulum_viewer::weather::WeatherTuning::load(&assets_dir());
     match spec {
-        "off" => renderer.weather_on = false,
-        "" | "live" => {}
+        "off" => {
+            renderer.weather_on = false;
+            renderer.weather_pin = None;
+        }
+        "" | "live" => {
+            renderer.weather_on = true;
+            renderer.weather_pin = None;
+        }
         s => {
             if let Some((c, p)) = s.split_once(',')
                 && let (Ok(c), Ok(p)) = (c.parse::<f32>(), p.parse::<f32>())
                 && c.is_finite()
                 && p.is_finite()
             {
+                renderer.weather_on = true;
                 renderer.weather_pin = Some((c.clamp(0.0, 1.0), p.clamp(0.0, 1.0)));
             } else {
                 eprintln!("--weather expects off | live | COVER,PRECIP");
@@ -252,6 +270,9 @@ fn capture(planet: Arc<Planet>, camera: Camera, args: Args, path: &str) -> Resul
     renderer.set_torches(load_torches(planet.seed));
     renderer.refresh_world_snapshot(&edits);
     apply_weather(&mut renderer, &args.weather);
+    if let Some(t_s) = args.weather_time {
+        renderer.set_weather_time_s(t_s);
+    }
     let eye_km = camera.ground_km + camera.altitude_km;
     renderer.underwater = triangulum_viewer::voxel::water_surface_km(
         &planet,
@@ -323,12 +344,13 @@ fn write_shot_sidecar(
     // function of (seed, position, time), so these fields make a storm
     // shot exactly reproducible like the sun already is
     let wx = renderer.last_weather;
+    let weather_t_s = renderer.weather_time_s();
     let weather_js = serde_json::json!({
         "on": renderer.weather_on,
         "pinned": renderer.weather_pin.map(|(c, p)| vec![c, p]),
-        "t_s": renderer.render_time_s(),
+        "t_s": weather_t_s,
         "season_frac": triangulum_viewer::weather::season_frac(
-            renderer.render_time_s(),
+            weather_t_s,
             renderer.day_len_s,
             &renderer.weather_tuning,
         ),
@@ -790,7 +812,8 @@ impl App {
     }
 
     /// Commit a destination chosen in the photo map: position, then the
-    /// photo's view if it carried one, then (opt-in) its time of day.
+    /// photo's view if it carried one, then (opt-in) its time of day and
+    /// recorded weather coordinate.
     fn apply_teleport(&mut self, act: triangulum_viewer::ui::TeleportAction) {
         // NaN passes an `abs() > 90` check (all NaN comparisons are false)
         // and would poison the camera — require finite, in-range values
@@ -840,6 +863,19 @@ impl App {
                 _ => t,
             };
             gfx.renderer.set_day_time_s(t);
+        }
+        if let (Some(on), Some(gfx)) = (act.weather_on, self.gfx.as_mut()) {
+            gfx.renderer.weather_on = on;
+            gfx.renderer.weather_pin = if on {
+                act.weather_pin.map(|(c, p)| (c.clamp(0.0, 1.0), p.clamp(0.0, 1.0)))
+            } else {
+                None
+            };
+            if on
+                && let Some(t_s) = act.weather_time_s.filter(|v| v.is_finite() && *v >= 0.0)
+            {
+                gfx.renderer.set_weather_time_s(t_s);
+            }
         }
     }
 
@@ -1004,6 +1040,9 @@ impl ApplicationHandler for App {
         renderer.set_torches(self.torches.clone());
         renderer.refresh_world_snapshot(&self.edits);
         apply_weather(&mut renderer, &self.args.weather);
+        if let Some(t_s) = self.args.weather_time {
+            renderer.set_weather_time_s(t_s);
+        }
         self.egui_state = Some(egui_winit::State::new(
             self.egui_ctx.clone(),
             egui::ViewportId::ROOT,
@@ -1170,8 +1209,10 @@ impl ApplicationHandler for App {
                         planet: &self.planet,
                         weather_field: renderer.weather_field.as_ref(),
                         weather_tuning: &renderer.weather_tuning,
-                        render_time_s: renderer.render_time_s(),
+                        weather_time_s: renderer.weather_time_s(),
                         day_len_s: renderer.day_len_s,
+                        weather_on: renderer.weather_on,
+                        weather_pin: renderer.weather_pin,
                         cur_lat: self.camera.lat.to_degrees(),
                         cur_lon: self.camera.lon.to_degrees(),
                     };

@@ -35,6 +35,10 @@
 //!                                 direction — far-longitude teleports then
 //!                                 render at NIGHT. OMIT sun for surveys: the
 //!                                 default lights every location at local noon.
+//!   weather off|live              disable/enable the deterministic field
+//!   weather pin COVER PRECIP      pin visible intensity (both 0..1)
+//!   weather time T_S              seek absolute weather time only
+//!   weather season FRAC           make the next shot use this year phase
 //!   probe LAT LON                 dump sampler + column truth at a point
 //!                                 into the transcript (h, water, lake/pond
 //!                                 levels, river, cave water) — the census
@@ -404,6 +408,7 @@ fn main() -> anyhow::Result<()> {
             "weather" => match toks.get(1).copied() {
                 Some("off") => {
                     renderer.weather_on = false;
+                    renderer.weather_pin = None;
                     trace!("[{}] weather off", ln + 1);
                 }
                 Some("live") => {
@@ -413,6 +418,11 @@ fn main() -> anyhow::Result<()> {
                 }
                 Some("pin") => {
                     let (c, p) = (f(2)?, f(3)?);
+                    anyhow::ensure!(
+                        c.is_finite() && p.is_finite(),
+                        "line {}: weather pin values must be finite",
+                        ln + 1
+                    );
                     renderer.weather_on = true;
                     renderer.weather_pin =
                         Some((c.clamp(0.0, 1.0) as f32, p.clamp(0.0, 1.0) as f32));
@@ -422,12 +432,38 @@ fn main() -> anyhow::Result<()> {
                 // so a script can shoot the same forest in deep winter and
                 // high summer without simulating months of ticks
                 Some("season") => {
-                    let frac = f(2)?.rem_euclid(1.0);
-                    renderer.weather_tuning.epoch_frac = frac;
+                    let requested = f(2)?;
+                    anyhow::ensure!(
+                        requested.is_finite(),
+                        "line {}: weather season must be finite",
+                        ln + 1
+                    );
+                    let frac = requested.rem_euclid(1.0);
+                    renderer.set_render_time_s(sim_ticks as f64 * DT);
+                    let weather_t_s = renderer.weather_time_s();
+                    renderer.weather_tuning.set_season_frac(
+                        weather_t_s,
+                        renderer.day_len_s,
+                        frac,
+                    );
                     trace!("[{}] weather season {frac:.2}", ln + 1);
                 }
+                Some("time") => {
+                    let t_s = f(2)?;
+                    anyhow::ensure!(
+                        t_s.is_finite() && t_s >= 0.0,
+                        "line {}: weather time must be finite and >= 0",
+                        ln + 1
+                    );
+                    // The renderer may lag sim_ticks until a shot. Align the
+                    // base clock first, then seek by offset so subsequent
+                    // waits advance from exactly this absolute weather time.
+                    renderer.set_render_time_s(sim_ticks as f64 * DT);
+                    renderer.set_weather_time_s(t_s);
+                    trace!("[{}] weather time {t_s:.6}", ln + 1);
+                }
                 _ => anyhow::bail!(
-                    "line {}: weather off|live|pin COVER PRECIP|season FRAC",
+                    "line {}: weather off|live|pin COVER PRECIP|time T_S|season FRAC",
                     ln + 1
                 ),
             },
