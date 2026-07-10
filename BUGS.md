@@ -121,7 +121,7 @@ lake ids (then delete the bake-side peel). Backlog; census-w5d.md is the
 inventory.
 
 ### W-8 Weather fidelity cluster (Sol review #2 findings 2,3,4,7,10,13)
-MISSION DISPATCHED (Sol #6, 2026-07-10 evening). Six related weather gaps:
+FIXED IN WORKTREE, AWAITING CLAUDE REVIEW (Sol #6, 2026-07-10). Six related weather gaps:
 (2) recorded shot weather is dead metadata - neither repro_shot.py nor the
 photo-map restore replays it (breaks the "photo of a storm is a coordinate"
 contract); (3) the bake drops WEATHER.md's promised semiannual harmonic -
@@ -134,6 +134,16 @@ Clouds-now ignores weather off/pin and never resynthesizes on time alone;
 (13) `weather season FRAC` sets epoch_frac, so after any elapsed sim time
 the frame season is FRAC + elapsed. Gates: byte-determinism reel, suites,
 before/after demos per item.
+
+Resolution: WEA2 adds the promised precipitation/cloud k=2 terms (global
+RMS 35.08032 -> 24.84529 mm/month and 0.03739 -> 0.02319 cloud fraction),
+advection is an exact great-circle rotation through arbitrary elapsed time,
+shot repro/photo teleport restore weather via an independent absolute clock,
+Clouds-now mirrors off/pin/live with a 60 s refresh bucket, invalid tuning
+falls back loudly as a whole, and `weather season` subtracts elapsed phase.
+New unit gates cover WEA1/WEA2 loading, two-year advection, tuning rejection,
+season semantics, opt-in photo restore, and map bucketing. Full evidence and
+gate transcript: `viewer/interchange/codex/FINDINGS.md`.
 
 ### E-2 Forest impostors skip tree_here guards (review #2 finding 9)
 The impostor lottery matches tree placement but not full eligibility:

@@ -42,14 +42,19 @@ plus per-pixel procedural detail in the shaders.
 
 - Weather is a pure function of (planet seed, position, weather time).
   No accumulation, no RNG draws at runtime, no wall clock.
-- Weather time = the renderer's `render_time_s` (+ a configurable epoch).
+- Weather time = the renderer's deterministic `render_time_s` plus a seek
+  offset (zero normally; `weather time T_S` / `--weather-time T_S` sets it).
+  The offset changes weather only: the sun/day cycle stays on the base clock.
   The play harness already drives render time from its fixed sim clock
   (F-20), so every `.play` script — including every EXISTING suite —
   reproduces byte-identical frames with weather on. Double-run hash gates
   keep proving it.
-- Scripts get a `weather` command (pin time/intensity or off), mirroring
-  `sun`. Shot sidecars record the weather state; `repro_shot.py` replays
-  it. A photo of a storm is a coordinate you can teleport back into.
+- Scripts get `weather off|live|pin COVER PRECIP|time T_S|season FRAC`,
+  mirroring `sun`. Shot sidecars record the weather state and absolute time;
+  `repro_shot.py`, `--capture`, and the photo map's opt-in time restore replay
+  it. Pre-weather sidecars are the deliberate cut line: they warn and fall
+  back to live weather at time zero because their storm state is unknowable.
+  A photo of a storm is a coordinate you can teleport back into.
 - Phase W1 touches NOTHING structural: terrain::sample still reads annual
   means, so every census number and physics assert is untouched by
   construction. Structural seasonality (W4) is where that changes, gated.
@@ -104,6 +109,17 @@ dusting altitude falloff, darkening strength, particle counts/speeds,
 year length, epoch. If Andrew wants to art-direct a value, it must be a
 knob, not a constant.
 
+Overrides are accepted only as a valid whole. Non-finite values, zero/negative
+denominators, inverted cover/snow bands, precipitation thresholds outside
+`[0,1)`, inverted cloud-shell heights, and particle counts above 100,000 emit
+a warning and fall back to all defaults; malformed tuning can never feed NaNs
+or an unbounded instance count to a frame.
+
+The photo map's **Clouds now** layer reads the same on/off/pin state and
+absolute weather time as the renderer. Live fronts invalidate its expensive
+raster on a 60-second weather-time bucket (not every frame); pinned clouds are
+constant, and weather-off intentionally draws an empty cloud overlay.
+
 ## Phase roadmap
 
 - **W1 (this commit):** weather.bin bake + weather.rs field + sky cloud
@@ -139,19 +155,31 @@ D-9 W4 seasonal ice/melt scope.
 ## Data format: weather.bin
 
 ```
-magic  b"WEA1"
+magic  b"WEA2"
 u32    res (texels per face edge, 256)
-u32    n_layers (10)
+u32    n_layers (14)
 6 faces x n_layers x res^2 f32, v-major rows, layer order:
   temp_a_c, temp_b_c        # temp mean lives in face_*.bin already
-  prc_mean, prc_a, prc_b    # mm/month
-  cld_mean, cld_a, cld_b    # cloud fraction 0..1
+  prc_mean, prc_a1, prc_b1, prc_a2, prc_b2  # mm/month
+  cld_mean, cld_a1, cld_b1, cld_a2, cld_b2  # cloud fraction 0..1
   wind_e, wind_n            # m/s annual mean
-value(t_yr) = mean + a*cos(2*pi*t_yr) + b*sin(2*pi*t_yr), t_yr in [0,1)
-with month centers at (m+0.5)/12. CARTESIAN coefficients on purpose:
+value(t_yr) = mean
+            + a1*cos(2*pi*t_yr) + b1*sin(2*pi*t_yr)
+            + a2*cos(4*pi*t_yr) + b2*sin(4*pi*t_yr), t_yr in [0,1)
+```
+
+Temperature uses only the annual pair (its mean is in face_*.bin); the k=2
+line applies to precipitation and clouds. Its shipped k=1 residual is 0.63 C
+against a 9.35 C mean seasonal swing, so two more always-sampled rasters were
+not justified for this targeted bimodal-weather fix.
+
+The fit uses month centers at `(m+0.5)/12`. CARTESIAN coefficients are on purpose:
 amp/phase cannot be blended across texels (phase wraps — a texel between
 a January-peak and a December-peak cell would average to July).
-```
+
 Rasters are edge-inclusive like face_*.bin (texel 0 and res-1 on the cube
 edge) and sampled bilinearly; weather varies at synoptic scales, so 256
-per face (~40 km/texel) is deliberately coarse and cheap (~16 MB).
+per face (~40 km/texel) is deliberately coarse and cheap (22,020,108 bytes,
+about 21 MiB). The loader accepts legacy WEA1/10-layer files loudly by
+zero-filling the missing k=2 terms; corrupt/unknown versions fail gracefully
+and name the rebake command.

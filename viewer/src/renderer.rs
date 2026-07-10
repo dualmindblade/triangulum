@@ -87,7 +87,7 @@ struct Globals {
     // z = cloud shell altitude (km), w = shell fade-out camera height (km)
     weather3: [f32; 4],
     // xyz = instantaneous wind (km/s, camera-relative frame) for particle
-    // slant; w spare
+    // slant; w = absolute weather clock modulo one hour for particle motion
     weather4: [f32; 4],
     // premultiplied cave-noise seeds for the karst breach hint (V-10):
     // low 32 bits of (seed+K).wrapping_mul(0x9E37_79B1) for K = 40961
@@ -166,7 +166,12 @@ pub struct Renderer {
     pub day_len_s: f64,
     /// Longitude (radians) that starts the cycle at mid-morning.
     pub sun_ref_lon: f64,
+    /// Base deterministic simulation clock. Sun/day cycle and non-weather
+    /// animation read this directly.
     render_time_s: f64,
+    /// Weather is the same deterministic clock plus a seek offset. Replaying
+    /// an absolute storm time therefore does not move the sun/day phase.
+    weather_time_offset_s: f64,
     /// Voxel patch radius multiplier (--patch): 1.0 = the classic
     /// 200–500 m disc, 2.0 = twice the radius (4x the chunks — streaming
     /// makes that affordable).
@@ -426,6 +431,7 @@ impl Renderer {
             day_len_s: 0.0,
             sun_ref_lon: 0.0,
             render_time_s: 0.0,
+            weather_time_offset_s: 0.0,
             patch_scale: 1.0,
             voxels_on: true,
             chunk_pending: HashMap::new(),
@@ -470,10 +476,24 @@ impl Renderer {
         }
     }
 
-    /// The deterministic render clock (photo sidecars record it so weather
-    /// and sun state are replayable).
+    /// The deterministic simulation/render clock used by the sun and general
+    /// animation. Weather normally follows it but can carry a replay offset.
     pub fn render_time_s(&self) -> f64 {
         self.render_time_s
+    }
+
+    /// Absolute deterministic weather time. This is the time recorded in
+    /// photo sidecars and fed to every climatology/synoptic/presentation path.
+    pub fn weather_time_s(&self) -> f64 {
+        self.render_time_s + self.weather_time_offset_s
+    }
+
+    /// Seek weather without changing the sun/day-cycle clock. The offset is
+    /// retained as simulation time advances, so a restored front keeps moving.
+    pub fn set_weather_time_s(&mut self, t_s: f64) {
+        if t_s.is_finite() {
+            self.weather_time_offset_s = t_s.max(0.0) - self.render_time_s;
+        }
     }
 
     pub fn advance_render_time_s(&mut self, dt_s: f64) {
@@ -523,10 +543,13 @@ impl Renderer {
 
     /// Jump the day/night cycle so the CURRENT moment sits `t_s` seconds
     /// into the day — the photo map's optional "restore time of day".
-    /// No-op when the sun is pinned or the cycle is off.
+    /// No-op when the sun is pinned or the cycle is off. The weather clock is
+    /// preserved; recorded weather has its own absolute restore coordinate.
     pub fn set_day_time_s(&mut self, t_s: f64) {
         if self.day_len_s > 0.0 && self.sun_dir.is_none() {
+            let weather_t_s = self.weather_time_s();
             self.render_time_s = t_s.rem_euclid(self.day_len_s);
+            self.weather_time_offset_s = weather_t_s - self.render_time_s;
         }
     }
 
@@ -595,6 +618,7 @@ impl Renderer {
         let vp = camera.view_proj(self.size.0 as f64 / self.size.1 as f64);
         let vp32 = Mat4::from_cols_array(&vp.to_cols_array().map(|x| x as f32));
         let t_s = self.render_time_s;
+        let weather_t_s = self.weather_time_s();
         let sun = self.sun_state(cam_pos).dir;
         // the moon rides opposite the sun (rises at sunset, near-full), tilted
         // ~18 deg off the solar path about the world X axis so it isn't a
@@ -725,7 +749,7 @@ impl Renderer {
 
         // living weather: ONE field sample per frame, at the camera. The
         // shaders add per-pixel detail from the same uniforms, so weather
-        // stays a pure function of (seed, position, render time) — the
+        // stays a pure function of (seed, position, weather time) — the
         // determinism contract in WEATHER.md.
         let wx = if self.weather_on
             && let Some(field) = &self.weather_field
@@ -734,7 +758,7 @@ impl Renderer {
                 field,
                 planet,
                 cam_pos.normalize(),
-                self.render_time_s,
+                weather_t_s,
                 self.day_len_s,
                 &self.weather_tuning,
             );
@@ -761,7 +785,7 @@ impl Renderer {
             let north = dirn.cross(east);
             let wind = east * wx.wind_e + north * wx.wind_n;
             (
-                wind * (self.weather_tuning.synoptic_speed * self.render_time_s
+                wind * (self.weather_tuning.synoptic_speed * weather_t_s
                     / (1000.0 * planet.radius_km)),
                 wind * 0.001,
             )
@@ -827,7 +851,12 @@ impl Renderer {
                 self.weather_tuning.shell_alt_km as f32,
                 self.weather_tuning.shell_fade_km as f32,
             ],
-            weather4: [wind_kms.x as f32, wind_kms.y as f32, wind_kms.z as f32, 0.0],
+            weather4: [
+                wind_kms.x as f32,
+                wind_kms.y as f32,
+                wind_kms.z as f32,
+                (weather_t_s % 3600.0) as f32,
+            ],
             karst: {
                 let kseed = |k: i64| {
                     (planet.seed.wrapping_add(k).wrapping_mul(0x9E37_79B1) & 0xFFFF_FFFF)

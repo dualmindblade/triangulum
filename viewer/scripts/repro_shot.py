@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Turn a viewer screenshot name into reproducible capture/play commands.
 
-New shots with a JSON sidecar use the recorded pose and effective sun. Legacy
-`shot_lat..._lon...` PNGs without a sidecar still recover the pose from the
-filename, but the original sun is unknowable.
+New shots with a JSON sidecar use the recorded pose, effective sun, and weather
+state/time. Legacy sidecars without a `weather` object are the deliberate cut
+line: pose/sun still replay, but the unknowable storm falls back loudly to live
+weather at time zero.
 """
 import argparse
 import json
@@ -84,6 +85,64 @@ def require_pose(pose):
         )
 
 
+def weather_from_sidecar(sidecar):
+    """Validated replay state, or None across the pre-weather cut line."""
+    weather = (sidecar or {}).get("weather")
+    if not isinstance(weather, dict) or not isinstance(weather.get("on"), bool):
+        return None
+    out = {"on": weather["on"], "pin": None, "t_s": None}
+    pin = weather.get("pinned")
+    if pin is not None:
+        if not isinstance(pin, list) or len(pin) != 2:
+            return None
+        try:
+            cover, precip = (float(pin[0]), float(pin[1]))
+        except (TypeError, ValueError):
+            return None
+        if not all(math.isfinite(v) and 0.0 <= v <= 1.0 for v in (cover, precip)):
+            return None
+        out["pin"] = (cover, precip)
+    if weather.get("t_s") is not None:
+        try:
+            t_s = float(weather["t_s"])
+        except (TypeError, ValueError):
+            return None
+        if not math.isfinite(t_s) or t_s < 0.0:
+            return None
+        out["t_s"] = t_s
+    return out
+
+
+def weather_play_lines(weather):
+    if weather is None:
+        return []
+    if not weather["on"]:
+        return ["weather off"]
+    lines = ["weather live"]
+    if weather["pin"] is not None:
+        cover, precip = weather["pin"]
+        lines = [f"weather pin {fmt(cover)} {fmt(precip)}"]
+    # A pin fixes cover/precip, but temperature and particle phase still come
+    # from the weather clock, so retain t_s for pinned shots too.
+    if weather["t_s"] is not None:
+        lines.append(f"weather time {fmt(weather['t_s'])}")
+    return lines
+
+
+def weather_cli_args(weather):
+    if weather is None:
+        return []
+    if not weather["on"]:
+        return ["--weather", "off"]
+    out = ["--weather", "live"]
+    if weather["pin"] is not None:
+        cover, precip = weather["pin"]
+        out = ["--weather", f"{fmt(cover)},{fmt(precip)}"]
+    if weather["t_s"] is not None:
+        out += ["--weather-time", fmt(weather["t_s"])]
+    return out
+
+
 def shot_name(path):
     name = re.sub(r"[^A-Za-z0-9_.-]+", "_", path.stem).strip("._")
     return name or "repro"
@@ -114,6 +173,7 @@ def command_line(path, pose):
         "--sun-lon",
         fmt(pose["sun_lon"]),
     ]
+    argv += weather_cli_args(pose["weather"])
     return subprocess.list2cmdline(argv)
 
 
@@ -124,8 +184,9 @@ def play_script(path, pose):
         f"look {fmt(pose['yaw'])} {fmt(pose['pitch'])}",
         f"mode {pose['mode']}",
         f"sun {fmt(pose['sun_lat'])} {fmt(pose['sun_lon'])}",
-        f"shot {shot_name(path)}",
     ]
+    lines += weather_play_lines(pose["weather"])
+    lines.append(f"shot {shot_name(path)}")
     return "\n".join(lines) + "\n"
 
 
@@ -147,6 +208,7 @@ def main():
         "pitch": field(sidecar, parsed, "pitch_deg", "pitch", 0.0),
         "mode": (sidecar or {}).get("mode", "fly"),
         "exagg": float((sidecar or {}).get("exaggeration", 1.0)),
+        "weather": weather_from_sidecar(sidecar),
     }
     require_pose(pose)
 
@@ -171,6 +233,20 @@ def main():
                     f"using default sun {fmt(DEFAULT_SUN[0])} {fmt(DEFAULT_SUN[1])}",
                     file=sys.stderr,
                 )
+
+    if pose["weather"] is None:
+        if sidecar:
+            print(
+                f"warning: {sidecar_path} has no valid recorded weather; "
+                "using live weather at time zero",
+                file=sys.stderr,
+            )
+        else:
+            print(
+                f"warning: no sidecar at {sidecar_path}; weather state is unknown, "
+                "using live weather at time zero",
+                file=sys.stderr,
+            )
 
     script = play_script(path, pose)
     print("# equivalent --capture command")

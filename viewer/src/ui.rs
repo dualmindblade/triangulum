@@ -41,6 +41,11 @@ pub struct Photo {
     pub yaw_deg: f64,
     pub pitch_deg: f64,
     pub day_time_s: Option<f64>,
+    /// Recorded weather restore coordinate. `weather_on == None` marks a
+    /// legacy/pre-weather sidecar; `Some(true)` plus no pin means live.
+    pub weather_on: Option<bool>,
+    pub weather_pin: Option<(f32, f32)>,
+    pub weather_time_s: Option<f64>,
     // exact-restore state (newer sidecars only; older photos fall back to
     // the generic fly-mode teleport): the photographed ground height, mode,
     // day length, and seed let restore reproduce the shot instead of
@@ -50,6 +55,38 @@ pub struct Photo {
     pub mode: Option<String>,
     pub day_len_s: Option<f64>,
     pub seed: Option<i64>,
+}
+
+fn sidecar_weather(js: &serde_json::Value) -> Option<(bool, Option<(f32, f32)>, Option<f64>)> {
+    let weather = js.get("weather")?.as_object()?;
+    let on = weather.get("on")?.as_bool()?;
+    let pin = match weather.get("pinned") {
+        None | Some(serde_json::Value::Null) => None,
+        Some(v) => {
+            let p = v.as_array()?;
+            if p.len() != 2 {
+                return None;
+            }
+            let (c, r) = (p[0].as_f64()?, p[1].as_f64()?);
+            if !c.is_finite() || !r.is_finite() || !(0.0..=1.0).contains(&c)
+                || !(0.0..=1.0).contains(&r)
+            {
+                return None;
+            }
+            Some((c as f32, r as f32))
+        }
+    };
+    let time = match weather.get("t_s") {
+        None | Some(serde_json::Value::Null) => None,
+        Some(v) => {
+            let t_s = v.as_f64()?;
+            if !t_s.is_finite() || t_s < 0.0 {
+                return None;
+            }
+            Some(t_s)
+        }
+    };
+    Some((on, pin, time))
 }
 
 fn parse_filename(name: &str) -> Option<(f64, f64, f64, f64, f64)> {
@@ -88,6 +125,7 @@ pub fn scan_photos(interchange: &Path) -> Vec<Photo> {
         {
             let f = |k: &str| js.get(k).and_then(|v| v.as_f64());
             if let (Some(lat), Some(lon)) = (f("lat_deg"), f("lon_deg")) {
+                let weather = sidecar_weather(&js);
                 photo = Some(Photo {
                     path: path.clone(),
                     name: name.clone(),
@@ -97,6 +135,9 @@ pub fn scan_photos(interchange: &Path) -> Vec<Photo> {
                     yaw_deg: f("yaw_deg").unwrap_or(0.0),
                     pitch_deg: f("pitch_deg").unwrap_or(-20.0),
                     day_time_s: f("day_cycle_time_s"),
+                    weather_on: weather.map(|w| w.0),
+                    weather_pin: weather.and_then(|w| w.1),
+                    weather_time_s: weather.and_then(|w| w.2),
                     ground_km: f("ground_km"),
                     mode: js.get("mode").and_then(|v| v.as_str()).map(str::to_owned),
                     day_len_s: f("day_len_s").filter(|v| *v > 0.0),
@@ -116,6 +157,9 @@ pub fn scan_photos(interchange: &Path) -> Vec<Photo> {
                 yaw_deg: yaw,
                 pitch_deg: pitch,
                 day_time_s: None,
+                weather_on: None,
+                weather_pin: None,
+                weather_time_s: None,
                 ground_km: None,
                 mode: None,
                 day_len_s: None,
@@ -161,8 +205,10 @@ pub struct MapEnv<'a> {
     pub planet: &'a Planet,
     pub weather_field: Option<&'a crate::weather::WeatherField>,
     pub weather_tuning: &'a crate::weather::WeatherTuning,
-    pub render_time_s: f64,
+    pub weather_time_s: f64,
     pub day_len_s: f64,
+    pub weather_on: bool,
+    pub weather_pin: Option<(f32, f32)>,
     pub cur_lat: f64,
     pub cur_lon: f64,
 }
@@ -218,7 +264,29 @@ struct MapSig {
     base: BaseLayer,
     relief: bool,
     clouds: bool,
+    weather_on: bool,
+    weather_pin: Option<(f32, f32)>,
+    /// 60-second buckets refresh live fronts at a useful visual cadence while
+    /// avoiding a costly map synthesis every frame.
+    weather_time_bucket: Option<i64>,
     bounds: Bounds,
+}
+
+const MAP_WEATHER_BUCKET_S: f64 = 60.0;
+
+fn map_weather_time_bucket(
+    base: BaseLayer,
+    clouds: bool,
+    weather_on: bool,
+    weather_pin: Option<(f32, f32)>,
+    weather_time_s: f64,
+) -> Option<i64> {
+    let time_sensitive = (clouds && weather_on && weather_pin.is_none())
+        || base != BaseLayer::Biomes;
+    time_sensitive.then(|| {
+        let t_s = if weather_time_s.is_finite() { weather_time_s } else { 0.0 };
+        (t_s / MAP_WEATHER_BUCKET_S).floor() as i64
+    })
 }
 
 fn dir_to_geo(d: DVec3) -> (f64, f64) {
@@ -334,11 +402,14 @@ fn synth_map(
     h: usize,
 ) -> egui::ColorImage {
     let planet = env.planet;
-    let season = crate::weather::season_frac(env.render_time_s, env.day_len_s, env.weather_tuning);
-    let (cs, sn) = (
-        (std::f64::consts::TAU * season).cos(),
-        (std::f64::consts::TAU * season).sin(),
+    let season = crate::weather::season_frac(
+        env.weather_time_s,
+        env.day_len_s,
+        env.weather_tuning,
     );
+    let angle = std::f64::consts::TAU * season;
+    let (sn1, cs1) = angle.sin_cos();
+    let (sn2, cs2) = (2.0 * angle).sin_cos();
     let (tstops, pstops) = (temp_stops(), precip_stops());
     let mut px = vec![Color32::BLACK; w * h];
     for y in 0..h {
@@ -354,14 +425,18 @@ fn synth_map(
                 BaseLayer::Biomes => biome_color(planet, f, u, v, relief),
                 BaseLayer::Temperature => {
                     let t = match env.weather_field {
-                        Some(wf) => wf.climate_sample(planet, f, u, v, cs, sn).0,
+                        Some(wf) => wf.climate_sample(
+                            planet, f, u, v, cs1, sn1, cs2, sn2,
+                        ).0,
                         None => planet.temp(f, u, v) as f64,
                     };
                     temp_color(t, &tstops)
                 }
                 BaseLayer::Precipitation => {
                     let p = match env.weather_field {
-                        Some(wf) => wf.climate_sample(planet, f, u, v, cs, sn).1,
+                        Some(wf) => wf.climate_sample(
+                            planet, f, u, v, cs1, sn1, cs2, sn2,
+                        ).1,
                         None => planet.precip(f, u, v) as f64 / 12.0,
                     };
                     precip_color(p, &pstops)
@@ -378,17 +453,23 @@ fn synth_map(
             // clouds NOW: the live synoptic field, white wisps grading to grey
             // storm as cover rises, alpha-composited over the base.
             if clouds
+                && env.weather_on
                 && let Some(wf) = env.weather_field
             {
-                let cover = crate::weather::weather_at(
-                    wf,
-                    planet,
-                    dir,
-                    env.render_time_s,
-                    env.day_len_s,
-                    env.weather_tuning,
-                )
-                .cloud_cover as f32;
+                let cover = env.weather_pin.map_or_else(
+                    || {
+                        crate::weather::weather_at(
+                            wf,
+                            planet,
+                            dir,
+                            env.weather_time_s,
+                            env.day_len_s,
+                            env.weather_tuning,
+                        )
+                        .cloud_cover as f32
+                    },
+                    |(cover, _)| cover,
+                );
                 if cover > 0.01 {
                     let a = cover.powf(1.1) * 0.9;
                     let cl = disp(0.95 - 0.42 * cover, 0.95 - 0.40 * cover, 0.97 - 0.36 * cover);
@@ -425,6 +506,12 @@ pub struct TeleportAction {
     /// as a PHASE of it (t=600 of a 1200 s day is noon, not dusk of a 600 s
     /// day) — the app rescales to the current cycle.
     pub day_len_s: Option<f64>,
+    /// Weather restore is controlled by the same opt-in checkbox as time of
+    /// day. None means a legacy sidecar or a non-photo destination; Some(false)
+    /// explicitly restores weather-off. Some(true) + no pin restores live.
+    pub weather_on: Option<bool>,
+    pub weather_pin: Option<(f32, f32)>,
+    pub weather_time_s: Option<f64>,
     /// Exact-restore state from the sidecar (photo destinations only): the
     /// photographed ground height and mode reproduce the shot instead of
     /// hovering in fly mode 2.5 m over the far terrain surface. The app
@@ -667,8 +754,15 @@ impl PhotoMap {
                         .on_hover_text("river courses from rivers.bin — thicker/brighter by flow; creeks appear as you zoom in");
                     ui.checkbox(&mut self.show_lakes, "Lakes")
                         .on_hover_text("liquid lakes blue, frozen ones pale");
+                    let cloud_tip = if !env.weather_on {
+                        "weather is off; this layer is intentionally empty"
+                    } else if env.weather_pin.is_some() {
+                        "the renderer's pinned cloud-cover field"
+                    } else {
+                        "the live synoptic cloud field at the current weather time"
+                    };
                     ui.checkbox(&mut self.show_clouds, "Clouds now")
-                        .on_hover_text("the live synoptic cloud field at the current weather time");
+                        .on_hover_text(cloud_tip);
                     ui.checkbox(&mut self.show_markers, "Markers")
                         .on_hover_text("photo markers");
                     ui.separator();
@@ -760,12 +854,22 @@ impl PhotoMap {
                         };
                         let tw = ((map_w * ppp).round() as usize).clamp(64, cap_w);
                         let th = ((map_h * ppp).round() as usize).clamp(32, cap_h);
+                        let weather_time_bucket = map_weather_time_bucket(
+                            self.base_layer,
+                            self.show_clouds,
+                            env.weather_on,
+                            env.weather_pin,
+                            env.weather_time_s,
+                        );
                         let sig = MapSig {
                             w: tw,
                             h: th,
                             base: self.base_layer,
                             relief: self.show_relief,
                             clouds: self.show_clouds,
+                            weather_on: env.weather_on,
+                            weather_pin: env.weather_pin,
+                            weather_time_bucket,
                             bounds,
                         };
                         if self.map_tex.is_none()
@@ -1085,7 +1189,8 @@ impl PhotoMap {
                         )
                         .on_hover_text(
                             "teleporting to a photo also rewinds the day/night cycle \
-                             to the moment it was taken (sidecar shots only)",
+                             and restores its recorded weather pin/off state or absolute \
+                             weather time (sidecar shots only)",
                         );
                         let dest = self.destination();
                         ui.add_enabled_ui(dest.is_some(), |ui| {
@@ -1143,6 +1248,9 @@ impl PhotoMap {
                 pitch_deg: Some(p.pitch_deg),
                 day_time_s: if self.restore_time { p.day_time_s } else { None },
                 day_len_s: if self.restore_time { p.day_len_s } else { None },
+                weather_on: if self.restore_time { p.weather_on } else { None },
+                weather_pin: if self.restore_time { p.weather_pin } else { None },
+                weather_time_s: if self.restore_time { p.weather_time_s } else { None },
                 ground_km: p.ground_km,
                 walk: p.mode.as_deref() == Some("walk"),
                 seed: p.seed,
@@ -1157,6 +1265,9 @@ impl PhotoMap {
                 pitch_deg: None,
                 day_time_s: None,
                 day_len_s: None,
+                weather_on: None,
+                weather_pin: None,
+                weather_time_s: None,
                 ground_km: None,
                 walk: false,
                 seed: None,
@@ -1181,6 +1292,9 @@ impl PhotoMap {
                     pitch_deg: None,
                     day_time_s: None,
                     day_len_s: None,
+                    weather_on: None,
+                    weather_pin: None,
+                    weather_time_s: None,
                     ground_km: None,
                     walk: false,
                     seed: None,
@@ -1602,5 +1716,75 @@ impl EguiPaint {
         for id in &deltas.free {
             self.textures.remove(id);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn photo_weather_restore_is_opt_in_with_time_checkbox() {
+        let parsed = sidecar_weather(&serde_json::json!({
+            "weather": {"on": true, "pinned": [0.97, 0.9], "t_s": 24_000.0}
+        }));
+        assert_eq!(parsed, Some((true, Some((0.97, 0.9)), Some(24_000.0))));
+
+        let mut map = PhotoMap::new(PathBuf::from("unused"));
+        map.photos.push(Photo {
+            path: PathBuf::from("shot.png"),
+            name: "shot.png".into(),
+            lat: 1.0,
+            lon: 2.0,
+            alt_km: 0.1,
+            yaw_deg: 3.0,
+            pitch_deg: -4.0,
+            day_time_s: Some(600.0),
+            weather_on: Some(true),
+            weather_pin: Some((0.97, 0.9)),
+            weather_time_s: Some(24_000.0),
+            ground_km: Some(0.2),
+            mode: Some("fly".into()),
+            day_len_s: Some(1200.0),
+            seed: Some(42),
+        });
+        map.selected = Some(0);
+
+        let normal = map.destination().unwrap();
+        assert_eq!(normal.day_time_s, None);
+        assert_eq!(normal.weather_on, None);
+        assert_eq!(normal.weather_pin, None);
+        assert_eq!(normal.weather_time_s, None);
+
+        map.restore_time = true;
+        let restored = map.destination().unwrap();
+        assert_eq!(restored.day_time_s, Some(600.0));
+        assert_eq!(restored.weather_on, Some(true));
+        assert_eq!(restored.weather_pin, Some((0.97, 0.9)));
+        assert_eq!(restored.weather_time_s, Some(24_000.0));
+    }
+
+    #[test]
+    fn clouds_now_bucket_tracks_only_moving_or_seasonal_fields() {
+        assert_eq!(
+            map_weather_time_bucket(BaseLayer::Biomes, true, true, None, 59.9),
+            Some(0)
+        );
+        assert_eq!(
+            map_weather_time_bucket(BaseLayer::Biomes, true, true, None, 60.0),
+            Some(1)
+        );
+        assert_eq!(
+            map_weather_time_bucket(BaseLayer::Biomes, true, true, Some((0.5, 0.0)), 60.0),
+            None
+        );
+        assert_eq!(
+            map_weather_time_bucket(BaseLayer::Biomes, true, false, None, 60.0),
+            None
+        );
+        assert_eq!(
+            map_weather_time_bucket(BaseLayer::Temperature, false, false, None, 60.0),
+            Some(1)
+        );
     }
 }

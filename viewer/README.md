@@ -33,7 +33,7 @@ cargo run --release -- --capture shot.png --lat 22 --lon 28 --alt 500 --pitch -3
 | **Q / E** | break a block / place a block against the face you're aiming at (edits persist to `assets/edits_seed*.bin`) |
 | **R** | place/remove a torch on the block you're aiming at — real light at night and in caves (persists to `assets/torches_seed*.bin`) |
 | **F** | back to fly mode |
-| **T** | the photo map: a pan/zoom minimap popup with a marker for every screenshot. **Scroll zooms** about the cursor, **drag pans**, **double-click** (or *Reset view*) returns to the whole planet; the visible region is re-synthesized from the rasters at each zoom, so small water features stay sharp. A layer bar composites features onto the map: a **Base** of *Biomes* (default), *Temperature* or *Precipitation* (both seasonal — they follow the current time of year), plus toggles for *Relief* shading, *Rivers* (courses from `rivers.bin`, thicker/brighter by flow — big rivers show planet-wide, creeks fade in as you zoom), *Lakes* (liquid blue, frozen pale), *Clouds now* (the live synoptic field at the current weather time), and *Markers*. A green ring marks your current position. Click a marker or list row to pick a photo (preview + two-way highlight), click open water/land to set a free destination, or type `lat lon [alt km]` — then **Teleport** commits (a photo restores its exact view; tick *Restore photo's time of day* to also rewind the day/night cycle to the shot's sidecar time). Checkboxes + **Delete** move photos to `interchange/trash/` after a confirm. Esc closes |
+| **T** | the photo map: a pan/zoom minimap popup with a marker for every screenshot. **Scroll zooms** about the cursor, **drag pans**, **double-click** (or *Reset view*) returns to the whole planet; the visible region is re-synthesized from the rasters at each zoom, so small water features stay sharp. A layer bar composites features onto the map: a **Base** of *Biomes* (default), *Temperature* or *Precipitation* (both seasonal — they follow the current time of year), plus toggles for *Relief* shading, *Rivers* (courses from `rivers.bin`, thicker/brighter by flow — big rivers show planet-wide, creeks fade in as you zoom), *Lakes* (liquid blue, frozen pale), *Clouds now* (the renderer's off/live/pinned field, refreshed in 60-second weather-time buckets while live), and *Markers*. A green ring marks your current position. Click a marker or list row to pick a photo (preview + two-way highlight), click open water/land to set a free destination, or type `lat lon [alt km]` — then **Teleport** commits (a photo restores its exact view; tick *Restore photo's time of day* to also rewind the day/night cycle and restore the sidecar's weather off/pin/absolute-time coordinate). Checkboxes + **Delete** move photos to `interchange/trash/` after a confirm. Esc closes |
 | **P** | screenshot to `interchange/shot_lat…_lon…_alt…km_….png` (pose in the filename, full state incl. sun in a `.json` sidecar) |
 | Esc | quit (or close the photo map / release the mouse first) |
 
@@ -53,6 +53,12 @@ Sunset brings out the stars; torches matter after dark. `--day-len 0`
 restores the old always-noon-where-you-are mode, and `--sun-lat/--sun-lon`
 pins the sun exactly (screenshots stay reproducible). `--exagg N` scales
 terrain height (default 10; walk mode is best at `--exagg 1`).
+
+Living weather defaults to `--weather live`; use `--weather off` for the clear
+legacy render or `--weather COVER,PRECIP` to pin both intensities. For replay,
+`--weather-time T_S` seeks the absolute weather clock without moving the
+day/night clock. The play harness exposes the same coordinate as `weather time
+T_S`, alongside `weather off|live|pin` and `weather season FRAC`.
 
 **`--auto-tilt`** opts into the descent cinematic: above 100 km, scrolling
 altitude eases the view pitch toward the planet. Default **off** — scroll
