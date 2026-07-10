@@ -195,7 +195,30 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         ground = ground * (1.0 - globals.weather3.x * rain);
     }
     let base = mix(ground, in.water.rgb, clamp(wet, 0.0, 1.0));
-    let n = normalize(in.normal);
+    var n = normalize(in.normal);
+    // ---- per-pixel normal detail (TRANSITIONS.md: mesh reads flat) ----
+    // The voxel patch gets surface relief for free — stepped 1 m column
+    // tops shade individually — while the mesh interpolates one normal
+    // across 26 m triangles and reads as vinyl. Perturb the mesh normal
+    // per ~2 m hash cell (same lattice family as the micro-texture), with
+    // the amplitude scaled by SLOPE: flat ground stays smooth exactly like
+    // coplanar block tops do, hillsides roughen exactly where the columns
+    // step. Water keeps its mirror (×(1−wet)), and the same ~2 km fade as
+    // the micro-texture returns the far field to today's clean reading.
+    if (in.rel_flag.w > 0.5) {
+        let wp = in.rel_flag.xyz - globals.center.xyz;
+        let cell = vec3<i32>(floor(wp * 480.0));
+        let jit = vec3<f32>(
+            hash3i(cell + vec3<i32>(11, 0, 0)),
+            hash3i(cell + vec3<i32>(0, 7, 0)),
+            hash3i(cell + vec3<i32>(0, 0, 3)),
+        ) - 0.5;
+        let pup = normalize(wp);
+        let slope = 1.0 - dot(n, pup);
+        let amp = 0.9 * smoothstep(0.01, 0.20, slope)
+            * exp(-in.dist_km / 1.8) * (1.0 - clamp(wet, 0.0, 1.0));
+        n = normalize(n + amp * jit);
+    }
     let light = max(dot(n, globals.sun_dir.xyz), 0.0);
     let sky_hemi = clamp(0.5 + 0.5 * dot(n, up), 0.0, 1.0);
     // overcast: direct sun dims toward its tunable floor and the ambient
