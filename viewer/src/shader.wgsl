@@ -552,16 +552,24 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
             }
         }
     }
-    if (globals.weather.w < 500.0) {
+    // Weather is sampled once per frame AT THE CAMERA's ground point and
+    // applied globally - correct when you are IN that weather, nonsense
+    // from orbit: flying at 6000 km sweeps synoptic cells below and the
+    // whole hemisphere's brightness pulsed with each one (Austin's polar
+    // flicker, ice 126 vs 152 RGB across 1.7 deg of latitude). All
+    // camera-anchored ground responses fade to neutral above the weather
+    // layer: full in the troposphere, gone by 40 km.
+    let wcam = 1.0 - smoothstep(8.0, 40.0, max(globals.sky.w, 0.0));
+    if (globals.weather.w < 500.0 && wcam > 0.0) {
         let wp = in.rel_flag.xyz - globals.center.xyz;
         let r_sphere = length(globals.center.xyz) - max(globals.sky.w, 0.0);
         let elev_km = length(wp) - r_sphere;
         let t_pix = globals.weather.w - 6.5 * (elev_km - max(globals.sky.w, 0.0));
         let dith = hash31(floor(wp * 40.0)) * 1.8 - 0.9;
         let cold = 1.0 - smoothstep(-globals.weather3.y, 1.0, t_pix + dith);
-        let dust = cold * (0.45 + 0.55 * globals.weather.z * globals.weather.y);
+        let dust = cold * (0.45 + 0.55 * globals.weather.z * globals.weather.y) * wcam;
         ground = mix(ground, vec3<f32>(0.88, 0.90, 0.94), dust);
-        let rain = globals.weather.y * (1.0 - globals.weather.z);
+        let rain = globals.weather.y * (1.0 - globals.weather.z) * wcam;
         ground = ground * (1.0 - globals.weather3.x * rain);
     }
     let base = mix(ground, in.water.rgb, clamp(wet, 0.0, 1.0));
@@ -594,8 +602,11 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     // overcast: direct sun dims toward its tunable floor and the ambient
     // flattens a touch — a grey day, not a dark one (night is untouched:
     // the dimming scales with `day`)
-    let odim = mix(1.0, globals.weather2.w, globals.weather.x * day);
-    let ambient = (0.10 + 0.40 * day * sky_hemi) * mix(1.0, 0.85, globals.weather.x * day);
+    // overcast dimming and ambient flattening are camera-weather too:
+    // scale by wcam so orbit sees the planet's true lighting (the flicker)
+    let odim = mix(1.0, globals.weather2.w, globals.weather.x * day * wcam);
+    let ambient =
+        (0.10 + 0.40 * day * sky_hemi) * mix(1.0, 0.85, globals.weather.x * day * wcam);
     // ...and the direct term itself dies with the horizon (* day): the
     // below-horizon sun otherwise kept lighting at FULL coefficient — tree
     // canopy sides facing the set sun glowed all night, opposite the moon
