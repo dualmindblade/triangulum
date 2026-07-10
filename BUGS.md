@@ -9,6 +9,18 @@ are `teleport LAT LON [ALT_KM]` viewer args at `--exagg 1` unless noted.
 
 ## OPEN
 
+### V-8 The deep-tile disc: full-octave detail ring pops against coarse mesh
+From ~2 km looking straight down (0.625 68.960 pitch -79), the deep-tile
+ring around the voxel patch reads as a lighter, busier disc: octave-12
+sampling resolves river carves and dirt banks that octave-8 neighbors
+smooth away. Wetness is already octave-stable (RIVER_REF_OCTAVES), but
+CARVE VISUALS and relief shading are not. Pre-existing (deep tiles exist
+precisely to match the blocks); A's shared texture fixed the flat-field
+half of the old V-1 disc, this detail ring is the tail. Fix directions:
+taper the extra octaves across the deep ring instead of stepping, or
+gate bank-dirt exposure by an octave-stable reference like the perch
+rule. Low urgency: visible only under ~2.5 km looking near-straight down.
+
 ### V-7 Lake-shore sand band disagrees between renderers (territory-wide)
 shade_ground paints lake-shore sand from the VERTEX rule (lake_level
 raster band — kilometers wide across a lake's territory, e.g. the lagoon

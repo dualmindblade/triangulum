@@ -190,7 +190,11 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     // the dimming scales with `day`)
     let odim = mix(1.0, globals.weather2.w, globals.weather.x * day);
     let ambient = (0.10 + 0.40 * day * sky_hemi) * mix(1.0, 0.85, globals.weather.x * day);
-    let sun_coeff = mix(1.0, 0.60, day) * odim;
+    // ...and the direct term itself dies with the horizon (* day): the
+    // below-horizon sun otherwise kept lighting at FULL coefficient — tree
+    // canopy sides facing the set sun glowed all night, opposite the moon
+    // ("tree shading is backwards", night photo at 0.626 68.962)
+    let sun_coeff = mix(1.0, 0.60, day) * odim * day;
     var c = base * (ambient + sun_coeff * light);
     if (in.rel_flag.w < 0.5) {
         if (in.water.a > 1.5) {
