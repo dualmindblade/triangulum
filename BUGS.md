@@ -105,7 +105,13 @@ curves, no orphan blue cells; flagship 13.357 -4.861 verified at 1 km
 and 4 km, v5-check.play). Residual: the lifted water-plane GEOMETRY
 still ends at vertex resolution, a faint silhouette wiggle at glancing
 angles from low altitude. Field clamps +-5 m (a -1 km sentinel skewed
-crossings into notches — first-build lesson). Original entry follows.
+crossings into notches — first-build lesson). RIVERS joined the field
+(wl - h crosses zero at the carved waterline) so their edges stopped
+stair-stepping too. Remaining residual: shoreline POSITION differs
+between mesh (8-octave h at 26 m tiles, the honest spacing cap) and
+blocks (12 octaves) by up to tens of meters on gentle shores — visible
+only in with/without-patch A/B comparison; closing it needs LOD 15+ or
+an octave-stable shoreline reference. Original entry follows.
 Round-6 hunt: from ~1 km up, big-lake shores and islands render as broad
 straight-edged polygons with orphan blue cells inland (13.357 -4.861; frame
 in interchange/runs/round6-findings-repro/). The Phase-7 roadmap item

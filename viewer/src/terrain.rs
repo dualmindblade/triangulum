@@ -855,12 +855,30 @@ pub fn build_tile(planet: &Planet, key: TileKey, exaggeration: f64) -> TileMesh 
             } else {
                 f64::NEG_INFINITY
             };
+            // rivers are the SAME field: the carve puts the bed below wl
+            // inside the channel and the banks above it outside, so wl - h
+            // crosses zero exactly where the carved profile meets the
+            // waterline — river edges render per-pixel like lakes and sea
+            // instead of stair-stepping at vertex resolution (Austin's
+            // river-mesh-zoom.png). river_wet carries the octave-stable
+            // perch decision, so perched dry washes stay dry; the 3 hw gate
+            // keeps the field from claiming unrelated terrain dips.
+            let shore_river = if s.river_level_km.is_finite()
+                && s.river_wet > 0.5
+                && s.temp_c >= -4.0
+                && s.river_dist_km < s.river_hw_km * 3.0
+            {
+                s.river_level_km - s.h_km
+            } else {
+                f64::NEG_INFINITY
+            };
             // clamp TIGHT (±5 m): the field only matters near its zero
             // crossing, and a vertex without lake data must sit at a gentle
             // -5 m rather than a -1 km sentinel — a huge jump on one vertex
             // skews the interpolated crossing toward it and re-cuts the
             // shoreline into vertex-scale notches (seen on the first build)
-            let shore = shore_sea.max(shore_lake).clamp(-0.005, 0.005) as f32;
+            let shore =
+                shore_sea.max(shore_lake).max(shore_river).clamp(-0.005, 0.005) as f32;
             vertices.push(Vertex {
                 pos: [p.x as f32, p.y as f32, p.z as f32],
                 normal: [nrm.x as f32, nrm.y as f32, nrm.z as f32],
