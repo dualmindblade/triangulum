@@ -188,6 +188,9 @@ pub struct Sample {
     /// Candidate lake level for local shore material, even when this sample
     /// is dry ground just above the waterline.
     pub lake_level_km: f64,
+    /// Octave-independent distance to the baked lake footprint edge. Derived
+    /// inside the existing `lake_at` geometry query; no terrain resampling.
+    pub lake_boundary_dist_km: f64,
     /// Distance to the nearest (meandered) river course and its channel
     /// half-width, for LOD-aware paint: a river narrower than a coarse
     /// tile's vertex spacing would only catch sporadic vertices and shatter
@@ -258,6 +261,7 @@ pub fn sample(planet: &Planet, face: usize, u: f64, v: f64, octaves: u32) -> Sam
         carve_km: 0.0,
         lake: false,
         lake_level_km: f64::NEG_INFINITY,
+        lake_boundary_dist_km: f64::INFINITY,
         river_dist_km: f64::INFINITY,
         river_hw_km: 0.0,
         river_wet: 0.0,
@@ -352,7 +356,7 @@ pub fn sample(planet: &Planet, face: usize, u: f64, v: f64, octaves: u32) -> Sam
         // shore apron grades from this frontier too (rivers.rs apron_past).
         (hit.d_lake_km < hit.radius_km * 2.6
             && (hit.in_lake_voronoi || (d_any < hit.radius_km * 1.15 && hit.rim_is_dam)))
-        .then_some((hit.level_km, hit.salt))
+        .then_some((hit.level_km, hit.salt, hit.boundary_dist_km))
     });
 
     // the roughness raster spikes wherever a land cell borders deep ocean
@@ -383,7 +387,7 @@ pub fn sample(planet: &Planet, face: usize, u: f64, v: f64, octaves: u32) -> Sam
         // ground that merely falls inside its cell-search disc (e.g. a pond).
         // Keyed to flood ELIGIBILITY: terrain outside the dam keeps its full
         // relief even when it happens to sit below some lake's level.
-        if let Some((lvl, _)) = lake_flood {
+        if let Some((lvl, _, _)) = lake_flood {
             let submerge = smoothstep(-0.005, 0.012, lvl - e_raw);
             env *= 1.0 - 0.88 * submerge;
         }
@@ -518,8 +522,9 @@ pub fn sample(planet: &Planet, face: usize, u: f64, v: f64, octaves: u32) -> Sam
 
     // lakes: fill to the spill level from the drainage graph. The bed is
     // the natural terrain — noise poking above the level makes islands.
-    if let Some((lvl, salt)) = lake_flood {
+    if let Some((lvl, salt, boundary_dist)) = lake_flood {
         out.lake_level_km = lvl;
+        out.lake_boundary_dist_km = boundary_dist;
         // the OUTLET channel owns its own water: past the spill the river's
         // fill level descends with the terrain, and letting the flood lay a
         // tongue of lake-level water in that descending channel would end in
@@ -1050,10 +1055,48 @@ fn frost_color(p: glam::DVec3) -> [f32; 3] {
 /// ramped on e_raw alone capped at 90% — a full-sand voxel disk on mostly
 /// grass mesh at every low coast (the v1_color pose, 0.569 68.915).
 /// Bands feather over ~2 m so the dithered edge reads as an ecotone.
+/// Callers yield to `lake_shore_frac` wherever a finite lake level makes the
+/// lake rule the material owner; otherwise this generic low coast could
+/// repaint a bounded lake shore as a province.
 pub fn beach_frac(e_raw_km: f64, h_km: f64) -> f64 {
     let by_raster = 1.0 - smoothstep(0.010, 0.012, e_raw_km);
     let by_surface = 1.0 - smoothstep(0.012, 0.014, h_km);
     by_raster * by_surface
+}
+
+const LAKE_SHORE_HEIGHT_KM: f64 = 0.0015;
+// Keep a solid core through one ~100 m mesh-vertex spacing at the 2 km visual
+// reference, then feather for another 200 m. Beyond that it is country, not
+// beach, even if a coarse flood-eligible sample happens to hug lake level.
+const LAKE_SHORE_SOLID_KM: f64 = 0.100;
+const LAKE_SHORE_REACH_KM: f64 = 0.300;
+
+/// THE lake-shore material decision (BUGS.md V-7): liquid-lake sand on dry
+/// ground in a small height band above the local waterline AND near the baked
+/// lake footprint's actual lake/rim edge. The height half preserves the old
+/// voxel column semantics; the bounded edge half prevents coarse mesh samples
+/// from painting a whole flood-eligible territory as sand. Mesh vertices mix
+/// by this fraction and voxel columns dither on it, matching `beach_frac`.
+/// Height is full at the waterline and zero 1.5 m above it; edge distance is
+/// full through 100 m and zero by 300 m. Frozen lakes return zero so their
+/// existing ice/snow shores stay untouched.
+pub fn lake_shore_frac(
+    temp_c: f64,
+    h_km: f64,
+    lake_level_km: f64,
+    lake_boundary_dist_km: f64,
+) -> f64 {
+    if temp_c < -4.0
+        || !lake_level_km.is_finite()
+        || !lake_boundary_dist_km.is_finite()
+        || h_km < lake_level_km
+    {
+        return 0.0;
+    }
+    let by_height = 1.0 - smoothstep(0.0, LAKE_SHORE_HEIGHT_KM, h_km - lake_level_km);
+    let by_edge =
+        1.0 - smoothstep(LAKE_SHORE_SOLID_KM, LAKE_SHORE_REACH_KM, lake_boundary_dist_km);
+    by_height * by_edge
 }
 
 /// THE liquid water surface color (TRANSITIONS.md F): one ramp for both
@@ -1115,7 +1158,15 @@ fn shade_ground(
     // beach sand on low coastal ground — the SAME fraction the blocks
     // dither their material on (beach_frac), mixed at full strength so a
     // frac-1 beach is exactly the blocks' Mat::Sand tint
-    let sandy = beach_frac(s.e_raw, s.h_km) as f32;
+    // A finite lake level means the lake-specific rule below owns sand here.
+    // Letting the generic low-elevation beach fall through would immediately
+    // repaint a near-sea-level lake's whole territory and make the bounded
+    // V-7 rule a visual no-op (the 47.80, 14.42 lagoon repro).
+    let sandy = if s.lake_level_km.is_finite() {
+        0.0
+    } else {
+        beach_frac(s.e_raw, s.h_km) as f32
+    };
     let sand = climate.tint(MainBlock::Sand);
     c = mix3(c, sand, sandy);
     // bare rock only where the ground is actually steep (like the blocks,
@@ -1131,15 +1182,47 @@ fn shade_ground(
     if climate.main_block == MainBlock::Snow {
         c = climate.tint(MainBlock::Snow);
     }
-    // Lake shore sand on dry ground just above the local lake level. Apply
-    // after rock/snow for liquid-temperature lakes so barely-emergent shoals
-    // read as sandbars instead of steep dark holes in the water.
-    let lake_shore =
-        if s.temp_c >= -4.0 && s.lake_level_km.is_finite() && s.h_km >= s.lake_level_km {
-            (1.0 - ((s.h_km - s.lake_level_km) / 0.0015).clamp(0.0, 1.0)) as f32
-        } else {
-            0.0
-        };
-    c = mix3(c, sand, lake_shore * 0.9);
+    // Lake-shore sand uses the SAME fraction the blocks dither on. Apply
+    // after rock/snow so barely-emergent liquid-lake shoals read as sandbars.
+    let lake_shore = lake_shore_frac(
+        s.temp_c,
+        s.h_km,
+        s.lake_level_km,
+        s.lake_boundary_dist_km,
+    ) as f32;
+    c = mix3(c, sand, lake_shore);
     c
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn lake_shore_fraction_requires_height_edge_and_liquid_water() {
+        let level = 0.070;
+        assert_eq!(lake_shore_frac(8.0, level, level, 0.0), 1.0);
+        assert_eq!(lake_shore_frac(-4.0, level, level, 0.0), 1.0);
+        assert_eq!(lake_shore_frac(8.0, level - 0.0001, level, 0.0), 0.0);
+        assert_eq!(lake_shore_frac(-4.01, level, level, 0.0), 0.0);
+        assert_eq!(lake_shore_frac(8.0, level, f64::NEG_INFINITY, 0.0), 0.0);
+        assert_eq!(lake_shore_frac(8.0, level, level, f64::INFINITY), 0.0);
+        assert_eq!(
+            lake_shore_frac(8.0, level + LAKE_SHORE_HEIGHT_KM, level, 0.0),
+            0.0
+        );
+        assert_eq!(
+            lake_shore_frac(8.0, level, level, LAKE_SHORE_REACH_KM),
+            0.0
+        );
+
+        // Both ramps are at their smoothstep midpoint, so they multiply.
+        let f = lake_shore_frac(
+            8.0,
+            level + LAKE_SHORE_HEIGHT_KM * 0.5,
+            level,
+            (LAKE_SHORE_SOLID_KM + LAKE_SHORE_REACH_KM) * 0.5,
+        );
+        assert!((f - 0.25).abs() < 1e-12, "fraction={f}");
+    }
 }

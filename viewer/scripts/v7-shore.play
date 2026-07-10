@@ -1,0 +1,23 @@
+# BUGS.md V-7: one lake-shore sand rule in mesh and voxel renderers.
+# Weather is disabled so the frames isolate base tint/material selection.
+
+weather off
+mode fly
+
+# Lagoon repro: before V-7 the flood-eligible territory is a tan province.
+sun 55 14
+teleport 47.800000 14.420000 2.0
+look 63 -30
+shot lagoon_2km
+
+# Healthy liquid lake with voxel-height shore columns on the baked edge: the
+# narrow sand rim must survive.
+sun 28 32
+teleport 12.338677 32.354582 0.8
+look 76 -70
+shot healthy_lake_rim
+
+# Low view across that shore: foreground blocks and far mesh share the frame.
+teleport 12.338677 32.354582 0.12
+look -14 -18
+shot shore_straddle
