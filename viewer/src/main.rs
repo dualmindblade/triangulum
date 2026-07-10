@@ -988,9 +988,21 @@ impl ApplicationHandler for App {
                 {
                     let raw = st.take_egui_input(&gfx.window);
                     let pm = &mut self.photo_map;
-                    let planet = &self.planet;
+                    // hand the map the planet + the live weather so its layers
+                    // (seasonal temp/precip, clouds-now) and the "you are here"
+                    // marker read the same state the renderer is drawing.
+                    let renderer = &gfx.renderer;
+                    let env = triangulum_viewer::ui::MapEnv {
+                        planet: &self.planet,
+                        weather_field: renderer.weather_field.as_ref(),
+                        weather_tuning: &renderer.weather_tuning,
+                        render_time_s: renderer.render_time_s(),
+                        day_len_s: renderer.day_len_s,
+                        cur_lat: self.camera.lat.to_degrees(),
+                        cur_lon: self.camera.lon.to_degrees(),
+                    };
                     let full = self.egui_ctx.run_ui(raw, |ctx| {
-                        action = pm.ui(ctx, planet);
+                        action = pm.ui(ctx, &env);
                     });
                     st.handle_platform_output(&gfx.window, full.platform_output);
                     let prims = self
