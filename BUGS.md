@@ -109,7 +109,29 @@ upstream fix is in PLANETGEN: don't merge depression chains into single
 lake ids (then delete the bake-side peel). Backlog; census-w5d.md is the
 inventory.
 
-### V-10 Flooded-cave surface breaches are voxel-only water (patch-boundary pop)
+### V-10 Flooded-cave surface breaches are voxel-only water (HINT SHIPPED)
+V1 MESH HINT LANDED (2026-07-10, Austin: "karst, frigging awesome" — keep
+the breaches, make the mesh show them): the fragment shader now evaluates
+the EXACT cave field the columns carve with — kgnoise/khash are bit-exact
+u32 twins of noise.rs (every step of its i64 hash is 32-bit masked, so u32
+arithmetic reproduces it; premultiplied seeds ride globals.karst; KGRAD
+generated from noise_grad.rs). Flooded breaches (shore field carries lake
+proximity) join the water pipeline as pools; dry breaches darken into pit
+mouths; full strength to the patch rim then fades by ~2 km. Two traps
+cost the evening: per-pixel elevation from length(wp) is f32-quantized to
+~1 m at planet magnitude and each quantum shifts the tube field ~8 m
+(moire scanlines) — fixed by camera-relative expansion (sky.w +
+dot(rel,up) + curvature term); and a depth-union "fix" for those stripes
+was compensating the same bug — surface-only k=0 matches truth once zm is
+precise. Measured: water-mask IoU voxel-vs-mesh render 0 -> 0.48 at the
+150 m satellite pose, 0.92 over the 450 m karst field; karst joined the
+sync-diff standing table (mean 13.3, lum -0.1); dry-pit hint costs +1-2
+mean on cave-bearing dry poses (style mismatch, v2 tune). GENERALIZATION
+(the reason Austin greenlit): any surface feature that is a pure function
+of (dir, seed) can now get a mesh twin this way — dry breaches already
+do; future generated structures should keep their placement pure
+functions to qualify. Player edits are not pure functions (would need an
+edit-splat overlay). Original entry follows.
 Austin's V-key survey find (2026-07-10, sync_lat13.346_lon-4.807 heatmap
 "satellites"). Around lake 582 (13.346 -4.807), dozens of pond- and
 channel-shaped water bodies render in the voxel patch and vanish in the

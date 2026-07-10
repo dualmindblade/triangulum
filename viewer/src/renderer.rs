@@ -89,6 +89,11 @@ struct Globals {
     // xyz = instantaneous wind (km/s, camera-relative frame) for particle
     // slant; w spare
     weather4: [f32; 4],
+    // premultiplied cave-noise seeds for the karst breach hint (V-10):
+    // low 32 bits of (seed+K).wrapping_mul(0x9E37_79B1) for K = 40961
+    // (region gate), 31337 (tube n1), 51413 (tube n2). The shader's u32
+    // hash twin consumes these to evaluate the EXACT cave field.
+    karst: [u32; 4],
     // placed-torch point lights: xyz camera-relative (km), w intensity
     lights: [[f32; 4]; MAX_LIGHTS],
 }
@@ -817,6 +822,13 @@ impl Renderer {
                 self.weather_tuning.shell_fade_km as f32,
             ],
             weather4: [wind_kms.x as f32, wind_kms.y as f32, wind_kms.z as f32, 0.0],
+            karst: {
+                let kseed = |k: i64| {
+                    (planet.seed.wrapping_add(k).wrapping_mul(0x9E37_79B1) & 0xFFFF_FFFF)
+                        as u32
+                };
+                [kseed(40961), kseed(31337), kseed(51413), 0]
+            },
             lights,
         };
         self.queue.write_buffer(&self.globals_buf, 0, bytemuck::bytes_of(&globals));
