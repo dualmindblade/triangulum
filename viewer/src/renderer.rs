@@ -1026,6 +1026,31 @@ impl Renderer {
         edits: &Edits,
         path: &str,
     ) -> Result<usize> {
+        let (pixels, n_tiles) = self.capture_rgba(planet, camera, edits)?;
+        let (w, h) = self.size;
+        Self::write_png(path, w, h, &pixels)?;
+        Ok(n_tiles)
+    }
+
+    /// Encode RGBA pixels as a PNG — shared by capture() and the in-game
+    /// sync-delta pair (which diffs pixel buffers before ever touching disk).
+    pub fn write_png(path: &str, w: u32, h: u32, pixels: &[u8]) -> Result<()> {
+        let file = std::fs::File::create(path)?;
+        let mut enc = png::Encoder::new(std::io::BufWriter::new(file), w, h);
+        enc.set_color(png::ColorType::Rgba);
+        enc.set_depth(png::BitDepth::Eight);
+        enc.write_header()?.write_image_data(pixels)?;
+        Ok(())
+    }
+
+    /// Render one COMPLETE frame offscreen (blocks until streamed chunks
+    /// land, like a screenshot) and return its RGBA pixels + draw count.
+    pub fn capture_rgba(
+        &mut self,
+        planet: &Arc<Planet>,
+        camera: &Camera,
+        edits: &Edits,
+    ) -> Result<(Vec<u8>, usize)> {
         let (w, h) = self.size;
         let texture = self.device.create_texture(&wgpu::TextureDescriptor {
             label: Some("capture"),
@@ -1114,12 +1139,6 @@ impl Renderer {
         }
         drop(data);
         readback.unmap();
-
-        let file = std::fs::File::create(path)?;
-        let mut enc = png::Encoder::new(std::io::BufWriter::new(file), w, h);
-        enc.set_color(png::ColorType::Rgba);
-        enc.set_depth(png::BitDepth::Eight);
-        enc.write_header()?.write_image_data(&pixels)?;
-        Ok(n_tiles)
+        Ok((pixels, n_tiles))
     }
 }

@@ -639,6 +639,137 @@ impl App {
         self.title_timer = -2.0; // let the message linger
     }
 
+    /// V key: the in-game sync-delta meter — scripts/sync_diff.py's twin.
+    /// Renders the current pose twice (voxel patch on, then off), diffs the
+    /// pair in memory, and saves vox/mesh/heatmap PNGs plus sidecars under
+    /// interchange/sync/. Both frames share one recorded sun and weather
+    /// instant, so they differ ONLY by the voxel patch. Rules of use per
+    /// TRANSITIONS.md "The meter": instrument, not an optimization target.
+    fn save_sync_delta(&mut self) {
+        let dir = format!("{}/sync", interchange_dir());
+        let _ = std::fs::create_dir_all(&dir);
+        let base = format!(
+            "sync_lat{:.3}_lon{:.3}_alt{:.3}km_yaw{:.0}_pitch{:.0}",
+            self.camera.lat.to_degrees(),
+            self.camera.lon.to_degrees(),
+            self.camera.altitude_km,
+            self.camera.yaw.to_degrees(),
+            self.camera.pitch.to_degrees(),
+        );
+        let mode = if self.player.mode == Mode::Walk { "walk" } else { "fly" };
+        let Some(gfx) = self.gfx.as_mut() else { return };
+        let r = &mut gfx.renderer;
+        let sun_pinned = r.sun_dir.is_some();
+        let day_len_s = r.day_len_s;
+        let sun = r.sun_state(self.camera.position());
+        let old_sun = r.sun_dir;
+        r.sun_dir = Some(sun.dir);
+        let was_on = r.voxels_on;
+        r.voxels_on = true;
+        let vox = r.capture_rgba(&self.planet, &self.camera, &self.edits);
+        r.voxels_on = false;
+        let mesh = r.capture_rgba(&self.planet, &self.camera, &self.edits);
+        r.voxels_on = was_on;
+        r.sun_dir = old_sun;
+        let msg = match (vox, mesh) {
+            (Ok((vox, _)), Ok((mesh, _))) => {
+                let (w, h) = r.size;
+                // same statistic as scripts/sync_diff.py: worst-channel
+                // delta per pixel, <=2/255 counts as identical (noise floor)
+                let mut hist = [0u64; 256];
+                let mut lum = 0.0f64;
+                let mut heat = mesh.clone();
+                for i in (0..vox.len().min(mesh.len())).step_by(4) {
+                    let d = vox[i]
+                        .abs_diff(mesh[i])
+                        .max(vox[i + 1].abs_diff(mesh[i + 1]))
+                        .max(vox[i + 2].abs_diff(mesh[i + 2]));
+                    hist[d as usize] += 1;
+                    if d > 2 {
+                        lum += 0.2126 * (f64::from(vox[i]) - f64::from(mesh[i]))
+                            + 0.7152 * (f64::from(vox[i + 1]) - f64::from(mesh[i + 1]))
+                            + 0.0722 * (f64::from(vox[i + 2]) - f64::from(mesh[i + 2]));
+                    }
+                    // heatmap: dimmed mesh frame, divergence burned in red
+                    heat[i] = (f64::from(mesh[i]) * 0.35)
+                        .max((f64::from(d) * 3.0).min(255.0)) as u8;
+                    heat[i + 1] = (f64::from(mesh[i + 1]) * 0.35) as u8;
+                    heat[i + 2] = (f64::from(mesh[i + 2]) * 0.35) as u8;
+                }
+                let total: u64 = hist.iter().sum::<u64>().max(1);
+                let div: u64 = hist[3..].iter().sum();
+                let mean = hist
+                    .iter()
+                    .enumerate()
+                    .skip(3)
+                    .map(|(v, &c)| v as f64 * c as f64)
+                    .sum::<f64>()
+                    / div.max(1) as f64;
+                let (mut p95, mut acc) = (0usize, 0u64);
+                for v in 3..256 {
+                    acc += hist[v];
+                    if acc * 20 >= div * 19 {
+                        p95 = v;
+                        break;
+                    }
+                }
+                let div_frac = div as f64 / total as f64;
+                let signed_lum = lum / div.max(1) as f64;
+                let vox_path = format!("{dir}/{base}_vox.png");
+                let write = Renderer::write_png(&vox_path, w, h, &vox)
+                    .and_then(|()| {
+                        Renderer::write_png(&format!("{dir}/{base}_mesh.png"), w, h, &mesh)
+                    })
+                    .and_then(|()| {
+                        Renderer::write_png(&format!("{dir}/{base}_diff.png"), w, h, &heat)
+                    })
+                    .and_then(|()| {
+                        // the vox frame gets the standard repro sidecar; the
+                        // metrics ride in their own _delta.json next to it
+                        write_shot_sidecar(
+                            &vox_path,
+                            &self.planet,
+                            &self.camera,
+                            &self.args,
+                            mode,
+                            sun,
+                            sun_pinned,
+                            day_len_s,
+                            r,
+                        )
+                    })
+                    .and_then(|()| {
+                        let js = serde_json::json!({
+                            "divergent_frac": (div_frac * 10000.0).round() / 10000.0,
+                            "mean_delta": (mean * 100.0).round() / 100.0,
+                            "p95_delta": p95,
+                            "signed_lum": (signed_lum * 100.0).round() / 100.0,
+                            "noise_floor": 2,
+                        });
+                        std::fs::write(
+                            format!("{dir}/{base}_delta.json"),
+                            serde_json::to_string_pretty(&js)?,
+                        )?;
+                        Ok(())
+                    });
+                match write {
+                    Ok(()) => format!(
+                        "sync delta: div {:.1}% mean {:.1} p95 {} lum {:+.1} — {dir}/{base}_*",
+                        div_frac * 100.0,
+                        mean,
+                        p95,
+                        signed_lum
+                    ),
+                    Err(e) => format!("sync delta: saved frames failed at {e}"),
+                }
+            }
+            (Err(e), _) | (_, Err(e)) => format!("sync delta failed: {e}"),
+        };
+        println!("{msg}");
+        gfx.window.set_title(&format!("Neisor — {msg}"));
+        self.title_timer = -4.0; // numbers are the point — let them linger
+    }
+
     /// Commit a destination chosen in the photo map: position, then the
     /// photo's view if it carried one, then (opt-in) its time of day.
     fn apply_teleport(&mut self, act: triangulum_viewer::ui::TeleportAction) {
@@ -760,8 +891,8 @@ impl App {
             self.title_timer = 0.0;
             if let Some(gfx) = &self.gfx {
                 let mode = match self.player.mode {
-                    Mode::Fly => "fly (click captures mouse, G walk, T teleport, P shot)",
-                    Mode::Walk => "walk (F fly, space jump, T teleport, P shot)",
+                    Mode::Fly => "fly (click captures mouse, G walk, T teleport, P shot, V sync)",
+                    Mode::Walk => "walk (F fly, space jump, T teleport, P shot, V sync)",
                 };
                 // objective framerate, not "feels smooth": avg cadence
                 // (vsync-locked 60 Hz reads 16.7), p95 where hitches live
@@ -934,6 +1065,7 @@ impl ApplicationHandler for App {
                                         self.photo_map.toggle();
                                     }
                                     K::KeyP => self.save_screenshot(),
+                                    K::KeyV => self.save_sync_delta(),
                                     _ => {}
                                 }
                             }
