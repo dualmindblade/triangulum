@@ -120,6 +120,38 @@ upstream fix is in PLANETGEN: don't merge depression chains into single
 lake ids (then delete the bake-side peel). Backlog; census-w5d.md is the
 inventory.
 
+### W-8 Weather fidelity cluster (Sol review #2 findings 2,3,4,7,10,13)
+MISSION DISPATCHED (Sol #6, 2026-07-10 evening). Six related weather gaps:
+(2) recorded shot weather is dead metadata - neither repro_shot.py nor the
+photo-map restore replays it (breaks the "photo of a storm is a coordinate"
+contract); (3) the bake drops WEATHER.md's promised semiannual harmonic -
+monsoon/bimodal regimes collapse to one sinusoid (k=2 would cut global
+precip RMS 35.1 -> 24.9 mm/mo); (4) synoptic advection uses
+normalize(dir - drift), whose angle asymptotes at 90 deg - fronts freeze
+after ~a simulated year; (7) weather_tuning.json is unvalidated -
+days_per_year: 0 NaN-poisons every uniform; (10) the photo map's
+Clouds-now ignores weather off/pin and never resynthesizes on time alone;
+(13) `weather season FRAC` sets epoch_frac, so after any elapsed sim time
+the frame season is FRAC + elapsed. Gates: byte-determinism reel, suites,
+before/after demos per item.
+
+### E-2 Forest impostors skip tree_here guards (review #2 finding 9)
+The impostor lottery matches tree placement but not full eligibility:
+tree_here also rejects edits, 8-neighbor relief, neighboring carves, and
+cave mouths (top_solid != ground). Measured: 23 of 915 impostors on the
+jungle reference tile stand where no block tree will exist (first:
+15.946564 -78.370195, a cave mouth) - a billboard rooted over a pit at
+the forest handoff. Fix shape: run survivors through the cheap parts of
+tree_here (one col_ctx per survivor after the two-phase cut).
+
+### V-6b A fully morphed child does not morph its shore field (review #2 f12)
+V-6 morphs height + wetness to the parent triangle, but Vertex::shore
+passes through unmorphed: 8 sign disagreements on the lake_shore test
+tile (child -0.064 m vs parent +0.073 m at 13.343049 -4.821302) - the AA
+shoreline can flip sides at the LOD swap. Fix shape: parent-triangle
+shore grid + one more morph channel, weighed against V-6's own vertex-
+size argument (a shore f32 is +4 bytes; evaluate before paying).
+
 ### V-10 Flooded-cave surface breaches are voxel-only water (HINT SHIPPED, v2)
 V2 (same day, Austin's field survey at the newly-christened DIFFICULTY
 LAKE, 13.346 -4.807): (1) false pools — a cross-section "core depth"
@@ -133,6 +165,12 @@ on grass, photo at 13.336 -4.798) to Mat::Dirt albedo lightly shadowed —
 the sync-diff dry poses now BEAT their pre-hint baselines (savanna 7.72
 -> 7.35, desert 6.65 -> 6.77): drawn pits in dirt match blocks better
 than absent pits. V1 notes follow.
+MEASURED LIMIT (review #2 finding 8): the u32 lattice hash is bit-exact,
+but kgnoise evaluates in f32 vs the CPU's f64 - max noise delta 0.020434
+flips 68 of 25,921 surface tube classifications (0.26%) near the 0.085
+threshold; this is the arithmetic root of part of the ~250 px false-pool
+floor. Accepted for v1 (WGSL has no f64); revisit only if edge shimmer
+is ever visible in motion.
 V1 MESH HINT LANDED (2026-07-10, Austin: "karst, frigging awesome" — keep
 the breaches, make the mesh show them): the fragment shader now evaluates
 the EXACT cave field the columns carve with — kgnoise/khash are bit-exact
@@ -179,7 +217,15 @@ tiles paint a hint of them (expensive: per-vertex cave noise taps); (c)
 accept the pop as-is and let the rim knob C own it. Gate for (a)/(b):
 the sync-diff satellites at this pose disappear or match.
 
-### V-9 Quantified shading biases: polar ice +12, steep slopes -8 (sync-diff)
+### V-9 Quantified shading biases (ICE MOSTLY FIXED ecf0b5d; slopes -8 open)
+UPDATE 2026-07-10 evening: the polar-ice bias was mostly a BUG, not taste -
+block water/ice quads took cold DUSTING through the ground path while the
+mesh wet-mix masked it (exposed when review #2's lapse fix shifted the
+reference 0.78 C). Chunk water surfaces now carry wflag=1 and the shader
+skips dusting/rain on open water: ice_top mean 19.1 -> 8.8, lum bias
++12.0 -> +3.4. Residual +3.4 and the steep-slope -8 remain the original
+shading-share questions below.
+### V-9 (original) polar ice +12, steep slopes -8 (sync-diff)
 Found by the sync-diff meter (scripts/sync_diff.py, 2026-07-10 overnight).
 Two systematic mesh-vs-block brightness disagreements, in 8-bit luminance
 over the divergent region: (1) ice_top pose (83.997 40.22): +12.0 bias
