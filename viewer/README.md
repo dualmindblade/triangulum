@@ -139,6 +139,7 @@ Scenic destinations (all `--exagg 1`):
 | taiga + cave pits | `--lat 51.18 --lon 85.83 --alt 0.05` |
 | savanna acacias | `--lat 1.51 --lon 40.49 --alt 0.05` |
 | highest peak (8.58 km) | `--lat 69 --lon 122 --alt 1` |
+| Difficulty Lake (karst breach fields, V-10's home; named by Austin) | `--lat 13.346 --lon -4.807 --alt 0.3` |
 
 ## Phase 3.5 (bug round, 2026-07-06)
 

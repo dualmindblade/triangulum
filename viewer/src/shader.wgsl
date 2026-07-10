@@ -525,14 +525,28 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
                         * (1.0 - smoothstep(0.076, 0.085, a2))
                         * smoothstep(-0.05, -0.02, region)
                         * kfade;
-                    // flooded whenever the shore field carries ANY lake
-                    // proximity (sentinel is exactly -5 m): col_ctx floods
-                    // caves across a 10 m groundwater band, so a -4 m gate
-                    // painted false dry gaps mid-channel
-                    if (in.shore > -0.0049) {
-                        wet = max(wet, t); // flooded: the water pipeline colors it
+                    // flooded only if the lake table reaches ABOVE the
+                    // pit floor - and the floor is only deep where the
+                    // TUBE ITSELF continues downward: probe the same field
+                    // 2.5 m deeper. A deep-running tube may flood from a
+                    // table up to ~3 m below ground; a surface graze only
+                    // from a table right at ground. (A cross-section
+                    // "core depth" proxy still painted false pools on
+                    // high ground - Austin's diff at 13.349 -4.798; the
+                    // deep probe is the blocks' actual geometry question.)
+                    let deep = max(
+                        abs(kgnoise(dirp * (90000.0 + (zm - 2.5) / 12.0), globals.karst.y)),
+                        abs(kgnoise(dirp * (76000.0 + (zm - 2.5) / 9.0), globals.karst.z)),
+                    ) < 0.085;
+                    if (in.shore > select(-0.0008, -0.0030, deep)) {
+                        wet = max(wet, t); // pool: the water pipeline colors it
                     } else {
-                        ground = ground * (1.0 - 0.7 * t); // dry pit mouth
+                        // dry pit mouth: the blocks expose DIRT walls
+                        // (Mat::Dirt albedo), lightly shadowed - a plain
+                        // darken read as olive smears on grass
+                        // ("difficulty lake" photo, 13.336 -4.798)
+                        let dirt = vec3<f32>(0.33, 0.235, 0.135);
+                        ground = mix(ground, dirt * 0.72, 0.85 * t);
                     }
                 }
             }

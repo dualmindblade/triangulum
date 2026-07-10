@@ -109,7 +109,19 @@ upstream fix is in PLANETGEN: don't merge depression chains into single
 lake ids (then delete the bake-side peel). Backlog; census-w5d.md is the
 inventory.
 
-### V-10 Flooded-cave surface breaches are voxel-only water (HINT SHIPPED)
+### V-10 Flooded-cave surface breaches are voxel-only water (HINT SHIPPED, v2)
+V2 (same day, Austin's field survey at the newly-christened DIFFICULTY
+LAKE, 13.346 -4.807): (1) false pools — a cross-section "core depth"
+proxy flooded tube cores whose carve never reaches the table (diff at
+13.349 -4.798); the flood test now probes the SAME field 2.5 m deeper
+(the blocks' actual geometry question: does the tube continue below the
+table?) — false pools 2,974 px -> 0 at that pose, main channel IoU held
+at 0.48, error sign now conservative (rare false-dry, never invented
+water). (2) dry pit mouths recolored from a plain darken (olive smears
+on grass, photo at 13.336 -4.798) to Mat::Dirt albedo lightly shadowed —
+the sync-diff dry poses now BEAT their pre-hint baselines (savanna 7.72
+-> 7.35, desert 6.65 -> 6.77): drawn pits in dirt match blocks better
+than absent pits. V1 notes follow.
 V1 MESH HINT LANDED (2026-07-10, Austin: "karst, frigging awesome" — keep
 the breaches, make the mesh show them): the fragment shader now evaluates
 the EXACT cave field the columns carve with — kgnoise/khash are bit-exact
