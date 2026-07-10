@@ -13,7 +13,11 @@ use crate::planet::{climate_surface, face_dir, MainBlock, Planet};
 use glam::DVec3;
 
 pub const TILE_QUADS: usize = 32; // 32x32 quads, 33x33 vertices per tile
-pub const MAX_LEVEL: u8 = 12;     // ~3.3 km tiles, ~103 m vertex spacing
+pub const MAX_LEVEL: u8 = 14; // ~0.8 km tiles, ~26 m vertex spacing at the cap
+// (was 12 / 103 m: a 15 m river cannot exist in a 103 m lattice — the wet
+// paint widened it to vertex spacing and the carved valley vanished, so the
+// mesh side of the patch rim read as a different planet. Austin's paired
+// photos at 15.024 17.648 are the exhibit.)
 const DETAIL_BASE_FREQ: f64 = 700.0; // first detail octave ~12 km at R=8660
 const MAX_DETAIL_OCTAVES: u32 = 8;
 
@@ -929,6 +933,8 @@ pub fn build_tile(planet: &Planet, key: TileKey, exaggeration: f64) -> TileMesh 
     // blocks take over, and there the hole owns the view). Two phases so
     // the expensive terrain sample runs only on budget survivors.
     let impostor_stride: u64 = match key.level {
+        14 => 1,
+        13 => 2,
         12 => 4,
         11 => 8,
         _ => 0,
