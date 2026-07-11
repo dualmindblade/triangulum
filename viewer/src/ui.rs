@@ -796,6 +796,11 @@ impl PhotoMap {
             .collapsible(false)
             .resizable(true)
             .default_size(egui::vec2(screen.width() * 0.86, screen.height() * 0.84))
+            // never larger than the screen, and scroll instead of clipping:
+            // the title/notes column made the content taller than fullscreen
+            // and parts rendered off-screen (Austin's notes-feature.png)
+            .max_size(egui::vec2(screen.width() * 0.95, screen.height() * 0.90))
+            .vscroll(true)
             .pivot(egui::Align2::CENTER_CENTER)
             .default_pos(screen.center())
             .show(ctx, |ui| {
@@ -841,7 +846,11 @@ impl PhotoMap {
                     // ---------------- left: map + preview ----------------
                     ui.vertical(|ui| {
                         let avail = ui.available_width() - list_w;
-                        let map_w = avail.max(320.0);
+                        // keep the 2:1 map SHORT enough that the preview +
+                        // title/notes below it still fit inside the window
+                        let map_w = avail
+                            .max(320.0)
+                            .min((ui.available_height() - 380.0).max(300.0) * 2.0);
                         let map_h = map_w * 0.5;
                         let (rect, resp) = ui.allocate_exact_size(
                             egui::vec2(map_w, map_h),
