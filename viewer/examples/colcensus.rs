@@ -6,6 +6,7 @@
 //!   EDGE  1-deep water standing above a dry neighbor - the shallow ring
 //!         Austin reported at Difficulty Lake (analog-clearance dead band;
 //!         includes creek films, which are 1-deep by construction)
+//!   SHOAL equal-block liquid-lake tie raised to dry ground at water level
 //!   CAVEP cave pool breaching the surface (pit open to sky, water below)
 //! Prints class totals, worst sites as teleport commands, and per-class
 //! coordinates for the play harness to re-shoot.
@@ -77,6 +78,9 @@ fn main() -> anyhow::Result<()> {
                 let c = ctx(di, dj);
                 // neighbor ground tops (walk surface, ignoring trees)
                 let n = [ctx(di + 1, dj), ctx(di - 1, dj), ctx(di, dj + 1), ctx(di, dj - 1)];
+                if c.lake_shoal {
+                    out.push(Hit { class: "SHOAL", di, dj, drop: 0 });
+                }
                 if c.has_water() {
                     let wtop = c.water;
                     let film = wtop == c.ground + 1;
@@ -108,7 +112,7 @@ fn main() -> anyhow::Result<()> {
         .collect();
 
     let mut all: Vec<Hit> = rows.into_iter().flatten().collect();
-    for class in ["LIP", "EDGE", "CAVEP"] {
+    for class in ["LIP", "EDGE", "SHOAL", "CAVEP"] {
         let mut hits: Vec<&Hit> = all.iter().filter(|h| h.class == class).collect();
         hits.sort_by_key(|h| -h.drop);
         println!("{class}: {} columns", hits.len());
