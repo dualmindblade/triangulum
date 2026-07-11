@@ -10,9 +10,9 @@
 
 use crate::noise::{fbm_band, normal_value_noise, ridged_band};
 use crate::planet::{
-    climate_surface, face_dir, sea_from_fields, MainBlock, Planet, COLUMNS_PER_FACE,
-    ECOTONE_BASE_PATCH_COLUMNS, ECOTONE_FIELD_OCTAVES, ECOTONE_LACUNARITY,
-    ECOTONE_PERSISTENCE,
+    climate_surface, climate_surface_pair, face_dir, sea_from_fields, ClimateSurface,
+    MainBlock, Planet, COLUMNS_PER_FACE, ECOTONE_BASE_PATCH_COLUMNS,
+    ECOTONE_FIELD_OCTAVES, ECOTONE_LACUNARITY, ECOTONE_PERSISTENCE,
 };
 use glam::DVec3;
 
@@ -24,6 +24,24 @@ pub const MAX_LEVEL: u8 = 14; // ~0.8 km tiles, ~26 m vertex spacing at the cap
 // photos at 15.024 17.648 are the exhibit.)
 const DETAIL_BASE_FREQ: f64 = 700.0; // first detail octave ~12 km at R=8660
 const MAX_DETAIL_OCTAVES: u32 = 8;
+/// Far patches retain this much categorical contrast over their continuous,
+/// area-preserving weights. Lower values soften coarse-mesh diamonds.
+pub const BIOME_RANGE_CATEGORICAL_CONTRAST: f32 = 0.45;
+/// Range color is stored as a signed delta at half-scale: SNORM8 precision is
+/// just under 0.004 linear-color units, while a zero delta remains exactly
+/// zero for voxel, water, and impostor vertices. This keeps `Vertex` at its
+/// pre-range-treatment 72 bytes and avoids expanding the GPU tile cache.
+pub const BIOME_RANGE_COLOR_DELTA_SCALE: f32 = 0.5;
+
+fn pack_range_color_delta(color: [f32; 3], far_color: [f32; 3]) -> [i8; 4] {
+    let pack = |i: usize| {
+        (((far_color[i] - color[i]) / BIOME_RANGE_COLOR_DELTA_SCALE)
+            .clamp(-1.0, 1.0)
+            * 127.0)
+            .round() as i8
+    };
+    [pack(0), pack(1), pack(2), 0]
+}
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct TileKey {
@@ -71,6 +89,9 @@ pub struct Vertex {
     /// polygons and orphan blue cells). -1.0 = no standing water nearby
     /// (also on voxel chunks and impostors, which are already exact).
     pub shore: f32,
+    /// SNORM8 range-only color delta. The shader reconstructs the far color
+    /// from `color`; voxel/impostor vertices use exact zero deltas.
+    pub far_color_delta: [i8; 4],
 }
 
 pub struct TileMesh {
@@ -1126,16 +1147,17 @@ pub fn build_tile(planet: &Planet, key: TileKey, exaggeration: f64) -> TileMesh 
             // the sea is real geometry at its surface — its "ground" color
             // is the water color so the wetness blend is a no-op there and
             // it stays fully blue at every distance
-            let ground = if class_s.sea || class_s.lake || class_s.lake_shoal {
+            let (ground, far_color) = if class_s.sea || class_s.lake || class_s.lake_shoal {
                 // a frozen sheet is solid walkable ice — give it a snow-dusted,
                 // LOD-stable surface so it reads as ground, not a flat plane
-                if class_s.temp_c < -4.0 {
+                let color = if class_s.temp_c < -4.0 {
                     frost_color(world[gj * np2 + gi])
                 } else {
                     wc
-                }
+                };
+                (color, color)
             } else {
-                shade_ground(planet, face, uu, vv, class_s, slope)
+                shade_ground_pair(planet, face, uu, vv, class_s, slope)
             };
             let dh = if key.level > 0 {
                 ((parent_value(&hp, i, j) - s.render_h_km()) * exaggeration) as f32
@@ -1152,6 +1174,7 @@ pub fn build_tile(planet: &Planet, key: TileKey, exaggeration: f64) -> TileMesh 
                 morph_wet: wet_parent as f32,
                 wflag: if s.sea || s.lake { 1.0 } else { 0.0 },
                 shore,
+                far_color_delta: pack_range_color_delta(ground, far_color),
             });
         }
     }
@@ -1187,6 +1210,7 @@ pub fn build_tile(planet: &Planet, key: TileKey, exaggeration: f64) -> TileMesh 
             morph_wet: v.morph_wet,
             wflag: v.wflag,
             shore: v.shore,
+            far_color_delta: v.far_color_delta,
         });
     }
     let skirt_base = (n * n) as u32;
@@ -1354,6 +1378,7 @@ pub fn build_tile(planet: &Planet, key: TileKey, exaggeration: f64) -> TileMesh 
                         morph_wet: 0.0,
                         wflag: 0.0,
                         shore: -1.0,
+                        far_color_delta: [0; 4],
                     });
                 }
                 indices.extend_from_slice(&[
@@ -1548,24 +1573,45 @@ fn water_color(s: &Sample) -> [f32; 3] {
 /// where it's cold. Kept in the same family as the voxel materials so the
 /// block patch doesn't read as a different planet. (Water rides a separate
 /// vertex channel — see Vertex::water.)
-fn shade_ground(
+fn shade_ground_pair(
     planet: &Planet,
     face: usize,
     u: f64,
     v: f64,
     s: &Sample,
     slope: f64,
+) -> ([f32; 3], [f32; 3]) {
+    let (local, range) = climate_surface_pair(planet, face, u, v, s.temp_c, s.precip, s.sea);
+    (
+        shade_ground_climate(local, s, slope, false),
+        shade_ground_climate(range, s, slope, true),
+    )
+}
+
+fn shade_ground_climate(
+    climate: ClimateSurface,
+    s: &Sample,
+    slope: f64,
+    soften_range: bool,
 ) -> [f32; 3] {
-    let climate = climate_surface(planet, face, u, v, s.temp_c, s.precip, s.sea);
-    let mut c = climate.tint(climate.main_block);
+    let contrast = if soften_range {
+        BIOME_RANGE_CATEGORICAL_CONTRAST
+    } else {
+        1.0
+    };
+    let weights = climate.display_weights(contrast);
+    let grass_tint = climate.tint(MainBlock::Grass);
+    let sand = climate.tint(MainBlock::Sand);
+    let snow = climate.tint(MainBlock::Snow);
+    let mut c = [
+        grass_tint[0] * weights[0] + sand[0] * weights[1] + snow[0] * weights[2],
+        grass_tint[1] * weights[0] + sand[1] * weights[1] + snow[1] * weights[2],
+        grass_tint[2] * weights[0] + sand[2] * weights[1] + snow[2] * weights[2],
+    ];
     // forested biomes read darker from afar (canopy self-shadowing), so the
     // tree-covered voxel patch doesn't pop out of a flat bright lawn. The
     // shared context blends this weight so it cannot restore a class line.
-    let forest = if climate.main_block == MainBlock::Grass {
-        climate.forest
-    } else {
-        0.0
-    };
+    let forest = climate.forest * weights[0];
     let dark = 1.0 - 0.22 * forest;
     c = [c[0] * dark, c[1] * dark, c[2] * dark];
     // beach sand on low coastal ground — the SAME fraction the blocks
@@ -1580,7 +1626,6 @@ fn shade_ground(
     } else {
         beach_frac(s.e_raw, s.h_km) as f32
     };
-    let sand = climate.tint(MainBlock::Sand);
     c = mix3(c, sand, sandy);
     // bare rock only where the ground is actually steep (like the blocks,
     // which rock by per-column steepness) — jagged-map areas rock sooner.
@@ -1590,10 +1635,11 @@ fn shade_ground(
     let rocky = ((rough_r * 0.9 - 0.05).clamp(0.0, 0.65)
         * smoothstep(0.25, 0.60, slope)) as f32;
     c = mix3(c, [0.23, 0.22, 0.21], rocky);
-    // Snow uses the same world-column hash and threshold as the voxels.
-    // Re-apply after rock/beach because voxel surface_mat gives snow priority.
-    if climate.main_block == MainBlock::Snow {
-        c = climate.tint(MainBlock::Snow);
+    // The local snow decision uses the same world-column hash and threshold as
+    // voxels. Re-apply it after rock/beach because voxel snow has priority.
+    // Range snow is already represented continuously in the weights above.
+    if !soften_range {
+        c = mix3(c, snow, weights[2]);
     }
     // Lake-shore sand uses the SAME fraction the blocks dither on. Apply
     // after rock/snow so barely-emergent liquid-lake shoals read as sandbars.
@@ -1610,6 +1656,20 @@ fn shade_ground(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn packed_range_color_keeps_the_original_vertex_footprint() {
+        assert_eq!(std::mem::size_of::<Vertex>(), 72);
+        let local = [0.10, 0.25, 0.80];
+        assert_eq!(pack_range_color_delta(local, local), [0; 4]);
+        let far = [0.42, 0.08, 0.51];
+        let packed = pack_range_color_delta(local, far);
+        for i in 0..3 {
+            let restored = local[i]
+                + BIOME_RANGE_COLOR_DELTA_SCALE * packed[i] as f32 / 127.0;
+            assert!((restored - far[i]).abs() <= 0.0021);
+        }
+    }
 
     fn test_planet() -> &'static Planet {
         static PLANET: std::sync::OnceLock<Planet> = std::sync::OnceLock::new();

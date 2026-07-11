@@ -1,0 +1,35 @@
+# Round-3 biome-blending evidence. The first two poses reproduce Andrew's
+# annotated failures; the final three are the previously approved references.
+# Weather is disabled and each sun is pinned for deterministic comparison.
+weather off
+mode fly
+
+# Andrew: "Warped tiling" (annotated at 189.542 km).
+sun 10 55.025055
+teleport 45.816516 18.134226 189.542181
+look -8.700204 -85.943669
+shot r3_warped_tiling
+
+# Andrew: "Jagged biome boundaries" (annotated at 15.734 km).
+sun 10 44.173037
+teleport 48.266365 29.779374 15.733562
+look 88.723928 -85.943669
+shot r3_razor_boundary
+
+# Approved broad continental breakup from orbit.
+sun 10 22.624453
+teleport 30.568006 27.528671 246.231614
+look -99.844162 -84.431061
+shot r3_approved_orbit
+
+# Approved desert interface at 19 km.
+sun 10 24.152744
+teleport 31.151792 28.038922 18.994605
+look -120.129729 -78.632728
+shot r3_approved_19km
+
+# Approved local/intermediate-scale appearance at 1.2 km.
+sun 10 20.583898
+teleport 31.152748 28.010161 1.192507
+look -107.035337 -73.212547
+shot r3_approved_1km
