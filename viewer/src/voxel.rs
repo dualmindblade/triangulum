@@ -989,6 +989,7 @@ pub fn build_chunk(
                 // +4 lum whole-sea divergence (review #2 aftermath)
                 wflag,
                 shore: -1.0, // blocks ARE the exact shoreline already
+                far_color_delta: [0; 4],
             });
         }
         indices.extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);

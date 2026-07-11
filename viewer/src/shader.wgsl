@@ -69,6 +69,8 @@ struct VsIn {
     // signed water-minus-ground delta (km): its interpolated zero crossing
     // IS the shoreline, stepped per fragment (-1 = no standing water)
     @location(7) shore: f32,
+    // packed range-visible color delta; zero on voxels/impostors/water
+    @location(8) far_color_delta: vec4<f32>,
 };
 struct VsOut {
     @builtin(position) clip: vec4<f32>,
@@ -80,7 +82,14 @@ struct VsOut {
     @location(4) water: vec4<f32>,
     @location(5) wflag: f32,
     @location(6) shore: f32,
+    @location(7) far_color: vec3<f32>,
 };
+
+// Keep the approved local 300 m ecotone through near flight, then hand off
+// continuously to the wide multiscale boundary before the 15 km review range.
+const BIOME_RANGE_BLEND_START_KM = 4.0;
+const BIOME_RANGE_BLEND_END_KM = 12.0;
+const BIOME_RANGE_COLOR_DELTA_SCALE = 0.5;
 
 // Karst twin of noise.rs GRAD (generated from noise_grad.rs - the
 // planetgen parity table; do not hand-edit).
@@ -415,6 +424,11 @@ fn vs_main(in: VsIn) -> VsOut {
     out.water = vec4<f32>(in.water.rgb, wet);
     out.wflag = in.wflag;
     out.shore = in.shore;
+    out.far_color = clamp(
+        in.color + BIOME_RANGE_COLOR_DELTA_SCALE * in.far_color_delta.rgb,
+        vec3<f32>(0.0),
+        vec3<f32>(1.0),
+    );
     return out;
 }
 
@@ -466,7 +480,12 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     // first (~6.5 C/km), the line broken up by a world-anchored hash so it
     // reads organic instead of contoured; dusting deepens while snow
     // actually falls. Rain soaks the ground toward dark.
-    var ground = in.color;
+    let biome_range = smoothstep(
+        BIOME_RANGE_BLEND_START_KM,
+        BIOME_RANGE_BLEND_END_KM,
+        in.dist_km,
+    );
+    var ground = mix(in.color, in.far_color, biome_range);
     let up = globals.sky.xyz;
     let day = smoothstep(-0.08, 0.15, dot(globals.sun_dir.xyz, up));
     // ---- shared micro-texture (TRANSITIONS.md A, kills the V-1 disk) ----

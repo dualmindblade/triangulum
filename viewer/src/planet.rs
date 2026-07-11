@@ -22,7 +22,8 @@ pub const FACES: [(DVec3, DVec3, DVec3); 6] = [
 pub const COLUMNS_PER_FACE: u64 = 10_000_000;
 
 /// Total width of a cross-material ecotone (half on either side of the baked
-/// Koppen edge). Same-material classes never consult this band.
+/// Koppen edge) at voxel/local scale. Same-material classes never consult this
+/// band. The range-visible boundary zone below uses this as its hard minimum.
 pub const CROSS_BLOCK_ECOTONE_KM: f64 = 0.300;
 /// Koppen contributes a small, spatially blended hue memory; continuous
 /// temperature and precipitation remain the dominant color coordinates.
@@ -34,22 +35,45 @@ pub const KOPPEN_HUE_NUDGE: f32 = 0.14;
 // Amplitude is in baked texels. Wavelength is also in baked texels at a face
 // center; LACUNARITY divides it and PERSISTENCE scales amplitude per octave.
 // On Neisor the defaults are approximately:
-//   wavelength 68 / 15 / 3.4 km, amplitude 6.8 / 2.0 / 0.61 km before the
-//   0.70-texel cap. The last octave is the intermediate-flight layer: broad
-//   enough to read around 1 km altitude, but still hands off cleanly to the
-//   300 m categorical ecotone below it.
-// One inexpensive smooth vector-noise evaluation supplies each broad octave;
-// the final octave weaves two projections. The class-interior fast path skips
-// the whole stack when it cannot matter.
-pub const BIOME_WARP_OCTAVES: u32 = 3;
-pub const BIOME_WARP_BASE_AMPLITUDE_TEXELS: f64 = 0.40;
-pub const BIOME_WARP_BASE_WAVELENGTH_TEXELS: f64 = 4.0;
-pub const BIOME_WARP_LACUNARITY: f64 = 4.5;
-pub const BIOME_WARP_PERSISTENCE: f64 = 0.30;
-pub const BIOME_WARP_MAX_DISPLACEMENT_TEXELS: f64 = 0.70;
+//   wavelength 85 / 24 / 6.5 / 1.8 / 0.50 km,
+//   amplitude 11 / 4.0 / 1.4 / 0.51 / 0.18 km before the 1.20-texel cap.
+// Every octave samples seamless hashed 3-D value noise in a rotated domain;
+// octave-varying carrier directions keep the displacement non-axis-aligned.
+// The >1 texel reach is deliberate: sub-texel displacement can only decorate
+// each baked cell, while this reach can break recognizable cell topology.
+// The class-interior fast path skips the whole stack when it cannot matter.
+pub const BIOME_WARP_OCTAVES: u32 = 5;
+pub const BIOME_WARP_BASE_AMPLITUDE_TEXELS: f64 = 0.65;
+pub const BIOME_WARP_BASE_WAVELENGTH_TEXELS: f64 = 5.0;
+pub const BIOME_WARP_LACUNARITY: f64 = 3.6;
+pub const BIOME_WARP_PERSISTENCE: f64 = 0.36;
+pub const BIOME_WARP_MAX_DISPLACEMENT_TEXELS: f64 = 1.20;
 
 const BIOME_WARP_SEED_OFFSET: i64 = 0x0B10_0A2E;
-const BIOME_WARP_WOVEN_OCTAVE: usize = 2;
+
+// ---- Andrew's range-visible boundary-zone knobs -------------------------
+// The approved four-scale comparator below already has ~7 km / 440 m / 27 m /
+// 1.7 m structure, but the old 300 m probability ramp gave that structure no
+// screen-space footprint at flight/orbital range. Cross-material boundaries
+// now expose up to an 8 km-wide probability zone to an expanded comparator
+// whose two broad layers precede that untouched local stack. The metric ramp
+// remains below one raster texel; a symmetric range-only prefilter deliberately
+// reaches one adjacent cell on each side. Same-main-block edges stay untouched.
+pub const BIOME_BOUNDARY_ZONE_KM: f64 = 8.0;
+pub const BIOME_BOUNDARY_ZONE_MAX_TEXEL_FRACTION: f64 = 0.90;
+/// Symmetric categorical prefilter applied only to the range-visible path.
+/// The center weight is `1 - 2*side`; normalization and symmetry preserve the
+/// expected area of each main block while extending islands into both sides.
+pub const BIOME_BOUNDARY_PREFILTER_SIDE_WEIGHT: f64 = 0.15;
+const BIOME_BOUNDARY_PREFILTER_SUPPORT_TEXELS: isize = 2;
+
+// Two range-only layers precede the untouched approved local comparator. On
+// Neisor their approximate wavelengths are 56 and 14 km, large enough for one
+// coherent patch to cross several baked texels instead of tracing each cell.
+pub const BIOME_BOUNDARY_FIELD_COARSE_OCTAVES: u32 = 2;
+pub const BIOME_BOUNDARY_FIELD_BASE_PATCH_COLUMNS: f64 = 32_768.0;
+pub const BIOME_BOUNDARY_FIELD_LACUNARITY: f64 = 4.0;
+pub const BIOME_BOUNDARY_FIELD_PERSISTENCE: f64 = 0.55;
 
 // ---- Andrew's fractal ecotone art-direction knobs -----------------------
 // OCTAVES is the number of nested spatial layers (and noise evaluations).
@@ -96,6 +120,10 @@ pub struct ClimateSurface {
     grass: [f32; 3],
     sand: [f32; 3],
     snow: [f32; 3],
+    /// Expected Grass/Sand/Snow coverage. Local surfaces store a one-hot
+    /// vector; the range surface retains its continuous area weights so the
+    /// terrain can soften mesh-lattice contrast without changing ownership.
+    block_weights: [f32; 3],
     /// Existing far-canopy approximation, spatially blended so it cannot put
     /// a second hard line back across a smooth same-block transition.
     pub forest: f32,
@@ -122,6 +150,22 @@ impl ClimateSurface {
             MainBlock::Sand => self.sand,
             MainBlock::Snow => self.snow,
         }
+    }
+
+    pub(crate) fn display_weights(self, categorical_contrast: f32) -> [f32; 3] {
+        let mut weights = self.block_weights;
+        let slot = match self.main_block {
+            MainBlock::Grass => 0,
+            MainBlock::Sand => 1,
+            MainBlock::Snow => 2,
+        };
+        for (i, weight) in weights.iter_mut().enumerate() {
+            *weight *= 1.0 - categorical_contrast;
+            if i == slot {
+                *weight += categorical_contrast;
+            }
+        }
+        weights
     }
 }
 
@@ -214,47 +258,15 @@ const BIOME_WARP_AXES: [[DVec3; 3]; 3] = [
     ],
 ];
 
-/// Two C2-continuous alternating value ramps in phase quadrature. One domain
-/// projection and floor supplies both vector channels, keeping each octave
-/// substantially cheaper than three independent scalar-noise evaluations.
 #[inline]
-fn smooth_noise_wave_pair(x: f64) -> (f64, f64) {
-    let cell = x.floor();
-    let t = x - cell;
-    let wave = |cell: i64, t: f64| {
-        let fade = t * t * t * (t * (t * 6.0 - 15.0) + 10.0);
-        if cell & 1 == 0 { 2.0 * fade - 1.0 } else { 1.0 - 2.0 * fade }
-    };
-    let cell = cell as i64;
-    let first = wave(cell, t);
-    let second = if t < 0.5 {
-        wave(cell, t + 0.5)
-    } else {
-        wave(cell + 1, t - 0.5)
-    };
-    (first, second)
-}
-
-#[inline]
-fn biome_vector_noise(dir: DVec3, frequency: f64, seed_phase: f64, octave: usize) -> DVec3 {
+fn biome_vector_noise(dir: DVec3, frequency: f64, seed: i64, octave: usize) -> DVec3 {
     let axes = BIOME_WARP_AXES[octave % BIOME_WARP_AXES.len()];
-    let octave_phase = seed_phase + octave as f64 * 0.618_033_988_749_894_9;
-    let (a, b) = smooth_noise_wave_pair(dir.dot(axes[0]) * frequency + octave_phase);
-    if octave == BIOME_WARP_WOVEN_OCTAVE {
-        // The broad approved layers keep their original inexpensive stripe
-        // field. The added flight-scale octave weaves a second projection into
-        // it, so a boundary parallel to one projection (notably lon -45) still
-        // receives variation along its length. RMS amplitude stays unchanged.
-        let (c, d) = smooth_noise_wave_pair(
-            dir.dot(axes[1]) * frequency
-                + octave_phase * 1.732_050_807_568_877_2
-                + 0.414_213_562_373_095_0,
-        );
-        (axes[1] * (a + d) + axes[2] * (b - c))
-            * (1.15 * std::f64::consts::FRAC_1_SQRT_2)
-    } else {
-        (axes[1] * a + axes[2] * b) * 1.15
-    }
+    let domain = DVec3::new(dir.dot(axes[0]), dir.dot(axes[1]), dir.dot(axes[2]));
+    let octave_seed = seed
+        .wrapping_add(BIOME_WARP_SEED_OFFSET)
+        .wrapping_mul(7_919)
+        .wrapping_add(octave as i64 * 131);
+    axes[1] * (1.15 * normal_value_noise(domain * frequency, octave_seed))
 }
 
 /// Smallest gnomonic angular derivative at this face position. Scaling the
@@ -276,18 +288,11 @@ fn biome_warp_metric_scale(u: f64, v: f64) -> f64 {
 fn biome_warp_dir(dir: DVec3, res: usize, seed: i64, metric_scale: f64) -> DVec3 {
     debug_assert!(res > 1);
     let texel_angle = 2.0 / (res - 1) as f64;
-    // smooth_noise_wave_pair has a two-cell period.
-    let mut frequency = 2.0 / (texel_angle * BIOME_WARP_BASE_WAVELENGTH_TEXELS);
+    let mut frequency = 1.0 / (texel_angle * BIOME_WARP_BASE_WAVELENGTH_TEXELS);
     let mut amplitude = BIOME_WARP_BASE_AMPLITUDE_TEXELS;
     let mut offset = DVec3::ZERO;
-    let mut phase_bits = (seed.wrapping_add(BIOME_WARP_SEED_OFFSET) as u64)
-        .wrapping_mul(0x9E37_79B9_7F4A_7C15);
-    phase_bits ^= phase_bits >> 30;
-    phase_bits = phase_bits.wrapping_mul(0xBF58_476D_1CE4_E5B9);
-    phase_bits ^= phase_bits >> 27;
-    let seed_phase = (phase_bits >> 11) as f64 * (2.0 / 9_007_199_254_740_992.0);
     for octave in 0..BIOME_WARP_OCTAVES as usize {
-        let vector = biome_vector_noise(dir, frequency, seed_phase, octave);
+        let vector = biome_vector_noise(dir, frequency, seed, octave);
         offset += amplitude * (vector - dir * vector.dot(dir));
         frequency *= BIOME_WARP_LACUNARITY;
         amplitude *= BIOME_WARP_PERSISTENCE;
@@ -322,7 +327,7 @@ fn standard_normal_cdf(x: f64) -> f64 {
 /// so every sample within a column gets the same answer. Noise is evaluated
 /// on the 3-D unit direction, making the field continuous across cube faces.
 /// `seed` selects an independent deterministic stream for each consumer.
-fn ecotone_comparator(face: usize, u: f64, v: f64, seed: i64) -> f64 {
+fn ecotone_column_dir(face: usize, u: f64, v: f64) -> DVec3 {
     let (face, u, v) = if u.abs() >= 1.0 || v.abs() >= 1.0 {
         face_from_dir(face_dir(face, u, v))
     } else {
@@ -333,8 +338,12 @@ fn ecotone_comparator(face: usize, u: f64, v: f64, seed: i64) -> f64 {
     let cj = (((v + 1.0) * 0.5 * n).clamp(0.0, n - 1.0)) as u64;
     let uc = -1.0 + 2.0 * (ci as f64 + 0.5) / n;
     let vc = -1.0 + 2.0 * (cj as f64 + 0.5) / n;
-    let dir = face_dir(face, uc, vc);
+    face_dir(face, uc, vc)
+}
 
+fn ecotone_comparator(face: usize, u: f64, v: f64, seed: i64) -> f64 {
+    let dir = ecotone_column_dir(face, u, v);
+    let n = COLUMNS_PER_FACE as f64;
     let mut frequency = n / (2.0 * ECOTONE_BASE_PATCH_COLUMNS);
     let mut amplitude = 1.0;
     let mut sum = 0.0;
@@ -349,13 +358,46 @@ fn ecotone_comparator(face: usize, u: f64, v: f64, seed: i64) -> f64 {
     standard_normal_cdf(sum / variance.sqrt()).clamp(0.0, 1.0)
 }
 
+/// Range-visible counterpart to `ecotone_comparator`: two broad layers own the
+/// silhouette across raster cells, then the approved four local layers add the
+/// exact 7 km-to-column character. Both stacks are normalized together before
+/// the probability transform, retaining an approximately uniform comparator.
+fn boundary_zone_comparator(face: usize, u: f64, v: f64, seed: i64) -> f64 {
+    let dir = ecotone_column_dir(face, u, v);
+    let n = COLUMNS_PER_FACE as f64;
+    let mut sum = 0.0;
+    let mut variance = 0.0;
+
+    let mut frequency = n / (2.0 * BIOME_BOUNDARY_FIELD_BASE_PATCH_COLUMNS);
+    let mut amplitude = 1.0;
+    for octave in 0..BIOME_BOUNDARY_FIELD_COARSE_OCTAVES as i64 {
+        let octave_seed = seed
+            .wrapping_mul(7_919)
+            .wrapping_add((octave - BIOME_BOUNDARY_FIELD_COARSE_OCTAVES as i64) * 131);
+        sum += amplitude * normal_value_noise(dir * frequency, octave_seed);
+        variance += amplitude * amplitude;
+        frequency *= BIOME_BOUNDARY_FIELD_LACUNARITY;
+        amplitude *= BIOME_BOUNDARY_FIELD_PERSISTENCE;
+    }
+
+    frequency = n / (2.0 * ECOTONE_BASE_PATCH_COLUMNS);
+    amplitude = 1.0;
+    for octave in 0..ECOTONE_FIELD_OCTAVES as i64 {
+        let octave_seed = seed.wrapping_mul(7_919).wrapping_add(octave * 131);
+        sum += amplitude * normal_value_noise(dir * frequency, octave_seed);
+        variance += amplitude * amplitude;
+        frequency *= ECOTONE_LACUNARITY;
+        amplitude *= ECOTONE_PERSISTENCE;
+    }
+    standard_normal_cdf(sum / variance.sqrt()).clamp(0.0, 1.0)
+}
+
 pub struct FaceRaster {
     pub res: usize,
     pub elev_km: Vec<f32>,
     pub koppen: Vec<u8>, // 255 = ocean
-    /// 1 where this texel's 8-neighbor ring contains another class. A
-    /// sub-texel domain warp cannot change class outside this conservative
-    /// strip, so those interiors skip every procedural warp evaluation.
+    /// 1 where the conservative warp + range-filter neighborhood contains
+    /// another class. Broad same-class interiors skip procedural evaluation.
     climate_edge: Vec<u64>,
     pub rough_km: Vec<f32>,     // mean |elevation delta| between map cells
     /// Interleaved [annual mean temperature C, annual precipitation mm].
@@ -631,11 +673,10 @@ impl Planet {
             return ClimatePosition { raster: source, warped: false };
         }
 
-        // With a hard <1-texel displacement bound, an equal 8-neighbor ring
-        // proves that the categorical result cannot change. This is the main
-        // per-vertex fast path: broad biome interiors retain the identity
-        // transform, consistently for class and tint, without evaluating
-        // procedural noise that could have no visible categorical effect.
+        // A same-class neighbor ring as wide as the displacement bound proves
+        // that the categorical result cannot change. This is the main per-
+        // vertex fast path: broad biome interiors retain the identity transform
+        // without evaluating noise that could have no visible class effect.
         if !source.climate_edge {
             return ClimatePosition { raster: source, warped: false };
         }
@@ -747,14 +788,14 @@ impl Planet {
         )
     }
 
-    /// Continuous main-block weights for the short cross-material band.
+    /// Continuous main-block weights for a cross-material band.
     ///
     /// The categorical texels live at integer raster coordinates and their
     /// nearest-sample boundaries at half-integers. Each axis gets a smooth
-    /// 0..1 ramp only within 150 m of its nearest boundary; the tensor product
-    /// of those two ramps weights all four surrounding texels. Unlike choosing
-    /// one of the nearest texel's four edges, the resulting probabilities have
-    /// the same limit from every quadrant of a texel corner.
+    /// 0..1 ramp only within 150 m of its nearest boundary on the public local
+    /// path; the tensor product weights all four surrounding texels. The
+    /// internal range path widens that ramp and symmetrically prefilters a 4x4
+    /// neighborhood. Both have the same limit from every corner quadrant.
     ///
     /// Returns the nearest class (for the no-blend fast path), accumulated
     /// weights in Grass/Sand/Snow order, and one representative class per
@@ -763,10 +804,17 @@ impl Planet {
     /// bilinear in `koppen_signature`.
     #[cfg(test)]
     fn koppen_block_weights(&self, face: usize, u: f64, v: f64) -> (u8, [f64; 3], [u8; 3]) {
-        self.koppen_block_weights_at(self.raster_position(face, u, v))
+        self.koppen_block_weights_at(
+            self.raster_position(face, u, v),
+            CROSS_BLOCK_ECOTONE_KM,
+        )
     }
 
-    fn koppen_block_weights_at(&self, p: RasterPosition) -> (u8, [f64; 3], [u8; 3]) {
+    fn koppen_block_weights_at(
+        &self,
+        p: RasterPosition,
+        requested_width_km: f64,
+    ) -> (u8, [f64; 3], [u8; 3]) {
         let r = &self.faces[p.face];
         let d = (r.res - 1) as f64;
         let (x, y) = (p.x, p.y);
@@ -779,7 +827,10 @@ impl Planet {
         let texel_uv = 2.0 / d;
         let km_x = self.radius_km * texel_uv * (1.0 + p.v * p.v).sqrt() / denom;
         let km_y = self.radius_km * texel_uv * (1.0 + p.u * p.u).sqrt() / denom;
-        let half = CROSS_BLOCK_ECOTONE_KM * 0.5;
+        let width_km = requested_width_km
+            .max(CROSS_BLOCK_ECOTONE_KM)
+            .min(BIOME_BOUNDARY_ZONE_MAX_TEXEL_FRACTION * km_x.min(km_y));
+        let half = width_km * 0.5;
         let axis_weight = |coord: f64, edge: f64, km_per_texel: f64| {
             let t = (0.5 + (coord - edge) * km_per_texel / (2.0 * half)).clamp(0.0, 1.0);
             t * t * (3.0 - 2.0 * t)
@@ -787,12 +838,6 @@ impl Planet {
         let (x0, y0) = (x.floor() as i64, y.floor() as i64);
         let wx = axis_weight(x, x0 as f64 + 0.5, km_x);
         let wy = axis_weight(y, y0 as f64 + 0.5, km_y);
-        let samples = [
-            (self.koppen_texel(p.face, x0, y0), (1.0 - wx) * (1.0 - wy)),
-            (self.koppen_texel(p.face, x0 + 1, y0), wx * (1.0 - wy)),
-            (self.koppen_texel(p.face, x0, y0 + 1), (1.0 - wx) * wy),
-            (self.koppen_texel(p.face, x0 + 1, y0 + 1), wx * wy),
-        ];
 
         let block_index = |block| match block {
             MainBlock::Grass => 0,
@@ -802,12 +847,48 @@ impl Planet {
         let mut weights = [0.0; 3];
         let mut representatives = [here; 3];
         let mut seen = [false; 3];
-        for (class, weight) in samples {
+        let mut add_sample = |class, weight| {
             let slot = block_index(koppen_main_block(class));
             weights[slot] += weight;
             if weight > 0.0 && !seen[slot] {
                 representatives[slot] = class;
                 seen[slot] = true;
+            }
+        };
+
+        if requested_width_km <= CROSS_BLOCK_ECOTONE_KM {
+            for (class, weight) in [
+                (self.koppen_texel(p.face, x0, y0), (1.0 - wx) * (1.0 - wy)),
+                (self.koppen_texel(p.face, x0 + 1, y0), wx * (1.0 - wy)),
+                (self.koppen_texel(p.face, x0, y0 + 1), (1.0 - wx) * wy),
+                (self.koppen_texel(p.face, x0 + 1, y0 + 1), wx * wy),
+            ] {
+                add_sample(class, weight);
+            }
+        } else if !p.climate_edge {
+            // The load-time mask covers the warp reach and this filter's full
+            // support. A clear bit proves all 16 reads would be `here`.
+            add_sample(here, 1.0);
+        } else {
+            let side = BIOME_BOUNDARY_PREFILTER_SIDE_WEIGHT;
+            let center = 1.0 - 2.0 * side;
+            let filtered_axis = |w: f64| {
+                [
+                    (1.0 - w) * side,
+                    (1.0 - w) * center + w * side,
+                    (1.0 - w) * side + w * center,
+                    w * side,
+                ]
+            };
+            let x_weights = filtered_axis(wx);
+            let y_weights = filtered_axis(wy);
+            for (dy, y_weight) in y_weights.into_iter().enumerate() {
+                for (dx, x_weight) in x_weights.into_iter().enumerate() {
+                    add_sample(
+                        self.koppen_texel(p.face, x0 + dx as i64 - 1, y0 + dy as i64 - 1),
+                        x_weight * y_weight,
+                    );
+                }
             }
         }
         (here, weights, representatives)
@@ -824,15 +905,29 @@ impl Planet {
         v: f64,
         comparator: impl FnOnce() -> f64,
     ) -> u8 {
-        self.dithered_koppen_at(self.raster_position(face, u, v), comparator)
+        self.dithered_koppen_at(
+            self.raster_position(face, u, v),
+            CROSS_BLOCK_ECOTONE_KM,
+            comparator,
+        )
     }
 
     fn dithered_koppen_at(
         &self,
         p: RasterPosition,
+        width_km: f64,
         comparator: impl FnOnce() -> f64,
     ) -> u8 {
-        let (here, weights, representatives) = self.koppen_block_weights_at(p);
+        let (here, weights, representatives) = self.koppen_block_weights_at(p, width_km);
+        Self::choose_dithered_koppen(here, weights, representatives, comparator)
+    }
+
+    fn choose_dithered_koppen(
+        here: u8,
+        weights: [f64; 3],
+        representatives: [u8; 3],
+        comparator: impl FnOnce() -> f64,
+    ) -> u8 {
         if weights.iter().filter(|&&weight| weight > 0.0).count() <= 1 {
             return here;
         }
@@ -856,19 +951,24 @@ impl Planet {
     }
 }
 
-/// Conservative same-class interior mask for the domain-warp fast path.
-/// Outer-ring texels stay marked because their true neighbors live on another
-/// cube face; they are a negligible fraction and must never be guessed from a
-/// clamped edge.
+/// Conservative same-class interior mask for the domain-warp fast path. Its
+/// radius follows the artist-facing displacement cap. Outer-ring texels stay
+/// marked because their true neighbors live on another cube face; they must
+/// never be guessed from a clamped edge.
 fn climate_edge_mask(koppen: &[u8], res: usize) -> Vec<u64> {
     let mut edge = vec![0u64; koppen.len().div_ceil(64)];
+    let radius = BIOME_WARP_MAX_DISPLACEMENT_TEXELS.ceil() as isize
+        + BIOME_BOUNDARY_PREFILTER_SUPPORT_TEXELS;
     for y in 0..res {
         for x in 0..res {
-            let mut differs = x == 0 || y == 0 || x + 1 == res || y + 1 == res;
+            let mut differs = x < radius as usize
+                || y < radius as usize
+                || x + radius as usize >= res
+                || y + radius as usize >= res;
             if !differs {
                 let here = koppen[y * res + x];
-                for dy in -1..=1isize {
-                    for dx in -1..=1isize {
+                for dy in -radius..=radius {
+                    for dx in -radius..=radius {
                         if dx == 0 && dy == 0 {
                             continue;
                         }
@@ -1143,11 +1243,133 @@ fn hue_nudge(base: [f32; 3], anchor: [f32; 3]) -> [f32; 3] {
     mix3(base, same_value, KOPPEN_HUE_NUDGE)
 }
 
-/// One truth for the two ground renderers: domain-warped climate supplies all
-/// provisional material tints, smoothly sampled Koppen only nudges grass hue,
-/// and the approved unwarped world-column field chooses cross-block and snow
-/// categories. The caller supplies unwarped physical-sea ownership solely as
-/// a guard; elevation, weather, hydrology, and water geometry never warp.
+#[derive(Clone, Copy)]
+struct ClimateSurfaceBasis {
+    p: RasterPosition,
+    world_face: usize,
+    world_u: f64,
+    world_v: f64,
+    temp_c: f64,
+    precip_mm: f64,
+    koppen_anchor: [f32; 3],
+    forest: f32,
+}
+
+fn climate_surface_basis(
+    planet: &Planet,
+    face: usize,
+    u: f64,
+    v: f64,
+    unwarped_temp_c: f64,
+    unwarped_precip_mm: f64,
+    unwarped_sea: bool,
+) -> ClimateSurfaceBasis {
+    let (world_face, world_u, world_v) = canonical_face_uv(face, u, v);
+    let lookup =
+        planet.climate_position_with_sea(world_face, world_u, world_v, unwarped_sea);
+    let p = lookup.raster;
+    let (koppen_anchor, forest) = planet.koppen_signature(p);
+    let (temp_c, precip_mm) = if lookup.warped {
+        let climate = planet.climate_bilinear_at(p);
+        (climate[0] as f64, climate[1] as f64)
+    } else {
+        (unwarped_temp_c, unwarped_precip_mm)
+    };
+    ClimateSurfaceBasis {
+        p,
+        world_face,
+        world_u,
+        world_v,
+        temp_c,
+        precip_mm,
+        koppen_anchor,
+        forest,
+    }
+}
+
+fn climate_cross_block(planet: &Planet, basis: ClimateSurfaceBasis) -> MainBlock {
+    let seed = planet.seed.wrapping_add(ECOTONE_FIELD_SEED_OFFSET);
+    let chosen = planet.dithered_koppen_at(basis.p, CROSS_BLOCK_ECOTONE_KM, || {
+        ecotone_comparator(
+            basis.world_face,
+            basis.world_u,
+            basis.world_v,
+            seed,
+        )
+    });
+    koppen_main_block(chosen)
+}
+
+fn climate_range_selection(
+    planet: &Planet,
+    basis: ClimateSurfaceBasis,
+) -> (MainBlock, [f32; 3]) {
+    let seed = planet.seed.wrapping_add(ECOTONE_FIELD_SEED_OFFSET);
+    let (here, weights, representatives) =
+        planet.koppen_block_weights_at(basis.p, BIOME_BOUNDARY_ZONE_KM);
+    let chosen = Planet::choose_dithered_koppen(here, weights, representatives, || {
+        boundary_zone_comparator(
+            basis.world_face,
+            basis.world_u,
+            basis.world_v,
+            seed,
+        )
+    });
+    (
+        koppen_main_block(chosen),
+        [weights[0] as f32, weights[1] as f32, weights[2] as f32],
+    )
+}
+
+fn apply_snow_override(
+    planet: &Planet,
+    basis: ClimateSurfaceBasis,
+    blocks: &mut [MainBlock],
+) -> bool {
+    let snow_low = SNOWLINE_CENTER_C - SNOWLINE_HALF_RANGE_C;
+    let snow_high = SNOWLINE_CENTER_C + SNOWLINE_HALF_RANGE_C;
+    if basis.temp_c < snow_low {
+        blocks.fill(MainBlock::Snow);
+        return true;
+    } else if basis.temp_c < snow_high && blocks.iter().any(|&b| b != MainBlock::Snow) {
+        let snow_comparator = ecotone_comparator(
+            basis.world_face,
+            basis.world_u,
+            basis.world_v,
+            planet.seed.wrapping_add(SNOW_FIELD_SEED_OFFSET),
+        );
+        let snow_threshold = SNOWLINE_CENTER_C
+            + (snow_comparator - 0.5) * (SNOWLINE_HALF_RANGE_C * 2.0);
+        if basis.temp_c < snow_threshold {
+            blocks.fill(MainBlock::Snow);
+            return true;
+        }
+    }
+    false
+}
+
+fn finish_climate_surface(
+    basis: ClimateSurfaceBasis,
+    main_block: MainBlock,
+    block_weights: [f32; 3],
+) -> ClimateSurface {
+    let temp = basis.temp_c as f32;
+    let precip = basis.precip_mm as f32;
+    ClimateSurface {
+        main_block,
+        grass: hue_nudge(climate_grass(temp, precip), basis.koppen_anchor),
+        sand: climate_sand(temp, precip),
+        snow: climate_snow(temp, precip),
+        block_weights,
+        forest: basis.forest,
+    }
+}
+
+/// One local truth for both ground renderers: domain-warped climate supplies
+/// provisional tints, smoothly sampled Koppen nudges grass hue, and the
+/// approved 300 m/four-octave field chooses cross-block and snow categories.
+/// The caller supplies unwarped physical-sea ownership solely as a guard;
+/// elevation, weather, hydrology, and water geometry never warp.
 pub fn climate_surface(
     planet: &Planet,
     face: usize,
@@ -1157,56 +1379,61 @@ pub fn climate_surface(
     unwarped_precip_mm: f64,
     unwarped_sea: bool,
 ) -> ClimateSurface {
-    // Canonicalize the real world position once. The climate raster reads use
-    // its warped counterpart; metre-scale comparator phases stay anchored to
-    // this original position so their approved character does not change.
-    let (world_face, world_u, world_v) = canonical_face_uv(face, u, v);
-    let lookup =
-        planet.climate_position_with_sea(world_face, world_u, world_v, unwarped_sea);
-    let p = lookup.raster;
-    let (koppen_anchor, forest) = planet.koppen_signature(p);
-    let chosen = planet.dithered_koppen_at(p, || {
-        ecotone_comparator(
-            world_face,
-            world_u,
-            world_v,
-            planet.seed.wrapping_add(ECOTONE_FIELD_SEED_OFFSET),
-        )
-    });
-    let (temp_c, precip_mm) = if lookup.warped {
-        let climate = planet.climate_bilinear_at(p);
-        (climate[0] as f64, climate[1] as f64)
-    } else {
-        (unwarped_temp_c, unwarped_precip_mm)
+    let basis = climate_surface_basis(
+        planet,
+        face,
+        u,
+        v,
+        unwarped_temp_c,
+        unwarped_precip_mm,
+        unwarped_sea,
+    );
+    let mut blocks = [climate_cross_block(planet, basis)];
+    apply_snow_override(planet, basis, &mut blocks);
+    let one_hot = match blocks[0] {
+        MainBlock::Grass => [1.0, 0.0, 0.0],
+        MainBlock::Sand => [0.0, 1.0, 0.0],
+        MainBlock::Snow => [0.0, 0.0, 1.0],
     };
-    let mut main_block = koppen_main_block(chosen);
-    let snow_low = SNOWLINE_CENTER_C - SNOWLINE_HALF_RANGE_C;
-    let snow_high = SNOWLINE_CENTER_C + SNOWLINE_HALF_RANGE_C;
-    if main_block == MainBlock::Snow || temp_c < snow_low {
-        main_block = MainBlock::Snow;
-    } else if temp_c < snow_high {
-        let snow_comparator = ecotone_comparator(
-            world_face,
-            world_u,
-            world_v,
-            planet.seed.wrapping_add(SNOW_FIELD_SEED_OFFSET),
-        );
-        let snow_threshold = SNOWLINE_CENTER_C
-            + (snow_comparator - 0.5) * (SNOWLINE_HALF_RANGE_C * 2.0);
-        if temp_c < snow_threshold {
-            main_block = MainBlock::Snow;
-        }
-    }
+    finish_climate_surface(basis, blocks[0], one_hot)
+}
 
-    let temp = temp_c as f32;
-    let precip = precip_mm as f32;
-    ClimateSurface {
-        main_block,
-        grass: hue_nudge(climate_grass(temp, precip), koppen_anchor),
-        sand: climate_sand(temp, precip),
-        snow: climate_snow(temp, precip),
-        forest,
+/// Local + range appearances from one raster/warp lookup. Terrain vertices
+/// carry both; the shader performs the camera-distance handoff. Voxel callers
+/// continue to use the public local API above unchanged.
+pub(crate) fn climate_surface_pair(
+    planet: &Planet,
+    face: usize,
+    u: f64,
+    v: f64,
+    unwarped_temp_c: f64,
+    unwarped_precip_mm: f64,
+    unwarped_sea: bool,
+) -> (ClimateSurface, ClimateSurface) {
+    let basis = climate_surface_basis(
+        planet,
+        face,
+        u,
+        v,
+        unwarped_temp_c,
+        unwarped_precip_mm,
+        unwarped_sea,
+    );
+    let local = climate_cross_block(planet, basis);
+    let (range, mut range_weights) = climate_range_selection(planet, basis);
+    let mut blocks = [local, range];
+    if apply_snow_override(planet, basis, &mut blocks) {
+        range_weights = [0.0, 0.0, 1.0];
     }
+    let local_weights = match blocks[0] {
+        MainBlock::Grass => [1.0, 0.0, 0.0],
+        MainBlock::Sand => [0.0, 1.0, 0.0],
+        MainBlock::Snow => [0.0, 0.0, 1.0],
+    };
+    (
+        finish_climate_surface(basis, blocks[0], local_weights),
+        finish_climate_surface(basis, blocks[1], range_weights),
+    )
 }
 
 /// Koppen class -> base color (matches planetgen/biomes.py palette, linearized-ish).
@@ -1232,11 +1459,13 @@ mod tests {
     use super::*;
     use crate::terrain;
 
-    fn climate_test_planet(right_class: u8) -> Planet {
-        let res = 4usize;
+    fn climate_test_planet_res(right_class: u8, res: usize) -> Planet {
+        assert!(res >= 4 && res.is_multiple_of(2));
         let n = res * res;
         let koppen: Vec<u8> = (0..res)
-            .flat_map(|_| [6, 6, right_class, right_class])
+            .flat_map(|_| {
+                (0..res).map(|x| if x < res / 2 { 6 } else { right_class })
+            })
             .collect();
         let face = || FaceRaster {
             res,
@@ -1254,6 +1483,47 @@ mod tests {
             seed: 42,
             faces: (0..6).map(|_| face()).collect(),
             rivers: crate::rivers::RiverIndex::empty(1.0),
+        }
+    }
+
+    fn climate_test_planet(right_class: u8) -> Planet {
+        climate_test_planet_res(right_class, 4)
+    }
+
+    fn assert_surface_bits_eq(left: ClimateSurface, right: ClimateSurface) {
+        assert_eq!(left.main_block, right.main_block);
+        for (label, left, right) in [
+            ("grass", left.grass, right.grass),
+            ("sand", left.sand, right.sand),
+            ("snow", left.snow, right.snow),
+            ("weights", left.block_weights, right.block_weights),
+        ] {
+            assert_eq!(
+                left.map(f32::to_bits),
+                right.map(f32::to_bits),
+                "{label} differs"
+            );
+        }
+        assert_eq!(left.forest.to_bits(), right.forest.to_bits());
+    }
+
+    #[test]
+    fn public_local_surface_matches_pair_local_bit_for_bit() {
+        for right_class in [4, 29] {
+            let planet = climate_test_planet_res(right_class, 8);
+            for (face, u, v, temp_c, precip_mm, sea) in [
+                (0, -0.80, 0.20, 17.0, 800.0, false),
+                (3, 0.03, -0.17, -4.0, 300.0, false),
+                (5, 0.40, 0.50, -20.0, 100.0, true),
+            ] {
+                let public = climate_surface(
+                    &planet, face, u, v, temp_c, precip_mm, sea,
+                );
+                let (paired_local, _) = climate_surface_pair(
+                    &planet, face, u, v, temp_c, precip_mm, sea,
+                );
+                assert_surface_bits_eq(public, paired_local);
+            }
         }
     }
 
@@ -1318,26 +1588,64 @@ mod tests {
     }
 
     #[test]
-    fn biome_warp_has_an_intermediate_flight_octave() {
-        // Art-direction gate for Neisor's production bake. This is the octave
-        // that must remain visible between the approved continental warp and
-        // the 300 m local ecotone field.
+    fn biome_warp_spans_intermediate_flight_to_local_scales() {
+        // Art-direction gate for Neisor's production bake. Octave two remains
+        // visible at intermediate flight range; the finest octave now reaches
+        // inside the 300 m local ecotone instead of ending kilometres above it.
         const NEISOR_RADIUS_KM: f64 = 8_660.254_037_844_386;
         const BAKE_RES: f64 = 1_024.0;
         let texel_km = NEISOR_RADIUS_KM * 2.0 / (BAKE_RES - 1.0);
-        let octave = (BIOME_WARP_OCTAVES - 1) as i32;
-        let wavelength_km = texel_km * BIOME_WARP_BASE_WAVELENGTH_TEXELS
-            / BIOME_WARP_LACUNARITY.powi(octave);
-        let amplitude_km = texel_km * BIOME_WARP_BASE_AMPLITUDE_TEXELS
-            * BIOME_WARP_PERSISTENCE.powi(octave);
+        let scale = |octave: i32| {
+            (
+                texel_km * BIOME_WARP_BASE_WAVELENGTH_TEXELS
+                    / BIOME_WARP_LACUNARITY.powi(octave),
+                texel_km * BIOME_WARP_BASE_AMPLITUDE_TEXELS
+                    * BIOME_WARP_PERSISTENCE.powi(octave),
+            )
+        };
+        let (wavelength_km, amplitude_km) = scale(2);
         assert!(
-            (2.0..=4.0).contains(&wavelength_km),
-            "finest warp wavelength is {wavelength_km:.3} km"
+            (5.0..=8.0).contains(&wavelength_km),
+            "intermediate warp wavelength is {wavelength_km:.3} km"
         );
         assert!(
-            (0.2..=0.7).contains(&amplitude_km),
-            "finest warp amplitude is {amplitude_km:.3} km"
+            (1.0..=2.0).contains(&amplitude_km),
+            "intermediate warp amplitude is {amplitude_km:.3} km"
         );
+        let (wavelength_km, amplitude_km) = scale((BIOME_WARP_OCTAVES - 1) as i32);
+        assert!((0.35..=0.70).contains(&wavelength_km));
+        assert!((0.10..=0.30).contains(&amplitude_km));
+    }
+
+    #[test]
+    fn range_boundary_zone_is_wide_symmetric_and_area_neutral() {
+        let mut cross = climate_test_planet_res(4, 8);
+        cross.radius_km = 8_660.254_037_844_386;
+        let weights_at_x = |x: f64| {
+            let u = -1.0 + 2.0 * x / 7.0;
+            cross
+                .koppen_block_weights_at(
+                    cross.raster_position(0, u, 0.0),
+                    BIOME_BOUNDARY_ZONE_KM,
+                )
+                .1[1]
+        };
+
+        // The 4x4 support extends the x=3.5 transition across its two adjacent
+        // texels, with pure ownership beyond them.
+        assert!(weights_at_x(2.0) < 1e-12);
+        assert!((weights_at_x(3.5) - 0.5).abs() < 1e-12);
+        assert!(1.0 - weights_at_x(5.0) < 1e-12);
+
+        // Both the smooth ramp and categorical prefilter are antisymmetric
+        // around the old edge, so neither biases expected biome area.
+        for i in 0..=64 {
+            let dx = 1.5 * i as f64 / 64.0;
+            assert!(
+                (weights_at_x(3.5 - dx) + weights_at_x(3.5 + dx) - 1.0).abs()
+                    < 1e-12
+            );
+        }
     }
 
     #[test]
@@ -1452,68 +1760,78 @@ mod tests {
     }
 
     #[test]
-    fn ecotone_comparator_preserves_area_fractions() {
+    fn categorical_comparators_preserve_area_fractions() {
         // Sample canonical columns over all faces and both categorical seed
         // streams. If the probability integral transform is doing its job,
         // threshold occupancy equals the requested blend weight.
         const SAMPLES_PER_SEED: usize = 65_536;
         const FRACTIONS: [f64; 3] = [0.25, 0.50, 0.75];
         const TOLERANCE: f64 = 0.008;
-        for seed in [
-            42i64.wrapping_add(ECOTONE_FIELD_SEED_OFFSET),
-            42i64.wrapping_add(SNOW_FIELD_SEED_OFFSET),
+        for (label, field) in [
+            ("local", ecotone_comparator as fn(usize, f64, f64, i64) -> f64),
+            ("boundary", boundary_zone_comparator),
         ] {
-            let mut occupied = [0usize; 3];
-            for sample in 0..SAMPLES_PER_SEED {
-                let face = sample % FACES.len();
-                let a = hash_u64(
-                    face as u8,
-                    sample as u64,
-                    (sample as u64).wrapping_mul(0x9E37_79B9),
-                    0xA11C_E001,
-                );
-                let b = hash_u64(
-                    face as u8,
-                    a,
-                    (sample as u64).wrapping_mul(0x85EB_CA77),
-                    0xA11C_E002,
-                );
-                let ci = a % COLUMNS_PER_FACE;
-                let cj = b % COLUMNS_PER_FACE;
-                let n = COLUMNS_PER_FACE as f64;
-                let u = -1.0 + 2.0 * (ci as f64 + 0.5) / n;
-                let v = -1.0 + 2.0 * (cj as f64 + 0.5) / n;
-                let comparator = ecotone_comparator(face, u, v, seed);
-                for (count, fraction) in occupied.iter_mut().zip(FRACTIONS) {
-                    *count += usize::from(comparator < fraction);
+            for seed in [
+                42i64.wrapping_add(ECOTONE_FIELD_SEED_OFFSET),
+                42i64.wrapping_add(SNOW_FIELD_SEED_OFFSET),
+            ] {
+                let mut occupied = [0usize; 3];
+                for sample in 0..SAMPLES_PER_SEED {
+                    let face = sample % FACES.len();
+                    let a = hash_u64(
+                        face as u8,
+                        sample as u64,
+                        (sample as u64).wrapping_mul(0x9E37_79B9),
+                        0xA11C_E001,
+                    );
+                    let b = hash_u64(
+                        face as u8,
+                        a,
+                        (sample as u64).wrapping_mul(0x85EB_CA77),
+                        0xA11C_E002,
+                    );
+                    let ci = a % COLUMNS_PER_FACE;
+                    let cj = b % COLUMNS_PER_FACE;
+                    let n = COLUMNS_PER_FACE as f64;
+                    let u = -1.0 + 2.0 * (ci as f64 + 0.5) / n;
+                    let v = -1.0 + 2.0 * (cj as f64 + 0.5) / n;
+                    let comparator = field(face, u, v, seed);
+                    for (count, fraction) in occupied.iter_mut().zip(FRACTIONS) {
+                        *count += usize::from(comparator < fraction);
+                    }
                 }
-            }
-            for (count, expected) in occupied.into_iter().zip(FRACTIONS) {
-                let measured = count as f64 / SAMPLES_PER_SEED as f64;
-                eprintln!(
-                    "ecotone occupancy seed={seed} blend={expected:.2} measured={measured:.5}"
-                );
-                assert!(
-                    (measured - expected).abs() <= TOLERANCE,
-                    "seed {seed}: occupancy {measured:.5} at blend {expected:.2} exceeds {TOLERANCE:.3} tolerance"
-                );
+                for (count, expected) in occupied.into_iter().zip(FRACTIONS) {
+                    let measured = count as f64 / SAMPLES_PER_SEED as f64;
+                    eprintln!(
+                        "{label} occupancy seed={seed} blend={expected:.2} measured={measured:.5}"
+                    );
+                    assert!(
+                        (measured - expected).abs() <= TOLERANCE,
+                        "{label} seed {seed}: occupancy {measured:.5} at blend {expected:.2} exceeds {TOLERANCE:.3} tolerance"
+                    );
+                }
             }
         }
     }
 
     #[test]
-    fn ecotone_comparator_is_one_value_per_canonical_column() {
+    fn categorical_comparators_are_one_value_per_canonical_column() {
         let n = COLUMNS_PER_FACE as f64;
         let (ci, cj) = (4_321_987u64, 7_654_321u64);
         let u = -1.0 + 2.0 * (ci as f64 + 0.5) / n;
         let v = -1.0 + 2.0 * (cj as f64 + 0.5) / n;
         let seed = 42i64.wrapping_add(ECOTONE_FIELD_SEED_OFFSET);
-        let expected = ecotone_comparator(2, u, v, seed).to_bits();
-        for (du, dv) in [(-0.20, -0.20), (0.20, -0.20), (-0.20, 0.20), (0.20, 0.20)] {
-            let got = ecotone_comparator(2, u + 2.0 * du / n, v + 2.0 * dv / n, seed);
-            assert_eq!(got.to_bits(), expected);
+        for (label, field) in [
+            ("local", ecotone_comparator as fn(usize, f64, f64, i64) -> f64),
+            ("boundary", boundary_zone_comparator),
+        ] {
+            let expected = field(2, u, v, seed).to_bits();
+            for (du, dv) in [(-0.20, -0.20), (0.20, -0.20), (-0.20, 0.20), (0.20, 0.20)] {
+                let got = field(2, u + 2.0 * du / n, v + 2.0 * dv / n, seed);
+                assert_eq!(got.to_bits(), expected, "{label} comparator changed within a column");
+            }
+            assert_eq!(field(2, u, v, seed).to_bits(), expected, "{label} repeat differed");
         }
-        assert_eq!(ecotone_comparator(2, u, v, seed).to_bits(), expected);
     }
 
     /// Project a world direction onto a specific face's gnomonic plane.
@@ -1548,31 +1866,36 @@ mod tests {
     }
 
     #[test]
-    fn ecotone_comparator_is_exact_across_cube_faces() {
+    fn categorical_comparators_are_exact_across_cube_faces() {
         let seed = 42i64.wrapping_add(ECOTONE_FIELD_SEED_OFFSET);
-        // Interior points on an edge plus both adjacent cube corners.
-        for dir in [
-            face_dir(0, 1.0, -1.0),
-            face_dir(0, 1.0, -0.234_567_89),
-            face_dir(0, 1.0, 0.618_033_99),
-            face_dir(0, 1.0, 1.0),
+        for (label, field) in [
+            ("local", ecotone_comparator as fn(usize, f64, f64, i64) -> f64),
+            ("boundary", boundary_zone_comparator),
         ] {
-            let mut expected = None;
-            let mut copies = 0;
-            for face in 0..FACES.len() {
-                let (u, v, on) = project(face, dir);
-                if !on || (u.abs() < 1.0 - 1e-6 && v.abs() < 1.0 - 1e-6) {
-                    continue;
+            // Interior points on an edge plus both adjacent cube corners.
+            for dir in [
+                face_dir(0, 1.0, -1.0),
+                face_dir(0, 1.0, -0.234_567_89),
+                face_dir(0, 1.0, 0.618_033_99),
+                face_dir(0, 1.0, 1.0),
+            ] {
+                let mut expected = None;
+                let mut copies = 0;
+                for face in 0..FACES.len() {
+                    let (u, v, on) = project(face, dir);
+                    if !on || (u.abs() < 1.0 - 1e-6 && v.abs() < 1.0 - 1e-6) {
+                        continue;
+                    }
+                    let got = field(face, u, v, seed).to_bits();
+                    if let Some(expected) = expected {
+                        assert_eq!(got, expected, "{label} face {face} differs at {dir:?}");
+                    } else {
+                        expected = Some(got);
+                    }
+                    copies += 1;
                 }
-                let got = ecotone_comparator(face, u, v, seed).to_bits();
-                if let Some(expected) = expected {
-                    assert_eq!(got, expected, "face {face} differs at {dir:?}");
-                } else {
-                    expected = Some(got);
-                }
-                copies += 1;
+                assert!(copies >= 2, "expected a shared edge/corner at {dir:?}");
             }
-            assert!(copies >= 2, "expected a shared edge/corner at {dir:?}");
         }
     }
 
