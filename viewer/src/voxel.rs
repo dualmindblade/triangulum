@@ -15,7 +15,9 @@
 //! Chunks are 32x32 columns, keyed (face, cx, cy) — the same "independent
 //! node, any depth" property as the tiles: a chunk needs nothing but its key.
 
-use crate::planet::{climate_surface, face_dir, hash01, hash_u64, MainBlock, Planet};
+use crate::planet::{
+    climate_surface, face_dir, hash01, hash_u64, ClimateSurface, MainBlock, Planet,
+};
 use crate::terrain::{sample, Sample, TileMesh, Vertex, VOXEL_OCTAVES};
 use glam::DVec3;
 use std::collections::{HashMap, HashSet};
@@ -127,7 +129,15 @@ pub struct ColCtx {
     /// (the ONE open-air surface body) — this is an underground pool under
     /// solid rock, which the single-surface model can't otherwise express.
     pub cave_water: i64,
+    /// The exact warped + locally-dithered surface field used by ground color.
+    /// Tree density/category gates consume this same value rather than making
+    /// an independent nearest-Koppen decision.
+    pub climate: ClimateSurface,
     pub koppen: u8,
+    /// Continuous climate at the same warped biome position. These select a
+    /// tree silhouette without putting a nearest-class line back into density.
+    pub biome_temp: f32,
+    pub biome_precip: f32,
     pub e_raw: f32,
     pub temp: f32,
     pub precip: f32,
@@ -373,6 +383,17 @@ pub fn col_ctx(planet: &Planet, edits: &Edits, face: usize, ci: u64, cj: u64) ->
         }
     }
 
+    let biome = planet.biome_climate(face, u, v);
+    let climate = climate_surface(
+        planet,
+        face,
+        u,
+        v,
+        s.temp_c,
+        s.precip,
+        s.sea,
+    );
+
     ColCtx {
         ground,
         ground0,
@@ -380,7 +401,10 @@ pub fn col_ctx(planet: &Planet, edits: &Edits, face: usize, ci: u64, cj: u64) ->
         water,
         cave_bits,
         cave_water,
-        koppen: planet.koppen_with_sea(face, u, v, s.sea),
+        climate,
+        koppen: biome.koppen,
+        biome_temp: biome.temp_c,
+        biome_precip: biome.precip_mm_yr,
         e_raw: s.e_raw as f32,
         temp: s.temp_c as f32,
         precip: s.precip as f32,
@@ -404,12 +428,18 @@ pub fn col_ctx(planet: &Planet, edits: &Edits, face: usize, ci: u64, cj: u64) ->
 
 /// Surface material given local steepness (max |height delta| to neighbors).
 /// Climate-owned grass/sand/snow selection is shared with the far mesh;
-/// hydrology and local slope remain higher-priority local facts. The beach
-/// is shared too: `beach_jitter` (a per-column hash) dithers the column on
-/// terrain::beach_frac, the same fraction the mesh mixes its tint by. A lake
+/// hydrology and local slope remain higher-priority local facts. Generic
+/// coastal beach sand uses the fractal ecotone comparator; the separately-
+/// approved V-7 lake shore retains its established per-column dither. A lake
 /// territory yields generic beach ownership to the shared lake-shore fraction
 /// so a near-sea-level lake cannot fall through and become a sand province.
-fn surface_mat(c: &ColCtx, steep: i64, climate_block: MainBlock, beach_jitter: f64) -> Mat {
+fn surface_mat(
+    c: &ColCtx,
+    steep: i64,
+    climate_block: MainBlock,
+    lake_jitter: f64,
+    coastal_comparator: f64,
+) -> Mat {
     // underwater floors
     if c.water != i64::MIN && c.ground < c.water {
         return if c.water - c.ground > 4 { Mat::Gravel } else { Mat::Sand };
@@ -423,7 +453,7 @@ fn surface_mat(c: &ColCtx, steep: i64, climate_block: MainBlock, beach_jitter: f
     if c.lake_shoal {
         return Mat::Sand;
     }
-    if beach_jitter < c.lake_shore_frac {
+    if lake_jitter < c.lake_shore_frac {
         return Mat::Sand;
     }
     if climate_block == MainBlock::Snow {
@@ -437,10 +467,12 @@ fn surface_mat(c: &ColCtx, steep: i64, climate_block: MainBlock, beach_jitter: f
     }
     // beaches: low ground near sea level, dithered on the SHARED fraction
     // (natural ground: a tower built on a beach stays a sand tower)
-    if !c.lake_material_region
-        && beach_jitter
-            < crate::terrain::beach_frac(c.e_raw as f64, c.ground0 as f64 / 1000.0)
-    {
+    if crate::terrain::coastal_beach_sand(
+        c.e_raw as f64,
+        c.h_km as f64,
+        c.lake_material_region,
+        coastal_comparator,
+    ) {
         return Mat::Sand;
     }
     match climate_block {
@@ -448,6 +480,19 @@ fn surface_mat(c: &ColCtx, steep: i64, climate_block: MainBlock, beach_jitter: f
         MainBlock::Grass => Mat::Grass,
         MainBlock::Snow => Mat::Snow, // handled above; exhaustive by contract
     }
+}
+
+/// Whether this exact canonical column wears generic coastal beach sand.
+/// Surface materials, voxel trees, probes, and mesh impostors all call this
+/// predicate, so vegetation cannot survive on a sand patch or stop at the
+/// retired raw-elevation line.
+pub fn coastal_beach_at(c: &ColCtx, face: u8, ci: u64, cj: u64, seed: i64) -> bool {
+    crate::terrain::coastal_beach_sand(
+        c.e_raw as f64,
+        c.h_km as f64,
+        c.lake_material_region,
+        crate::terrain::beach_blend_comparator(face, ci, cj, seed),
+    )
 }
 
 fn mat_main_block(mat: Mat, fallback: MainBlock) -> MainBlock {
@@ -509,6 +554,8 @@ pub enum TreeKind {
 /// billboard impostors in terrain::build_tile; TRANSITIONS.md E).
 /// Densities are per-column; one canopy covers ~25 columns, so 0.010 is
 /// already a closed-canopy forest.
+pub const MAX_TREE_DENSITY: f64 = 0.011;
+
 pub fn tree_kind_density(koppen: u8) -> Option<(TreeKind, f64)> {
     match koppen {
         0 | 1 => Some((TreeKind::Jungle, 0.011)),
@@ -522,6 +569,95 @@ pub fn tree_kind_density(koppen: u8) -> Option<(TreeKind, f64)> {
         28 => Some((TreeKind::Shrub, 0.002)),
         _ => None, // deserts, ice cap, ocean
     }
+}
+
+/// Continuous forest signature -> established tree density. Every knot is an
+/// existing biome interior, so joining the field does not globally retune
+/// forests: only the space between those signatures changes continuously.
+fn forest_tree_density(forest: f64) -> f64 {
+    const KNOTS: [(f64, f64); 7] = [
+        (0.0, 0.0),
+        (0.15, 0.0012),
+        (0.30, 0.0025),
+        (0.40, 0.0030),
+        (0.50, 0.0050),
+        (0.60, 0.0070),
+        (0.85, MAX_TREE_DENSITY),
+    ];
+    let forest = forest.clamp(0.0, 1.0);
+    for pair in KNOTS.windows(2) {
+        let (x0, y0) = pair[0];
+        let (x1, y1) = pair[1];
+        if forest <= x1 {
+            let t = (forest - x0) / (x1 - x0);
+            return y0 + (y1 - y0) * t;
+        }
+    }
+    MAX_TREE_DENSITY
+}
+
+/// Species and density on the same warped/dithered field the ground uses.
+///
+/// `main_block` is the categorical fractal ecotone result: sand and snow
+/// patches cannot grow a tree even when their nearest Koppen texel is wooded.
+/// `forest` is the continuous signature at the same warped position, converted
+/// to a density curve calibrated to retain the established biome interiors.
+/// Existing vegetated classes retain their established species; continuous
+/// warped climate supplies a species only on a dithered grass island whose
+/// nearest class is barren. Classes whose forest signature is genuinely zero
+/// keep their old sparse acacia/shrub populations.
+pub fn tree_biome_profile(
+    koppen: u8,
+    main_block: MainBlock,
+    forest: f32,
+    biome_temp_c: f32,
+    biome_precip_mm: f32,
+) -> Option<(TreeKind, f64)> {
+    if main_block != MainBlock::Grass {
+        return None;
+    }
+    let forest = f64::from(forest.clamp(0.0, 1.0));
+    if forest > 1e-4 {
+        let inherited = tree_kind_density(koppen);
+        let sparse = match koppen {
+            5 | 6 | 28 => inherited,
+            _ => None,
+        };
+        let forest_density = forest_tree_density(forest);
+        if sparse.is_some_and(|(_, density)| density >= forest_density) {
+            return sparse;
+        }
+        let climate_kind = if biome_temp_c < 5.0 {
+            TreeKind::Conifer
+        } else if biome_temp_c > 20.0 && biome_precip_mm > 1_400.0 {
+            TreeKind::Jungle
+        } else if biome_temp_c > 16.0 && biome_precip_mm < 1_400.0 {
+            TreeKind::Acacia
+        } else {
+            TreeKind::Broadleaf
+        };
+        // Preserve established species wherever the warped nearest class is
+        // already vegetated. Continuous climate supplies only the missing
+        // species for a dithered grass island on the nominally barren side;
+        // shrubs likewise hand over when a real forest signal overtakes them.
+        let kind = match inherited {
+            Some((TreeKind::Shrub, _)) | None => climate_kind,
+            Some((kind, _)) => kind,
+        };
+        return Some((kind, forest_density));
+    }
+    tree_kind_density(koppen)
+}
+
+#[inline]
+fn tree_profile(c: &ColCtx) -> Option<(TreeKind, f64)> {
+    tree_biome_profile(
+        c.koppen,
+        c.climate.main_block,
+        c.climate.forest,
+        c.biome_temp,
+        c.biome_precip,
+    )
 }
 
 /// The placement lottery ticket for a column (uniform 0..1, compared
@@ -543,20 +679,32 @@ pub fn tree_trunk(kind: TreeKind, face: u8, ci: u64, cj: u64) -> i64 {
     }
 }
 
-/// Deterministic tree placement: species + density by biome, no trees on
-/// steep ground, water, beaches, or beyond the cold treeline.
-pub fn tree_at(c: &ColCtx, face: u8, ci: u64, cj: u64, seed: i64) -> Option<(TreeKind, i64)> {
-    // no trees in water, on beaches, or in river/pond carved ground (a
-    // canopy anchored in a gully pokes out at rim level as leaf shards)
+/// Deterministic tree placement with a density multiplier for strided mesh
+/// impostors. Scale 1 is voxel truth; a stride-s impostor represents s^2
+/// columns and therefore uses scale s^2 against the same lottery/profile.
+pub fn tree_at_scaled(
+    c: &ColCtx,
+    face: u8,
+    ci: u64,
+    cj: u64,
+    seed: i64,
+    density_scale: f64,
+) -> Option<(TreeKind, i64)> {
+    // No trees in water, on actual beach sand, in edited/cave-mouth columns,
+    // or in river/pond carved ground (a canopy anchored in a gully pokes out
+    // at rim level as leaf shards). The separately-approved lake vegetation
+    // band stays unchanged; this mission changes generic coastal beaches.
     if c.has_water()
         || c.water != i64::MIN
-        || c.e_raw < 0.010
         || c.lake_level_band
         || c.carved
+        || c.ground != c.ground0
+        || c.top_solid() != c.ground
+        || coastal_beach_at(c, face, ci, cj, seed)
     {
         return None;
     }
-    let Some((kind, density)) = tree_kind_density(c.koppen) else {
+    let Some((kind, density)) = tree_profile(c) else {
         return None;
     };
     // treeline: shrubs shiver on, trees give up
@@ -566,10 +714,16 @@ pub fn tree_at(c: &ColCtx, face: u8, ci: u64, cj: u64, seed: i64) -> Option<(Tre
     if c.temp < -11.0 {
         return None;
     }
-    if tree_hash01(face, ci, cj, seed) >= density {
+    if tree_hash01(face, ci, cj, seed) >= density * density_scale {
         return None;
     }
     Some((kind, tree_trunk(kind, face, ci, cj)))
+}
+
+/// Voxel tree lottery (density scale 1). Public because probes and the voxel
+/// mesher share this exact single-column decision with forest impostors.
+pub fn tree_at(c: &ColCtx, face: u8, ci: u64, cj: u64, seed: i64) -> Option<(TreeKind, i64)> {
+    tree_at_scaled(c, face, ci, cj, seed, 1.0)
 }
 
 /// The full-block cells of a tree, relative to its anchor column's ground.
@@ -1007,15 +1161,9 @@ pub fn build_chunk(
             let d11 = face_dir(face, u1, v1);
             let d01 = face_dir(face, u0, v1);
             let up = origin_dir;
-            let climate = climate_surface(
-                planet,
-                face,
-                (u0 + u1) * 0.5,
-                (v0 + v1) * 0.5,
-                c.temp as f64,
-                c.precip as f64,
-                c.sea,
-            );
+            // `col_ctx` caches the exact climate surface because trees and
+            // materials must consume the same warped/dithered field.
+            let climate = c.climate;
 
             // Per-column surface normal for the block top. Without slope
             // self-shading the only relief cue is the baked-dark terrace risers,
@@ -1081,6 +1229,12 @@ pub fn build_chunk(
                 steep,
                 climate.main_block,
                 hash01(face as u8, ci, cj, 0xBEAC),
+                crate::terrain::beach_blend_comparator(
+                    face as u8,
+                    ci,
+                    cj,
+                    planet.seed,
+                ),
             );
             let tint = climate.tint(mat_main_block(surf, climate.main_block));
 
@@ -1560,4 +1714,42 @@ pub fn build_chunk(
     }
 
     TileMesh { origin_km: origin, vertices, indices }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tree_profile_follows_shared_surface_not_nearest_class() {
+        let wooded = tree_biome_profile(13, MainBlock::Grass, 0.5, 15.0, 1_000.0)
+            .expect("grass forest should grow trees");
+        let sentinel_patch = tree_biome_profile(255, MainBlock::Grass, 0.5, 15.0, 1_000.0)
+            .expect("a dithered grass island must not inherit sentinel barrenness");
+        assert_eq!(wooded.0, sentinel_patch.0);
+        assert!((wooded.1 - sentinel_patch.1).abs() < f64::EPSILON);
+        assert!(
+            tree_biome_profile(13, MainBlock::Sand, 0.5, 15.0, 1_000.0).is_none(),
+            "a dithered sand island must not inherit forest eligibility"
+        );
+    }
+
+    #[test]
+    fn tree_density_is_continuous_in_warped_forest_signal() {
+        let densities: Vec<f64> = [0.15, 0.30, 0.50, 0.60, 0.85]
+            .into_iter()
+            .map(|forest| {
+                tree_biome_profile(13, MainBlock::Grass, forest, 12.0, 1_000.0)
+                    .unwrap()
+                    .1
+            })
+            .collect();
+        assert!(densities.windows(2).all(|w| w[0] < w[1]), "{densities:?}");
+        assert!((densities[4] - MAX_TREE_DENSITY).abs() < 0.000_1);
+        // True zero-forest steppe/tundra retains its established sparse flora.
+        assert_eq!(
+            tree_biome_profile(6, MainBlock::Grass, 0.0, 2.0, 300.0),
+            Some((TreeKind::Shrub, 0.0015))
+        );
+    }
 }
