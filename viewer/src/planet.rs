@@ -34,17 +34,22 @@ pub const KOPPEN_HUE_NUDGE: f32 = 0.14;
 // Amplitude is in baked texels. Wavelength is also in baked texels at a face
 // center; LACUNARITY divides it and PERSISTENCE scales amplitude per octave.
 // On Neisor the defaults are approximately:
-//   wavelength 68 / 8.5 km, amplitude 6.8 / 3.0 km before the 0.70-texel cap.
-// One inexpensive smooth vector-noise evaluation supplies all components per
-// octave; the class-interior fast path skips the stack when it cannot matter.
-pub const BIOME_WARP_OCTAVES: u32 = 2;
+//   wavelength 68 / 15 / 3.4 km, amplitude 6.8 / 2.0 / 0.61 km before the
+//   0.70-texel cap. The last octave is the intermediate-flight layer: broad
+//   enough to read around 1 km altitude, but still hands off cleanly to the
+//   300 m categorical ecotone below it.
+// One inexpensive smooth vector-noise evaluation supplies each broad octave;
+// the final octave weaves two projections. The class-interior fast path skips
+// the whole stack when it cannot matter.
+pub const BIOME_WARP_OCTAVES: u32 = 3;
 pub const BIOME_WARP_BASE_AMPLITUDE_TEXELS: f64 = 0.40;
 pub const BIOME_WARP_BASE_WAVELENGTH_TEXELS: f64 = 4.0;
-pub const BIOME_WARP_LACUNARITY: f64 = 8.0;
-pub const BIOME_WARP_PERSISTENCE: f64 = 0.45;
+pub const BIOME_WARP_LACUNARITY: f64 = 4.5;
+pub const BIOME_WARP_PERSISTENCE: f64 = 0.30;
 pub const BIOME_WARP_MAX_DISPLACEMENT_TEXELS: f64 = 0.70;
 
 const BIOME_WARP_SEED_OFFSET: i64 = 0x0B10_0A2E;
+const BIOME_WARP_WOVEN_OCTAVE: usize = 2;
 
 // ---- Andrew's fractal ecotone art-direction knobs -----------------------
 // OCTAVES is the number of nested spatial layers (and noise evaluations).
@@ -104,6 +109,10 @@ pub struct BiomeClimate {
     pub koppen: u8,
     pub temp_c: f32,
     pub precip_mm_yr: f32,
+    /// Physical sea ownership at the original, unwarped world position.
+    /// A dry coastal column may legitimately carry the baked `255` sentinel;
+    /// consumers must use this bit, not the class byte, to identify water.
+    pub sea: bool,
 }
 
 impl ClimateSurface {
@@ -174,6 +183,16 @@ fn canonical_face_uv(face: usize, u: f64, v: f64) -> (usize, f64, f64) {
     }
 }
 
+/// The physical open-sea classifier shared with `terrain::sample`.
+///
+/// This deliberately remains a function of UNWARPED landscape rasters. The
+/// biome transform may move climate appearance, never water ownership.
+#[inline]
+pub fn sea_from_fields(e_raw_km: f64, water_mask: f64, ocean_frac: f64) -> bool {
+    e_raw_km <= 0.0
+        && (water_mask >= 0.5 || (e_raw_km <= -0.1 && ocean_frac > 0.35))
+}
+
 // Seed-independent irrational-looking directions for the three vector-noise
 // channels. Each row rotates the domain at the next octave; all are normalized
 // integer triples, so no cube-face or world-axis direction owns the result.
@@ -221,7 +240,21 @@ fn biome_vector_noise(dir: DVec3, frequency: f64, seed_phase: f64, octave: usize
     let axes = BIOME_WARP_AXES[octave % BIOME_WARP_AXES.len()];
     let octave_phase = seed_phase + octave as f64 * 0.618_033_988_749_894_9;
     let (a, b) = smooth_noise_wave_pair(dir.dot(axes[0]) * frequency + octave_phase);
-    (axes[1] * a + axes[2] * b) * 1.15
+    if octave == BIOME_WARP_WOVEN_OCTAVE {
+        // The broad approved layers keep their original inexpensive stripe
+        // field. The added flight-scale octave weaves a second projection into
+        // it, so a boundary parallel to one projection (notably lon -45) still
+        // receives variation along its length. RMS amplitude stays unchanged.
+        let (c, d) = smooth_noise_wave_pair(
+            dir.dot(axes[1]) * frequency
+                + octave_phase * 1.732_050_807_568_877_2
+                + 0.414_213_562_373_095_0,
+        );
+        (axes[1] * (a + d) + axes[2] * (b - c))
+            * (1.15 * std::f64::consts::FRAC_1_SQRT_2)
+    } else {
+        (axes[1] * a + axes[2] * b) * 1.15
+    }
 }
 
 /// Smallest gnomonic angular derivative at this face position. Scaling the
@@ -529,9 +562,25 @@ impl Planet {
         self.bilinear(face, |r| &r.water, u, v)
     }
 
+    /// Physical sea ownership at an unwarped raster position. The positive-
+    /// elevation fast path matters for dry coastal `255` areas: it proves land
+    /// with one raster read and avoids consulting either ocean mask.
+    #[inline]
+    fn true_sea_at(&self, face: usize, u: f64, v: f64) -> bool {
+        let e_raw = self.elevation(face, u, v) as f64;
+        if e_raw > 0.0 {
+            return false;
+        }
+        sea_from_fields(
+            e_raw,
+            self.water_frac(face, u, v) as f64,
+            self.ocean(face, u, v) as f64,
+        )
+    }
+
     /// Unwarped nearest-texel class read. This is private because public biome
     /// consumers must all pass through `climate_position`; it remains the
-    /// authority for the original-position ocean gate and raster neighbors.
+    /// authority for categorical neighbor reads and regression probes.
     fn raw_koppen(&self, face: usize, u: f64, v: f64) -> u8 {
         let r = &self.faces[face];
         let res = r.res as f64;
@@ -564,14 +613,21 @@ impl Planet {
 
     /// The ONE position transform for every biome-class and biome-tint read.
     ///
-    /// Ocean ownership is checked first at the unwarped world position. Ocean
-    /// points never warp, and a land warp that would sample an ocean texel is
-    /// rejected as a whole, so climate displacement cannot move either side of
-    /// the sea boundary. Elevation and all water masks are never read here.
-    fn climate_position(&self, face: usize, u: f64, v: f64) -> ClimatePosition {
+    /// Physical sea ownership is checked first at the unwarped world position;
+    /// true sea never warps. A land warp touching the categorical `255`
+    /// sentinel is rejected only when its target is also physical sea. Thus the
+    /// water boundary cannot move, while dry `255` coastal land still receives
+    /// the same appearance transform as every other biome.
+    fn climate_position_with_sea(
+        &self,
+        face: usize,
+        u: f64,
+        v: f64,
+        source_is_sea: bool,
+    ) -> ClimatePosition {
         let (face, u, v) = canonical_face_uv(face, u, v);
         let source = self.raster_position(face, u, v);
-        if source.here == 255 {
+        if source_is_sea {
             return ClimatePosition { raster: source, warped: false };
         }
 
@@ -601,29 +657,53 @@ impl Planet {
             face_from_dir(warped_dir)
         };
         let warped = self.raster_position(warped_face, warped_u, warped_v);
-        if warped.here == 255 {
+        // `255` is a climate sentinel, not a water decision. It occurs over
+        // positive-elevation coastal land throughout the bake (the -44.8 deg
+        // repro is the largest example). Only reject a sentinel-crossing warp
+        // when its TARGET is physically sea; otherwise dry sand/forest edges
+        // participate in the same domain warp as every other biome boundary.
+        let touches_sentinel = source.here == 255 || warped.here == 255;
+        if touches_sentinel && self.true_sea_at(warped_face, warped_u, warped_v) {
             ClimatePosition { raster: source, warped: false }
         } else {
             ClimatePosition { raster: warped, warped: true }
         }
     }
 
-    /// Nearest-texel domain-warped Koppen class id; 255 = unwarped ocean.
+    #[inline]
+    fn climate_position(&self, face: usize, u: f64, v: f64) -> ClimatePosition {
+        let (face, u, v) = canonical_face_uv(face, u, v);
+        let source_is_sea = self.true_sea_at(face, u, v);
+        self.climate_position_with_sea(face, u, v, source_is_sea)
+    }
+
+    /// Nearest-texel domain-warped Koppen class id. `255` is the baked climate
+    /// sentinel and can occur on dry land; use `BiomeClimate::sea` for water.
     pub fn koppen(&self, face: usize, u: f64, v: f64) -> u8 {
         self.climate_position(face, u, v).raster.here
+    }
+
+    /// Domain-warped class when the caller already owns the authoritative
+    /// unwarped surface sample. Mesh and voxel hot paths use this to avoid
+    /// re-reading the three sea-classification rasters.
+    pub fn koppen_with_sea(&self, face: usize, u: f64, v: f64, sea: bool) -> u8 {
+        self.climate_position_with_sea(face, u, v, sea).raster.here
     }
 
     /// Class plus continuous tint coordinates at the exact same warped point.
     /// This is intentionally separate from `temp()` / `precip()`: those public
     /// fields remain unwarped for terrain, weather, ecology, and water rules.
     pub fn biome_climate(&self, face: usize, u: f64, v: f64) -> BiomeClimate {
-        let p = self.climate_position(face, u, v);
+        let (face, u, v) = canonical_face_uv(face, u, v);
+        let sea = self.true_sea_at(face, u, v);
+        let p = self.climate_position_with_sea(face, u, v, sea);
         let r = p.raster;
         let climate = self.climate_bilinear_at(r);
         BiomeClimate {
             koppen: r.here,
             temp_c: climate[0],
             precip_mm_yr: climate[1],
+            sea,
         }
     }
 
@@ -1066,8 +1146,8 @@ fn hue_nudge(base: [f32; 3], anchor: [f32; 3]) -> [f32; 3] {
 /// One truth for the two ground renderers: domain-warped climate supplies all
 /// provisional material tints, smoothly sampled Koppen only nudges grass hue,
 /// and the approved unwarped world-column field chooses cross-block and snow
-/// categories. Elevation, water, weather, and the terrain `Sample` never enter
-/// this transform.
+/// categories. The caller supplies unwarped physical-sea ownership solely as
+/// a guard; elevation, weather, hydrology, and water geometry never warp.
 pub fn climate_surface(
     planet: &Planet,
     face: usize,
@@ -1075,12 +1155,14 @@ pub fn climate_surface(
     v: f64,
     unwarped_temp_c: f64,
     unwarped_precip_mm: f64,
+    unwarped_sea: bool,
 ) -> ClimateSurface {
     // Canonicalize the real world position once. The climate raster reads use
     // its warped counterpart; metre-scale comparator phases stay anchored to
     // this original position so their approved character does not change.
     let (world_face, world_u, world_v) = canonical_face_uv(face, u, v);
-    let lookup = planet.climate_position(world_face, world_u, world_v);
+    let lookup =
+        planet.climate_position_with_sea(world_face, world_u, world_v, unwarped_sea);
     let p = lookup.raster;
     let (koppen_anchor, forest) = planet.koppen_signature(p);
     let chosen = planet.dithered_koppen_at(p, || {
@@ -1236,16 +1318,73 @@ mod tests {
     }
 
     #[test]
-    fn biome_warp_cannot_cross_the_raw_ocean_mask() {
-        let ocean_edge = climate_test_planet(255);
+    fn biome_warp_has_an_intermediate_flight_octave() {
+        // Art-direction gate for Neisor's production bake. This is the octave
+        // that must remain visible between the approved continental warp and
+        // the 300 m local ecotone field.
+        const NEISOR_RADIUS_KM: f64 = 8_660.254_037_844_386;
+        const BAKE_RES: f64 = 1_024.0;
+        let texel_km = NEISOR_RADIUS_KM * 2.0 / (BAKE_RES - 1.0);
+        let octave = (BIOME_WARP_OCTAVES - 1) as i32;
+        let wavelength_km = texel_km * BIOME_WARP_BASE_WAVELENGTH_TEXELS
+            / BIOME_WARP_LACUNARITY.powi(octave);
+        let amplitude_km = texel_km * BIOME_WARP_BASE_AMPLITUDE_TEXELS
+            * BIOME_WARP_PERSISTENCE.powi(octave);
+        assert!(
+            (2.0..=4.0).contains(&wavelength_km),
+            "finest warp wavelength is {wavelength_km:.3} km"
+        );
+        assert!(
+            (0.2..=0.7).contains(&amplitude_km),
+            "finest warp amplitude is {amplitude_km:.3} km"
+        );
+    }
+
+    #[test]
+    fn dry_ocean_sentinel_participates_in_biome_warp() {
+        // Production has dry, positive-elevation coastal land whose nearest
+        // climate byte is 255. It is sand appearance, not physical ocean, and
+        // therefore must move with the forest/sand domain warp.
+        let dry_sentinel = climate_test_planet(255);
+        let mut changed = 0usize;
         for face in 0..FACES.len() {
             for j in 0..128 {
                 for i in 0..128 {
                     let u = -1.0 + 2.0 * (i as f64 + 0.5) / 128.0;
                     let v = -1.0 + 2.0 * (j as f64 + 0.5) / 128.0;
-                    let raw_is_ocean = ocean_edge.raw_koppen(face, u, v) == 255;
+                    assert!(!dry_sentinel.true_sea_at(face, u, v));
+                    changed += usize::from(
+                        dry_sentinel.raw_koppen(face, u, v)
+                            != dry_sentinel.koppen(face, u, v),
+                    );
+                }
+            }
+        }
+        assert!(changed > 0, "dry 255 boundary remained completely unwarped");
+        assert!(!dry_sentinel.biome_climate(0, 0.25, 0.0).sea);
+    }
+
+    #[test]
+    fn biome_warp_cannot_cross_true_sea() {
+        let mut ocean_edge = climate_test_planet(255);
+        for face in &mut ocean_edge.faces {
+            for y in 0..face.res {
+                for x in 2..face.res {
+                    let index = y * face.res + x;
+                    face.elev_km[index] = -0.2;
+                    face.water[index] = 1.0;
+                    face.ocean[index] = 1.0;
+                }
+            }
+        }
+        for face in 0..FACES.len() {
+            for j in 0..128 {
+                for i in 0..128 {
+                    let u = -1.0 + 2.0 * (i as f64 + 0.5) / 128.0;
+                    let v = -1.0 + 2.0 * (j as f64 + 0.5) / 128.0;
+                    let true_sea = ocean_edge.true_sea_at(face, u, v);
                     let warped_is_ocean = ocean_edge.koppen(face, u, v) == 255;
-                    assert_eq!(warped_is_ocean, raw_is_ocean, "face={face} u={u} v={v}");
+                    assert_eq!(warped_is_ocean, true_sea, "face={face} u={u} v={v}");
                 }
             }
         }
@@ -1271,9 +1410,9 @@ mod tests {
 
         // The hue nudge itself is bilinear, so same-block color is continuous
         // across that nearest-class edge.
-        let a = climate_surface(&same, 0, -1e-6, 0.0, 8.0, 900.0)
+        let a = climate_surface(&same, 0, -1e-6, 0.0, 8.0, 900.0, false)
             .tint(MainBlock::Grass);
-        let b = climate_surface(&same, 0, 1e-6, 0.0, 8.0, 900.0)
+        let b = climate_surface(&same, 0, 1e-6, 0.0, 8.0, 900.0, false)
             .tint(MainBlock::Grass);
         assert!(a.into_iter().zip(b).all(|(x, y)| (x - y).abs() < 1e-5));
     }

@@ -1,0 +1,41 @@
+# Round-2 biome warp evidence: Andrew's three lon -45 failures, the missing
+# intermediate scale, and the two approved broader-scale references. Exact
+# field poses and recorded sun directions make every re-render comparable.
+weather off
+mode fly
+
+# Dry, positive-elevation land carrying the baked ocean sentinel. Before the
+# true-sea fix, sand and forest both stopped on the unwarped sentinel edge.
+sun 10 -48.724402
+teleport 11.219098 -44.824563 0.727485
+look -105.637047 -26.195630
+shot seam_forest_727m
+
+sun 10 -34.919050
+teleport 12.132215 -44.816366 0.208977
+look -140.804372 -30.733456
+shot seam_forest_209m
+
+sun 10 -32.346561
+teleport 12.105767 -44.777901 12.814264
+look -73.737304 -54.557041
+shot seam_biomes_12km
+
+# The scale Andrew asked us to add: the old broad warp read as a smooth line
+# here, above the reach of the approved 300 m ecotone field.
+sun 10 20.583898
+teleport 31.152748 28.010161 1.192507
+look -107.035337 -73.212547
+shot intermediate_1km
+
+# Approved character references: broad continental breakup from orbit and the
+# same desert interface at 19 km. These may move locally but must read alike.
+sun 10 22.624453
+teleport 30.568006 27.528671 246.231614
+look -99.844162 -84.431061
+shot approved_orbit
+
+sun 10 24.152744
+teleport 31.151792 28.038922 18.994605
+look -120.129729 -78.632728
+shot approved_19km
