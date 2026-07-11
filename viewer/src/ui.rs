@@ -55,6 +55,11 @@ pub struct Photo {
     pub mode: Option<String>,
     pub day_len_s: Option<f64>,
     pub seed: Option<i64>,
+    /// Player-authored, editable in the photo window and stored back in the
+    /// sidecar. Absent on legacy sidecars (and never present on filename-only
+    /// shots) — read as empty strings, never an error.
+    pub title: String,
+    pub note: String,
 }
 
 fn sidecar_weather(js: &serde_json::Value) -> Option<(bool, Option<(f32, f32)>, Option<f64>)> {
@@ -89,6 +94,25 @@ fn sidecar_weather(js: &serde_json::Value) -> Option<(bool, Option<(f32, f32)>, 
     Some((on, pin, time))
 }
 
+/// A free-text sidecar field (title / note): missing or non-string reads as
+/// empty so pre-notes sidecars and filename-only shots keep working.
+fn sidecar_str(js: &serde_json::Value, key: &str) -> String {
+    js.get(key).and_then(|v| v.as_str()).unwrap_or("").to_string()
+}
+
+/// Set `title`/`note` on a sidecar value, preserving every other field
+/// (read-modify-write). A non-object value (or an absent sidecar the caller
+/// passes as `{}`) becomes a fresh object holding just these two keys.
+fn apply_notes(js: &mut serde_json::Value, title: &str, note: &str) {
+    if !js.is_object() {
+        *js = serde_json::Value::Object(serde_json::Map::new());
+    }
+    if let Some(obj) = js.as_object_mut() {
+        obj.insert("title".to_string(), serde_json::Value::String(title.to_string()));
+        obj.insert("note".to_string(), serde_json::Value::String(note.to_string()));
+    }
+}
+
 fn parse_filename(name: &str) -> Option<(f64, f64, f64, f64, f64)> {
     // shot_lat4.990_lon-29.403_alt0.047km_yaw37_pitch-29.png
     let grab = |key: &str, until: &str| -> Option<f64> {
@@ -119,13 +143,16 @@ pub fn scan_photos(interchange: &Path) -> Vec<Photo> {
             continue;
         }
         let sidecar = path.with_extension("json");
+        // parse the sidecar once: pose may come from it (below) or from the
+        // filename, but title/note always come from it when present.
+        let js = std::fs::read_to_string(&sidecar)
+            .ok()
+            .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok());
         let mut photo: Option<Photo> = None;
-        if let Ok(raw) = std::fs::read_to_string(&sidecar)
-            && let Ok(js) = serde_json::from_str::<serde_json::Value>(&raw)
-        {
+        if let Some(js) = &js {
             let f = |k: &str| js.get(k).and_then(|v| v.as_f64());
             if let (Some(lat), Some(lon)) = (f("lat_deg"), f("lon_deg")) {
-                let weather = sidecar_weather(&js);
+                let weather = sidecar_weather(js);
                 photo = Some(Photo {
                     path: path.clone(),
                     name: name.clone(),
@@ -142,6 +169,8 @@ pub fn scan_photos(interchange: &Path) -> Vec<Photo> {
                     mode: js.get("mode").and_then(|v| v.as_str()).map(str::to_owned),
                     day_len_s: f("day_len_s").filter(|v| *v > 0.0),
                     seed: js.get("seed").and_then(|v| v.as_i64()),
+                    title: String::new(),
+                    note: String::new(),
                 });
             }
         }
@@ -164,7 +193,15 @@ pub fn scan_photos(interchange: &Path) -> Vec<Photo> {
                 mode: None,
                 day_len_s: None,
                 seed: None,
+                title: String::new(),
+                note: String::new(),
             });
+        }
+        // title/note ride the sidecar regardless of where the pose came from,
+        // so a note saved onto an otherwise filename-only shot round-trips.
+        if let (Some(p), Some(js)) = (photo.as_mut(), &js) {
+            p.title = sidecar_str(js, "title");
+            p.note = sidecar_str(js, "note");
         }
         if let Some(p) = photo {
             out.push(p);
@@ -657,6 +694,32 @@ impl PhotoMap {
         self.preview = Some((idx, tex));
     }
 
+    /// Persist the selected photo's title/note into its JSON sidecar,
+    /// preserving every existing field. The in-memory `Photo` already holds
+    /// the edited text (the edit boxes bind straight to it), so we only touch
+    /// disk here — no re-scan, which would resort the roll under the player.
+    fn save_notes(&mut self, idx: usize) {
+        let Some(p) = self.photos.get(idx) else {
+            return;
+        };
+        let sidecar = p.path.with_extension("json");
+        let name = p.name.clone();
+        let title = p.title.clone();
+        let note = p.note.clone();
+        let mut js = std::fs::read_to_string(&sidecar)
+            .ok()
+            .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
+            .unwrap_or_else(|| serde_json::Value::Object(serde_json::Map::new()));
+        apply_notes(&mut js, &title, &note);
+        self.status = match serde_json::to_string_pretty(&js) {
+            Ok(text) => match std::fs::write(&sidecar, text) {
+                Ok(()) => format!("saved notes for {name}"),
+                Err(e) => format!("note save failed: {e}"),
+            },
+            Err(e) => format!("note save failed: {e}"),
+        };
+    }
+
     fn trash_pair_paths(trash: &Path, png: &Path) -> Option<(PathBuf, PathBuf)> {
         let stem = png.file_stem()?.to_string_lossy();
         let ext = png.extension().and_then(|e| e.to_str()).unwrap_or("png");
@@ -1083,8 +1146,13 @@ impl PhotoMap {
                             for p in &self.photos {
                                 if bounds.project(rect, p.lat, p.lon).distance(hp) < 10.0 {
                                     let font = egui::FontId::proportional(12.0);
+                                    let text = if p.title.trim().is_empty() {
+                                        p.name.clone()
+                                    } else {
+                                        p.title.clone()
+                                    };
                                     let galley = ui.painter().layout_no_wrap(
-                                        p.name.clone(),
+                                        text,
                                         font,
                                         Color32::WHITE,
                                     );
@@ -1111,6 +1179,30 @@ impl PhotoMap {
                                 let scale = (map_w / size.x).min(220.0 / size.y).min(1.0);
                                 ui.add_space(6.0);
                                 ui.image((tex.id(), size * scale));
+                            }
+                            // title + notes for the selected photo, editable and
+                            // written straight into its sidecar. The edit boxes
+                            // bind to the in-memory Photo; Save (or focus loss)
+                            // commits it to disk.
+                            if sel < self.photos.len() {
+                                ui.add_space(6.0);
+                                ui.label("Title");
+                                let title_resp = ui.add(
+                                    egui::TextEdit::singleline(&mut self.photos[sel].title)
+                                        .hint_text("a name for this shot")
+                                        .desired_width(f32::INFINITY),
+                                );
+                                ui.label("Notes");
+                                let note_resp = ui.add(
+                                    egui::TextEdit::multiline(&mut self.photos[sel].note)
+                                        .hint_text("notes about this shot")
+                                        .desired_rows(3)
+                                        .desired_width(f32::INFINITY),
+                                );
+                                let save = ui.button("Save").clicked();
+                                if save || title_resp.lost_focus() || note_resp.lost_focus() {
+                                    self.save_notes(sel);
+                                }
                             }
                         }
                     });
@@ -1157,13 +1249,21 @@ impl PhotoMap {
                                                 self.checked.remove(&i);
                                             }
                                         }
-                                        let label = format!(
-                                            "{:.3} {:.3}  alt {:.0} m{}",
-                                            p.lat,
-                                            p.lon,
-                                            p.alt_km * 1000.0,
-                                            if p.day_time_s.is_some() { "  ⏱" } else { "" },
-                                        );
+                                        let clock =
+                                            if p.day_time_s.is_some() { "  ⏱" } else { "" };
+                                        // the player's title when they gave one,
+                                        // else the coordinates as before
+                                        let label = if p.title.trim().is_empty() {
+                                            format!(
+                                                "{:.3} {:.3}  alt {:.0} m{}",
+                                                p.lat,
+                                                p.lon,
+                                                p.alt_km * 1000.0,
+                                                clock,
+                                            )
+                                        } else {
+                                            format!("{}{}", p.title, clock)
+                                        };
                                         let r = ui.selectable_label(sel, label);
                                         if sel && self.scroll_to_selected {
                                             r.scroll_to_me(Some(egui::Align::Center));
@@ -1172,7 +1272,13 @@ impl PhotoMap {
                                             self.selected = Some(i);
                                             self.custom_dest = None;
                                         }
-                                        r.on_hover_text(&p.name);
+                                        // filename, plus the note when present
+                                        let mut hover = p.name.clone();
+                                        if !p.note.trim().is_empty() {
+                                            hover.push_str("\n\n");
+                                            hover.push_str(&p.note);
+                                        }
+                                        r.on_hover_text(hover);
                                     });
                                 }
                                 self.scroll_to_selected = false;
@@ -1748,6 +1854,8 @@ mod tests {
             mode: Some("fly".into()),
             day_len_s: Some(1200.0),
             seed: Some(42),
+            title: String::new(),
+            note: String::new(),
         });
         map.selected = Some(0);
 
@@ -1763,6 +1871,56 @@ mod tests {
         assert_eq!(restored.weather_on, Some(true));
         assert_eq!(restored.weather_pin, Some((0.97, 0.9)));
         assert_eq!(restored.weather_time_s, Some(24_000.0));
+    }
+
+    #[test]
+    fn sidecar_notes_round_trip_preserves_other_fields() {
+        // a representative sidecar with pose, repro, and weather fields
+        let mut js = serde_json::json!({
+            "lat_deg": 4.99,
+            "lon_deg": -29.403,
+            "alt_km": 0.047,
+            "seed": 42,
+            "mode": "walk",
+            "weather": {"on": true, "pinned": [0.97, 0.9], "t_s": 24_000.0},
+        });
+        apply_notes(&mut js, "Cliffside creek", "north bank, dusk light");
+
+        // the two new fields land as strings
+        assert_eq!(sidecar_str(&js, "title"), "Cliffside creek");
+        assert_eq!(sidecar_str(&js, "note"), "north bank, dusk light");
+        // every prior field is byte-for-byte untouched
+        assert_eq!(js.get("lat_deg").and_then(|v| v.as_f64()), Some(4.99));
+        assert_eq!(js.get("lon_deg").and_then(|v| v.as_f64()), Some(-29.403));
+        assert_eq!(js.get("alt_km").and_then(|v| v.as_f64()), Some(0.047));
+        assert_eq!(js.get("seed").and_then(|v| v.as_i64()), Some(42));
+        assert_eq!(js.get("mode").and_then(|v| v.as_str()), Some("walk"));
+        assert_eq!(js["weather"]["pinned"][0].as_f64(), Some(0.97));
+        assert_eq!(js["weather"]["t_s"].as_f64(), Some(24_000.0));
+
+        // re-saving overwrites just the two keys (no dupes, nothing dropped);
+        // 6 original keys + title + note = 8
+        apply_notes(&mut js, "renamed", "");
+        assert_eq!(sidecar_str(&js, "title"), "renamed");
+        assert_eq!(sidecar_str(&js, "note"), "");
+        assert_eq!(js.get("seed").and_then(|v| v.as_i64()), Some(42));
+        assert_eq!(js.as_object().unwrap().len(), 8);
+    }
+
+    #[test]
+    fn sidecar_notes_default_to_empty_and_survive_non_object() {
+        // legacy sidecar without the keys reads as empty, never an error
+        let legacy = serde_json::json!({"lat_deg": 1.0, "lon_deg": 2.0});
+        assert_eq!(sidecar_str(&legacy, "title"), "");
+        assert_eq!(sidecar_str(&legacy, "note"), "");
+
+        // a corrupt / non-object sidecar becomes a fresh object with just the
+        // notes rather than panicking or silently dropping the save
+        let mut junk = serde_json::json!("not an object");
+        apply_notes(&mut junk, "t", "n");
+        assert_eq!(sidecar_str(&junk, "title"), "t");
+        assert_eq!(sidecar_str(&junk, "note"), "n");
+        assert_eq!(junk.as_object().unwrap().len(), 2);
     }
 
     #[test]
