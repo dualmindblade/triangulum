@@ -27,6 +27,64 @@ fn fade(t: f64) -> f64 {
     t * t * t * (t * (t * 6.0 - 15.0) + 10.0)
 }
 
+/// A separate 64-bit lattice hash for procedural fields that need scalar
+/// values rather than the legacy 256-entry gradient table. Keeping this out
+/// of `hash` preserves the Python/Rust terrain-noise goldens byte-for-byte.
+#[inline]
+fn scalar_hash(ix: i64, iy: i64, iz: i64, seed: i64) -> u64 {
+    let mut h = (ix as u64)
+        .wrapping_mul(0x9E37_79B9_7F4A_7C15)
+        ^ (iy as u64).wrapping_mul(0xC2B2_AE3D_27D4_EB4F)
+        ^ (iz as u64).wrapping_mul(0x1656_67B1_9E37_79F9)
+        ^ (seed as u64).wrapping_mul(0x85EB_CA77_C2B2_AE63);
+    h ^= h >> 30;
+    h = h.wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    h ^= h >> 27;
+    h = h.wrapping_mul(0x94D0_49BB_1331_11EB);
+    h ^ (h >> 31)
+}
+
+/// One cheap, approximately standard-normal lattice variate. The population
+/// count of a well-mixed 64-bit word is Binomial(64, 1/2), with mean 32 and
+/// variance 16. It is close to Gaussian and compiles to one popcount instead
+/// of spending a dozen additions at every corner of every octave.
+#[inline]
+fn lattice_normal(bits: u64) -> f64 {
+    (bits.count_ones() as f64 - 32.0) * 0.25
+}
+
+/// Seamless scalar value noise with an approximately N(0,1) marginal.
+///
+/// Trilinear interpolation normally has lower variance in the middle of a
+/// lattice cell than at its corners. Dividing by the exact L2 norm of the
+/// eight interpolation weights removes that phase-dependent variance. This
+/// matters when a caller applies a CDF: every position should have the same
+/// occupancy statistics, not just the lattice points.
+pub fn normal_value_noise(p: DVec3, seed: i64) -> f64 {
+    let pi = p.floor();
+    let pf = p - pi;
+    let (ix, iy, iz) = (pi.x as i64, pi.y as i64, pi.z as i64);
+    let (fx, fy, fz) = (fade(pf.x), fade(pf.y), fade(pf.z));
+    let mut total = 0.0;
+    for dx in 0..2i64 {
+        let wx = if dx == 1 { fx } else { 1.0 - fx };
+        for dy in 0..2i64 {
+            let wy = if dy == 1 { fy } else { 1.0 - fy };
+            for dz in 0..2i64 {
+                let wz = if dz == 1 { fz } else { 1.0 - fz };
+                total += wx
+                    * wy
+                    * wz
+                    * lattice_normal(scalar_hash(ix + dx, iy + dy, iz + dz, seed));
+            }
+        }
+    }
+    let norm2 = ((1.0 - fx).powi(2) + fx.powi(2))
+        * ((1.0 - fy).powi(2) + fy.powi(2))
+        * ((1.0 - fz).powi(2) + fz.powi(2));
+    total / norm2.sqrt()
+}
+
 /// Perlin-style gradient noise at p; output roughly [-1, 1].
 pub fn gradient_noise(p: DVec3, seed: i64) -> f64 {
     let pi = p.floor();
