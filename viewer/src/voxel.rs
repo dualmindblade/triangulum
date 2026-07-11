@@ -121,6 +121,12 @@ pub struct ColCtx {
     /// don't band into terrace-edge rings the way quantized heights do.
     pub h_km: f32,
     pub water: i64,     // water surface block; i64::MIN = dry column
+    /// Continuous presentation level for the tightly-scoped A-5 handoff.
+    /// Occupancy remains `water` and is never reclassified by this field.
+    pub analog_water_km: f64,
+    /// Liquid graph-river/lake overlap whose block ceiling must hand off to
+    /// the lower continuous lake plane at the voxel-patch rim.
+    pub rim_flush_water: bool,
     pub cave_bits: u32, // bit k set = block at z = ground0 - k carved out
     /// Local water table for FLOODED CAVES (BUGS.md W-6): any carved cave cell
     /// at z <= cave_water fills with water instead of air. Set only for dry-
@@ -232,6 +238,34 @@ pub fn water_render_top(cc: &ColCtx, nbs8: &[ColCtx; 8]) -> i64 {
         }
     }
     we.max(cc.top_solid() + 1)
+}
+
+/// Offset from an unclamped lattice top to the shared analog level, excluding
+/// the patch lift. The shader removes that lift continuously at the rim.
+fn rim_water_analog_delta_km(cc: &ColCtx, rendered_top: i64, exaggeration: f64) -> Option<f64> {
+    (cc.rim_flush_water && rendered_top == cc.water).then_some(
+        (cc.analog_water_km - rendered_top as f64 * VOXEL_KM) * exaggeration,
+    )
+}
+
+fn same_rim_water_plane(a: &ColCtx, b: &ColCtx) -> bool {
+    a.rim_flush_water
+        && b.rim_flush_water
+        && (a.analog_water_km - b.analog_water_km).abs() < 1e-9
+}
+
+#[cfg(test)]
+fn rim_water_top_km(
+    cc: &ColCtx,
+    rendered_top: i64,
+    exaggeration: f64,
+    lift: f64,
+    flush: f64,
+) -> f64 {
+    rendered_top as f64 * VOXEL_KM * exaggeration
+        + lift
+        + rim_water_analog_delta_km(cc, rendered_top, exaggeration).unwrap_or(0.0)
+        - lift * flush.clamp(0.0, 1.0)
 }
 
 /// Canonical face/column for an extended lattice index. In-range indices keep
@@ -394,11 +428,27 @@ pub fn col_ctx(planet: &Planet, edits: &Edits, face: usize, ci: u64, cj: u64) ->
         s.sea,
     );
 
+    // A-5: the graph river is several metres above a local lake here. Keep
+    // block occupancy intact, but rendering and swimming share the stable
+    // nearby lake plane instead of exposing the river's lattice wall.
+    let rim_flush_water = s.temp_c >= -4.0
+        && s.has_water()
+        && s.lake_level_km.is_finite()
+        && s.river_level_km.is_finite()
+        && s.river_level_km - s.lake_level_km > 0.002;
+    let analog_water_km = if rim_flush_water {
+        s.lake_level_km
+    } else {
+        s.water_km
+    };
+
     ColCtx {
         ground,
         ground0,
         h_km: s.h_km as f32,
         water,
+        analog_water_km,
+        rim_flush_water,
         cave_bits,
         cave_water,
         climate,
@@ -960,6 +1010,9 @@ pub fn water_surface_km(
     // frozen columns are solid ice (walkable, handled by support_below_km),
     // NOT liquid — so wading/underwater physics must not see water here.
     if c.has_water() && c.frozen_ice().is_none() {
+        if c.rim_flush_water {
+            return Some(c.analog_water_km * exaggeration + lift);
+        }
         return Some(c.water as f64 * scale + lift);
     }
     if c.cave_water != i64::MIN {
@@ -1122,6 +1175,10 @@ pub fn build_chunk(
 
     let mut vertices: Vec<Vertex> = Vec::new();
     let mut indices: Vec<u32> = Vec::new();
+    // Optional per-corner analog offset and lift-removal weight for marked
+    // A-5 water quads. Ordinary block vertices retain the old zero/dim pair.
+    let quad_rim_delta = std::cell::Cell::new([0.0f32; 4]);
+    let quad_rim_weight = std::cell::Cell::new(None::<[f32; 4]>);
     // per-corner colors: ambient occlusion darkens individual corners.
     // `dim` is the cave-darkness factor (1 = open sky): blocks carry it in
     // the water attribute's alpha so the shader — not the bake — applies
@@ -1135,8 +1192,8 @@ pub fn build_chunk(
                 normal: [normal.x as f32, normal.y as f32, normal.z as f32],
                 color: cols[k],
                 water: [0.0, 0.0, 0.0, dim],
-                morph_dh: 0.0, // blocks don't geomorph (they rim-sink instead)
-                morph_wet: dim,
+                morph_dh: quad_rim_delta.get()[k],
+                morph_wet: quad_rim_weight.get().map_or(dim, |weights| weights[k]),
                 // 1.0 marks OPEN WATER surfaces: the shader's cold-dusting and
                 // rain-darkening skip them (snow does not settle on liquid) -
                 // block water dusted while the mesh's wet-mix masked it, a
@@ -1475,6 +1532,9 @@ pub fn build_chunk(
                     if frozen || nb.temp < -4.0 || !nb.has_water() {
                         return None;
                     }
+                    if same_rim_water_plane(c, nb) {
+                        return None;
+                    }
                     let (di, dj) = nb_off[nbi];
                     let nb_w = w_eff(i + di, j + dj);
                     (nb_w < w).then(|| {
@@ -1496,10 +1556,28 @@ pub fn build_chunk(
                         }
                     }
                 }
-                quad([d00 * r, d10 * r, d11 * r, d01 * r], up, wtop_cols, 1.0, 1.0);
+                let rim_delta = rim_water_analog_delta_km(c, w, exaggeration).map(|d| d as f32);
+                if let Some(delta) = rim_delta {
+                    quad_rim_delta.set([delta; 4]);
+                    quad_rim_weight.set(Some([1.0; 4]));
+                }
+                quad(
+                    [d00 * r, d10 * r, d11 * r, d01 * r],
+                    up,
+                    wtop_cols,
+                    1.0,
+                    if rim_delta.is_some() { 2.0 } else { 1.0 },
+                );
+                quad_rim_delta.set([0.0; 4]);
+                quad_rim_weight.set(None);
                 let wside = vary(wtop, 0.93);
                 for (nbi, da, db) in sides {
                     let nb = nbs[nbi];
+                    if same_rim_water_plane(c, nb) {
+                        // Occupancy still steps from graph river to lake, but
+                        // their presentation surface is one analog plane.
+                        continue;
+                    }
                     // the neighbour's water top must be ITS clamped value, or
                     // the two columns disagree about the seam and leak faces
                     let nb_surf = nb.top_solid().max(if nb.has_water() {
@@ -1515,13 +1593,19 @@ pub fn build_chunk(
                         let col = lower_liquid_step(nbi)
                             .map(|strength| mix_color(wside, foam, strength))
                             .unwrap_or(wside);
+                        if let Some(delta) = rim_delta {
+                            quad_rim_delta.set([delta, delta, 0.0, 0.0]);
+                            quad_rim_weight.set(Some([1.0, 1.0, 0.0, 0.0]));
+                        }
                         quad(
                             [da * r1, db * r1, db * r0, da * r0],
                             n_side,
                             [col; 4],
                             1.0,
-                            1.0,
+                            if rim_delta.is_some() { 2.0 } else { 1.0 },
                         );
+                        quad_rim_delta.set([0.0; 4]);
+                        quad_rim_weight.set(None);
                     }
                 }
             }
@@ -1720,6 +1804,63 @@ pub fn build_chunk(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn test_planet() -> Planet {
+        let assets = if std::path::Path::new("assets/meta.json").exists() {
+            "assets"
+        } else {
+            "viewer/assets"
+        };
+        Planet::load(assets).expect("voxel gates require the baked viewer assets")
+    }
+
+    fn ctx_at(planet: &Planet, edits: &Edits, dir: DVec3) -> ColCtx {
+        let (face, u, v) = crate::planet::face_from_dir(dir);
+        let (ci, cj) = column_of(u, v);
+        col_ctx(planet, edits, face, ci, cj)
+    }
+
+    #[test]
+    fn rim_water_handoff_is_flush_without_changing_occupancy() {
+        let planet = test_planet();
+        let edits = Edits::default();
+        let (lat, lon) = (13.013f64.to_radians(), -4.546f64.to_radians());
+        let center_dir = DVec3::new(lat.cos() * lon.cos(), lat.cos() * lon.sin(), lat.sin());
+        let axis = if center_dir.z.abs() < 0.9 { DVec3::Z } else { DVec3::X };
+        let tangent = (axis - center_dir * axis.dot(center_dir)).normalize();
+        let river_dir = (center_dir - tangent * 0.10 / planet.radius_km).normalize();
+        let lake = ctx_at(&planet, &edits, center_dir);
+        let river = ctx_at(&planet, &edits, river_dir);
+
+        assert!(lake.rim_flush_water && river.rim_flush_water);
+        assert_eq!(lake.water, 122);
+        assert_eq!(river.water, 125, "graph-river occupancy unexpectedly changed");
+        assert!(same_rim_water_plane(&lake, &river));
+        assert!((lake.analog_water_km - 0.122_408_948_838_710_78).abs() < 1e-12);
+
+        let lift = lift_km(1.0);
+        assert!((rim_water_top_km(&river, river.water, 1.0, lift, 0.0)
+            - (river.analog_water_km + lift)).abs() < 1e-12);
+        assert!((rim_water_top_km(&river, river.water, 1.0, lift, 1.0)
+            - river.analog_water_km).abs() < 1e-12);
+        let physics = water_surface_km(&planet, &edits, river_dir, 1.0, 1.0).unwrap();
+        assert!((physics - (river.analog_water_km + lift)).abs() < 1e-12);
+
+        // Same fractional lake level, no higher-river overlap: the standing
+        // Difficulty Lake control keeps its exact lattice path.
+        let (dl_lat, dl_lon) = (13.346f64.to_radians(), -4.807f64.to_radians());
+        let dl_dir = DVec3::new(
+            dl_lat.cos() * dl_lon.cos(),
+            dl_lat.cos() * dl_lon.sin(),
+            dl_lat.sin(),
+        );
+        let dl = ctx_at(&planet, &edits, dl_dir);
+        assert!(dl.has_water() && !dl.rim_flush_water);
+        assert_eq!(
+            water_surface_km(&planet, &edits, dl_dir, 1.0, 1.0).unwrap(),
+            dl.water as f64 * VOXEL_KM + lift
+        );
+    }
 
     #[test]
     fn tree_profile_follows_shared_surface_not_nearest_class() {

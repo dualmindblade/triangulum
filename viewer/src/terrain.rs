@@ -219,6 +219,115 @@ fn smoothstep(a: f64, b: f64, x: f64) -> f64 {
     t * t * (3.0 - 2.0 * t)
 }
 
+/// A pond may add at most three metres of structural ground. Fill is exact
+/// through two metres, then fades continuously to zero at the cap so a
+/// rejected pool cannot leave the old three-metre fence behind.
+const POND_BANK_FILL_BUDGET_KM: f64 = 0.003;
+
+fn bounded_pond_fill(natural_km: f64, target_km: f64) -> f64 {
+    let need = (target_km - natural_km).max(0.0);
+    let support = 1.0 - smoothstep(
+        POND_BANK_FILL_BUDGET_KM * (2.0 / 3.0),
+        POND_BANK_FILL_BUDGET_KM,
+        need,
+    );
+    natural_km + need.min(POND_BANK_FILL_BUDGET_KM) * support
+}
+
+/// Build a candidate pond bed transactionally. `None` means the caller keeps
+/// natural terrain: dig, bench, fill, and water are committed together.
+fn supported_pond_bed_km(
+    natural_km: f64,
+    dig_km: f64,
+    water_km: f64,
+    existing_water_km: f64,
+) -> Option<f64> {
+    let dug_km = natural_km - dig_km;
+    let bed_km = if existing_water_km <= dug_km {
+        bounded_pond_fill(dug_km, water_km - 0.0015)
+    } else {
+        dug_km
+    };
+    // Digging deeper cannot manufacture permission for a taller dam.
+    (water_km <= natural_km + POND_BANK_FILL_BUDGET_KM
+        && water_km <= bed_km + dig_km + 0.002)
+        .then_some(bed_km)
+}
+
+fn pond_noise(face: usize, u: f64, v: f64, seed: i64) -> f64 {
+    fbm_band(face_dir(face, u, v), 0, 2, 16000.0, seed.wrapping_add(9241))
+}
+
+/// Follow the local pn gradient to a point safely inside the adjoining pool.
+fn pond_interior_probe_uv(face: usize, u: f64, v: f64, seed: i64) -> Option<(f64, f64)> {
+    const TARGET: f64 = -0.55;
+    const EPS: f64 = 0.000_001;
+    const MAX_STEP: f64 = 0.000_010;
+    let (mut pu, mut pv) = (u, v);
+    for _ in 0..5 {
+        let pn = pond_noise(face, pu, pv, seed);
+        if pn <= TARGET {
+            return Some((pu, pv));
+        }
+        let gu = (pond_noise(face, pu + EPS, pv, seed)
+            - pond_noise(face, pu - EPS, pv, seed)) / (2.0 * EPS);
+        let gv = (pond_noise(face, pu, pv + EPS, seed)
+            - pond_noise(face, pu, pv - EPS, seed)) / (2.0 * EPS);
+        let g2 = gu * gu + gv * gv;
+        if !g2.is_finite() || g2 < 1e-12 {
+            return None;
+        }
+        let scale = ((TARGET - pn) / g2)
+            .clamp(-MAX_STEP / g2.sqrt(), MAX_STEP / g2.sqrt());
+        pu += gu * scale;
+        pv += gv * scale;
+        if !(-1.0..=1.0).contains(&pu) || !(-1.0..=1.0).contains(&pv) {
+            return None;
+        }
+    }
+    (pond_noise(face, pu, pv, seed) < -0.50).then_some((pu, pv))
+}
+
+/// An apron is structural only when an authoritative retained pond column is
+/// nearby. Donor samples disable further apron probes, so this is finite.
+fn live_pond_nearby(
+    planet: &Planet,
+    face: usize,
+    u: f64,
+    v: f64,
+    octaves: u32,
+    seed: i64,
+) -> bool {
+    let live_at = |pu: f64, pv: f64| {
+        if !(-1.0..=1.0).contains(&pu)
+            || !(-1.0..=1.0).contains(&pv)
+            || pond_noise(face, pu, pv, seed) >= -0.50
+        {
+            return false;
+        }
+        let donor = sample_inner(planet, face, pu, pv, octaves, false);
+        donor.pond_level_km.is_finite() && donor.has_water()
+    };
+    if pond_interior_probe_uv(face, u, v, seed).is_some_and(|p| live_at(p.0, p.1)) {
+        return true;
+    }
+    const DIRS: [(f64, f64); 8] = [
+        (1.0, 0.0), (-1.0, 0.0), (0.0, 1.0), (0.0, -1.0),
+        (0.7071067811865476, 0.7071067811865476),
+        (0.7071067811865476, -0.7071067811865476),
+        (-0.7071067811865476, 0.7071067811865476),
+        (-0.7071067811865476, -0.7071067811865476),
+    ];
+    for radius in [0.000_002, 0.000_004, 0.000_008, 0.000_016] {
+        for (du, dv) in DIRS {
+            if live_at(u + du * radius, v + dv * radius) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 /// One generated point of the world: terrain, water, and the map-scale
 /// climate context everything downstream (colors, materials, flora) keys on.
 #[derive(Clone, Copy)]
@@ -305,6 +414,19 @@ impl Sample {
 /// carved rivers/ponds with explicit water surfaces. Shared by the mesh
 /// tiles and the voxel columns so the two can never disagree.
 pub fn sample(planet: &Planet, face: usize, u: f64, v: f64, octaves: u32) -> Sample {
+    sample_inner(planet, face, u, v, octaves, true)
+}
+
+/// Donor queries run the full pond-water transaction but cannot recursively
+/// launch another apron query.
+fn sample_inner(
+    planet: &Planet,
+    face: usize,
+    u: f64,
+    v: f64,
+    octaves: u32,
+    probe_pond_apron: bool,
+) -> Sample {
     let e_raw = planet.elevation(face, u, v) as f64;
     let rough = planet.rough(face, u, v) as f64;
     let (temp_c, precip) = planet.temp_precip(face, u, v);
@@ -698,11 +820,11 @@ pub fn sample(planet: &Planet, face: usize, u: f64, v: f64, octaves: u32) -> Sam
         && !on_apron_band
         && pond_flat()
     {
-        let pn = fbm_band(dir, 0, 2, 16000.0, seed.wrapping_add(9241));
+        let pn = pond_noise(face, u, v, seed);
         if pn < -0.50 && valley >= 0.999 {
             let pd = (-0.50 - pn) * 0.030;
-            h -= pd;
-            out.carve_km += pd;
+            let coastal_mask_mismatch = wmask > 0.50;
+            let natural_h = h;
             // FLAT surface: the pool level is the coarse (detail-free) land
             // elevation, not this column's own detailed ground — a pond is a
             // level water table, so its top must be constant across the basin.
@@ -730,17 +852,35 @@ pub fn sample(planet: &Planet, face: usize, u: f64, v: f64, octaves: u32) -> Sam
             // lake surface grew a +54 m pond terrace on top of the lake
             // (census, 9.270 -76.780 — the old guard made pond-over-lake
             // unreachable by construction, and this gate preserves that).
-            let bench = wl - 0.0015;
-            if out.water_km <= h && h < bench && bench - h <= env0 * 1.5 {
-                h = bench;
-            }
             // never perched: the pool may not stand above this column's
             // NATURAL (post-bench) ground — a blob lapping onto a slope or
             // a valley rim otherwise hangs its flat surface metres above
             // the downhill terrain as a standing wall (census: 20 m pond
             // walls at 4.999 -29.391). Water that would drain does not
             // exist.
-            if wl <= h + pd + 0.002 {
+            if !coastal_mask_mismatch {
+                // Stable inland pond country keeps its established path
+                // byte-for-byte. The rampart family sits on dry land inside
+                // the coast mask's blended fringe, where e_raw and fine
+                // natural terrain can disagree by tens of metres.
+                h -= pd;
+                out.carve_km += pd;
+                let bench = wl - 0.0015;
+                if out.water_km <= h && h < bench && bench - h <= env0 * 1.5 {
+                    h = bench;
+                }
+                if wl <= h + pd + 0.002 {
+                    out.pond_level_km = wl;
+                    if wl > h {
+                        out.water_km = out.water_km.max(wl);
+                        out.wet_soft = out.wet_soft.max(smoothstep(0.0, 0.004, pd));
+                    }
+                }
+            } else if let Some(bed_h) =
+                supported_pond_bed_km(natural_h, pd, wl, out.water_km)
+            {
+                h = bed_h;
+                out.carve_km += pd;
                 // candidate level even on dry columns (edges, islands): the
                 // shore field interpolates its zero crossing through them.
                 // NOT recorded in the perched-drain case above the guard -
@@ -750,6 +890,14 @@ pub fn sample(planet: &Planet, face: usize, u: f64, v: f64, octaves: u32) -> Sam
                     out.water_km = out.water_km.max(wl);
                     out.wet_soft = out.wet_soft.max(smoothstep(0.0, 0.004, pd));
                 }
+            } else if probe_pond_apron
+                && out.carve_km <= 0.0
+                && riv_d > hw * 1.5
+                && live_pond_nearby(planet, face, u, v, octaves, seed)
+            {
+                // A rejected raw-mask point is untouched terrain unless it
+                // is the dry bank of retained water next door.
+                h = bounded_pond_fill(natural_h, wl - 0.001);
             }
         } else if out.carve_km <= 0.0 && riv_d > hw * 1.5 {
             // pond shore apron, the lake apron's little sibling: where
@@ -778,8 +926,15 @@ pub fn sample(planet: &Planet, face: usize, u: f64, v: f64, octaves: u32) -> Sam
             // descend as deep as detail digs before the profile runs out
             let scale = env0 * 10.0;
             let floor = wl - 0.001 - (0.012 * x + 0.090 * x * x) * scale;
-            if h < floor {
-                h = floor;
+            if wmask <= 0.50 {
+                if h < floor {
+                    h = floor;
+                }
+            } else if probe_pond_apron
+                && h < floor
+                && live_pond_nearby(planet, face, u, v, octaves, seed)
+            {
+                h = bounded_pond_fill(h, floor);
             }
         }
     }
@@ -1873,6 +2028,40 @@ mod tests {
             (LAKE_SHORE_SOLID_KM + LAKE_SHORE_REACH_KM) * 0.5,
         );
         assert!((f - 0.25).abs() < 1e-12, "fraction={f}");
+    }
+
+    #[test]
+    fn pond_fill_is_bounded_continuous_and_dies_at_the_cap() {
+        let target = 0.030;
+        assert_eq!(bounded_pond_fill(0.040, target), 0.040);
+        assert_eq!(bounded_pond_fill(0.028, target), target);
+        assert_eq!(bounded_pond_fill(0.027, target), 0.027);
+        assert_eq!(bounded_pond_fill(0.010, target), 0.010);
+
+        let mut previous = bounded_pond_fill(target - 0.0035, target);
+        let mut need = 0.0035;
+        while need > 0.0015 {
+            need -= 0.000_01;
+            let current = bounded_pond_fill(target - need, target);
+            assert!((current - previous).abs() < 0.000_05);
+            previous = current;
+        }
+        assert!(supported_pond_bed_km(0.0046, 0.0003, 0.0282, f64::NEG_INFINITY).is_none());
+    }
+
+    #[test]
+    fn unbankable_rampart_pond_reverts_its_whole_transaction() {
+        let planet = test_planet();
+        let (lat, lon) = (12.19414f64.to_radians(), -44.85752f64.to_radians());
+        let dir = DVec3::new(lat.cos() * lon.cos(), lat.cos() * lon.sin(), lat.sin());
+        let (face, u, v) = crate::planet::face_from_dir(dir);
+        let s = sample(planet, face, u, v, VOXEL_OCTAVES);
+        let without_apron = sample_inner(planet, face, u, v, VOXEL_OCTAVES, false);
+
+        assert!(!s.has_water() && !s.pond_level_km.is_finite());
+        assert_eq!(s.carve_km, 0.0, "suppressed water left a dry pond dig");
+        assert_eq!(s.h_km, without_apron.h_km, "suppressed water left structural fill");
+        assert!(s.h_km < 0.010, "former 26.7 m bench returned: {} m", s.h_km * 1000.0);
     }
 
     #[test]

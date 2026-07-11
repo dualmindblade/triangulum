@@ -1,0 +1,44 @@
+# A-4/A-5 redo: deterministic visual and physics evidence.
+mode fly
+weather pin 0.10 0.0
+
+# A-4 photographed rampart and its higher dossier view.
+teleport 12.194 -44.858 0.085
+look 82 -25
+sun 12.19 -59.86
+shot rampart_vox
+voxels off
+shot rampart_mesh
+voxels on
+
+teleport 12.199 -44.827 0.100
+look -90 -45
+sun 12.20 -59.83
+shot ponds_dossier
+
+# Standing healthy pond-country control.
+teleport -0.798 -67.941 0.150
+look 40 -35
+sun -0.80 -82.94
+shot pond_country_control
+
+# A-5 photographed patch-rim band and mesh-only twin.
+teleport 13.013 -4.546 0.012
+look 163 -12
+sun 13.01 -19.55
+shot band_vox
+voxels off
+shot band_mesh
+voxels on
+
+# Walk/swim truth at the photographed A-5 cohort. The authoritative analog
+# lake level is 122.408949 m; with the unchanged 1.6 m patch lift, visuals and
+# physics meet at 124.008949 m.
+teleport 13.0128 -4.5462 0.050
+mode walk
+wait 10
+assert has_water == true
+assert underwater == true
+assert water_surface_km > 0.1240
+assert water_surface_km < 0.1241
+state band_swim
