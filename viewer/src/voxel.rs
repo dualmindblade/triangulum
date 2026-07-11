@@ -380,7 +380,7 @@ pub fn col_ctx(planet: &Planet, edits: &Edits, face: usize, ci: u64, cj: u64) ->
         water,
         cave_bits,
         cave_water,
-        koppen: planet.koppen(face, u, v),
+        koppen: planet.koppen_with_sea(face, u, v, s.sea),
         e_raw: s.e_raw as f32,
         temp: s.temp_c as f32,
         precip: s.precip as f32,
@@ -1014,6 +1014,7 @@ pub fn build_chunk(
                 (v0 + v1) * 0.5,
                 c.temp as f64,
                 c.precip as f64,
+                c.sea,
             );
 
             // Per-column surface normal for the block top. Without slope

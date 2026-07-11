@@ -9,7 +9,7 @@
 //! consistent averages of finer ones.
 
 use crate::noise::{fbm_band, ridged_band};
-use crate::planet::{climate_surface, face_dir, MainBlock, Planet};
+use crate::planet::{climate_surface, face_dir, sea_from_fields, MainBlock, Planet};
 use glam::DVec3;
 
 pub const TILE_QUADS: usize = 32; // 32x32 quads, 33x33 vertices per tile
@@ -315,7 +315,7 @@ pub fn sample(planet: &Planet, face: usize, u: f64, v: f64, octaves: u32) -> Sam
         river_wet: 0.0,
         river_level_km: f64::NEG_INFINITY,
         salt: false,
-        sea: e_raw <= 0.0 && (wmask >= 0.5 || (e_raw <= -0.1 && ofrac > 0.35)),
+        sea: sea_from_fields(e_raw, wmask, ofrac),
     };
 
     if out.sea {
@@ -1239,8 +1239,14 @@ pub fn build_tile(planet: &Planet, key: TileKey, exaggeration: f64) -> TileMesh 
                 }
                 let u = -1.0 + 2.0 * (ci as f64 + 0.5) / nnf;
                 let v = -1.0 + 2.0 * (cj as f64 + 0.5) / nnf;
-                let Some((kind, density)) =
-                    crate::voxel::tree_kind_density(planet.koppen(face, u, v))
+                // Candidate enumeration is land-optimistic: the survivor's
+                // authoritative terrain sample below rejects actual water.
+                // Passing that known assumption avoids three redundant sea-
+                // raster reads for every cheap lottery survivor while keeping
+                // the exact same warped class on every drawable tree.
+                let Some((kind, density)) = crate::voxel::tree_kind_density(
+                    planet.koppen_with_sea(face, u, v, false),
+                )
                 else {
                     continue;
                 };
@@ -1459,7 +1465,7 @@ fn shade_ground(
     s: &Sample,
     slope: f64,
 ) -> [f32; 3] {
-    let climate = climate_surface(planet, face, u, v, s.temp_c, s.precip);
+    let climate = climate_surface(planet, face, u, v, s.temp_c, s.precip, s.sea);
     let mut c = climate.tint(climate.main_block);
     // forested biomes read darker from afar (canopy self-shadowing), so the
     // tree-covered voxel patch doesn't pop out of a flat bright lawn. The

@@ -399,7 +399,7 @@ fn biome_color(planet: &Planet, f: usize, u: f64, v: f64, relief: bool) -> [f32;
     let e = planet.elevation(f, u, v) as f64;
     let climate = planet.biome_climate(f, u, v);
     let k = climate.koppen;
-    if k == 255 {
+    if climate.sea {
         // sea: deep navy to shelf teal (bathymetry, kept regardless of relief)
         let d = (-e / 4.0).clamp(0.0, 1.0) as f32;
         [
