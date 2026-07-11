@@ -194,6 +194,35 @@ fn smoothstep(a: f64, b: f64, x: f64) -> f64 {
     t * t * (3.0 - 2.0 * t)
 }
 
+/// Maximum structural fill a noise pond may add to its natural bed/bank.
+/// A pond that needs more than this is locally suppressed by the existing
+/// never-perched test: water that needs a dam is not a pond.
+const POND_BANK_FILL_BUDGET_KM: f64 = 0.003;
+
+/// Raise `natural_km` toward a pond bed/bank target without ever adding more
+/// than the fill budget. Unlike Phase 8h's rejected all-or-nothing budget,
+/// this is continuous when the required fill crosses the budget: the ground
+/// follows `natural + budget`, rather than snapping from the target all the
+/// way back to natural terrain.
+fn bounded_pond_fill(natural_km: f64, target_km: f64) -> f64 {
+    natural_km + (target_km - natural_km).clamp(0.0, POND_BANK_FILL_BUDGET_KM)
+}
+
+/// Visible river level through the never-perched handoff. The graph level is
+/// authoritative while it stands at most 2 m above the octave-stable natural
+/// reference. From 2–4 m clearance the surface descends continuously to that
+/// reference; at 4 m it is a dry wash. The old binary `perch < 0.5` gate put
+/// the full graph level beside the lake/dry surface at that exact threshold —
+/// a 3.6 m water riser at 13.013 -4.546.
+fn supported_river_water_km(graph_level_km: f64, reference_h_km: f64) -> f64 {
+    let clearance = graph_level_km - reference_h_km;
+    if clearance >= 0.004 {
+        return f64::NEG_INFINITY;
+    }
+    let supported = 1.0 - smoothstep(0.002, 0.004, clearance);
+    reference_h_km + clearance * supported
+}
+
 /// One generated point of the world: terrain, water, and the map-scale
 /// climate context everything downstream (colors, materials, flora) keys on.
 #[derive(Clone, Copy)]
@@ -504,6 +533,7 @@ pub fn sample(planet: &Planet, face: usize, u: f64, v: f64, octaves: u32) -> Sam
         out.river_hw_km = hw;
         out.river_level_km = wl;
         out.river_wet = 1.0 - smoothstep(0.002, 0.006, wl - h_river_ref);
+        let river_water_km = supported_river_water_km(wl, h_river_ref);
         let bank_w = (hw * 0.9).max(0.02) + (h - wl).max(0.0) * 1.2;
         if riv_d < hw + bank_w {
             // the graph level never exceeds its own cell's bed elevation,
@@ -517,8 +547,10 @@ pub fn sample(planet: &Planet, face: usize, u: f64, v: f64, octaves: u32) -> Sam
                 let target = bed.min(h);
                 out.carve_km += h - target;
                 h = target;
-                if perch < 0.5 && (wl * 1000.0).floor() > ((h + 1e-6) * 1000.0).floor() {
-                    out.water_km = wl;
+                if river_water_km.is_finite()
+                    && (river_water_km * 1000.0).floor() > ((h + 1e-6) * 1000.0).floor()
+                {
+                    out.water_km = river_water_km;
                 }
             } else {
                 let t = smoothstep(0.0, 1.0, (riv_d - hw) / bank_w);
@@ -533,8 +565,10 @@ pub fn sample(planet: &Planet, face: usize, u: f64, v: f64, octaves: u32) -> Sam
                 // shoreline lip (Austin, shot at 15.650 28.794). Flooding
                 // them puts the shoreline exactly where the carved profile
                 // crosses the level, which also rounds flush.
-                if perch < 0.5 && (wl * 1000.0).floor() > ((h + 1e-6) * 1000.0).floor() {
-                    out.water_km = wl;
+                if river_water_km.is_finite()
+                    && (river_water_km * 1000.0).floor() > ((h + 1e-6) * 1000.0).floor()
+                {
+                    out.water_km = river_water_km;
                 }
             }
             out.wet_soft =
@@ -554,8 +588,11 @@ pub fn sample(planet: &Planet, face: usize, u: f64, v: f64, octaves: u32) -> Sam
                 let edge = hw + bank_w;
                 let bay_reach = edge * 0.6 + 0.010;
                 if riv_d < edge + bay_reach {
-                    if (wl * 1000.0).floor() > ((h + 1e-6) * 1000.0).floor() {
-                        out.water_km = out.water_km.max(wl);
+                    if river_water_km.is_finite()
+                        && (river_water_km * 1000.0).floor()
+                            > ((h + 1e-6) * 1000.0).floor()
+                    {
+                        out.water_km = out.water_km.max(river_water_km);
                     }
                 } else {
                     let floor = wl - 0.001 - 0.030 * (riv_d - edge - bay_reach);
@@ -676,8 +713,8 @@ pub fn sample(planet: &Planet, face: usize, u: f64, v: f64, octaves: u32) -> Sam
         let pn = fbm_band(dir, 0, 2, 16000.0, seed.wrapping_add(9241));
         if pn < -0.50 && valley >= 0.999 {
             let pd = (-0.50 - pn) * 0.030;
-            h -= pd;
-            out.carve_km += pd;
+            let natural_h = h;
+            let dug_h = natural_h - pd;
             // FLAT surface: the pool level is the coarse (detail-free) land
             // elevation, not this column's own detailed ground — a pond is a
             // level water table, so its top must be constant across the basin.
@@ -687,35 +724,32 @@ pub fn sample(planet: &Planet, face: usize, u: f64, v: f64, octaves: u32) -> Sam
             // only the sub-pond wobble, leaving fine dips flooded and bumps as
             // tiny shore.
             let wl = e_raw - 0.0018;
-            // moderate interior dips fill with GROUND to just under the
-            // pool — an underwater bench, i.e. bathymetry — so the pool
-            // covers them instead of walling around a dry pit (18 m wall
-            // photographed at -0.798 -67.941). The budget matches the
-            // edge apron's reach so the mask edge can always hand off;
-            // dips deeper than it stay honest dry pits. (Flooding interior
-            // dips UNCONDITIONALLY was measured catastrophic: blobs on
-            // mountainsides filled 300 m relief gorges and the planet
-            // census exploded from 38k to 79k pond walls.)
-            // budget scales with the local relief envelope so it always
-            // covers what detail can dig inside an env0-gated pond — a
-            // fixed 30 m budget left a razor edge where a 31 m dip beside
-            // a 30 m dip became an instant benched-water-vs-pit cliff
-            // (census, 4.992 -29.395). NEVER bench ground that is already
-            // underwater: a lake-flooded dip benched up through its own
-            // lake surface grew a +54 m pond terrace on top of the lake
-            // (census, 9.270 -76.780 — the old guard made pond-over-lake
-            // unreachable by construction, and this gate preserves that).
+            // Interior dips may fill with GROUND to just under the pool —
+            // underwater bathymetry — but only by a few metres. Phase 8h's
+            // envelope-scaled bench could lift a 4.5 m natural basin to
+            // 26.7 m at 12.194 -44.858; the adjacent mask sample stayed at
+            // 4.5 m, exposing a 22 m retaining wall along the pn=-0.50 arc.
+            // A fixed accept/reject budget was already measured dead: it
+            // merely moved that cliff to the first dip just over budget.
+            // `bounded_pond_fill` instead caps the ADDED ground continuously;
+            // the never-perched test below then suppresses water wherever
+            // those few metres cannot support it. NEVER bank ground already
+            // underwater (the Phase 8h pond-over-lake +54 m regression).
             let bench = wl - 0.0015;
-            if out.water_km <= h && h < bench && bench - h <= env0 * 1.5 {
-                h = bench;
-            }
+            let banked_h = if out.water_km <= dug_h {
+                bounded_pond_fill(dug_h, bench)
+            } else {
+                dug_h
+            };
             // never perched: the pool may not stand above this column's
-            // NATURAL (post-bench) ground — a blob lapping onto a slope or
-            // a valley rim otherwise hangs its flat surface metres above
-            // the downhill terrain as a standing wall (census: 20 m pond
-            // walls at 4.999 -29.391). Water that would drain does not
-            // exist.
-            if wl <= h + pd + 0.002 {
+            // natural ground plus its bounded structural fill. A blob
+            // lapping onto a slope or basin otherwise hangs its flat surface
+            // above the downhill terrain. Water that would drain — or would
+            // require a retaining dam — does not exist. Commit the dig only
+            // after this test; a suppressed pond leaves no dry crater behind.
+            if wl <= banked_h + pd + 0.002 {
+                h = banked_h;
+                out.carve_km += pd;
                 // candidate level even on dry columns (edges, islands): the
                 // shore field interpolates its zero crossing through them.
                 // NOT recorded in the perched-drain case above the guard -
@@ -753,9 +787,10 @@ pub fn sample(planet: &Planet, face: usize, u: f64, v: f64, octaves: u32) -> Sam
             // descend as deep as detail digs before the profile runs out
             let scale = env0 * 10.0;
             let floor = wl - 0.001 - (0.012 * x + 0.090 * x * x) * scale;
-            if h < floor {
-                h = floor;
-            }
+            // The profile still supplies a smooth target, but it no longer
+            // has permission to build an arbitrarily tall dirt dam when pn
+            // traverses its whole apron inside one or two metre columns.
+            h = bounded_pond_fill(h, floor);
         }
     }
 
@@ -1674,6 +1709,57 @@ mod tests {
     }
 
     #[test]
+    fn pond_fill_budget_is_bounded_without_a_threshold_cliff() {
+        let target = 0.030;
+        assert_eq!(bounded_pond_fill(0.040, target), 0.040);
+        assert_eq!(bounded_pond_fill(0.028, target), target);
+        assert!((bounded_pond_fill(0.010, target) - 0.013).abs() < 1e-12);
+
+        // Crossing the 3 m budget changes the result by the same micrometre
+        // as the input; it never repeats Phase 8h's target-to-natural snap.
+        let just_inside = bounded_pond_fill(target - 0.002_999, target);
+        let just_outside = bounded_pond_fill(target - 0.003_001, target);
+        assert!((just_inside - just_outside - 0.000_001).abs() < 1e-12);
+    }
+
+    #[test]
+    fn perched_river_surface_tapers_to_ground_without_a_level_jump() {
+        let graph = 0.126;
+        assert_eq!(supported_river_water_km(graph, graph - 0.002), graph);
+        assert!(!supported_river_water_km(graph, graph - 0.004).is_finite());
+        let midpoint = supported_river_water_km(graph, graph - 0.003);
+        assert!((midpoint - (graph - 0.0015)).abs() < 1e-12);
+        let last_wet = supported_river_water_km(graph, graph - 0.003_999);
+        assert!((last_wet - (graph - 0.003_999)).abs() < 5e-9);
+
+        let planet = test_planet();
+        let (lat, lon) = (13.012354f64.to_radians(), -4.545798f64.to_radians());
+        let dir = DVec3::new(lat.cos() * lon.cos(), lat.cos() * lon.sin(), lat.sin());
+        let (face, u, v) = crate::planet::face_from_dir(dir);
+        let s = sample(planet, face, u, v, VOXEL_OCTAVES);
+        assert!(s.lake_level_km.is_finite());
+        assert!(
+            !s.has_water() || s.water_km - s.lake_level_km < 0.001,
+            "perched river/lake step returned: river={} lake={}",
+            s.water_km * 1000.0,
+            s.lake_level_km * 1000.0
+        );
+    }
+
+    #[test]
+    fn unbankable_rampart_pond_is_suppressed() {
+        let planet = test_planet();
+        let (lat, lon) = (12.19414f64.to_radians(), -44.85752f64.to_radians());
+        let dir = DVec3::new(lat.cos() * lon.cos(), lat.cos() * lon.sin(), lat.sin());
+        let (face, u, v) = crate::planet::face_from_dir(dir);
+        let s = sample(planet, face, u, v, VOXEL_OCTAVES);
+
+        assert!(!s.has_water());
+        assert!(!s.pond_level_km.is_finite());
+        assert!(s.h_km < 0.010, "the former 26.7 m bench returned: {} m", s.h_km * 1000.0);
+    }
+
+    #[test]
     fn equal_block_liquid_lake_ties_fill_to_walkable_shoals() {
         let level = 0.1224;
         assert!(liquid_lake_shoal(level, 0.1220, -4.0));
@@ -1704,7 +1790,80 @@ mod tests {
             assert_eq!(c.water, i64::MIN);
             assert_eq!(c.ground0, 122);
             assert_eq!(c.top_solid(), c.ground0, "shoal must be walkable, not cave-carved");
+            assert!((c.analog_water_km - s.lake_level_km).abs() < 1e-12);
+            let visible = crate::voxel::surface_height_km(planet, &edits, dir, 1.0);
+            let expected = c.analog_water_km + crate::voxel::lift_km(1.0);
+            assert!((visible - expected).abs() < 1e-12, "shoal cap is not analog-flush");
+
+            let mut edited = c;
+            edited.ground += 1;
+            assert!(
+                crate::voxel::shoal_cap_height_km(&edited).is_none(),
+                "a player block must remain on its lattice shell"
+            );
         }
+    }
+
+    #[test]
+    fn liquid_block_top_and_physics_share_the_analog_lake_level() {
+        let planet = test_planet();
+        let edits = crate::voxel::Edits::default();
+        let (lat, lon) = (13.013f64.to_radians(), -4.546f64.to_radians());
+        let dir = DVec3::new(lat.cos() * lon.cos(), lat.cos() * lon.sin(), lat.sin());
+        let (face, u, v) = crate::planet::face_from_dir(dir);
+        let (ci, cj) = crate::voxel::column_of(u, v);
+        let c = crate::voxel::col_ctx(planet, &edits, face, ci, cj);
+        let nbs8 = [
+            crate::voxel::col_ctx_ext(planet, &edits, face, ci as i64 + 1, cj as i64),
+            crate::voxel::col_ctx_ext(planet, &edits, face, ci as i64 - 1, cj as i64),
+            crate::voxel::col_ctx_ext(planet, &edits, face, ci as i64, cj as i64 + 1),
+            crate::voxel::col_ctx_ext(planet, &edits, face, ci as i64, cj as i64 - 1),
+            crate::voxel::col_ctx_ext(planet, &edits, face, ci as i64 + 1, cj as i64 + 1),
+            crate::voxel::col_ctx_ext(planet, &edits, face, ci as i64 + 1, cj as i64 - 1),
+            crate::voxel::col_ctx_ext(planet, &edits, face, ci as i64 - 1, cj as i64 + 1),
+            crate::voxel::col_ctx_ext(planet, &edits, face, ci as i64 - 1, cj as i64 - 1),
+        ];
+
+        assert!(c.has_water() && c.temp >= -4.0);
+        let rendered = crate::voxel::water_render_height_km(&c, &nbs8);
+        assert!((rendered - c.analog_water_km).abs() < 1e-12);
+        assert!(
+            (rendered - c.water as f64 * crate::voxel::VOXEL_KM).abs() > 0.0002,
+            "Bug B site no longer exercises a fractional lake level"
+        );
+        let physics = crate::voxel::water_surface_km(planet, &edits, dir, 1.0, 1.0)
+            .expect("liquid lake must report a water surface");
+        assert!((physics - rendered - crate::voxel::lift_km(1.0)).abs() < 1e-12);
+    }
+
+    #[test]
+    fn frozen_water_top_remains_on_its_walkable_block_shell() {
+        let planet = test_planet();
+        let edits = crate::voxel::Edits::default();
+        let (lat, lon) = (73.486f64.to_radians(), -76.450f64.to_radians());
+        let dir = DVec3::new(lat.cos() * lon.cos(), lat.cos() * lon.sin(), lat.sin());
+        let (face, u, v) = crate::planet::face_from_dir(dir);
+        let (ci, cj) = crate::voxel::column_of(u, v);
+        let c = crate::voxel::col_ctx(planet, &edits, face, ci, cj);
+        let nbs8 = [
+            crate::voxel::col_ctx_ext(planet, &edits, face, ci as i64 + 1, cj as i64),
+            crate::voxel::col_ctx_ext(planet, &edits, face, ci as i64 - 1, cj as i64),
+            crate::voxel::col_ctx_ext(planet, &edits, face, ci as i64, cj as i64 + 1),
+            crate::voxel::col_ctx_ext(planet, &edits, face, ci as i64, cj as i64 - 1),
+            crate::voxel::col_ctx_ext(planet, &edits, face, ci as i64 + 1, cj as i64 + 1),
+            crate::voxel::col_ctx_ext(planet, &edits, face, ci as i64 + 1, cj as i64 - 1),
+            crate::voxel::col_ctx_ext(planet, &edits, face, ci as i64 - 1, cj as i64 + 1),
+            crate::voxel::col_ctx_ext(planet, &edits, face, ci as i64 - 1, cj as i64 - 1),
+        ];
+
+        assert!(c.has_water() && c.temp < -4.0);
+        let lattice = c.water as f64 * crate::voxel::VOXEL_KM;
+        assert_eq!(crate::voxel::water_render_height_km(&c, &nbs8), lattice);
+        assert_eq!(
+            crate::voxel::surface_height_km(planet, &edits, dir, 1.0),
+            lattice + crate::voxel::lift_km(1.0)
+        );
+        assert!(crate::voxel::water_surface_km(planet, &edits, dir, 1.0, 1.0).is_none());
     }
 
     #[test]
