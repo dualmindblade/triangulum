@@ -282,8 +282,8 @@ impl Sample {
 pub fn sample(planet: &Planet, face: usize, u: f64, v: f64, octaves: u32) -> Sample {
     let e_raw = planet.elevation(face, u, v) as f64;
     let rough = planet.rough(face, u, v) as f64;
-    let temp_c = planet.temp(face, u, v) as f64;
-    let precip = planet.precip(face, u, v) as f64;
+    let (temp_c, precip) = planet.temp_precip(face, u, v);
+    let (temp_c, precip) = (temp_c as f64, precip as f64);
     let ofrac = planet.ocean(face, u, v) as f64;
     // sea = below sea level AND on the ocean side of the map's own
     // cell-resolution coastline (sharp mask). Raster elevation is an

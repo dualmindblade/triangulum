@@ -28,6 +28,24 @@ pub const CROSS_BLOCK_ECOTONE_KM: f64 = 0.300;
 /// temperature and precipitation remain the dominant color coordinates.
 pub const KOPPEN_HUE_NUDGE: f32 = 0.14;
 
+// ---- Andrew's continental biome-warp art-direction knobs ---------------
+// The baked climate raster is categorical, so its otherwise straight texel
+// edges are displaced in climate-lookup space before class and tint reads.
+// Amplitude is in baked texels. Wavelength is also in baked texels at a face
+// center; LACUNARITY divides it and PERSISTENCE scales amplitude per octave.
+// On Neisor the defaults are approximately:
+//   wavelength 68 / 8.5 km, amplitude 6.8 / 3.0 km before the 0.70-texel cap.
+// One inexpensive smooth vector-noise evaluation supplies all components per
+// octave; the class-interior fast path skips the stack when it cannot matter.
+pub const BIOME_WARP_OCTAVES: u32 = 2;
+pub const BIOME_WARP_BASE_AMPLITUDE_TEXELS: f64 = 0.40;
+pub const BIOME_WARP_BASE_WAVELENGTH_TEXELS: f64 = 4.0;
+pub const BIOME_WARP_LACUNARITY: f64 = 8.0;
+pub const BIOME_WARP_PERSISTENCE: f64 = 0.45;
+pub const BIOME_WARP_MAX_DISPLACEMENT_TEXELS: f64 = 0.70;
+
+const BIOME_WARP_SEED_OFFSET: i64 = 0x0B10_0A2E;
+
 // ---- Andrew's fractal ecotone art-direction knobs -----------------------
 // OCTAVES is the number of nested spatial layers (and noise evaluations).
 // BASE_PATCH_COLUMNS is the broadest layer's approximate wavelength on the
@@ -78,6 +96,16 @@ pub struct ClimateSurface {
     pub forest: f32,
 }
 
+/// Climate values sampled at the one shared, domain-warped biome position.
+/// Terrain/weather/water callers deliberately continue to use `temp()` and
+/// `precip()` at the original world position; this type is for biome visuals.
+#[derive(Clone, Copy, Debug)]
+pub struct BiomeClimate {
+    pub koppen: u8,
+    pub temp_c: f32,
+    pub precip_mm_yr: f32,
+}
+
 impl ClimateSurface {
     pub fn tint(self, block: MainBlock) -> [f32; 3] {
         match block {
@@ -125,6 +153,119 @@ pub fn face_from_dir(dir: DVec3) -> (usize, f64, f64) {
     let (axis, right, up) = FACES[best.0];
     let p = dir / dir.dot(axis);
     (best.0, p.dot(right), p.dot(up))
+}
+
+#[inline]
+fn uv_from_dir_on_face(face: usize, dir: DVec3) -> (f64, f64) {
+    let (axis, right, up) = FACES[face];
+    let p = dir / dir.dot(axis);
+    (p.dot(right), p.dot(up))
+}
+
+/// Canonical face ownership is needed only on shared cube edges. It makes a
+/// world position presented through either adjacent face follow the exact same
+/// floating-point path before any procedural field is evaluated.
+#[inline]
+fn canonical_face_uv(face: usize, u: f64, v: f64) -> (usize, f64, f64) {
+    if u.abs() >= 1.0 || v.abs() >= 1.0 {
+        face_from_dir(face_dir(face, u, v))
+    } else {
+        (face, u, v)
+    }
+}
+
+// Seed-independent irrational-looking directions for the three vector-noise
+// channels. Each row rotates the domain at the next octave; all are normalized
+// integer triples, so no cube-face or world-axis direction owns the result.
+const BIOME_WARP_AXES: [[DVec3; 3]; 3] = [
+    [
+        DVec3::new(0.811_107_105_653_812_7, 0.324_442_842_261_525_1, -0.486_664_263_392_287_6),
+        DVec3::new(-0.235_702_260_395_515_9, 0.942_809_041_582_063_4, 0.235_702_260_395_515_9),
+        DVec3::new(0.371_390_676_354_103_7, -0.557_086_014_531_155_6, 0.742_781_352_708_207_4),
+    ],
+    [
+        DVec3::new(-0.685_994_340_570_035_4, 0.514_495_755_427_526_5, 0.514_495_755_427_526_5),
+        DVec3::new(0.696_310_623_822_791_4, 0.696_310_623_822_791_4, -0.174_077_655_955_697_9),
+        DVec3::new(-0.365_148_371_670_110_7, 0.182_574_185_835_055_4, 0.912_870_929_175_276_9),
+    ],
+    [
+        DVec3::new(0.486_664_263_392_287_6, -0.811_107_105_653_812_7, -0.324_442_842_261_525_1),
+        DVec3::new(0.169_030_850_945_703_3, 0.507_092_552_837_110_0, 0.845_154_254_728_516_6),
+        DVec3::new(0.745_355_992_499_929_9, -0.298_142_396_999_972_0, 0.596_284_793_999_943_9),
+    ],
+];
+
+/// Two C2-continuous alternating value ramps in phase quadrature. One domain
+/// projection and floor supplies both vector channels, keeping each octave
+/// substantially cheaper than three independent scalar-noise evaluations.
+#[inline]
+fn smooth_noise_wave_pair(x: f64) -> (f64, f64) {
+    let cell = x.floor();
+    let t = x - cell;
+    let wave = |cell: i64, t: f64| {
+        let fade = t * t * t * (t * (t * 6.0 - 15.0) + 10.0);
+        if cell & 1 == 0 { 2.0 * fade - 1.0 } else { 1.0 - 2.0 * fade }
+    };
+    let cell = cell as i64;
+    let first = wave(cell, t);
+    let second = if t < 0.5 {
+        wave(cell, t + 0.5)
+    } else {
+        wave(cell + 1, t - 0.5)
+    };
+    (first, second)
+}
+
+#[inline]
+fn biome_vector_noise(dir: DVec3, frequency: f64, seed_phase: f64, octave: usize) -> DVec3 {
+    let axes = BIOME_WARP_AXES[octave % BIOME_WARP_AXES.len()];
+    let octave_phase = seed_phase + octave as f64 * 0.618_033_988_749_894_9;
+    let (a, b) = smooth_noise_wave_pair(dir.dot(axes[0]) * frequency + octave_phase);
+    (axes[1] * a + axes[2] * b) * 1.15
+}
+
+/// Smallest gnomonic angular derivative at this face position. Scaling the
+/// direction-space displacement by it makes the maximum a true local raster-
+/// texel bound even at cube corners, where one face-center angular texel would
+/// otherwise span more than two raster texels. The expression is symmetric
+/// across shared face representations.
+#[inline]
+fn biome_warp_metric_scale(u: f64, v: f64) -> f64 {
+    let denom = 1.0 + u * u + v * v;
+    // 1/denom is a conservative lower bound on both exact derivatives. It
+    // keeps the proof strict without adding square roots to every edge lookup.
+    1.0 / denom
+}
+
+/// Pure, direction-space domain warp. The vector field is sampled in 3-D and
+/// projected onto the sphere tangent, so it has neither cube-face axes nor
+/// seams. The final displacement is angular and scaled in baked texels.
+fn biome_warp_dir(dir: DVec3, res: usize, seed: i64, metric_scale: f64) -> DVec3 {
+    debug_assert!(res > 1);
+    let texel_angle = 2.0 / (res - 1) as f64;
+    // smooth_noise_wave_pair has a two-cell period.
+    let mut frequency = 2.0 / (texel_angle * BIOME_WARP_BASE_WAVELENGTH_TEXELS);
+    let mut amplitude = BIOME_WARP_BASE_AMPLITUDE_TEXELS;
+    let mut offset = DVec3::ZERO;
+    let mut phase_bits = (seed.wrapping_add(BIOME_WARP_SEED_OFFSET) as u64)
+        .wrapping_mul(0x9E37_79B9_7F4A_7C15);
+    phase_bits ^= phase_bits >> 30;
+    phase_bits = phase_bits.wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    phase_bits ^= phase_bits >> 27;
+    let seed_phase = (phase_bits >> 11) as f64 * (2.0 / 9_007_199_254_740_992.0);
+    for octave in 0..BIOME_WARP_OCTAVES as usize {
+        let vector = biome_vector_noise(dir, frequency, seed_phase, octave);
+        offset += amplitude * (vector - dir * vector.dot(dir));
+        frequency *= BIOME_WARP_LACUNARITY;
+        amplitude *= BIOME_WARP_PERSISTENCE;
+    }
+    let length = offset.length();
+    if length > BIOME_WARP_MAX_DISPLACEMENT_TEXELS {
+        offset *= BIOME_WARP_MAX_DISPLACEMENT_TEXELS / length;
+    }
+    // Projection back to a cube face is homogeneous, so normalization here
+    // would be a wasted square root in the hot path.
+    dir + texel_angle * metric_scale * offset
 }
 
 /// Fast standard-normal CDF (Abramowitz-Stegun 26.2.17, max error about
@@ -179,9 +320,15 @@ pub struct FaceRaster {
     pub res: usize,
     pub elev_km: Vec<f32>,
     pub koppen: Vec<u8>, // 255 = ocean
+    /// 1 where this texel's 8-neighbor ring contains another class. A
+    /// sub-texel domain warp cannot change class outside this conservative
+    /// strip, so those interiors skip every procedural warp evaluation.
+    climate_edge: Vec<u64>,
     pub rough_km: Vec<f32>,     // mean |elevation delta| between map cells
-    pub precip_mm_yr: Vec<f32>, // annual precipitation
-    pub temp_c: Vec<f32>,       // annual mean temperature
+    /// Interleaved [annual mean temperature C, annual precipitation mm].
+    /// These are read together by terrain and biome tint paths, so one cache
+    /// stream serves both without changing either field's coordinates.
+    climate: Vec<[f32; 2]>,
     pub flow_log10: Vec<f32>,   // log10(1 + river flow accumulation m3/s)
     /// Blurred is-ocean mask (0 = interior land, 1 = open sea), derived from
     /// koppen==255 at load. "Below sea level" alone is NOT ocean: the map has
@@ -203,6 +350,23 @@ pub struct Planet {
     /// River courses + lakes from the drainage graph (empty if rivers.bin
     /// is missing — run scripts/bake_rivers.py).
     pub rivers: crate::rivers::RiverIndex,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct RasterPosition {
+    face: usize,
+    u: f64,
+    v: f64,
+    x: f64,
+    y: f64,
+    here: u8,
+    climate_edge: bool,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct ClimatePosition {
+    raster: RasterPosition,
+    warped: bool,
 }
 
 impl Planet {
@@ -230,9 +394,11 @@ impl Planet {
             };
             let elev_km = f32s(0);
             let koppen = raw[n * 4..n * 5].to_vec();
+            let climate_edge = climate_edge_mask(&koppen, res);
             let rough_km = f32s(n * 5);
             let precip_mm_yr = f32s(n * 9);
             let temp_c = f32s(n * 13);
+            let climate = temp_c.into_iter().zip(precip_mm_yr).map(|(t, p)| [t, p]).collect();
             let flow_log10 = f32s(n * 17);
             let ocean = blur_mask(&koppen, res, 2);
             let water = koppen.iter().map(|&k| (k == 255) as u8 as f32).collect();
@@ -240,9 +406,9 @@ impl Planet {
                 res,
                 elev_km,
                 koppen,
+                climate_edge,
                 rough_km,
-                precip_mm_yr,
-                temp_c,
+                climate,
                 flow_log10,
                 ocean,
                 water,
@@ -289,6 +455,37 @@ impl Planet {
         a * (1.0 - fy) + b * fy
     }
 
+    #[inline]
+    fn climate_bilinear_xy(r: &FaceRaster, x: f64, y: f64) -> [f32; 2] {
+        let (x0, y0) = (x.floor() as usize, y.floor() as usize);
+        let (x1, y1) = ((x0 + 1).min(r.res - 1), (y0 + 1).min(r.res - 1));
+        let (fx, fy) = ((x - x0 as f64) as f32, (y - y0 as f64) as f32);
+        let a = r.climate[y0 * r.res + x0];
+        let b = r.climate[y0 * r.res + x1];
+        let c = r.climate[y1 * r.res + x0];
+        let d = r.climate[y1 * r.res + x1];
+        let top = [a[0] * (1.0 - fx) + b[0] * fx, a[1] * (1.0 - fx) + b[1] * fx];
+        let bottom = [c[0] * (1.0 - fx) + d[0] * fx, c[1] * (1.0 - fx) + d[1] * fx];
+        [
+            top[0] * (1.0 - fy) + bottom[0] * fy,
+            top[1] * (1.0 - fy) + bottom[1] * fy,
+        ]
+    }
+
+    #[inline]
+    fn climate_bilinear(&self, face: usize, u: f64, v: f64) -> [f32; 2] {
+        let r = &self.faces[face];
+        let d = (r.res - 1) as f64;
+        let x = ((u * 0.5 + 0.5) * d).clamp(0.0, d);
+        let y = ((v * 0.5 + 0.5) * d).clamp(0.0, d);
+        Self::climate_bilinear_xy(r, x, y)
+    }
+
+    #[inline]
+    fn climate_bilinear_at(&self, p: RasterPosition) -> [f32; 2] {
+        Self::climate_bilinear_xy(&self.faces[p.face], p.x, p.y)
+    }
+
     /// Bilinear elevation (km).
     pub fn elevation(&self, face: usize, u: f64, v: f64) -> f32 {
         self.bilinear(face, |r| &r.elev_km, u, v)
@@ -301,12 +498,18 @@ impl Planet {
 
     /// Annual precipitation (mm/yr).
     pub fn precip(&self, face: usize, u: f64, v: f64) -> f32 {
-        self.bilinear(face, |r| &r.precip_mm_yr, u, v)
+        self.climate_bilinear(face, u, v)[1]
     }
 
     /// Annual mean temperature (deg C).
     pub fn temp(&self, face: usize, u: f64, v: f64) -> f32 {
-        self.bilinear(face, |r| &r.temp_c, u, v)
+        self.climate_bilinear(face, u, v)[0]
+    }
+
+    /// Unwarped annual mean temperature and precipitation in one raster pass.
+    pub fn temp_precip(&self, face: usize, u: f64, v: f64) -> (f32, f32) {
+        let climate = self.climate_bilinear(face, u, v);
+        (climate[0], climate[1])
     }
 
     /// log10(1 + river flow accumulation m3/s), dilated one map cell.
@@ -326,13 +529,102 @@ impl Planet {
         self.bilinear(face, |r| &r.water, u, v)
     }
 
-    /// Nearest-texel Koppen class id at (u, v); 255 = ocean.
-    pub fn koppen(&self, face: usize, u: f64, v: f64) -> u8 {
+    /// Unwarped nearest-texel class read. This is private because public biome
+    /// consumers must all pass through `climate_position`; it remains the
+    /// authority for the original-position ocean gate and raster neighbors.
+    fn raw_koppen(&self, face: usize, u: f64, v: f64) -> u8 {
         let r = &self.faces[face];
         let res = r.res as f64;
         let x = (((u * 0.5 + 0.5) * (res - 1.0)).round().max(0.0) as usize).min(r.res - 1);
         let y = (((v * 0.5 + 0.5) * (res - 1.0)).round().max(0.0) as usize).min(r.res - 1);
         r.koppen[y * r.res + x]
+    }
+
+    /// Raster coordinates cached across the signature, class-weight, and
+    /// warp-gate reads made by one surface lookup.
+    #[inline]
+    fn raster_position(&self, face: usize, u: f64, v: f64) -> RasterPosition {
+        let r = &self.faces[face];
+        let d = (r.res - 1) as f64;
+        let x = ((u * 0.5 + 0.5) * d).clamp(0.0, d);
+        let y = ((v * 0.5 + 0.5) * d).clamp(0.0, d);
+        let xi = x.round() as i64;
+        let yi = y.round() as i64;
+        let index = yi as usize * r.res + xi as usize;
+        RasterPosition {
+            face,
+            u,
+            v,
+            x,
+            y,
+            here: r.koppen[index],
+            climate_edge: (r.climate_edge[index >> 6] >> (index & 63)) & 1 != 0,
+        }
+    }
+
+    /// The ONE position transform for every biome-class and biome-tint read.
+    ///
+    /// Ocean ownership is checked first at the unwarped world position. Ocean
+    /// points never warp, and a land warp that would sample an ocean texel is
+    /// rejected as a whole, so climate displacement cannot move either side of
+    /// the sea boundary. Elevation and all water masks are never read here.
+    fn climate_position(&self, face: usize, u: f64, v: f64) -> ClimatePosition {
+        let (face, u, v) = canonical_face_uv(face, u, v);
+        let source = self.raster_position(face, u, v);
+        if source.here == 255 {
+            return ClimatePosition { raster: source, warped: false };
+        }
+
+        // With a hard <1-texel displacement bound, an equal 8-neighbor ring
+        // proves that the categorical result cannot change. This is the main
+        // per-vertex fast path: broad biome interiors retain the identity
+        // transform, consistently for class and tint, without evaluating
+        // procedural noise that could have no visible categorical effect.
+        if !source.climate_edge {
+            return ClimatePosition { raster: source, warped: false };
+        }
+
+        let res = self.faces[face].res;
+        let warped_dir = biome_warp_dir(
+            face_dir(face, u, v),
+            res,
+            self.seed,
+            biome_warp_metric_scale(u, v),
+        );
+        let face_margin = 4.0 / (res - 1) as f64;
+        let (warped_face, warped_u, warped_v) = if u.abs() < 1.0 - face_margin
+            && v.abs() < 1.0 - face_margin
+        {
+            let (u, v) = uv_from_dir_on_face(face, warped_dir);
+            (face, u, v)
+        } else {
+            face_from_dir(warped_dir)
+        };
+        let warped = self.raster_position(warped_face, warped_u, warped_v);
+        if warped.here == 255 {
+            ClimatePosition { raster: source, warped: false }
+        } else {
+            ClimatePosition { raster: warped, warped: true }
+        }
+    }
+
+    /// Nearest-texel domain-warped Koppen class id; 255 = unwarped ocean.
+    pub fn koppen(&self, face: usize, u: f64, v: f64) -> u8 {
+        self.climate_position(face, u, v).raster.here
+    }
+
+    /// Class plus continuous tint coordinates at the exact same warped point.
+    /// This is intentionally separate from `temp()` / `precip()`: those public
+    /// fields remain unwarped for terrain, weather, ecology, and water rules.
+    pub fn biome_climate(&self, face: usize, u: f64, v: f64) -> BiomeClimate {
+        let p = self.climate_position(face, u, v);
+        let r = p.raster;
+        let climate = self.climate_bilinear_at(r);
+        BiomeClimate {
+            koppen: r.here,
+            temp_c: climate[0],
+            precip_mm_yr: climate[1],
+        }
     }
 
     /// Categorical texel access with a real neighbor across cube-face edges.
@@ -347,17 +639,15 @@ impl Planet {
         let u = -1.0 + 2.0 * x as f64 / d;
         let v = -1.0 + 2.0 * y as f64 / d;
         let (f2, u2, v2) = face_from_dir(face_dir(face, u, v));
-        self.koppen(f2, u2, v2)
+        self.raw_koppen(f2, u2, v2)
     }
 
     /// Smooth the old palette anchor and far-forest weight over the categorical
     /// raster lattice. This signal is only a small nudge; unlike nearest-texel
     /// Koppen it is continuous at cell edges.
-    fn koppen_signature(&self, face: usize, u: f64, v: f64) -> ([f32; 3], f32) {
-        let r = &self.faces[face];
-        let d = (r.res - 1) as f64;
-        let x = ((u * 0.5 + 0.5) * d).clamp(0.0, d);
-        let y = ((v * 0.5 + 0.5) * d).clamp(0.0, d);
+    fn koppen_signature(&self, p: RasterPosition) -> ([f32; 3], f32) {
+        let r = &self.faces[p.face];
+        let (x, y) = (p.x, p.y);
         let (x0, y0) = (x.floor() as usize, y.floor() as usize);
         let (x1, y1) = ((x0 + 1).min(r.res - 1), (y0 + 1).min(r.res - 1));
         let (fx, fy) = ((x - x0 as f64) as f32, (y - y0 as f64) as f32);
@@ -391,21 +681,24 @@ impl Planet {
     /// block. The representative is immaterial to rendering: callers use its
     /// main block, while the long-range Koppen tint signal remains separately
     /// bilinear in `koppen_signature`.
+    #[cfg(test)]
     fn koppen_block_weights(&self, face: usize, u: f64, v: f64) -> (u8, [f64; 3], [u8; 3]) {
-        let r = &self.faces[face];
+        self.koppen_block_weights_at(self.raster_position(face, u, v))
+    }
+
+    fn koppen_block_weights_at(&self, p: RasterPosition) -> (u8, [f64; 3], [u8; 3]) {
+        let r = &self.faces[p.face];
         let d = (r.res - 1) as f64;
-        let x = ((u * 0.5 + 0.5) * d).clamp(0.0, d);
-        let y = ((v * 0.5 + 0.5) * d).clamp(0.0, d);
-        let (xi, yi) = (x.round() as i64, y.round() as i64);
-        let here = self.koppen_texel(face, xi, yi);
+        let (x, y) = (p.x, p.y);
+        let here = p.here;
 
         // Gnomonic metric: angular derivative of normalize([u,v,1]). This
         // keeps the artist-facing width in kilometres across face centers,
         // edges, and corners instead of treating a raster texel as constant.
-        let denom = 1.0 + u * u + v * v;
+        let denom = 1.0 + p.u * p.u + p.v * p.v;
         let texel_uv = 2.0 / d;
-        let km_x = self.radius_km * texel_uv * (1.0 + v * v).sqrt() / denom;
-        let km_y = self.radius_km * texel_uv * (1.0 + u * u).sqrt() / denom;
+        let km_x = self.radius_km * texel_uv * (1.0 + p.v * p.v).sqrt() / denom;
+        let km_y = self.radius_km * texel_uv * (1.0 + p.u * p.u).sqrt() / denom;
         let half = CROSS_BLOCK_ECOTONE_KM * 0.5;
         let axis_weight = |coord: f64, edge: f64, km_per_texel: f64| {
             let t = (0.5 + (coord - edge) * km_per_texel / (2.0 * half)).clamp(0.0, 1.0);
@@ -415,10 +708,10 @@ impl Planet {
         let wx = axis_weight(x, x0 as f64 + 0.5, km_x);
         let wy = axis_weight(y, y0 as f64 + 0.5, km_y);
         let samples = [
-            (self.koppen_texel(face, x0, y0), (1.0 - wx) * (1.0 - wy)),
-            (self.koppen_texel(face, x0 + 1, y0), wx * (1.0 - wy)),
-            (self.koppen_texel(face, x0, y0 + 1), (1.0 - wx) * wy),
-            (self.koppen_texel(face, x0 + 1, y0 + 1), wx * wy),
+            (self.koppen_texel(p.face, x0, y0), (1.0 - wx) * (1.0 - wy)),
+            (self.koppen_texel(p.face, x0 + 1, y0), wx * (1.0 - wy)),
+            (self.koppen_texel(p.face, x0, y0 + 1), (1.0 - wx) * wy),
+            (self.koppen_texel(p.face, x0 + 1, y0 + 1), wx * wy),
         ];
 
         let block_index = |block| match block {
@@ -443,6 +736,7 @@ impl Planet {
     /// Dither against the continuous four-texel weights in a stable block
     /// order. Same-block neighborhoods return the nearest class exactly and
     /// therefore retain all climate/material statistics outside ecotones.
+    #[cfg(test)]
     fn dithered_koppen(
         &self,
         face: usize,
@@ -450,7 +744,15 @@ impl Planet {
         v: f64,
         comparator: impl FnOnce() -> f64,
     ) -> u8 {
-        let (here, weights, representatives) = self.koppen_block_weights(face, u, v);
+        self.dithered_koppen_at(self.raster_position(face, u, v), comparator)
+    }
+
+    fn dithered_koppen_at(
+        &self,
+        p: RasterPosition,
+        comparator: impl FnOnce() -> f64,
+    ) -> u8 {
+        let (here, weights, representatives) = self.koppen_block_weights_at(p);
         if weights.iter().filter(|&&weight| weight > 0.0).count() <= 1 {
             return here;
         }
@@ -472,6 +774,37 @@ impl Planet {
         // covers a caller-supplied one or a final-ULP accumulation shortfall.
         last
     }
+}
+
+/// Conservative same-class interior mask for the domain-warp fast path.
+/// Outer-ring texels stay marked because their true neighbors live on another
+/// cube face; they are a negligible fraction and must never be guessed from a
+/// clamped edge.
+fn climate_edge_mask(koppen: &[u8], res: usize) -> Vec<u64> {
+    let mut edge = vec![0u64; koppen.len().div_ceil(64)];
+    for y in 0..res {
+        for x in 0..res {
+            let mut differs = x == 0 || y == 0 || x + 1 == res || y + 1 == res;
+            if !differs {
+                let here = koppen[y * res + x];
+                for dy in -1..=1isize {
+                    for dx in -1..=1isize {
+                        if dx == 0 && dy == 0 {
+                            continue;
+                        }
+                        let xx = (x as isize + dx) as usize;
+                        let yy = (y as isize + dy) as usize;
+                        differs |= koppen[yy * res + xx] != here;
+                    }
+                }
+            }
+            if differs {
+                let index = y * res + x;
+                edge[index >> 6] |= 1u64 << (index & 63);
+            }
+        }
+    }
+    edge
 }
 
 /// Separable box blur of the (koppen == 255) ocean mask, edge-clamped.
@@ -730,36 +1063,40 @@ fn hue_nudge(base: [f32; 3], anchor: [f32; 3]) -> [f32; 3] {
     mix3(base, same_value, KOPPEN_HUE_NUDGE)
 }
 
-/// One truth for the two ground renderers: continuous climate supplies all
+/// One truth for the two ground renderers: domain-warped climate supplies all
 /// provisional material tints, smoothly sampled Koppen only nudges grass hue,
-/// and the shared world-column field chooses cross-block and snow categories.
-/// This performs raster reads and procedural field evaluations only; callers
-/// already own the terrain `Sample`, so no extra `terrain::sample` enters
-/// either hot path.
+/// and the approved unwarped world-column field chooses cross-block and snow
+/// categories. Elevation, water, weather, and the terrain `Sample` never enter
+/// this transform.
 pub fn climate_surface(
     planet: &Planet,
     face: usize,
     u: f64,
     v: f64,
-    temp_c: f64,
-    precip_mm: f64,
+    unwarped_temp_c: f64,
+    unwarped_precip_mm: f64,
 ) -> ClimateSurface {
-    // Only shared cube edges need canonical ownership. Voxel centers and tile
-    // interiors keep the cheap direct path.
-    let (face, u, v) = if u.abs() >= 1.0 || v.abs() >= 1.0 {
-        face_from_dir(face_dir(face, u, v))
-    } else {
-        (face, u, v)
-    };
-    let (koppen_anchor, forest) = planet.koppen_signature(face, u, v);
-    let chosen = planet.dithered_koppen(face, u, v, || {
+    // Canonicalize the real world position once. The climate raster reads use
+    // its warped counterpart; metre-scale comparator phases stay anchored to
+    // this original position so their approved character does not change.
+    let (world_face, world_u, world_v) = canonical_face_uv(face, u, v);
+    let lookup = planet.climate_position(world_face, world_u, world_v);
+    let p = lookup.raster;
+    let (koppen_anchor, forest) = planet.koppen_signature(p);
+    let chosen = planet.dithered_koppen_at(p, || {
         ecotone_comparator(
-            face,
-            u,
-            v,
+            world_face,
+            world_u,
+            world_v,
             planet.seed.wrapping_add(ECOTONE_FIELD_SEED_OFFSET),
         )
     });
+    let (temp_c, precip_mm) = if lookup.warped {
+        let climate = planet.climate_bilinear_at(p);
+        (climate[0] as f64, climate[1] as f64)
+    } else {
+        (unwarped_temp_c, unwarped_precip_mm)
+    };
     let mut main_block = koppen_main_block(chosen);
     let snow_low = SNOWLINE_CENTER_C - SNOWLINE_HALF_RANGE_C;
     let snow_high = SNOWLINE_CENTER_C + SNOWLINE_HALF_RANGE_C;
@@ -767,9 +1104,9 @@ pub fn climate_surface(
         main_block = MainBlock::Snow;
     } else if temp_c < snow_high {
         let snow_comparator = ecotone_comparator(
-            face,
-            u,
-            v,
+            world_face,
+            world_u,
+            world_v,
             planet.seed.wrapping_add(SNOW_FIELD_SEED_OFFSET),
         );
         let snow_threshold = SNOWLINE_CENTER_C
@@ -823,9 +1160,9 @@ mod tests {
             res,
             elev_km: vec![0.2; n],
             koppen: koppen.clone(),
+            climate_edge: climate_edge_mask(&koppen, res),
             rough_km: vec![0.0; n],
-            precip_mm_yr: vec![500.0; n],
-            temp_c: vec![8.0; n],
+            climate: vec![[8.0, 500.0]; n],
             flow_log10: vec![0.0; n],
             ocean: vec![0.0; n],
             water: vec![0.0; n],
@@ -849,6 +1186,69 @@ mod tests {
             assert_eq!(koppen_main_block(k), expected, "Koppen class {k}");
         }
         assert_eq!(koppen_main_block(255), MainBlock::Sand);
+    }
+
+    #[test]
+    fn biome_warp_is_deterministic_and_exact_across_cube_faces() {
+        let seed = 42;
+        let dir = face_dir(2, 0.271_828_182_8, -0.618_033_988_7);
+        let expected = biome_warp_dir(dir, 1024, seed, 1.0);
+        let repeated = biome_warp_dir(dir, 1024, seed, 1.0);
+        assert_eq!(
+            [expected.x.to_bits(), expected.y.to_bits(), expected.z.to_bits()],
+            [repeated.x.to_bits(), repeated.y.to_bits(), repeated.z.to_bits()]
+        );
+        assert!((expected - dir).length() > 1e-8, "configured warp must move the lookup");
+
+        // Present identical edge/corner directions through every face that
+        // owns them. Production canonicalization must lead to one bit-exact
+        // warped direction, not merely visually close copies.
+        for dir in [
+            face_dir(0, 1.0, -1.0),
+            face_dir(0, 1.0, -0.234_567_89),
+            face_dir(0, 1.0, 0.618_033_99),
+            face_dir(0, 1.0, 1.0),
+        ] {
+            let mut expected = None;
+            let mut copies = 0;
+            for face in 0..FACES.len() {
+                let (u, v, on) = project(face, dir);
+                if !on || (u.abs() < 1.0 - 1e-6 && v.abs() < 1.0 - 1e-6) {
+                    continue;
+                }
+                let (f, u, v) = canonical_face_uv(face, u, v);
+                let got = biome_warp_dir(
+                    face_dir(f, u, v),
+                    1024,
+                    seed,
+                    biome_warp_metric_scale(u, v),
+                );
+                let bits = [got.x.to_bits(), got.y.to_bits(), got.z.to_bits()];
+                if let Some(expected) = expected {
+                    assert_eq!(bits, expected, "face {face} differs at {dir:?}");
+                } else {
+                    expected = Some(bits);
+                }
+                copies += 1;
+            }
+            assert!(copies >= 2, "expected a shared edge/corner at {dir:?}");
+        }
+    }
+
+    #[test]
+    fn biome_warp_cannot_cross_the_raw_ocean_mask() {
+        let ocean_edge = climate_test_planet(255);
+        for face in 0..FACES.len() {
+            for j in 0..128 {
+                for i in 0..128 {
+                    let u = -1.0 + 2.0 * (i as f64 + 0.5) / 128.0;
+                    let v = -1.0 + 2.0 * (j as f64 + 0.5) / 128.0;
+                    let raw_is_ocean = ocean_edge.raw_koppen(face, u, v) == 255;
+                    let warped_is_ocean = ocean_edge.koppen(face, u, v) == 255;
+                    assert_eq!(warped_is_ocean, raw_is_ocean, "face={face} u={u} v={v}");
+                }
+            }
+        }
     }
 
     #[test]

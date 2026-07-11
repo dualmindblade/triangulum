@@ -1,0 +1,27 @@
+# Continental biome domain-warp evidence. Weather and sun are pinned so this
+# script is byte-repeatable; the first pose reproduces Andrew's report exactly.
+weather off
+mode fly
+
+sun 23 23
+teleport 42.765000 38.439000 288.186
+look -64 -85
+shot reported_orbit_288km
+
+# Warm mixed-biome continent: savanna site seen from orbit.
+sun 6 17
+teleport 5.560000 31.741000 288.000
+look -35 -85
+shot savanna_orbit_288km
+
+# Independent equatorial continent around the approved jungle site.
+sun -1 -83
+teleport -0.906000 -67.804000 288.000
+look 28 -85
+shot jungle_orbit_288km
+
+# Reported four-texel corner at a scale where map warp and local dither overlap.
+sun 16 -38
+teleport 16.684000 -23.367000 10.000
+look -91 -82
+shot reported_corner_10km
