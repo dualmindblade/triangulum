@@ -415,11 +415,13 @@ fn surface_mat(c: &ColCtx, steep: i64, climate_block: MainBlock, beach_jitter: f
         return if c.water - c.ground > 4 { Mat::Gravel } else { Mat::Sand };
     }
     // The analog point is submerged even though no distinct liquid cell can
-    // coexist with its equal-block ground. Its solid, walkable cap therefore
-    // wears the shared shallow-water color instead of opening a dry-color pit
-    // that the coarser heightfield cannot resolve.
+    // coexist with its equal-block ground. Field-tested correction (Andrew,
+    // 2026-07-11): water-colored walkable caps read as broken water - the
+    // player can stand on 'water' they cannot swim in. Shoals now wear SAND:
+    // an honest sandbar archipelago flush with the surface, connecting with
+    // the lake-shore sand band.
     if c.lake_shoal {
-        return Mat::Water;
+        return Mat::Sand;
     }
     if beach_jitter < c.lake_shore_frac {
         return Mat::Sand;
@@ -1096,8 +1098,10 @@ pub fn build_chunk(
                     continue;
                 }
                 let mat = mat_at(c, z, surf);
-                let base = if c.lake_shoal && mat == Mat::Water {
-                    crate::terrain::water_surface_color(0.0, false, c.salt)
+                // shoal caps darken slightly: wet sand at the waterline
+                let base = if c.lake_shoal && mat == Mat::Sand {
+                    let c0 = mat.color(tint);
+                    [c0[0] * 0.82, c0[1] * 0.82, c0[2] * 0.84]
                 } else {
                     mat.color(tint)
                 };
