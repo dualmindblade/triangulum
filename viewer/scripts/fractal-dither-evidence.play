@@ -1,0 +1,47 @@
+# Controlled visual comparison for the fractal ecotone dither mission.
+# Run the white-noise and fractal builds with the same script and output dirs.
+# Weather is disabled and the sun is pinned per site for byte-repeatability.
+
+weather off
+
+# Reported four-texel corner: face 0 corner (290.5, 678.5), sand vs tundra.
+sun 16 -38
+teleport 16.684000 -23.367000 0.050
+mode walk
+wait 6
+look -91 -20
+shot reported_corner_walk
+teleport 16.684000 -23.367000 0.414
+look -91 -80
+shot reported_corner_400m
+teleport 16.684000 -23.367000 3.000
+look -91 -80
+shot reported_corner_3km
+
+# Independent desert/grass corner: face 0 corner (74.5, 629.5), 1:3 mix.
+sun 10 -56
+teleport 9.948359 -40.508919 0.050
+mode walk
+wait 6
+look -91 -20
+shot desert_grass_walk
+teleport 9.948359 -40.508919 0.414
+look -91 -80
+shot desert_grass_400m
+teleport 9.948359 -40.508919 3.000
+look -91 -80
+shot desert_grass_3km
+
+# Active land temperature snowline (annual mean approximately -9 C).
+sun 23 70
+teleport 69.117710 85.399450 0.050
+mode walk
+wait 6
+look 0 -20
+shot snowline_walk
+teleport 69.117710 85.399450 0.400
+look 0 -80
+shot snowline_400m
+teleport 69.117710 85.399450 3.000
+look 0 -80
+shot snowline_3km

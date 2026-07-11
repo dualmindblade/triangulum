@@ -6,6 +6,8 @@
 use anyhow::{Context, Result};
 use glam::DVec3;
 
+use crate::noise::normal_value_noise;
+
 pub const FACES: [(DVec3, DVec3, DVec3); 6] = [
     (DVec3::new(1.0, 0.0, 0.0), DVec3::new(0.0, 1.0, 0.0), DVec3::new(0.0, 0.0, 1.0)),
     (DVec3::new(-1.0, 0.0, 0.0), DVec3::new(0.0, -1.0, 0.0), DVec3::new(0.0, 0.0, 1.0)),
@@ -15,7 +17,7 @@ pub const FACES: [(DVec3, DVec3, DVec3); 6] = [
     (DVec3::new(0.0, 0.0, -1.0), DVec3::new(0.0, 1.0, 0.0), DVec3::new(1.0, 0.0, 0.0)),
 ];
 
-/// The canonical one-metre-ish column lattice. Biome dithering hashes this
+/// The canonical one-metre-ish column lattice. Biome dithering snaps to this
 /// identity in both renderers; changing it would move every ecotone column.
 pub const COLUMNS_PER_FACE: u64 = 10_000_000;
 
@@ -26,8 +28,22 @@ pub const CROSS_BLOCK_ECOTONE_KM: f64 = 0.300;
 /// temperature and precipitation remain the dominant color coordinates.
 pub const KOPPEN_HUE_NUDGE: f32 = 0.14;
 
-const ECOTONE_HASH_SALT: u64 = 0xEC07_0AE;
-const SNOW_HASH_SALT: u64 = 0x5A0E;
+// ---- Andrew's fractal ecotone art-direction knobs -----------------------
+// OCTAVES is the number of nested spatial layers (and noise evaluations).
+// BASE_PATCH_COLUMNS is the broadest layer's approximate wavelength on the
+// canonical face lattice: 4096 columns is ~0.4 of a 1024-bake texel and
+// ~7 km at a face center on Neisor.
+// LACUNARITY divides wavelength between layers. At 16, the four defaults are
+// about 4096, 256, 16, and 1 column: map-scale islands down to voxel speckle.
+// PERSISTENCE multiplies amplitude per finer layer. 0.5 lets broad islands
+// own the silhouette while each smaller layer can perforate their margins.
+pub const ECOTONE_FIELD_OCTAVES: u32 = 4;
+pub const ECOTONE_BASE_PATCH_COLUMNS: f64 = 4_096.0;
+pub const ECOTONE_LACUNARITY: f64 = 16.0;
+pub const ECOTONE_PERSISTENCE: f64 = 0.5;
+
+const ECOTONE_FIELD_SEED_OFFSET: i64 = 0x0EC0_70AE;
+const SNOW_FIELD_SEED_OFFSET: i64 = 0x0000_5A0E;
 const SNOWLINE_CENTER_C: f64 = -9.0;
 const SNOWLINE_HALF_RANGE_C: f64 = 1.5;
 
@@ -72,8 +88,9 @@ impl ClimateSurface {
     }
 }
 
-/// Shared splitmix-style column hash. It intentionally preserves the exact
-/// voxel hash that already owns snowline statistics.
+/// Shared splitmix-style column hash. Its exact output remains stable for
+/// beaches, decorations, and other per-column consumers; categorical climate
+/// transitions use the correlated field below instead.
 pub fn hash_u64(face: u8, ci: u64, cj: u64, salt: u64) -> u64 {
     let mut x = (ci ^ ((face as u64) << 60))
         .wrapping_mul(0x9E37_79B9_7F4A_7C15)
@@ -108,6 +125,54 @@ pub fn face_from_dir(dir: DVec3) -> (usize, f64, f64) {
     let (axis, right, up) = FACES[best.0];
     let p = dir / dir.dot(axis);
     (best.0, p.dot(right), p.dot(up))
+}
+
+/// Fast standard-normal CDF (Abramowitz-Stegun 26.2.17, max error about
+/// 7.5e-8). The ecotone stack is normalized to N(0,1), so this probability
+/// integral transform makes its comparator approximately uniform on [0,1].
+#[inline]
+fn standard_normal_cdf(x: f64) -> f64 {
+    let z = x.abs();
+    let t = 1.0 / (1.0 + 0.231_641_9 * z);
+    let tail = 0.398_942_280_401_432_7
+        * (-0.5 * z * z).exp()
+        * t
+        * (0.319_381_530
+            + t * (-0.356_563_782
+                + t * (1.781_477_937 + t * (-1.821_255_978 + t * 1.330_274_429))));
+    if x < 0.0 { tail } else { 1.0 - tail }
+}
+
+/// The one categorical-dither truth used by mesh vertices and voxel columns.
+/// Input is snapped to the canonical column center before any noise is read,
+/// so every sample within a column gets the same answer. Noise is evaluated
+/// on the 3-D unit direction, making the field continuous across cube faces.
+/// `seed` selects an independent deterministic stream for each consumer.
+fn ecotone_comparator(face: usize, u: f64, v: f64, seed: i64) -> f64 {
+    let (face, u, v) = if u.abs() >= 1.0 || v.abs() >= 1.0 {
+        face_from_dir(face_dir(face, u, v))
+    } else {
+        (face, u, v)
+    };
+    let n = COLUMNS_PER_FACE as f64;
+    let ci = (((u + 1.0) * 0.5 * n).clamp(0.0, n - 1.0)) as u64;
+    let cj = (((v + 1.0) * 0.5 * n).clamp(0.0, n - 1.0)) as u64;
+    let uc = -1.0 + 2.0 * (ci as f64 + 0.5) / n;
+    let vc = -1.0 + 2.0 * (cj as f64 + 0.5) / n;
+    let dir = face_dir(face, uc, vc);
+
+    let mut frequency = n / (2.0 * ECOTONE_BASE_PATCH_COLUMNS);
+    let mut amplitude = 1.0;
+    let mut sum = 0.0;
+    let mut variance = 0.0;
+    for octave in 0..ECOTONE_FIELD_OCTAVES as i64 {
+        let octave_seed = seed.wrapping_mul(7_919).wrapping_add(octave * 131);
+        sum += amplitude * normal_value_noise(dir * frequency, octave_seed);
+        variance += amplitude * amplitude;
+        frequency *= ECOTONE_LACUNARITY;
+        amplitude *= ECOTONE_PERSISTENCE;
+    }
+    standard_normal_cdf(sum / variance.sqrt()).clamp(0.0, 1.0)
 }
 
 pub struct FaceRaster {
@@ -378,12 +443,19 @@ impl Planet {
     /// Dither against the continuous four-texel weights in a stable block
     /// order. Same-block neighborhoods return the nearest class exactly and
     /// therefore retain all climate/material statistics outside ecotones.
-    fn dithered_koppen(&self, face: usize, u: f64, v: f64, hash: f64) -> u8 {
+    fn dithered_koppen(
+        &self,
+        face: usize,
+        u: f64,
+        v: f64,
+        comparator: impl FnOnce() -> f64,
+    ) -> u8 {
         let (here, weights, representatives) = self.koppen_block_weights(face, u, v);
         if weights.iter().filter(|&&weight| weight > 0.0).count() <= 1 {
             return here;
         }
 
+        let comparator = comparator();
         let mut cumulative = 0.0;
         let mut last = here;
         for (weight, class) in weights.into_iter().zip(representatives) {
@@ -392,12 +464,12 @@ impl Planet {
             }
             cumulative += weight;
             last = class;
-            if hash < cumulative {
+            if comparator < cumulative {
                 return class;
             }
         }
-        // `hash01` is strictly below one. This only covers a caller-supplied
-        // hash of exactly one or a final-ULP accumulation shortfall.
+        // The CDF can round to exactly one in its extreme tail. This also
+        // covers a caller-supplied one or a final-ULP accumulation shortfall.
         last
     }
 }
@@ -660,9 +732,10 @@ fn hue_nudge(base: [f32; 3], anchor: [f32; 3]) -> [f32; 3] {
 
 /// One truth for the two ground renderers: continuous climate supplies all
 /// provisional material tints, smoothly sampled Koppen only nudges grass hue,
-/// and the shared world-column hashes choose cross-block and snow categories.
-/// This performs raster reads and hashes only; callers already own the terrain
-/// `Sample`, so no extra `terrain::sample` enters either hot path.
+/// and the shared world-column field chooses cross-block and snow categories.
+/// This performs raster reads and procedural field evaluations only; callers
+/// already own the terrain `Sample`, so no extra `terrain::sample` enters
+/// either hot path.
 pub fn climate_surface(
     planet: &Planet,
     face: usize,
@@ -678,19 +751,32 @@ pub fn climate_surface(
     } else {
         (face, u, v)
     };
-    let n = COLUMNS_PER_FACE as f64;
-    let ci = (((u + 1.0) * 0.5 * n).clamp(0.0, n - 1.0)) as u64;
-    let cj = (((v + 1.0) * 0.5 * n).clamp(0.0, n - 1.0)) as u64;
-    let edge_hash = hash01(face as u8, ci, cj, ECOTONE_HASH_SALT);
-    let snow_hash = hash01(face as u8, ci, cj, SNOW_HASH_SALT);
-
     let (koppen_anchor, forest) = planet.koppen_signature(face, u, v);
-    let chosen = planet.dithered_koppen(face, u, v, edge_hash);
+    let chosen = planet.dithered_koppen(face, u, v, || {
+        ecotone_comparator(
+            face,
+            u,
+            v,
+            planet.seed.wrapping_add(ECOTONE_FIELD_SEED_OFFSET),
+        )
+    });
     let mut main_block = koppen_main_block(chosen);
-    let snow_threshold =
-        SNOWLINE_CENTER_C + (snow_hash - 0.5) * (SNOWLINE_HALF_RANGE_C * 2.0);
-    if main_block == MainBlock::Snow || temp_c < snow_threshold {
+    let snow_low = SNOWLINE_CENTER_C - SNOWLINE_HALF_RANGE_C;
+    let snow_high = SNOWLINE_CENTER_C + SNOWLINE_HALF_RANGE_C;
+    if main_block == MainBlock::Snow || temp_c < snow_low {
         main_block = MainBlock::Snow;
+    } else if temp_c < snow_high {
+        let snow_comparator = ecotone_comparator(
+            face,
+            u,
+            v,
+            planet.seed.wrapping_add(SNOW_FIELD_SEED_OFFSET),
+        );
+        let snow_threshold = SNOWLINE_CENTER_C
+            + (snow_comparator - 0.5) * (SNOWLINE_HALF_RANGE_C * 2.0);
+        if temp_c < snow_threshold {
+            main_block = MainBlock::Snow;
+        }
     }
 
     let temp = temp_c as f32;
@@ -772,16 +858,16 @@ mod tests {
         // opposite ends of the hash interval.
         let cross = climate_test_planet(4);
         let u_near = -0.006;
-        assert_eq!(cross.dithered_koppen(0, u_near, 0.0, 0.0), 6);
-        assert_eq!(cross.dithered_koppen(0, u_near, 0.0, 0.999), 4);
+        assert_eq!(cross.dithered_koppen(0, u_near, 0.0, || 0.0), 6);
+        assert_eq!(cross.dithered_koppen(0, u_near, 0.0, || 0.999), 4);
         // More than half the 300 m band away, no hash can cross the edge.
-        assert_eq!(cross.dithered_koppen(0, -0.30, 0.0, 0.0), 6);
+        assert_eq!(cross.dithered_koppen(0, -0.30, 0.0, || 0.0), 6);
 
         // Classes 6 and 14 are both grass: even at the exact edge the
         // category remains nearest-texel and no random decision is made.
         let same = climate_test_planet(14);
-        assert_eq!(same.dithered_koppen(0, u_near, 0.0, 0.0), 6);
-        assert_eq!(same.dithered_koppen(0, u_near, 0.0, 0.999), 6);
+        assert_eq!(same.dithered_koppen(0, u_near, 0.0, || 0.0), 6);
+        assert_eq!(same.dithered_koppen(0, u_near, 0.0, || 0.999), 6);
 
         // The hue nudge itself is bilinear, so same-block color is continuous
         // across that nearest-class edge.
@@ -826,6 +912,71 @@ mod tests {
         assert!((at_corner[1] - 0.25).abs() < 1e-12);
     }
 
+    #[test]
+    fn ecotone_comparator_preserves_area_fractions() {
+        // Sample canonical columns over all faces and both categorical seed
+        // streams. If the probability integral transform is doing its job,
+        // threshold occupancy equals the requested blend weight.
+        const SAMPLES_PER_SEED: usize = 65_536;
+        const FRACTIONS: [f64; 3] = [0.25, 0.50, 0.75];
+        const TOLERANCE: f64 = 0.008;
+        for seed in [
+            42i64.wrapping_add(ECOTONE_FIELD_SEED_OFFSET),
+            42i64.wrapping_add(SNOW_FIELD_SEED_OFFSET),
+        ] {
+            let mut occupied = [0usize; 3];
+            for sample in 0..SAMPLES_PER_SEED {
+                let face = sample % FACES.len();
+                let a = hash_u64(
+                    face as u8,
+                    sample as u64,
+                    (sample as u64).wrapping_mul(0x9E37_79B9),
+                    0xA11C_E001,
+                );
+                let b = hash_u64(
+                    face as u8,
+                    a,
+                    (sample as u64).wrapping_mul(0x85EB_CA77),
+                    0xA11C_E002,
+                );
+                let ci = a % COLUMNS_PER_FACE;
+                let cj = b % COLUMNS_PER_FACE;
+                let n = COLUMNS_PER_FACE as f64;
+                let u = -1.0 + 2.0 * (ci as f64 + 0.5) / n;
+                let v = -1.0 + 2.0 * (cj as f64 + 0.5) / n;
+                let comparator = ecotone_comparator(face, u, v, seed);
+                for (count, fraction) in occupied.iter_mut().zip(FRACTIONS) {
+                    *count += usize::from(comparator < fraction);
+                }
+            }
+            for (count, expected) in occupied.into_iter().zip(FRACTIONS) {
+                let measured = count as f64 / SAMPLES_PER_SEED as f64;
+                eprintln!(
+                    "ecotone occupancy seed={seed} blend={expected:.2} measured={measured:.5}"
+                );
+                assert!(
+                    (measured - expected).abs() <= TOLERANCE,
+                    "seed {seed}: occupancy {measured:.5} at blend {expected:.2} exceeds {TOLERANCE:.3} tolerance"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn ecotone_comparator_is_one_value_per_canonical_column() {
+        let n = COLUMNS_PER_FACE as f64;
+        let (ci, cj) = (4_321_987u64, 7_654_321u64);
+        let u = -1.0 + 2.0 * (ci as f64 + 0.5) / n;
+        let v = -1.0 + 2.0 * (cj as f64 + 0.5) / n;
+        let seed = 42i64.wrapping_add(ECOTONE_FIELD_SEED_OFFSET);
+        let expected = ecotone_comparator(2, u, v, seed).to_bits();
+        for (du, dv) in [(-0.20, -0.20), (0.20, -0.20), (-0.20, 0.20), (0.20, 0.20)] {
+            let got = ecotone_comparator(2, u + 2.0 * du / n, v + 2.0 * dv / n, seed);
+            assert_eq!(got.to_bits(), expected);
+        }
+        assert_eq!(ecotone_comparator(2, u, v, seed).to_bits(), expected);
+    }
+
     /// Project a world direction onto a specific face's gnomonic plane.
     /// `on` is true when the direction lies within this face's [-1,1]^2
     /// domain (a hair of slack so an exact edge direction registers on both
@@ -854,6 +1005,35 @@ mod tests {
         } else {
             let k = ((x * 0.5 + 0.5) * (res as f64 - 1.0)).round();
             -1.0 + 2.0 * k / (res as f64 - 1.0)
+        }
+    }
+
+    #[test]
+    fn ecotone_comparator_is_exact_across_cube_faces() {
+        let seed = 42i64.wrapping_add(ECOTONE_FIELD_SEED_OFFSET);
+        // Interior points on an edge plus both adjacent cube corners.
+        for dir in [
+            face_dir(0, 1.0, -1.0),
+            face_dir(0, 1.0, -0.234_567_89),
+            face_dir(0, 1.0, 0.618_033_99),
+            face_dir(0, 1.0, 1.0),
+        ] {
+            let mut expected = None;
+            let mut copies = 0;
+            for face in 0..FACES.len() {
+                let (u, v, on) = project(face, dir);
+                if !on || (u.abs() < 1.0 - 1e-6 && v.abs() < 1.0 - 1e-6) {
+                    continue;
+                }
+                let got = ecotone_comparator(face, u, v, seed).to_bits();
+                if let Some(expected) = expected {
+                    assert_eq!(got, expected, "face {face} differs at {dir:?}");
+                } else {
+                    expected = Some(got);
+                }
+                copies += 1;
+            }
+            assert!(copies >= 2, "expected a shared edge/corner at {dir:?}");
         }
     }
 
