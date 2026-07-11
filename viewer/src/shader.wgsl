@@ -386,6 +386,7 @@ fn vs_main(in: VsIn) -> VsOut {
     var rel = in.pos + tile.offset.xyz;
     let d = length(rel);
     var wet = in.water.a;
+    var shore = in.shore;
     if (tile.morph.y > 0.0) {
         // Geomorphing: slide to the parent triangle's height and its actual
         // triangle-interpolated river paint. The scalar radial slide retains
@@ -404,8 +405,23 @@ fn vs_main(in: VsIn) -> VsOut {
         let q = rel - globals.hole.xyz;
         let vert = dot(q, globals.hole_up.xyz);
         let horiz = length(q - globals.hole_up.xyz * vert);
-        let sink = smoothstep(globals.misc.z * 0.85, globals.misc.z * 1.06, horiz);
-        rel -= globals.hole_up.xyz * (globals.center.w * 1.1 * sink);
+        if (in.wflag > 1.5) {
+            // A-5: this marked lake/river-overlap top first moves from its
+            // lattice ceiling to the shared analog level (morph_dh), then
+            // sheds the patch lift through the established outer rim band.
+            // At the selected-radius handoff it is exactly coplanar with the
+            // always-retained mesh safety plane; the fragment stage gives the
+            // outer side to that one plane before the voxel top can cross it.
+            let handoff = globals.misc.z;
+            let flush = smoothstep(handoff * 0.85, handoff, horiz);
+            let top_weight = clamp(in.morph_wet, 0.0, 1.0);
+            rel += globals.hole_up.xyz
+                * (in.morph_dh - globals.center.w * flush * top_weight);
+            shore = handoff - horiz;
+        } else {
+            let sink = smoothstep(globals.misc.z * 0.85, globals.misc.z * 1.06, horiz);
+            rel -= globals.hole_up.xyz * (globals.center.w * 1.1 * sink);
+        }
     }
     out.clip = globals.view_proj * vec4<f32>(rel, 1.0);
     out.normal = in.normal;
@@ -414,7 +430,7 @@ fn vs_main(in: VsIn) -> VsOut {
     out.rel_flag = vec4<f32>(rel, tile.offset.w);
     out.water = vec4<f32>(in.water.rgb, wet);
     out.wflag = in.wflag;
-    out.shore = in.shore;
+    out.shore = shore;
     return out;
 }
 
@@ -440,6 +456,14 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         if (abs(vert) < 25.0 && length(horiz) < globals.hole.w) {
             discard;
         }
+    }
+    // Marked A-5 voxel water owns the complementary inner half of the exact
+    // same radial handoff. Outside it, only the retained continuous mesh plane
+    // is visible, so no lattice side/foam face follows the camera at the rim.
+    if (in.rel_flag.w < 0.5
+        && in.wflag > 1.5
+        && in.shore < 0.0) {
+        discard;
     }
     // deep tiles (near the voxel patch) resolve rivers: step the wetness
     // for crisp per-pixel water edges. Far tiles can't — a soft wet tint
