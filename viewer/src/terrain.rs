@@ -201,11 +201,23 @@ const POND_BANK_FILL_BUDGET_KM: f64 = 0.003;
 
 /// Raise `natural_km` toward a pond bed/bank target without ever adding more
 /// than the fill budget. Unlike Phase 8h's rejected all-or-nothing budget,
-/// this is continuous when the required fill crosses the budget: the ground
-/// follows `natural + budget`, rather than snapping from the target all the
-/// way back to natural terrain.
+/// this is continuous when the required fill crosses the budget - and the
+/// fill FADES TO ZERO as the requirement approaches it: a plain clamp kept
+/// a filled-but-dry ridge standing after the never-perched test had killed
+/// the pond itself, a block fence tracing the pond contour across the
+/// desert (re-shoot of Andrew's rampart site, 12.194 -44.858). Full support
+/// below 2/3 of the budget keeps healthy ponds untouched; by the budget the
+/// fill is gone, so the ground passes through the pond's death continuously.
+/// Site census is IDENTICAL to the clamp form (the fence was dirt-vs-dirt).
 fn bounded_pond_fill(natural_km: f64, target_km: f64) -> f64 {
-    natural_km + (target_km - natural_km).clamp(0.0, POND_BANK_FILL_BUDGET_KM)
+    let need = (target_km - natural_km).max(0.0);
+    let support = 1.0
+        - smoothstep(
+            POND_BANK_FILL_BUDGET_KM * (2.0 / 3.0),
+            POND_BANK_FILL_BUDGET_KM,
+            need,
+        );
+    natural_km + need.min(POND_BANK_FILL_BUDGET_KM) * support
 }
 
 /// Visible river level through the never-perched handoff. The graph level is
@@ -1709,17 +1721,32 @@ mod tests {
     }
 
     #[test]
-    fn pond_fill_budget_is_bounded_without_a_threshold_cliff() {
+    fn pond_fill_budget_is_bounded_and_dies_with_the_pond() {
         let target = 0.030;
+        // above target: never lowered
         assert_eq!(bounded_pond_fill(0.040, target), 0.040);
+        // small needs (below 2/3 budget): exact fill, healthy ponds untouched
         assert_eq!(bounded_pond_fill(0.028, target), target);
-        assert!((bounded_pond_fill(0.010, target) - 0.013).abs() < 1e-12);
-
-        // Crossing the 3 m budget changes the result by the same micrometre
-        // as the input; it never repeats Phase 8h's target-to-natural snap.
-        let just_inside = bounded_pond_fill(target - 0.002_999, target);
-        let just_outside = bounded_pond_fill(target - 0.003_001, target);
-        assert!((just_inside - just_outside - 0.000_001).abs() < 1e-12);
+        assert_eq!(bounded_pond_fill(0.0285, target), target);
+        // at/beyond the budget the fill is ZERO, not clamped: a clamped
+        // ridge outlived its suppressed pond as a block fence tracing the
+        // pond contour (re-shoot at Andrew's rampart site 12.194 -44.858)
+        assert_eq!(bounded_pond_fill(0.027, target), 0.027);
+        assert_eq!(bounded_pond_fill(0.010, target), 0.010);
+        // continuous through the fade band: micrometre input steps cannot
+        // produce a Phase 8h-style snap anywhere
+        let mut prev = bounded_pond_fill(target - 0.0035, target);
+        let mut need = 0.0035_f64;
+        while need > 0.0015 {
+            need -= 0.000_01;
+            let cur = bounded_pond_fill(target - need, target);
+            assert!(
+                (cur - prev).abs() < 0.000_05,
+                "fill stepped {} at need {need}",
+                (cur - prev).abs()
+            );
+            prev = cur;
+        }
     }
 
     #[test]
