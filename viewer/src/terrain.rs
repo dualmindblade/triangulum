@@ -178,6 +178,17 @@ fn lake_shore_delta_km(level_km: f64, h_km: f64) -> f64 {
     (level_km * 1000.0).floor() / 1000.0 - (h_km + 1e-6)
 }
 
+/// The unrepresentable tail of the block-quantized liquid-lake predicate.
+/// The analog ground is submerged, but level and biased ground select the
+/// same block, so no water block can stand above the column. Such columns
+/// become dry, walkable shoals at lake level rather than holes in the sheet.
+/// Frozen lakes deliberately keep their existing class and geometry.
+fn liquid_lake_shoal(level_km: f64, h_km: f64, temp_c: f64) -> bool {
+    temp_c >= -4.0
+        && h_km < level_km
+        && (level_km * 1000.0).floor() == ((h_km + 1e-6) * 1000.0).floor()
+}
+
 fn smoothstep(a: f64, b: f64, x: f64) -> f64 {
     let t = ((x - a) / (b - a)).clamp(0.0, 1.0);
     t * t * (3.0 - 2.0 * t)
@@ -204,6 +215,15 @@ pub struct Sample {
     /// Lakes render like the sea: real geometry at the surface, so a
     /// 100-km lake reads flat from orbit instead of a painted bowl.
     pub lake: bool,
+    /// Liquid-lake flood territory whose analog ground is below the level,
+    /// but whose surface and ground quantize to the same block. There is no
+    /// representable water cell, so the shared terrain truth raises `h_km`
+    /// to a dry, walkable shoal flush with the lake surface.
+    pub lake_shoal: bool,
+    /// Analog water depth replaced by the equal-block structural fill. Kept
+    /// after `h_km` is raised so the mesh shore field retains the true wet
+    /// magnitude instead of inventing one from the post-fill geometry.
+    pub lake_shoal_depth_km: f64,
     /// Candidate lake level for local shore material, even when this sample
     /// is dry ground just above the waterline.
     pub lake_level_km: f64,
@@ -285,6 +305,8 @@ pub fn sample(planet: &Planet, face: usize, u: f64, v: f64, octaves: u32) -> Sam
         wet_soft: 0.0,
         carve_km: 0.0,
         lake: false,
+        lake_shoal: false,
+        lake_shoal_depth_km: 0.0,
         lake_level_km: f64::NEG_INFINITY,
         pond_level_km: f64::NEG_INFINITY,
         lake_boundary_dist_km: f64::INFINITY,
@@ -573,22 +595,34 @@ pub fn sample(planet: &Planet, face: usize, u: f64, v: f64, octaves: u32) -> Sam
             && wl.is_finite()
             && wl < lvl - 0.008
             && (riv_d < hw * 1.5 || out.carve_km > 0.0005);
-        // Match the one-metre column lattice, exactly as F-23 does for
-        // rivers: a lake exists when its surface block is above the biased
-        // ground block. An analog 0.5 m clearance left already-submerged
-        // ground dry whenever the two values straddled a block boundary.
-        // Temperature is deliberately absent; the existing temp < -4 C
-        // consumers still turn every flooded frozen-lake column into the
-        // same solid, walkable ice class.
-        if (lvl * 1000.0).floor() > ((h + 1e-6) * 1000.0).floor() && !river_owns {
-            out.water_km = out.water_km.max(lvl);
-            out.lake = true;
-            out.salt = salt;
-            // Preserve the old 3 m feather width, but anchor its zero to the
-            // new block boundary instead of an analog 0.5 m clearance.
-            out.wet_soft = out
-                .wet_soft
-                .max(smoothstep(0.0, 0.003, lake_shore_delta_km(lvl, h)));
+        if !river_owns {
+            // Match the one-metre column lattice, exactly as F-23 does for
+            // rivers: a lake exists when its surface block is above the
+            // biased ground block. Temperature is deliberately absent; the
+            // existing temp < -4 C consumers still turn every representable
+            // frozen-lake column into the same solid, walkable ice class.
+            if (lvl * 1000.0).floor() > ((h + 1e-6) * 1000.0).floor() {
+                out.water_km = out.water_km.max(lvl);
+                out.lake = true;
+                out.salt = salt;
+                // Preserve the old 3 m feather width, but anchor its zero to
+                // the block boundary instead of an analog 0.5 m clearance.
+                out.wet_soft = out
+                    .wet_soft
+                    .max(smoothstep(0.0, 0.003, lake_shore_delta_km(lvl, h)));
+            } else if liquid_lake_shoal(lvl, h, temp_c) {
+                // Equal-block tie: analog water covers this point, but a
+                // water cell at `floor(lvl)` would collide with its ground
+                // cell. Structural sediment yields upward, as at an apron,
+                // until dry ground meets the rendered water plane. Keep
+                // `lake` and lake wetness false: this is a shore, not liquid.
+                out.lake_shoal_depth_km = lvl - h;
+                h = lvl;
+                out.lake_shoal = true;
+                // The solid cap wears the shared shallow-water color so the
+                // unresolved mesh and voxel patch agree; retain mineral tint.
+                out.salt = salt;
+            }
         }
     }
 
@@ -840,6 +874,13 @@ fn voxel_shore_reference(
     octaves: u32,
     s: &Sample,
 ) -> Sample {
+    // A shoal has already replaced its underlying detailed height with the
+    // lake level. Completing omitted noise bands from that raised value would
+    // invent a different surface, so resample the authoritative full-depth
+    // truth. This is the same lost-base case as the coastal height floor.
+    if s.lake_shoal {
+        return sample(planet, face, u, v, VOXEL_OCTAVES);
+    }
     if s.lake_level_km.is_finite() && !s.river_dist_km.is_finite() {
         let ofrac = planet.ocean(face, u, v) as f64;
         let h_floor = if ofrac > 0.02 { 0.002 } else { -9.0 };
@@ -871,17 +912,22 @@ fn voxel_shore_reference(
                         planet.seed.wrapping_add(2027),
                     );
             let mut out = *s;
-            out.h_km = (s.h_km + envelope * detail).max(h_floor);
+            let detailed_h = (s.h_km + envelope * detail).max(h_floor);
             let lake = (s.lake_level_km * 1000.0).floor()
-                > ((out.h_km + 1e-6) * 1000.0).floor();
+                > ((detailed_h + 1e-6) * 1000.0).floor();
+            let shoal = !lake
+                && liquid_lake_shoal(s.lake_level_km, detailed_h, s.temp_c);
             // A dry->wet transition needs the lake hit's salt bit, which a
             // dry Sample intentionally does not retain.
-            if lake && !s.lake {
+            if (lake && !s.lake) || (shoal && !s.lake_shoal) {
                 return sample(planet, face, u, v, VOXEL_OCTAVES);
             }
+            out.h_km = if shoal { s.lake_level_km } else { detailed_h };
             out.lake = lake;
+            out.lake_shoal = shoal;
+            out.lake_shoal_depth_km = if shoal { s.lake_level_km - detailed_h } else { 0.0 };
             out.water_km = if lake { s.lake_level_km } else { f64::NEG_INFINITY };
-            out.salt = lake && s.salt;
+            out.salt = (lake || shoal) && s.salt;
             return out;
         }
     }
@@ -909,7 +955,13 @@ fn shore_field(planet: &Planet, face: usize, u: f64, v: f64, s: &Sample) -> f32 
     } else {
         f64::NEG_INFINITY
     };
-    let shore_lake = if s.lake_level_km.is_finite() && s.temp_c >= -4.0 {
+    let shore_lake = if s.lake_shoal {
+        // Occupancy is a solid cap, but visually it represents analog water
+        // too shallow to encode as a distinct cell. Keep the mesh wet across
+        // it; the next true dry bank owns the zero crossing. This also keeps
+        // the mesh karst hint from reopening a cave mouth through the cap.
+        s.lake_shoal_depth_km.clamp(1e-6, SHORE_CLAMP_KM)
+    } else if s.lake_level_km.is_finite() && s.temp_c >= -4.0 {
         // Floor the per-lake constant level, never the position-varying
         // ground. This stays smooth across triangles while its zero crossing
         // lands exactly where `sample`'s block predicate flips wet/dry.
@@ -1070,7 +1122,7 @@ pub fn build_tile(planet: &Planet, key: TileKey, exaggeration: f64) -> TileMesh 
             // the sea is real geometry at its surface — its "ground" color
             // is the water color so the wetness blend is a no-op there and
             // it stays fully blue at every distance
-            let ground = if class_s.sea || class_s.lake {
+            let ground = if class_s.sea || class_s.lake || class_s.lake_shoal {
                 // a frozen sheet is solid walkable ice — give it a snow-dusted,
                 // LOD-stable surface so it reads as ground, not a flat plane
                 if class_s.temp_c < -4.0 {
@@ -1490,7 +1542,9 @@ mod tests {
         } else {
             f64::NEG_INFINITY
         };
-        let lake = if s.lake_level_km.is_finite() && s.temp_c >= -4.0 {
+        let lake = if s.lake_shoal {
+            s.lake_shoal_depth_km.clamp(1e-6, SHORE_CLAMP_KM)
+        } else if s.lake_level_km.is_finite() && s.temp_c >= -4.0 {
             (s.lake_level_km * 1000.0).floor() / 1000.0 - (s.h_km + 1e-6)
         } else {
             f64::NEG_INFINITY
@@ -1620,6 +1674,40 @@ mod tests {
     }
 
     #[test]
+    fn equal_block_liquid_lake_ties_fill_to_walkable_shoals() {
+        let level = 0.1224;
+        assert!(liquid_lake_shoal(level, 0.1220, -4.0));
+        assert!(!liquid_lake_shoal(level, 0.121_998, -4.0));
+        assert!(!liquid_lake_shoal(level, 0.1220, -4.000_001));
+        assert!(!liquid_lake_shoal(level, level, 8.0));
+
+        let planet = test_planet();
+        let edits = crate::voxel::Edits::default();
+        for (lat, lon) in [(13.345964f64, -4.806852f64), (13.345954, -4.806789)] {
+            let (la, lo) = (lat.to_radians(), lon.to_radians());
+            let dir = DVec3::new(la.cos() * lo.cos(), la.cos() * lo.sin(), la.sin());
+            let (face, u, v) = crate::planet::face_from_dir(dir);
+            let s = sample(planet, face, u, v, VOXEL_OCTAVES);
+            assert!(s.lake_shoal, "photographed column at {lat} {lon} is not a shoal");
+            assert!(!s.lake && !s.has_water());
+            assert!((s.h_km - s.lake_level_km).abs() < 1e-12);
+            assert!((s.render_h_km() - s.lake_level_km).abs() < 1e-12);
+            assert!(s.lake_shoal_depth_km > 0.0 && s.lake_shoal_depth_km < 0.0011);
+            assert_eq!(s.wet_soft, 0.0, "a dry shoal must not carry lake wet paint");
+            assert_eq!(shore_field(planet, face, u, v, &s), s.lake_shoal_depth_km as f32);
+
+            // Probe the authoritative lattice center too: the photographed
+            // coordinate and every consumer resolve to this same ColCtx.
+            let (ci, cj) = crate::voxel::column_of(u, v);
+            let c = crate::voxel::col_ctx(planet, &edits, face, ci, cj);
+            assert!(c.lake_shoal);
+            assert_eq!(c.water, i64::MIN);
+            assert_eq!(c.ground0, 122);
+            assert_eq!(c.top_solid(), c.ground0, "shoal must be walkable, not cave-carved");
+        }
+    }
+
+    #[test]
     fn lake_shore_field_matches_block_quantized_boundary() {
         let planet = test_planet();
         let lat = 13.346f64.to_radians();
@@ -1727,6 +1815,7 @@ mod tests {
                         voxel_shore_reference(planet, key.face as usize, u, v, octaves, &capped);
                     assert!((optimized.h_km - voxel.h_km).abs() < 1e-12);
                     assert_eq!(optimized.lake, voxel.lake);
+                    assert_eq!(optimized.lake_shoal, voxel.lake_shoal);
                     assert_eq!(optimized.salt, voxel.salt);
                 }
 

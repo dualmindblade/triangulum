@@ -140,6 +140,10 @@ pub struct ColCtx {
     /// level river mouth renders a pale sea-tinted slab inside the patch
     /// against fresh mesh water (field hunt 3, 7.042 33.477).
     pub sea: bool,
+    /// Shared terrain classification for an unrepresentable liquid-lake tie:
+    /// dry ground raised flush with the water plane. Copied verbatim from the
+    /// Sample so block truth and mesh truth name the same columns.
+    pub lake_shoal: bool,
     /// Shared liquid-lake shore fraction; surface blocks dither on it.
     pub lake_shore_frac: f64,
     /// A finite local lake level makes the shared lake rule, rather than the
@@ -307,7 +311,13 @@ pub fn col_ctx(planet: &Planet, edits: &Edits, face: usize, ci: u64, cj: u64) ->
         let seed = planet.seed;
         let region = crate::noise::gradient_noise(dir * 90.0, seed.wrapping_add(40961));
         if region > -0.05 {
-            for k in 0..CAVE_DEPTH {
+            // A shoal is structural sediment added specifically to make the
+            // equal-block tie walkable. Keep its new cap solid while leaving
+            // every underground cave bit deterministic and intact; otherwise
+            // shifting the cave band's vertical anchor can turn the repaired
+            // one-block pit into a deeper cave mouth at the same column.
+            let first = if s.lake_shoal { 1 } else { 0 };
+            for k in first..CAVE_DEPTH {
                 let zm = (ground0 - k) as f64;
                 let n1 = crate::noise::gradient_noise(
                     dir * (90000.0 + zm / 12.0),
@@ -378,6 +388,7 @@ pub fn col_ctx(planet: &Planet, edits: &Edits, face: usize, ci: u64, cj: u64) ->
         carved: s.carve_km > 0.001,
         salt: s.salt,
         sea: s.sea,
+        lake_shoal: s.lake_shoal,
         lake_shore_frac: crate::terrain::lake_shore_frac(
             s.temp_c,
             s.h_km,
@@ -402,6 +413,13 @@ fn surface_mat(c: &ColCtx, steep: i64, climate_block: MainBlock, beach_jitter: f
     // underwater floors
     if c.water != i64::MIN && c.ground < c.water {
         return if c.water - c.ground > 4 { Mat::Gravel } else { Mat::Sand };
+    }
+    // The analog point is submerged even though no distinct liquid cell can
+    // coexist with its equal-block ground. Its solid, walkable cap therefore
+    // wears the shared shallow-water color instead of opening a dry-color pit
+    // that the coarser heightfield cannot resolve.
+    if c.lake_shoal {
+        return Mat::Water;
     }
     if beach_jitter < c.lake_shore_frac {
         return Mat::Sand;
@@ -1078,7 +1096,12 @@ pub fn build_chunk(
                     continue;
                 }
                 let mat = mat_at(c, z, surf);
-                let col = vary(mat.color(tint), bright(z));
+                let base = if c.lake_shoal && mat == Mat::Water {
+                    crate::terrain::water_surface_color(0.0, false, c.salt)
+                } else {
+                    mat.color(tint)
+                };
+                let col = vary(base, bright(z));
                 // cave dimming: faces buried under rock overhead darken
                 // with depth below the walkable top (pit floors stay lit)
                 let cave = (1.0 - 0.20 * (c.top_solid() - z).max(0) as f32).clamp(0.25, 1.0);
