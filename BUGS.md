@@ -9,6 +9,15 @@ are `teleport LAT LON [ALT_KM]` viewer args at `--exagg 1` unless noted.
 
 ## OPEN
 
+### P-1 Residual pond walls at the rampart site (28 census sites)
+After the rampart cap + fill taper (5f6d57e), census --at 12.194 -44.858
+still reports 28 WALL sites (worst d=23.6 m, pond@28.2 over dry@4.6,
+plus 3 more at 12.181 -44.853). Identical under the clamp and taper fill
+forms, so the wall stands somewhere else in the pond machinery (apron
+path or a mask-interior bench against unbanked exterior). Probe before
+hypothesizing - this family has a graveyard (Phase 8h). Gate: the site's
+WALL count to 0 without raising global census totals.
+
 ### V-8 The deep-tile disc: full-octave detail ring pops against coarse mesh
 From ~2 km looking straight down (0.625 68.960 pitch -79), the deep-tile
 ring around the voxel patch reads as a lighter, busier disc: octave-12
