@@ -6,21 +6,19 @@
 # re-levelled by the cap — the census had recorded 12-22 m water walls at
 # its old rim (census-after.md lines ~50394/71140), so the level dropped and
 # the shore moved; three in-lake columns must agree to <0.3 m at the NEW
-# analog level plus the local patch lift (~0.1993 km), and the two formerly-
-# asserted columns that are now shore must be DRY (they sit outside the flood
-# at the corrected level). Bug B moved liquid physics off floor(level) and
-# onto the same continuous top quad the player sees.
+# level (~0.1986 km), and the two formerly-asserted columns that are now
+# shore must be DRY (they sit outside the flood at the corrected level).
 mode fly
 teleport 12.340 32.360 0.05
 assert water_surface_km != none
-assert water_surface_km > 0.1990
-assert water_surface_km < 0.1995
+assert water_surface_km > 0.1983
+assert water_surface_km < 0.1989
 teleport 12.345 32.352 0.05
-assert water_surface_km > 0.1990
-assert water_surface_km < 0.1995
+assert water_surface_km > 0.1983
+assert water_surface_km < 0.1989
 teleport 12.343 32.357 0.05
-assert water_surface_km > 0.1990
-assert water_surface_km < 0.1995
+assert water_surface_km > 0.1983
+assert water_surface_km < 0.1989
 teleport 12.350 32.360 0.05
 assert water_surface_km == none
 teleport 12.360 32.360 0.05

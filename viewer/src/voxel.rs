@@ -119,10 +119,6 @@ pub struct ColCtx {
     /// don't band into terrace-edge rings the way quantized heights do.
     pub h_km: f32,
     pub water: i64,     // water surface block; i64::MIN = dry column
-    /// Authoritative continuous open-water level from terrain::Sample. For a
-    /// liquid-lake shoal this is the level its structural cap represents;
-    /// otherwise NEG_INFINITY on dry columns. Occupancy remains `water`.
-    pub analog_water_km: f64,
     pub cave_bits: u32, // bit k set = block at z = ground0 - k carved out
     /// Local water table for FLOODED CAVES (BUGS.md W-6): any carved cave cell
     /// at z <= cave_water fills with water instead of air. Set only for dry-
@@ -210,42 +206,22 @@ impl ColCtx {
     }
 }
 
-/// Fractional solid cap for an untouched structural lake shoal. Player edits
-/// restore ordinary lattice geometry: a placed block must not be flattened
-/// back onto the lake plane, and a dug cap must not remain walkable.
-pub(crate) fn shoal_cap_height_km(cc: &ColCtx) -> Option<f64> {
-    (cc.lake_shoal && cc.top_solid() == cc.ground0).then_some(cc.analog_water_km)
-}
-
-/// Continuous height (km above the nominal sphere, before exaggeration/lift)
-/// at which an open-water top renders. Liquid uses the same analog level as
-/// the far mesh. Frozen sheets retain their walkable block-lattice surface.
-/// At a dry shore the established clamp still meets the rendered bank flush;
-/// liquid shoals contribute their own analog solid cap instead of lowering
-/// the surrounding lake back onto the lattice.
-pub fn water_render_height_km(cc: &ColCtx, nbs8: &[ColCtx; 8]) -> f64 {
+/// The block whose top the water surface RENDERS at for a liquid column:
+/// clamped so the surface meets DRY shore neighbours (all 8) flush — the
+/// mesher's shoreline rule, shared with the census `--lips` survey so the
+/// survey measures exactly what renders. Frozen sheets are walkable and
+/// never clamp. `nbs8` is the 8-neighbourhood in any order.
+pub fn water_render_top(cc: &ColCtx, nbs8: &[ColCtx; 8]) -> i64 {
+    let mut we = cc.water;
     if cc.temp < -4.0 {
-        return cc.water as f64 * VOXEL_KM;
+        return we;
     }
-    let minimum = (cc.top_solid() + 1) as f64 * VOXEL_KM;
-    let mut we = cc.analog_water_km.max(minimum);
     for nb in nbs8 {
-        if !nb.has_water() {
-            let bank = shoal_cap_height_km(nb)
-                .unwrap_or_else(|| nb.top_solid() as f64 * VOXEL_KM);
-            if bank < we {
-                we = bank;
-            }
+        if !nb.has_water() && nb.top_solid() < we {
+            we = nb.top_solid();
         }
     }
-    we.max(minimum)
-}
-
-/// Integer summary of the rendered height for the block census. Geometry and
-/// physics use `water_render_height_km`; flooring here preserves the census's
-/// block-magnitude reporting without re-quantizing the actual top quad.
-pub fn water_render_top(cc: &ColCtx, nbs8: &[ColCtx; 8]) -> i64 {
-    (water_render_height_km(cc, nbs8) / VOXEL_KM).floor() as i64
+    we.max(cc.top_solid() + 1)
 }
 
 /// Canonical face/column for an extended lattice index. In-range indices keep
@@ -402,13 +378,6 @@ pub fn col_ctx(planet: &Planet, edits: &Edits, face: usize, ci: u64, cj: u64) ->
         ground0,
         h_km: s.h_km as f32,
         water,
-        analog_water_km: if s.water_km.is_finite() {
-            s.water_km
-        } else if s.lake_shoal {
-            s.lake_level_km
-        } else {
-            f64::NEG_INFINITY
-        },
         cave_bits,
         cave_water,
         koppen: planet.koppen(face, u, v),
@@ -726,12 +695,7 @@ pub fn surface_height_km(planet: &Planet, edits: &Edits, dir: DVec3, exaggeratio
     // support_below_km: aiming, placing, and torch height must see the ice
     // a player stands on, not the seabed beneath it
     let top = c.top_solid().max(c.frozen_ice().unwrap_or(i64::MIN));
-    let top_km = if top == c.ground0 {
-        shoal_cap_height_km(&c).unwrap_or(top as f64 * VOXEL_KM)
-    } else {
-        top as f64 * VOXEL_KM
-    };
-    top_km * exaggeration + lift_km(exaggeration)
+    top as f64 * VOXEL_KM * exaggeration + lift_km(exaggeration)
 }
 
 /// Highest solid block top at or below `at_km` in the column under `dir`
@@ -772,16 +736,6 @@ pub fn support_below_km(
     let z_min = c.ground - CAVE_DEPTH - 1;
     while z >= z_min {
         if solid(z) {
-            if z == c.ground0 {
-                if let Some(cap_km) = shoal_cap_height_km(&c) {
-                    let support = cap_km * exaggeration + lift;
-                    if support <= at_km + 1e-10 {
-                        return support;
-                    }
-                    z -= 1;
-                    continue;
-                }
-            }
             return z as f64 * scale + lift;
         }
         z -= 1;
@@ -845,24 +799,15 @@ pub fn water_surface_km(
     let (face, u, v) = crate::planet::face_from_dir(dir);
     let (ci, cj) = column_of(u, v);
     let c = col_ctx(planet, edits, face, ci, cj);
+    let scale = VOXEL_KM * exaggeration;
     let lift = lift_km(exaggeration);
     // frozen columns are solid ice (walkable, handled by support_below_km),
     // NOT liquid — so wading/underwater physics must not see water here.
     if c.has_water() && c.frozen_ice().is_none() {
-        let nbs8 = [
-            col_ctx_ext(planet, edits, face, ci as i64 + 1, cj as i64),
-            col_ctx_ext(planet, edits, face, ci as i64 - 1, cj as i64),
-            col_ctx_ext(planet, edits, face, ci as i64, cj as i64 + 1),
-            col_ctx_ext(planet, edits, face, ci as i64, cj as i64 - 1),
-            col_ctx_ext(planet, edits, face, ci as i64 + 1, cj as i64 + 1),
-            col_ctx_ext(planet, edits, face, ci as i64 + 1, cj as i64 - 1),
-            col_ctx_ext(planet, edits, face, ci as i64 - 1, cj as i64 + 1),
-            col_ctx_ext(planet, edits, face, ci as i64 - 1, cj as i64 - 1),
-        ];
-        return Some(water_render_height_km(&c, &nbs8) * exaggeration + lift);
+        return Some(c.water as f64 * scale + lift);
     }
     if c.cave_water != i64::MIN {
-        let surf = c.cave_water as f64 * VOXEL_KM * exaggeration + lift;
+        let surf = c.cave_water as f64 * scale + lift;
         if at_km < surf {
             return Some(surf);
         }
@@ -1017,8 +962,7 @@ pub fn build_chunk(
     let lift = lift_km(exaggeration);
     let origin_dir = face_dir(face, u_of(base_i + n / 2), v_of(base_j + n / 2));
     let origin = origin_dir * radius;
-    let height_shell = |h_km: f64| radius + h_km * exaggeration + lift;
-    let shell = |z: i64| height_shell(z as f64 * VOXEL_KM);
+    let shell = |z: i64| radius + (z as f64) * VOXEL_KM * exaggeration + lift;
 
     let mut vertices: Vec<Vertex> = Vec::new();
     let mut indices: Vec<u32> = Vec::new();
@@ -1162,14 +1106,7 @@ pub fn build_chunk(
                 // with depth below the walkable top (pit floors stay lit)
                 let cave = (1.0 - 0.20 * (c.top_solid() - z).max(0) as f32).clamp(0.25, 1.0);
                 if !c.filled(z + 1) {
-                    // Liquid-lake shoals are solid block occupancy but their
-                    // top represents the same analog plane as adjacent water.
-                    // Keep that cap continuous instead of re-quantizing it.
-                    let r = if z == c.ground0 {
-                        shoal_cap_height_km(c).map_or_else(|| shell(z), height_shell)
-                    } else {
-                        shell(z)
-                    };
+                    let r = shell(z);
                     // per-corner ambient occlusion from the three blocks
                     // touching each corner one level up — the classic
                     // "soft shadow along walls" that makes blocks read 3D
@@ -1239,13 +1176,7 @@ pub fn build_chunk(
                     match (run_start, mat) {
                         (None, Some(mm)) => run_start = Some((z, mm)),
                         (Some((z0, m0)), other) if other != Some(m0) => {
-                            let r0 = shell(z0 - 1);
-                            let r1 = if z - 1 == c.ground0 {
-                                shoal_cap_height_km(c)
-                                    .map_or_else(|| shell(z - 1), height_shell)
-                            } else {
-                                shell(z - 1)
-                            };
+                            let (r0, r1) = (shell(z0 - 1), shell(z - 1));
                             let cave = (1.0
                                 - 0.20 * (nb.top_solid() - (z - 1)).max(0) as f32)
                                 .clamp(0.25, 1.0);
@@ -1310,14 +1241,21 @@ pub fn build_chunk(
 
             // ---- water: top surface and exposed banks
             if c.has_water() {
-                // Liquid tops use the terrain Sample's continuous water level,
-                // so the outer block ring lands on the same plane as the mesh
-                // behind it instead of standing 0.6–1.0 m proud at a lattice
-                // shell. The established dry-bank clamp remains, now in
-                // analog height; frozen sheets stay exactly on their walkable
-                // block shell. Every seam computes this from the same ghosted
-                // 8-neighbourhood, including across chunk borders.
-                let w_eff = |i: i64, j: i64| -> f64 {
+                // Rendered water top, clamped to meet DRY shore neighbours
+                // flush. Blended river levels tilt the water surface, and
+                // quantizing a tilted surface against the terrain contour
+                // otherwise leaves the water standing one block PROUD of the
+                // bank along stretches of shoreline (floor(level) can exceed
+                // floor(bank h) while the bank itself is genuinely above the
+                // water). A dry neighbour is only ever lower than the water
+                // block through that rounding mismatch, so meeting it flush
+                // mis-renders by <1 m and reads as a real waterline. Both
+                // sides of every seam compute the same clamp (pure function
+                // of the column + 4-neighbourhood, all inside the ghost
+                // margin), so faces agree across chunk borders.
+                // (LIQUID only: a frozen sheet is walkable geometry — physics
+                // stands on the unclamped block, so its visual must not sink.)
+                let w_eff = |i: i64, j: i64| -> i64 {
                     let nbs8 = [
                         *at(i + 1, j),
                         *at(i - 1, j),
@@ -1328,7 +1266,7 @@ pub fn build_chunk(
                         *at(i - 1, j + 1),
                         *at(i - 1, j - 1),
                     ];
-                    water_render_height_km(at(i, j), &nbs8)
+                    water_render_top(at(i, j), &nbs8)
                 };
                 let w = w_eff(i, j);
                 let frozen = c.temp < -4.0;
@@ -1355,19 +1293,19 @@ pub fn build_chunk(
                     let depth_km = if c.sea {
                         -c.e_raw as f64
                     } else {
-                        w - c.top_solid() as f64 * VOXEL_KM
+                        (w - c.top_solid()) as f64 / 1000.0
                     };
                     wcol = crate::terrain::water_surface_color(depth_km, c.sea, c.salt);
                 }
-                let r = height_shell(w);
+                let r = shell(w);
                 // frozen tops take the same per-column brightness checker as
                 // land so the flat sheet reads as tiled ground, not a plane
-                let wtop = if frozen { vary(wcol, bright(c.water)) } else { wcol };
+                let wtop = if frozen { vary(wcol, bright(w)) } else { wcol };
                 // same order as `nbs`: +i, -i, +j, -j
                 let nb_off = [(1i64, 0i64), (-1, 0), (0, 1), (0, -1)];
                 let foam = [0.70, 0.82, 0.78];
-                let foam_strength = |diff_km: f64, salt: u64| -> f32 {
-                    let d = (diff_km * 1000.0).clamp(1.0, 4.0) as f32;
+                let foam_strength = |diff: i64, salt: u64| -> f32 {
+                    let d = diff.clamp(1, 4) as f32;
                     let base = 0.10 + 0.06 * (d - 1.0);
                     let shimmer = 0.88 + 0.24 * hash01(face as u8, ci, cj, salt) as f32;
                     (base * shimmer).clamp(0.08, 0.30)
@@ -1379,11 +1317,8 @@ pub fn build_chunk(
                     }
                     let (di, dj) = nb_off[nbi];
                     let nb_w = w_eff(i + di, j + dj);
-                    (nb_w + 1e-9 < w).then(|| {
-                        foam_strength(
-                            w - nb_w,
-                            0xF04Du64 ^ ((nbi as u64) << 8) ^ c.water as u64,
-                        )
+                    (nb_w < w).then(|| {
+                        foam_strength(w - nb_w, 0xF04Du64 ^ ((nbi as u64) << 8) ^ w as u64)
                     })
                 };
                 let mut wtop_cols = [wtop; 4];
@@ -1407,21 +1342,16 @@ pub fn build_chunk(
                     let nb = nbs[nbi];
                     // the neighbour's water top must be ITS clamped value, or
                     // the two columns disagree about the seam and leak faces
-                    let nb_solid = shoal_cap_height_km(nb)
-                        .unwrap_or_else(|| nb.top_solid() as f64 * VOXEL_KM);
-                    let nb_surf = nb_solid.max(if nb.has_water() {
+                    let nb_surf = nb.top_solid().max(if nb.has_water() {
                         w_eff(i + nb_off[nbi].0, j + nb_off[nbi].1)
                     } else {
-                        f64::NEG_INFINITY
+                        i64::MIN
                     });
-                    if nb_surf + 1e-9 < w {
+                    if nb_surf < w {
                         // true face direction (see ei_dir/ej_dir above) — the
                         // old position-derived out_n corrupted these too
                         let n_side = (out_dirs[nbi] * 0.18 + up).normalize();
-                        let r0 = height_shell(
-                            nb_surf.max(c.top_solid() as f64 * VOXEL_KM),
-                        );
-                        let r1 = height_shell(w);
+                        let (r0, r1) = (shell(nb_surf.max(c.top_solid())), shell(w));
                         let col = lower_liquid_step(nbi)
                             .map(|strength| mix_color(wside, foam, strength))
                             .unwrap_or(wside);
