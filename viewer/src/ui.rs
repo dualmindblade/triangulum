@@ -360,7 +360,8 @@ fn precip_color(mm: f64, stops: &[(f32, [f32; 3])]) -> [f32; 3] {
 /// `relief` on this reproduces the original `build_minimap` land/sea look.
 fn biome_color(planet: &Planet, f: usize, u: f64, v: f64, relief: bool) -> [f32; 3] {
     let e = planet.elevation(f, u, v) as f64;
-    let k = planet.koppen(f, u, v);
+    let climate = planet.biome_climate(f, u, v);
+    let k = climate.koppen;
     if k == 255 {
         // sea: deep navy to shelf teal (bathymetry, kept regardless of relief)
         let d = (-e / 4.0).clamp(0.0, 1.0) as f32;
@@ -372,7 +373,7 @@ fn biome_color(planet: &Planet, f: usize, u: f64, v: f64, relief: bool) -> [f32;
     } else {
         let g = ground_tint(k);
         if relief {
-            let t = planet.temp(f, u, v);
+            let t = climate.temp_c;
             let l = (e / 4.5).clamp(0.0, 1.0) as f32;
             let snow = if t < -9.0 { 0.75f32 } else { 0.0 };
             let m = l.max(snow);
