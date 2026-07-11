@@ -9,6 +9,17 @@ are `teleport LAT LON [ALT_KM]` viewer args at `--exagg 1` unless noted.
 
 ## OPEN
 
+### A-4/A-5 FIXED on the second pass (gauntlet-constrained redo, 29188ec)
+FIXED: the dam family (water, dig, bench, fill, apron) now suppresses
+together and continuously - rampart site LIP/EDGE 215/136 -> 0/0, all
+67 local WALL sites including P-1's 28 CLOSED; the rim band is gone
+without touching block occupancy or lake shapes. World reel: only the
+two bug-zone poses changed, 22/24 byte-identical, VOID lint silent,
+physics swim checks pass. DESIGN NOTE for Andrew: the large
+dam-dependent pond at 12.199 -44.827 no longer exists (it required a
+dam beyond budget) - the zone is savanna with dry traces now; if
+dammed ponds are wanted as a FEATURE, that is a new design item, not a
+bug. Original reopened entry follows.
 ### A-4/A-5 Pond ramparts + rim water band (REOPENED after water2 revert)
 The first fixes (72448da: 3 m dam cap; analog water tops shared by
 render+physics) were REVERTED at 0d70b29: Andrew's survey found a
