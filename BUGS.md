@@ -9,6 +9,21 @@ are `teleport LAT LON [ALT_KM]` viewer args at `--exagg 1` unless noted.
 
 ## OPEN
 
+### A-4/A-5 Pond ramparts + rim water band (REOPENED after water2 revert)
+The first fixes (72448da: 3 m dam cap; analog water tops shared by
+render+physics) were REVERTED at 0d70b29: Andrew's survey found a
+regression zoo the mission gates could not see - a grid on open water,
+black void cracks / invisible water along shores, Difficulty Lake
+reading a different shape, dry pond beds with banks and 1-block water
+films near the rampart site. The redo MUST gate on the four dossier
+zones (poses in scripts/revert-check.play, clean reference frames in
+interchange/runs/revert-check/): byte-compare-grade A/B at each zone,
+a near-black void-pixel detector on daytime shore captures, colcensus
++ census at both pond sites, and the original two bug poses. Original
+diagnoses hold: rampart = pond bench/apron dam along the pn contour;
+band = block water tops at the lattice ceiling standing proud of the
+mesh plane at the patch rim.
+
 ### P-1 Residual pond walls at the rampart site (28 census sites)
 After the rampart cap + fill taper (5f6d57e), census --at 12.194 -44.858
 still reports 28 WALL sites (worst d=23.6 m, pond@28.2 over dry@4.6,
