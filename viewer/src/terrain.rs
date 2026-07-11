@@ -8,8 +8,12 @@
 //! can carry, so descending never runs out of detail and coarser tiles are
 //! consistent averages of finer ones.
 
-use crate::noise::{fbm_band, ridged_band};
-use crate::planet::{climate_surface, face_dir, sea_from_fields, MainBlock, Planet};
+use crate::noise::{fbm_band, normal_value_noise, ridged_band};
+use crate::planet::{
+    climate_surface, face_dir, sea_from_fields, MainBlock, Planet, COLUMNS_PER_FACE,
+    ECOTONE_BASE_PATCH_COLUMNS, ECOTONE_FIELD_OCTAVES, ECOTONE_LACUNARITY,
+    ECOTONE_PERSISTENCE,
+};
 use glam::DVec3;
 
 pub const TILE_QUADS: usize = 32; // 32x32 quads, 33x33 vertices per tile
@@ -1234,18 +1238,31 @@ pub fn build_tile(planet: &Planet, key: TileKey, exaggeration: f64) -> TileMesh 
         for ci in (ci0..=ci1).step_by(s as usize) {
             for cj in (cj0..=cj1).step_by(s as usize) {
                 let lot = crate::voxel::tree_hash01(face as u8, ci, cj, seed);
-                if lot >= 0.011 * comp {
+                if lot >= crate::voxel::MAX_TREE_DENSITY * comp {
                     continue; // cheapest gate: above every biome's density
                 }
                 let u = -1.0 + 2.0 * (ci as f64 + 0.5) / nnf;
                 let v = -1.0 + 2.0 * (cj as f64 + 0.5) / nnf;
-                // Candidate enumeration is land-optimistic: the survivor's
-                // authoritative terrain sample below rejects actual water.
-                // Passing that known assumption avoids three redundant sea-
-                // raster reads for every cheap lottery survivor while keeping
-                // the exact same warped class on every drawable tree.
-                let Some((kind, density)) = crate::voxel::tree_kind_density(
-                    planet.koppen_with_sea(face, u, v, false),
+                // Candidate enumeration uses the same warped climate and
+                // locally-dithered main block as voxel trees. The authoritative
+                // ColCtx pass below still owns water/beach/cave eligibility.
+                let (temp, precip) = planet.temp_precip(face, u, v);
+                let biome = planet.biome_climate(face, u, v);
+                let climate = climate_surface(
+                    planet,
+                    face,
+                    u,
+                    v,
+                    temp as f64,
+                    precip as f64,
+                    biome.sea,
+                );
+                let Some((kind, density)) = crate::voxel::tree_biome_profile(
+                    biome.koppen,
+                    climate.main_block,
+                    climate.forest,
+                    biome.temp_c,
+                    biome.precip_mm_yr,
                 )
                 else {
                     continue;
@@ -1261,19 +1278,29 @@ pub fn build_tile(planet: &Planet, key: TileKey, exaggeration: f64) -> TileMesh 
         // decimation past the cap keeps visual mass by growing the kept
         // trees (area-conserving sqrt, capped before they read as blobs)
         let boost = (keep_every as f64).sqrt().min(2.2);
-        for (ci, cj, kind, lot) in cands.into_iter().step_by(keep_every) {
+        let no_edits = crate::voxel::Edits::default();
+        for (ci, cj, _candidate_kind, lot) in cands.into_iter().step_by(keep_every) {
             let u = -1.0 + 2.0 * (ci as f64 + 0.5) / nnf;
             let v = -1.0 + 2.0 * (cj as f64 + 0.5) / nnf;
-            // one real sample per survivor: correct rooting on THIS tile's
-            // surface (same octave budget) + the guards tree_at applies
+            // The mesh-height sample roots the billboard on this LOD. One
+            // authoritative voxel ColCtx then runs the exact same biome,
+            // beach, water, edit, carve, and cave-mouth decision as blocks.
+            // This also closes the dominant cheap half of BUGS.md E-2.
             let smp = sample(planet, face, u, v, octaves);
-            if smp.has_water() || smp.e_raw < 0.010 || smp.carve_km > 0.0005 {
+            let c = crate::voxel::col_ctx(planet, &no_edits, face, ci, cj);
+            let Some((kind, trunk)) = crate::voxel::tree_at_scaled(
+                &c,
+                face as u8,
+                ci,
+                cj,
+                seed,
+                comp,
+            ) else {
+                continue;
+            };
+            if kind == crate::voxel::TreeKind::Shrub {
                 continue;
             }
-            if smp.temp_c < -6.0 || smp.temp_c < -11.0 {
-                continue;
-            }
-            let trunk = crate::voxel::tree_trunk(kind, face as u8, ci, cj);
             use crate::voxel::{Mat, TreeKind};
             // width/taper give each species its silhouette: conifers pinch
             // to spires, broadleaf/jungle round off, acacias flare into the
@@ -1369,6 +1396,53 @@ fn frost_color(p: glam::DVec3) -> [f32; 3] {
     ]
 }
 
+const BEACH_RASTER_FULL_KM: f64 = 0.009;
+const BEACH_RASTER_END_KM: f64 = 0.013;
+const BEACH_SURFACE_FULL_KM: f64 = 0.010;
+const BEACH_SURFACE_END_KM: f64 = 0.016;
+const BEACH_FIELD_SEED_OFFSET: i64 = 0x0BEA_C4EC;
+
+/// Fast standard-normal CDF used to turn the normalized beach octave stack
+/// into a stable 0..1 comparator. This matches the categorical ecotone field's
+/// probability transform; the beach uses an independent seed so its islands
+/// do not mechanically trace every biome island.
+#[inline]
+fn blend_normal_cdf(x: f64) -> f64 {
+    let z = x.abs();
+    let t = 1.0 / (1.0 + 0.231_641_9 * z);
+    let tail = 0.398_942_280_401_432_7
+        * (-0.5 * z * z).exp()
+        * t
+        * (0.319_381_530
+            + t * (-0.356_563_782
+                + t * (1.781_477_937 + t * (-1.821_255_978 + t * 1.330_274_429))));
+    if x < 0.0 { tail } else { 1.0 - tail }
+}
+
+/// Fractal per-column comparator for coastal beach material. The frequency,
+/// octave, lacunarity, and persistence knobs are the public biome-ecotone
+/// knobs, so beach transitions have the same islands-to-speckle visual
+/// grammar. Input is already a canonical column identity in both renderers.
+pub fn beach_blend_comparator(face: u8, ci: u64, cj: u64, seed: i64) -> f64 {
+    let n = COLUMNS_PER_FACE as f64;
+    let u = -1.0 + 2.0 * (ci as f64 + 0.5) / n;
+    let v = -1.0 + 2.0 * (cj as f64 + 0.5) / n;
+    let dir = face_dir(face as usize, u, v);
+    let field_seed = seed.wrapping_add(BEACH_FIELD_SEED_OFFSET);
+    let mut frequency = n / (2.0 * ECOTONE_BASE_PATCH_COLUMNS);
+    let mut amplitude = 1.0;
+    let mut sum = 0.0;
+    let mut variance = 0.0;
+    for octave in 0..ECOTONE_FIELD_OCTAVES as i64 {
+        let octave_seed = field_seed.wrapping_mul(7_919).wrapping_add(octave * 131);
+        sum += amplitude * normal_value_noise(dir * frequency, octave_seed);
+        variance += amplitude * amplitude;
+        frequency *= ECOTONE_LACUNARITY;
+        amplitude *= ECOTONE_PERSISTENCE;
+    }
+    blend_normal_cdf(sum / variance.sqrt()).clamp(0.0, 1.0)
+}
+
 /// THE beach decision (TRANSITIONS.md): sand on low coastal ground, one
 /// fraction for both renderers — the mesh mixes its tint by it, the blocks
 /// dither their material on it — so the patch rim cannot disagree about
@@ -1376,14 +1450,31 @@ fn frost_color(p: glam::DVec3) -> [f32; 3] {
 /// tested `e_raw < 12 m AND surface < 14 blocks` hard while the mesh
 /// ramped on e_raw alone capped at 90% — a full-sand voxel disk on mostly
 /// grass mesh at every low coast (the v1_color pose, 0.569 68.915).
-/// Bands feather over ~2 m so the dithered edge reads as an ecotone.
+/// The raster and continuous-surface feathers span four and six metres around
+/// their original midpoints. Voxel callers must pass continuous `h_km`, never
+/// the floored block top: flooring compressed the old feather into one full-
+/// sand level, one random level, and one full-grass level.
 /// Callers yield to `lake_shore_frac` wherever a finite lake level makes the
 /// lake rule the material owner; otherwise this generic low coast could
 /// repaint a bounded lake shore as a province.
 pub fn beach_frac(e_raw_km: f64, h_km: f64) -> f64 {
-    let by_raster = 1.0 - smoothstep(0.010, 0.012, e_raw_km);
-    let by_surface = 1.0 - smoothstep(0.012, 0.014, h_km);
+    let by_raster =
+        1.0 - smoothstep(BEACH_RASTER_FULL_KM, BEACH_RASTER_END_KM, e_raw_km);
+    let by_surface =
+        1.0 - smoothstep(BEACH_SURFACE_FULL_KM, BEACH_SURFACE_END_KM, h_km);
     by_raster * by_surface
+}
+
+/// Exact generic-coast material predicate shared by voxel surfaces and tree
+/// eligibility. Lake territory has its separately-approved V-7 shore rule.
+#[inline]
+pub fn coastal_beach_sand(
+    e_raw_km: f64,
+    h_km: f64,
+    lake_material_region: bool,
+    comparator: f64,
+) -> bool {
+    !lake_material_region && comparator < beach_frac(e_raw_km, h_km)
 }
 
 const LAKE_SHORE_HEIGHT_KM: f64 = 0.0015;
@@ -1530,6 +1621,51 @@ mod tests {
             };
             Planet::load(assets).expect("terrain mesh gates require the baked viewer assets")
         })
+    }
+
+    #[test]
+    fn coastal_beach_fraction_spans_continuous_block_levels() {
+        assert_eq!(beach_frac(BEACH_RASTER_FULL_KM, BEACH_SURFACE_FULL_KM), 1.0);
+        assert_eq!(beach_frac(BEACH_RASTER_END_KM, BEACH_SURFACE_FULL_KM), 0.0);
+        assert_eq!(beach_frac(BEACH_RASTER_FULL_KM, BEACH_SURFACE_END_KM), 0.0);
+        let midpoint = beach_frac(
+            (BEACH_RASTER_FULL_KM + BEACH_RASTER_END_KM) * 0.5,
+            (BEACH_SURFACE_FULL_KM + BEACH_SURFACE_END_KM) * 0.5,
+        );
+        assert!((midpoint - 0.25).abs() < 1e-12, "fraction={midpoint}");
+
+        // Every metre inside the continuous surface feather owns a distinct
+        // probability. Passing floor(h*1000) would collapse this back into
+        // the full/noise/empty block bands from Andrew's evidence photo.
+        let fractions: Vec<f64> = (11..=15)
+            .map(|metres| beach_frac(BEACH_RASTER_FULL_KM, metres as f64 / 1000.0))
+            .collect();
+        assert!(fractions.windows(2).all(|w| w[0] > w[1]), "{fractions:?}");
+        assert!(fractions.iter().all(|&f| f > 0.0 && f < 1.0));
+    }
+
+    #[test]
+    fn coastal_beach_comparator_is_local_and_deterministic() {
+        let face = 0u8;
+        let (ci, cj) = (5_100_000u64, 4_900_000u64);
+        let seed = 42;
+        assert_eq!(
+            beach_blend_comparator(face, ci, cj, seed),
+            beach_blend_comparator(face, ci, cj, seed)
+        );
+        let mut local_delta = 0.0;
+        let mut distant_delta = 0.0;
+        for k in 0..256u64 {
+            let a = beach_blend_comparator(face, ci + k, cj + k * 3, seed);
+            let near = beach_blend_comparator(face, ci + k + 1, cj + k * 3, seed);
+            let far = beach_blend_comparator(face, ci + k + 16_384, cj + k * 3, seed);
+            local_delta += (a - near).abs();
+            distant_delta += (a - far).abs();
+        }
+        assert!(
+            local_delta < distant_delta * 0.5,
+            "local={local_delta} distant={distant_delta}"
+        );
     }
 
     /// Independent V-5 oracle: keep the block boundary literal here so

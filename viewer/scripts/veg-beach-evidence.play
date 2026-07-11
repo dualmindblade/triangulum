@@ -1,0 +1,29 @@
+# Andrew vegetation/beach mission: exact reported poses plus the independent
+# V-1 coastal-color site. Weather and sun are pinned for byte-repeatability;
+# each pose records voxel and mesh-only twins for tree/impostor comparison.
+weather off
+mode fly
+
+sun 10 16.360713
+teleport 27.902794 33.965275 0.355905
+look -22.208398 -79.136930
+shot andrew_beach_vox
+voxels off
+shot andrew_beach_mesh
+voxels on
+
+sun 0.569 53.915
+teleport 0.569 68.915 0.263
+look -149 -25
+shot second_beach_vox
+voxels off
+shot second_beach_mesh
+voxels on
+
+sun 10 -48.724402
+teleport 11.219098 -44.824563 0.727485
+look -105.637047 -26.195630
+shot koppen255_vox
+voxels off
+shot koppen255_mesh
+voxels on
