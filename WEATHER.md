@@ -176,6 +176,37 @@ constant, and weather-off intentionally draws an empty cloud overlay.
   deserts (precip=0 + high wind), wind-swayed trees/shrubs, puddle
   accumulation on flats, snow depth as voxel overlay, weather-aware
   ambient audio.
+- **W-MOTION (banked 2026-07-12, Austin: "distortions in the field that
+  evolve over time... full turbulence as the ceiling", everything
+  deterministic and O(1) in t):** true turbulence needs path-dependent
+  transport (integration, state) and is off the table by the time-travel
+  constraint - but its LOOK is reachable by composing closed-form terms,
+  every one a pure f(position, t, seed). Ordered cheap-to-flagship:
+  1. PHASE-VELOCITY OCTAVES: each fabric octave drifts at its own speed
+     and heading (fine octaves faster - an energy-cascade feel). Zero
+     extra noise taps; kills the rigid-sheet read of the deck.
+  2. EVOLVING DOMAIN WARP: sample position warped by a slow vector
+     noise that itself drifts, p' = p + A*warp(p*fw - u*t). Two taps.
+     Filaments stretch and fold - the visual signature of advection.
+  3. DIFFERENTIAL ROTATION: Rodrigues-rotate the domain about the spin
+     axis by theta(lat, t) = (w0 + w1*cos^2 lat)*t - Jupiter-style
+     zonal shear, features at different latitudes slide past each
+     other. One rotation per pixel, closed form.
+  4. ANALYTIC VORTICES (the flagship): N seeded cyclones, each a
+     closed-form swirl in its co-moving frame (center rides a zonal
+     track c_i(t); local domain rotates by exp(-d^2/r^2)*w*t).
+     Placement/intensity modulated by the baked storm field so
+     cyclones live where the bake says storms live. Rotating storms
+     with eyes, visible from orbit.
+  5. FRONTS: ridged line features on the phase-velocity scheme with
+     asymmetric (sharp leading, trailing smear) profiles.
+  6. 4D NOISE: t as a fourth hash dimension at a slow rate - cells are
+     born and die in place, complementing all transport terms above.
+  All terms compose in the planet-anchored domain (see the 2576050
+  drift fix - camera-anchored motion is the one forbidden shape) and
+  none touch weather replay, sidecar restore, or double-run byte
+  determinism. Natural mission size: 1+2+6 first (pure look), then
+  3+4+5 (structure) with an orbital reel pose per term.
 
 ## Decision points for Andrew
 
