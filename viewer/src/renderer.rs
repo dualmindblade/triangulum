@@ -84,15 +84,22 @@ struct Globals {
     // w = fraction of direct sun surviving full overcast
     weather2: [f32; 4],
     // x = rain ground-darkening cap, y = full-dusting cold depth (C),
-    // z = cloud shell altitude (km), w = shell fade-out camera height (km)
+    // z = low cloud-shell altitude (km), w = ground/orbit handoff height (km)
     weather3: [f32; 4],
     // xyz = instantaneous wind (km/s, camera-relative frame) for particle
     // slant; w = absolute weather clock modulo one hour for particle motion
     weather4: [f32; 4],
-    // premultiplied cave-noise seeds for the karst breach hint (V-10):
+    // x/y = middle/high cloud-shell altitudes (km), z = active layer count,
+    // w = hard orbital cloud-opacity cap (WEATHER.md W3)
+    weather5: [f32; 4],
+    // xyz = low/mid/high shell noise scales, w = D-8 rain crevice bias
+    weather6: [f32; 4],
+    // xyz = low/mid/high shell density multipliers; w spare
+    weather7: [f32; 4],
+    // premultiplied procedural seeds. xyz are the karst breach hint (V-10):
     // low 32 bits of (seed+K).wrapping_mul(0x9E37_79B1) for K = 40961
-    // (region gate), 31337 (tube n1), 51413 (tube n2). The shader's u32
-    // hash twin consumes these to evaluate the EXACT cave field.
+    // (region gate), 31337 (tube n1), 51413 (tube n2); w is the independent
+    // clouds-v2 layout seed (+70001). Shader u32 hashes retain exact low bits.
     karst: [u32; 4],
     // placed-torch point lights: xyz camera-relative (km), w intensity
     lights: [[f32; 4]; MAX_LIGHTS],
@@ -978,16 +985,41 @@ impl Renderer {
         };
         // precipitation particles live in a volume around the camera; none
         // underwater, and they thin away as the camera climbs through the
-        // cloud deck (same fade as the W1 shell)
+        // low deck toward the ground/orbit cloud handoff.
         let precip_fade = {
             let t = (cam_h_km - self.weather_tuning.shell_alt_km)
                 / (self.weather_tuning.shell_fade_km - self.weather_tuning.shell_alt_km).max(1e-6);
             1.0 - t.clamp(0.0, 1.0)
         };
+        // D-8 particle interpolation reuses the same signed sub-raster
+        // elevation residual carried to ground fragments. This costs one
+        // already-resident bilinear elevation lookup, not another full
+        // terrain sample. Snow density stays unchanged; Andrew's verdict is
+        // specifically about rain collecting in crevices.
+        let particle_precip = if wx.precip > 0.0 && wx.snow_frac < 1.0 {
+            let dir = cam_pos.normalize();
+            let (face, u, v) = crate::planet::face_from_dir(dir);
+            let coarse = planet.elevation(face, u, v) as f64;
+            let local = camera.ground_km / self.exaggeration.max(1e-6);
+            // Open water has no peak/crevice distinction and therefore stays
+            // at the unmodified regional particle rate.
+            let concavity = if planet.ocean(face, u, v) > 0.5 {
+                0.0
+            } else {
+                crate::terrain::rain_concavity_proxy(coarse, local) as f64
+            };
+            let redistribute = 1.0
+                + self.weather_tuning.rain_crevice_bias
+                    * concavity
+                    * (1.0 - wx.snow_frac);
+            (wx.precip * redistribute).clamp(0.0, 1.0)
+        } else {
+            wx.precip
+        };
         let n_precip = if self.underwater {
             0u32
         } else {
-            (wx.precip * precip_fade * self.weather_tuning.particles_max as f64) as u32
+            (particle_precip * precip_fade * self.weather_tuning.particles_max as f64) as u32
         };
 
         let globals = Globals {
@@ -1043,12 +1075,30 @@ impl Renderer {
                 wind_kms.z as f32,
                 (weather_t_s % 3600.0) as f32,
             ],
+            weather5: [
+                self.weather_tuning.cloud_mid_alt_km as f32,
+                self.weather_tuning.cloud_high_alt_km as f32,
+                self.weather_tuning.cloud_layer_count as f32,
+                self.weather_tuning.orbit_cloud_opacity_cap as f32,
+            ],
+            weather6: [
+                self.weather_tuning.cloud_low_scale as f32,
+                self.weather_tuning.cloud_mid_scale as f32,
+                self.weather_tuning.cloud_high_scale as f32,
+                self.weather_tuning.rain_crevice_bias as f32,
+            ],
+            weather7: [
+                self.weather_tuning.cloud_low_density as f32,
+                self.weather_tuning.cloud_mid_density as f32,
+                self.weather_tuning.cloud_high_density as f32,
+                0.0,
+            ],
             karst: {
                 let kseed = |k: i64| {
                     (planet.seed.wrapping_add(k).wrapping_mul(0x9E37_79B1) & 0xFFFF_FFFF)
                         as u32
                 };
-                [kseed(40961), kseed(31337), kseed(51413), 0]
+                [kseed(40961), kseed(31337), kseed(51413), kseed(70001)]
             },
             lights,
         };

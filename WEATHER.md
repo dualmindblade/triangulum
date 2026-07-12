@@ -1,6 +1,6 @@
 # WEATHER.md — living weather for Neisor
 
-Status: Phase W1 landing (2026-07-09). A long-running thread; this doc is
+Status: W1 + clouds v2/W3 presentation landed (2026-07-11). A long-running thread; this doc is
 the contract. Owner: Austin + Andrew (taste), Fable (architecture).
 
 ## What we're building
@@ -32,8 +32,9 @@ storms drift with the wind, grow and die over tens of minutes, and yet
 there is no mutable state anywhere — any (seed, position, time) always
 reproduces the identical weather. Seekable, rewindable, deterministic.
 
-**Layer 3 — presentation (renderer, per-frame):** what you SEE: the cloud
-shell in the sky, sun dimming under overcast, precipitation particles,
+**Layer 3 — presentation (renderer, per-frame):** what you SEE: three
+parallax cloud shells and their capped orbital composite, sun dimming under
+overcast, precipitation particles,
 snow dusting and rain-darkening on the ground, and someday cloud shadows,
 fog banks, lightning. Reads Layer 2 once per frame at the camera (cheap)
 plus per-pixel procedural detail in the shaders.
@@ -55,7 +56,7 @@ plus per-pixel procedural detail in the shaders.
   it. Pre-weather sidecars are the deliberate cut line: they warn and fall
   back to live weather at time zero because their storm state is unknowable.
   A photo of a storm is a coordinate you can teleport back into.
-- Phase W1 touches NOTHING structural: terrain::sample still reads annual
+- Weather presentation touches NOTHING structural: terrain::sample still reads annual
   means, so every census number and physics assert is untouched by
   construction. Structural seasonality (W4) is where that changes, gated.
 
@@ -65,6 +66,9 @@ Weather must never create a new mesh-vs-voxel disagreement:
 - Ground responses (snow dusting, rain darkening) live in the SHARED
   fragment shader, applied identically to mesh tiles and voxel chunks by
   construction — never in per-renderer geometry builders.
+- D-8's rain interpolation is one shared signed vertex channel. Mesh and
+  voxel builders encode the same local-height residual into a previously
+  spare byte; the fragment shader alone turns it into rain intensity.
 - Anything that would change sample() (structural seasonality) is a
   shared-sample change reviewed against the transitions program first.
 - Sky/particles are renderer-global and touch neither.
@@ -83,18 +87,24 @@ Weather must never create a new mesh-vs-voxel disagreement:
 
 - Sky: clear -> scattered -> broken -> overcast -> storm, a continuous
   `cloud_cover` in [0,1] with a tunable contrast curve; never a binary.
+- Formation type is continuous too: low cover favors high fibrous cirrus;
+  middle cover grows broken cumulus masses; precipitation brings in a low,
+  dark base aligned with the middle mass so warm storms read taller. Cold
+  air strengthens ice-rich cirrus while warmth slightly favors vertical
+  cumulus/storm growth.
 - Precipitation: `precip` in [0,1] continuous (drizzle -> downpour),
   split rain/snow by local air temperature with a mixed band around 0 C
   (sleety flurries are allowed and good).
 - Ground: dusting -> cover for snow; damp -> soaked darkening for rain.
+  Rain intensity is subtly redistributed toward local troughs (at most 18%
+  with defaults), not converted into a new biome or a new weather event.
 
 ## Hard constraints
 
-- From orbit the ground is never fully obscured: the orbital cloud layer
-  (W3) has a hard tunable opacity cap (default 0.55) and the cloud shell
-  fades out above ~15 km camera altitude in W1 (i.e., W1 renders NO
-  clouds from space — trivially satisfying the constraint until W3 does
-  it properly).
+- From orbit the ground is never fully obscured: low/middle/high shells are
+  composited far-to-near and their COMBINED alpha is then hard-capped by
+  `orbit_cloud_opacity_cap` (default 0.55). The below-deck path hands over
+  between the 8.2 km high shell and 15 km camera altitude.
 - Performance: Layer 2 evaluated per-frame at the camera + a handful of
   probe points (< 20 samples); per-pixel work is shader noise only.
 
@@ -109,9 +119,30 @@ dusting altitude falloff, darkening strength, particle counts/speeds,
 year length, epoch. If Andrew wants to art-direct a value, it must be a
 knob, not a constant.
 
+Clouds-v2 and D-8 defaults (the documented art knobs):
+
+| knob | default | meaning |
+|---|---:|---|
+| `cloud_layer_count` | 3 | 1 = middle only, 2 = + high cirrus, 3 = + low storm base |
+| `shell_alt_km` / `cloud_mid_alt_km` / `cloud_high_alt_km` | 1.8 / 3.8 / 8.2 | concentric shell altitudes |
+| `shell_fade_km` | 15.0 | below-deck to orbital handoff end |
+| `cloud_low_scale` / `cloud_mid_scale` / `cloud_high_scale` | 460 / 900 / 620 | unit-sphere noise frequencies; larger means smaller formations |
+| `cloud_low_density` / `cloud_mid_density` / `cloud_high_density` | 0.92 / 0.82 / 0.32 | per-shell opacity multipliers before stacking |
+| `orbit_cloud_opacity_cap` | 0.55 | hard cap after all orbital layers are stacked |
+| `rain_crevice_bias` | 0.18 | maximum signed rain redistribution at deep trough/peak proxies |
+
+The crevice proxy is `(coarse_elevation - detailed_elevation) / 120 m`,
+clamped to `[-1,1]`. The coarse term is the smooth ~30 km elevation raster;
+the detailed term includes band-limited relief and river/pond carving, so a
+positive residual means locally low terrain rather than merely low global
+altitude. It costs no neighbor samples. The same proxy modestly changes rain
+particle count at the camera via one resident elevation lookup; open ocean
+and snow keep the regional rate.
+
 Overrides are accepted only as a valid whole. Non-finite values, zero/negative
 denominators, inverted cover/snow bands, precipitation thresholds outside
-`[0,1)`, inverted cloud-shell heights, and particle counts above 100,000 emit
+`[0,1)`, layer counts outside 1..3, non-positive scales, densities/caps/biases
+outside `[0,1]`, inverted cloud-shell heights, and particle counts above 100,000 emit
 a warning and fall back to all defaults; malformed tuning can never feed NaNs
 or an unbounded instance count to a frame.
 
@@ -122,7 +153,7 @@ constant, and weather-off intentionally draws an empty cloud overlay.
 
 ## Phase roadmap
 
-- **W1 (this commit):** weather.bin bake + weather.rs field + sky cloud
+- **W1 (2026-07-09):** weather.bin bake + weather.rs field + sky cloud
   shell (from below/aloft, fades before orbit) + sun/ambient dimming +
   precip particles (rain streaks / snow flakes) + snow dusting and rain
   darkening in the shared shader + `weather` play command + sidecar
@@ -130,9 +161,9 @@ constant, and weather-off intentionally draws an empty cloud overlay.
 - **W2:** cloud shadows on the ground (project the shell noise along the
   sun), fog banks / valley mist by humidity + dawn, storm-edge lighting
   (dark horizons, shafts), wind-driven particle slant.
-- **W3:** orbital clouds — a proper capped-opacity cloud layer visible
-  from space, matched to the shell from below; the "planet from orbit
-  breathes" shot. Hard cap enforced here.
+- **Clouds v2 / W3 (2026-07-11):** three weather-typed 2-D shells at distinct
+  altitudes fake depth through parallax; the same seeded formations composite
+  over the planet from space with a hard post-stack opacity cap.
 - **W4 (gated on Andrew + suite strategy):** structural seasonality —
   frozen lakes melt in summer, sea ice advances/retreats (seaice_monthly
   is already baked per month!), snow line moves in sample(), deciduous
@@ -146,11 +177,11 @@ constant, and weather-off intentionally draws an empty cloud overlay.
   accumulation on flats, snow depth as voxel overlay, weather-aware
   ambient audio.
 
-## Decision points for Andrew (none block W1)
+## Decision points for Andrew
 
-Moved to DECISIONS.md (repo root): D-5 year length/starting season,
-D-6 cloud art direction, D-7 overcast gloom cap, D-8 storm frequency,
-D-9 W4 seasonal ice/melt scope.
+Moved to DECISIONS.md (repo root). D-6 and D-8's 2026-07-11 verdicts are the
+clouds-v2 and crevice interpolation implemented above; D-5, D-7, and D-9
+remain tuning/future-phase context.
 
 ## Data format: weather.bin
 

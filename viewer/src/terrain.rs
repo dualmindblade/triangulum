@@ -28,19 +28,42 @@ const MAX_DETAIL_OCTAVES: u32 = 8;
 /// area-preserving weights. Lower values soften coarse-mesh diamonds.
 pub const BIOME_RANGE_CATEGORICAL_CONTRAST: f32 = 0.45;
 /// Range color is stored as a signed delta at half-scale: SNORM8 precision is
-/// just under 0.004 linear-color units, while a zero delta remains exactly
-/// zero for voxel, water, and impostor vertices. This keeps `Vertex` at its
-/// pre-range-treatment 72 bytes and avoids expanding the GPU tile cache.
+/// just under 0.004 linear-color units, while a zero RGB delta remains exact
+/// for voxel, water, and impostor vertices. Alpha now carries D-8's signed
+/// rain-concavity proxy. This keeps `Vertex` at its pre-range-treatment 72
+/// bytes and avoids expanding the GPU tile cache.
 pub const BIOME_RANGE_COLOR_DELTA_SCALE: f32 = 0.5;
 
-fn pack_range_color_delta(color: [f32; 3], far_color: [f32; 3]) -> [i8; 4] {
+fn pack_range_color_delta(
+    color: [f32; 3],
+    far_color: [f32; 3],
+    rain_concavity: f32,
+) -> [i8; 4] {
     let pack = |i: usize| {
         (((far_color[i] - color[i]) / BIOME_RANGE_COLOR_DELTA_SCALE)
             .clamp(-1.0, 1.0)
             * 127.0)
             .round() as i8
     };
-    [pack(0), pack(1), pack(2), 0]
+    [
+        pack(0),
+        pack(1),
+        pack(2),
+        (rain_concavity.clamp(-1.0, 1.0) * 127.0).round() as i8,
+    ]
+}
+
+/// D-8's cheap local concavity correlate. `e_raw` is the smooth ~30 km
+/// raster envelope while `local_h` contains the band-limited terrain detail
+/// and hydrologic carving. Their signed residual therefore separates a local
+/// trough/crevice (+) from a local peak (-) without another terrain sample.
+/// A 120 m half-range keeps the interpolation broad and subtle; fine noise
+/// cannot flip the response hard enough to read as a new biome.
+pub fn rain_concavity_proxy(e_raw_km: f64, local_h_km: f64) -> f32 {
+    if !e_raw_km.is_finite() || !local_h_km.is_finite() {
+        return 0.0;
+    }
+    ((e_raw_km - local_h_km) / 0.120).clamp(-1.0, 1.0) as f32
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
@@ -89,8 +112,9 @@ pub struct Vertex {
     /// polygons and orphan blue cells). -1.0 = no standing water nearby
     /// (also on voxel chunks and impostors, which are already exact).
     pub shore: f32,
-    /// SNORM8 range-only color delta. The shader reconstructs the far color
-    /// from `color`; voxel/impostor vertices use exact zero deltas.
+    /// SNORM8 packed presentation data: rgb is the range-only color delta;
+    /// alpha is D-8's signed trough (+) / peak (-) rain proxy. The shader
+    /// reconstructs far color from `color`; voxel/impostor rgb stays zero.
     pub far_color_delta: [i8; 4],
 }
 
@@ -1329,7 +1353,11 @@ pub fn build_tile(planet: &Planet, key: TileKey, exaggeration: f64) -> TileMesh 
                 morph_wet: wet_parent as f32,
                 wflag: if s.sea || s.lake { 1.0 } else { 0.0 },
                 shore,
-                far_color_delta: pack_range_color_delta(ground, far_color),
+                far_color_delta: pack_range_color_delta(
+                    ground,
+                    far_color,
+                    rain_concavity_proxy(s.e_raw, s.h_km),
+                ),
             });
         }
     }
@@ -1860,14 +1888,25 @@ mod tests {
     fn packed_range_color_keeps_the_original_vertex_footprint() {
         assert_eq!(std::mem::size_of::<Vertex>(), 72);
         let local = [0.10, 0.25, 0.80];
-        assert_eq!(pack_range_color_delta(local, local), [0; 4]);
+        assert_eq!(pack_range_color_delta(local, local, 0.0), [0; 4]);
         let far = [0.42, 0.08, 0.51];
-        let packed = pack_range_color_delta(local, far);
+        let packed = pack_range_color_delta(local, far, 0.5);
+        assert_eq!(packed[3], 64);
         for i in 0..3 {
             let restored = local[i]
                 + BIOME_RANGE_COLOR_DELTA_SCALE * packed[i] as f32 / 127.0;
             assert!((restored - far[i]).abs() <= 0.0021);
         }
+    }
+
+    #[test]
+    fn rain_concavity_proxy_favors_troughs_not_peaks() {
+        assert_eq!(rain_concavity_proxy(0.50, 0.50), 0.0);
+        assert!((rain_concavity_proxy(0.50, 0.44) - 0.5).abs() < 1e-6);
+        assert!((rain_concavity_proxy(0.50, 0.56) + 0.5).abs() < 1e-6);
+        assert_eq!(rain_concavity_proxy(0.50, 0.20), 1.0);
+        assert_eq!(rain_concavity_proxy(0.50, 0.80), -1.0);
+        assert_eq!(rain_concavity_proxy(f64::NAN, 0.50), 0.0);
     }
 
     fn test_planet() -> &'static Planet {

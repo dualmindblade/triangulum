@@ -1178,6 +1178,11 @@ pub fn build_chunk(
     // A-5 water quads. Ordinary block vertices retain the old zero/dim pair.
     let quad_rim_delta = std::cell::Cell::new([0.0f32; 4]);
     let quad_rim_weight = std::cell::Cell::new(None::<[f32; 4]>);
+    // The fourth byte of the packed range-color attribute is spare on every
+    // vertex. Carry D-8's signed trough/peak residual there so blocks and the
+    // heightfield consume the same rain-interpolation channel without growing
+    // the established 72-byte vertex or GPU tile cache.
+    let quad_rain_concavity = std::cell::Cell::new(0.0f32);
     // per-corner colors: ambient occlusion darkens individual corners.
     // `dim` is the cave-darkness factor (1 = open sky): blocks carry it in
     // the water attribute's alpha so the shader — not the bake — applies
@@ -1199,7 +1204,12 @@ pub fn build_chunk(
                 // +4 lum whole-sea divergence (review #2 aftermath)
                 wflag,
                 shore: -1.0, // blocks ARE the exact shoreline already
-                far_color_delta: [0; 4],
+                far_color_delta: [
+                    0,
+                    0,
+                    0,
+                    (quad_rain_concavity.get().clamp(-1.0, 1.0) * 127.0).round() as i8,
+                ],
             });
         }
         indices.extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
@@ -1209,6 +1219,10 @@ pub fn build_chunk(
     for j in 0..n {
         for i in 0..n {
             let c = at(i, j);
+            quad_rain_concavity.set(crate::terrain::rain_concavity_proxy(
+                c.e_raw as f64,
+                c.h_km as f64,
+            ));
             let ci = (base_i + i) as u64;
             let cj = (base_j + j) as u64;
             let (u0, u1) = (u_of(base_i + i), u_of(base_i + i + 1));
@@ -1706,6 +1720,11 @@ pub fn build_chunk(
         }
         let ci = (base_i + ti) as u64;
         let cj = (base_j + tj) as u64;
+        let rain_c = at(ti, tj);
+        quad_rain_concavity.set(crate::terrain::rain_concavity_proxy(
+            rain_c.e_raw as f64,
+            rain_c.h_km as f64,
+        ));
         // Tree cells never use a ground-tinted material; keep their established
         // species palette without another climate raster pass per leaf block.
         let tint = [0.0; 3];
@@ -1770,6 +1789,10 @@ pub fn build_chunk(
             continue;
         }
         let c = at(ti, tj);
+        quad_rain_concavity.set(crate::terrain::rain_concavity_proxy(
+            c.e_raw as f64,
+            c.h_km as f64,
+        ));
         // walkable top, ice included — a torch on a frozen lake stands on
         // the ice sheet, not drowned on the seabed below it
         let top = c.top_solid().max(c.frozen_ice().unwrap_or(i64::MIN));
