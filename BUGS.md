@@ -9,6 +9,11 @@ are `teleport LAT LON [ALT_KM]` viewer args at `--exagg 1` unless noted.
 
 ## OPEN
 
+### B-2 Moon crater singularity ("black hole") — FIXED by moonscape v2
+Verified at merge review: the site renders as ordinary regolith plain,
+probe height -0.179 km (a legitimate crater floor), and
+scripts/blackhole.play stands as the regression (physical +-2.5 km
+bounds at the exact coordinate). Original entry follows.
 ### B-2 Moon crater singularity ("black hole") at -35.057 51.770
 Andrew's photo (titled "Black hole"): terrain spirals into an
 unbounded pit - a crater depth/dimple formula diverging at its exact

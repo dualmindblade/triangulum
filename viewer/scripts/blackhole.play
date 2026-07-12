@@ -1,0 +1,9 @@
+# B-2 gate: the old crater fold diverged here (Andrew's 'black hole')
+moonpose -35.057 51.770 0.015 -161 -32
+shot b2_site
+moonprobe -35.057 51.770
+# physical bounds: mare basins run km-deep, nothing runs unbounded
+assert moon_surface_height_km > -2.5
+assert moon_surface_height_km < 2.5
+moonpose -35.057 51.770 2.0 0 -80
+shot b2_above
