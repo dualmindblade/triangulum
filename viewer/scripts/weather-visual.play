@@ -4,7 +4,7 @@
 
 # savanna site, live field (whatever the climate + synoptic sim says today)
 teleport 6.974 33.203 0.15
-look -50 -8
+look 0 12
 weather live
 shot live_savanna
 
@@ -17,6 +17,18 @@ weather pin 0.75 0.15
 shot broken_drizzle
 weather pin 0.97 0.9
 shot storm
+
+# clouds v2 / W3: the same clear, partial, and storm formations from orbit.
+# clear + storm extend the determinism gate across both ground and orbital
+# paths; partial completes the 3x2 formations contact sheet.
+teleport 6.974 33.203 291.4
+look 0 -86
+weather pin 0.08 0.0
+shot clear_orbit
+weather pin 0.45 0.0
+shot scattered_orbit
+weather pin 0.97 0.9
+shot storm_orbit
 
 # rain at eye level (streaks against the sky)
 teleport 6.974 33.203 0.02

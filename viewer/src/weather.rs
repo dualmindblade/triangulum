@@ -48,14 +48,34 @@ pub struct WeatherTuning {
     pub overcast_sun_floor: f64,
     /// Max rain darkening of ground albedo (0..1).
     pub rain_darken: f64,
+    /// Signed local redistribution of rain between sub-raster troughs and
+    /// peaks. 0 disables it; 0.18 means at most +18% in a deep crevice and
+    /// -18% on a sharp local high. The global precipitation sample is never
+    /// changed -- this is presentation-scale interpolation only (D-8).
+    pub rain_crevice_bias: f64,
     /// Snow dusting: full white this many C below freezing at the pixel.
     pub dust_full_c: f64,
-    /// Cloud shell altitude above the surface (km).
+    /// Low storm-base cloud shell altitude above the surface (km).
     pub shell_alt_km: f64,
-    /// Camera altitude (km) by which the W1 cloud shell has faded out —
-    /// W1 renders NO clouds from space (WEATHER.md hard constraint; the
-    /// real orbital layer with a capped opacity is W3).
+    /// Middle cumulus and high cirrus shell altitudes (km).
+    pub cloud_mid_alt_km: f64,
+    pub cloud_high_alt_km: f64,
+    /// Camera altitude (km) at which below-deck rendering has handed fully
+    /// to the capped orbital composite.
     pub shell_fade_km: f64,
+    /// Number of presentation shells. One keeps the middle formation, two
+    /// add cirrus, and three add the low storm base.
+    pub cloud_layer_count: u32,
+    /// Noise frequencies on the unit sphere (larger = smaller formations).
+    pub cloud_low_scale: f64,
+    pub cloud_mid_scale: f64,
+    pub cloud_high_scale: f64,
+    /// Per-layer opacity multipliers before the orbital hard cap.
+    pub cloud_low_density: f64,
+    pub cloud_mid_density: f64,
+    pub cloud_high_density: f64,
+    /// W3 hard cap: even stacked shells cannot hide more orbital ground.
+    pub orbit_cloud_opacity_cap: f64,
     /// Max precipitation particles at full intensity.
     pub particles_max: u32,
 }
@@ -83,9 +103,20 @@ impl Default for WeatherTuning {
             snow_hi_c: 1.5,
             overcast_sun_floor: 0.35,
             rain_darken: 0.30,
+            rain_crevice_bias: 0.18,
             dust_full_c: 3.0,
-            shell_alt_km: 3.2,
+            shell_alt_km: 1.8,
+            cloud_mid_alt_km: 3.8,
+            cloud_high_alt_km: 8.2,
             shell_fade_km: 15.0,
+            cloud_layer_count: 3,
+            cloud_low_scale: 460.0,
+            cloud_mid_scale: 900.0,
+            cloud_high_scale: 620.0,
+            cloud_low_density: 0.92,
+            cloud_mid_density: 0.82,
+            cloud_high_density: 0.32,
+            orbit_cloud_opacity_cap: 0.55,
             particles_max: 9000,
         }
     }
@@ -141,9 +172,19 @@ impl WeatherTuning {
             ("snow_hi_c", self.snow_hi_c),
             ("overcast_sun_floor", self.overcast_sun_floor),
             ("rain_darken", self.rain_darken),
+            ("rain_crevice_bias", self.rain_crevice_bias),
             ("dust_full_c", self.dust_full_c),
             ("shell_alt_km", self.shell_alt_km),
+            ("cloud_mid_alt_km", self.cloud_mid_alt_km),
+            ("cloud_high_alt_km", self.cloud_high_alt_km),
             ("shell_fade_km", self.shell_fade_km),
+            ("cloud_low_scale", self.cloud_low_scale),
+            ("cloud_mid_scale", self.cloud_mid_scale),
+            ("cloud_high_scale", self.cloud_high_scale),
+            ("cloud_low_density", self.cloud_low_density),
+            ("cloud_mid_density", self.cloud_mid_density),
+            ("cloud_high_density", self.cloud_high_density),
+            ("orbit_cloud_opacity_cap", self.orbit_cloud_opacity_cap),
         ];
         if let Some((name, _)) = finite.into_iter().find(|(_, v)| !v.is_finite()) {
             return Err(format!("{name} must be finite"));
@@ -171,14 +212,40 @@ impl WeatherTuning {
         }
         if !(0.0..=1.0).contains(&self.overcast_sun_floor)
             || !(0.0..=1.0).contains(&self.rain_darken)
+            || !(0.0..=1.0).contains(&self.rain_crevice_bias)
         {
-            return Err("overcast_sun_floor and rain_darken must be in [0, 1]".into());
+            return Err(
+                "overcast_sun_floor, rain_darken, and rain_crevice_bias must be in [0, 1]"
+                    .into(),
+            );
         }
         if self.dust_full_c <= 0.0 {
             return Err("dust_full_c must be > 0".into());
         }
-        if self.shell_alt_km < 0.0 || self.shell_fade_km <= self.shell_alt_km {
-            return Err("shell altitudes require 0 <= shell_alt_km < shell_fade_km".into());
+        if self.shell_alt_km < 0.0
+            || self.cloud_mid_alt_km <= self.shell_alt_km
+            || self.cloud_high_alt_km <= self.cloud_mid_alt_km
+            || self.shell_fade_km <= self.cloud_high_alt_km
+        {
+            return Err(
+                "cloud altitudes require 0 <= low < mid < high < shell_fade_km".into(),
+            );
+        }
+        if !(1..=3).contains(&self.cloud_layer_count) {
+            return Err("cloud_layer_count must be in 1..=3".into());
+        }
+        if self.cloud_low_scale <= 0.0
+            || self.cloud_mid_scale <= 0.0
+            || self.cloud_high_scale <= 0.0
+        {
+            return Err("cloud scales must be > 0".into());
+        }
+        if !(0.0..=1.0).contains(&self.cloud_low_density)
+            || !(0.0..=1.0).contains(&self.cloud_mid_density)
+            || !(0.0..=1.0).contains(&self.cloud_high_density)
+            || !(0.0..=1.0).contains(&self.orbit_cloud_opacity_cap)
+        {
+            return Err("cloud densities and orbit opacity cap must be in [0, 1]".into());
         }
         if self.particles_max > PARTICLES_MAX_CAP {
             return Err(format!("particles_max must be <= {PARTICLES_MAX_CAP}"));
@@ -545,6 +612,14 @@ mod tests {
             r#"{"snow_lo_c":2,"snow_hi_c":-2,"epoch_frac":0.12}"#,
             r#"{"precip_threshold":1,"epoch_frac":0.12}"#,
             r#"{"particles_max":100001,"epoch_frac":0.12}"#,
+            r#"{"rain_crevice_bias":1.01,"epoch_frac":0.12}"#,
+            r#"{"cloud_layer_count":0,"epoch_frac":0.12}"#,
+            r#"{"cloud_layer_count":4,"epoch_frac":0.12}"#,
+            r#"{"cloud_mid_alt_km":1.0,"epoch_frac":0.12}"#,
+            r#"{"cloud_high_alt_km":16.0,"epoch_frac":0.12}"#,
+            r#"{"cloud_low_scale":0,"epoch_frac":0.12}"#,
+            r#"{"cloud_mid_density":1.01,"epoch_frac":0.12}"#,
+            r#"{"orbit_cloud_opacity_cap":1.01,"epoch_frac":0.12}"#,
             r#"{"days_per_year":1e999,"epoch_frac":0.12}"#,
         ];
         for raw in invalid {
@@ -556,6 +631,17 @@ mod tests {
         let mut non_finite = WeatherTuning::default();
         non_finite.cover_lo = f64::NAN;
         assert!(non_finite.validate().is_err());
+    }
+
+    #[test]
+    fn cloud_v2_defaults_keep_three_ordered_layers_and_w3_cap() {
+        let t = WeatherTuning::default();
+        assert_eq!(t.cloud_layer_count, 3);
+        assert!(t.shell_alt_km < t.cloud_mid_alt_km);
+        assert!(t.cloud_mid_alt_km < t.cloud_high_alt_km);
+        assert!(t.cloud_high_alt_km < t.shell_fade_km);
+        assert_eq!(t.orbit_cloud_opacity_cap, 0.55);
+        assert!(t.validate().is_ok());
     }
 
     #[test]

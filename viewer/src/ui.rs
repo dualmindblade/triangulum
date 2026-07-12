@@ -589,6 +589,11 @@ pub struct PhotoMap {
     view_zoom: f64,
     view_center_lat: f64,
     view_center_lon: f64,
+    /// Screen size the popup was last laid out for. egui remembers window
+    /// positions, so without this a drag or an OS-window resize leaves the
+    /// popup off-center forever ("back to the old version" - Austin,
+    /// 2026-07-12); on any size change we force a re-center.
+    last_screen: Option<egui::Vec2>,
 }
 
 impl PhotoMap {
@@ -617,6 +622,7 @@ impl PhotoMap {
             view_zoom: 1.0,
             view_center_lat: 0.0,
             view_center_lon: 0.0,
+            last_screen: None,
         }
     }
 
@@ -798,14 +804,21 @@ impl PhotoMap {
         // the window is not user-resizable - it auto-fits on every window
         // resize instead. Dragging to reposition stays enabled.
         let fit = egui::vec2(screen.width() * 0.92, screen.height() * 0.90);
-        egui::Window::new("Photo map — teleport")
+        let recenter = self.last_screen != Some(screen.size());
+        self.last_screen = Some(screen.size());
+        let mut window = egui::Window::new("Photo map — teleport")
             .collapsible(false)
             .resizable(false)
             .fixed_size(fit)
             .vscroll(true)
             .pivot(egui::Align2::CENTER_CENTER)
-            .default_pos(screen.center())
-            .show(ctx, |ui| {
+            .default_pos(screen.center());
+        if recenter {
+            // any app-window resize snaps the popup back to center (egui
+            // otherwise keeps the remembered, possibly off-screen position)
+            window = window.current_pos(screen.center());
+        }
+        window.show(ctx, |ui| {
                 ui.horizontal(|ui| {
                     ui.label(&self.status);
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {

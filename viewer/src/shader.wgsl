@@ -24,14 +24,22 @@ struct Globals {
     // xyz = cloud-domain drift (synoptic advection), w = overcast sun floor
     weather2: vec4<f32>,
     // x rain darkening cap, y full-dusting cold depth (C),
-    // z cloud shell altitude (km), w shell fade-out camera height (km)
+    // z low cloud-shell altitude (km), w ground/orbit handoff height (km)
     weather3: vec4<f32>,
     // xyz = instantaneous wind (km/s, camera-relative) for particle slant,
     // w = absolute weather time (s, wraps hourly) for particle motion
     weather4: vec4<f32>,
+    // x/y = middle/high cloud-shell altitudes (km), z = active layer count,
+    // w = hard orbital opacity cap
+    weather5: vec4<f32>,
+    // xyz = low/mid/high cloud noise scales, w = rain crevice-bias strength
+    weather6: vec4<f32>,
+    // xyz = low/mid/high cloud density multipliers, w spare
+    weather7: vec4<f32>,
     // premultiplied cave-noise seeds (low 32 bits of
     // (seed+K).wrapping_mul(0x9E37_79B1)) for the karst breach hint:
-    // x = region gate (+40961), y = tube n1 (+31337), z = tube n2 (+51413)
+    // x = region gate (+40961), y = tube n1 (+31337), z = tube n2 (+51413),
+    // w = independent clouds-v2 layout seed (+70001)
     karst: vec4<u32>,
     // dusting-dither anchor (see renderer.rs Globals): xyz = the camera's
     // dither-lattice corner relative to the camera (km, <= 25 m), and the
@@ -76,7 +84,8 @@ struct VsIn {
     // signed water-minus-ground delta (km): its interpolated zero crossing
     // IS the shoreline, stepped per fragment (-1 = no standing water)
     @location(7) shore: f32,
-    // packed range-visible color delta; zero on voxels/impostors/water
+    // packed presentation data: rgb = range-visible color delta; alpha =
+    // signed rain-concavity proxy (voxel/impostor rgb stays zero)
     @location(8) far_color_delta: vec4<f32>,
 };
 struct VsOut {
@@ -90,6 +99,9 @@ struct VsOut {
     @location(5) wflag: f32,
     @location(6) shore: f32,
     @location(7) far_color: vec3<f32>,
+    // signed sub-raster trough (+) / peak (-) residual packed in the spare
+    // alpha byte of far_color_delta (D-8)
+    @location(8) rain_concavity: f32,
 };
 
 // Keep the approved local 300 m ecotone through near flight, then hand off
@@ -452,6 +464,7 @@ fn vs_main(in: VsIn) -> VsOut {
         vec3<f32>(0.0),
         vec3<f32>(1.0),
     );
+    out.rain_concavity = in.far_color_delta.a;
     return out;
 }
 
@@ -655,7 +668,16 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         let dust =
             cold * (0.45 + 0.55 * globals.weather.z * globals.weather.y) * wcam * dry_px;
         ground = mix(ground, vec3<f32>(0.88, 0.90, 0.94), dust);
-        let rain = globals.weather.y * (1.0 - globals.weather.z) * wcam * dry_px;
+        // Redistribute (do not create) at most weather6.w of rain from local
+        // highs toward sub-raster troughs. The signed residual was computed
+        // from smooth raster elevation minus detailed/carved elevation on
+        // both mesh and voxel vertices; snow remains on its existing rule.
+        let rain_local = clamp(
+            globals.weather.y * (1.0 + globals.weather6.w * in.rain_concavity),
+            0.0,
+            1.0,
+        );
+        let rain = rain_local * (1.0 - globals.weather.z) * wcam * dry_px;
         ground = ground * (1.0 - globals.weather3.x * rain);
     }
     let base = mix(ground, in.water.rgb, clamp(wet, 0.0, 1.0));
@@ -742,6 +764,14 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     let hemi_n = 0.5 + 0.5 * dot(n, globals.sky.xyz);
     c += base * vec3<f32>(0.40, 0.50, 0.72)
         * (moonlit * 0.10 + 0.015 + 0.05 * hemi_n) * (1.0 - day) * moon_up;
+    // Clouds v2 / W3: once the camera rises above the high shell, composite
+    // the same three deterministic formations over terrain pixels. The
+    // helper stacks far-to-near shell hits and hard-caps the combined alpha,
+    // so clouds can never fully obscure orbital ground.
+    if (globals.weather.w < 500.0 && globals.sky.w > globals.weather5.y) {
+        let orbital = cloud_orbit_composite(normalize(in.rel_flag.xyz));
+        c = mix(c, orbital.rgb, orbital.a);
+    }
     let fog = (1.0 - exp(-in.dist_km * 0.0035)) * atm * 0.7;
     c = mix(c, vec3<f32>(0.55, 0.70, 0.88) * (0.15 + 0.85 * day), fog);
     // wading with your eyes under the surface: everything goes water-blue
@@ -800,7 +830,9 @@ fn vnoise_at(base: vec3<i32>, p: vec3<f32>) -> f32 {
     return mix(mix(x00, x10, u.y), mix(x01, x11, u.y), u.z);
 }
 
-// trilinear value noise + a 4-octave fbm — the cloud deck's fabric
+// Trilinear value noise is the shared fabric for the faked-3D cloud shells.
+// Layer functions deliberately use only 2-3 taps apiece: shell parallax and
+// weather-driven shape changes buy more depth than a volume march would.
 fn vnoise(p: vec3<f32>) -> f32 {
     let i = vec3<i32>(floor(p));
     let f = fract(p);
@@ -820,16 +852,169 @@ fn vnoise(p: vec3<f32>) -> f32 {
     return mix(mix(x00, x10, u.y), mix(x01, x11, u.y), u.z);
 }
 
-fn cloud_fbm(p: vec3<f32>) -> f32 {
-    var v = 0.0;
-    var amp = 0.5;
-    var q = p;
-    for (var i = 0; i < 4; i = i + 1) {
-        v += amp * vnoise(q);
-        q = q * 2.13 + vec3<f32>(31.7, 17.3, 51.1);
-        amp *= 0.5;
+fn cloud_seed_offset(layer: u32) -> vec3<f32> {
+    // Planet seed is carried in karst.w as an independent premixed u32.
+    // Integer mixing keeps the layout seed-dependent without asking large
+    // f32 world coordinates to preserve low seed bits.
+    var s = globals.karst.w ^ (layer * 747796405u + 2891336453u);
+    s ^= s >> 16u;
+    s *= 2246822519u;
+    s ^= s >> 13u;
+    return vec3<f32>(
+        f32(s & 1023u),
+        f32((s >> 10u) & 1023u),
+        f32((s >> 20u) & 1023u),
+    ) * 0.03125;
+}
+
+fn cloud_shell_hit(ray: vec3<f32>, altitude_km: f32) -> vec4<f32> {
+    // Below a shell the positive far root is overhead; outside it the near
+    // root lies between an orbital eye and the ground. w < 0 means no hit.
+    let ctr = globals.center.xyz;
+    let r_ground = length(ctr) - max(globals.sky.w, 0.0);
+    let r_shell = r_ground + altitude_km;
+    let b = dot(ctr, ray);
+    let qd = dot(ctr, ctr) - r_shell * r_shell;
+    let disc = b * b - qd;
+    if (disc <= 0.0) {
+        return vec4<f32>(0.0, 0.0, 0.0, -1.0);
     }
-    return v;
+    let root = sqrt(disc);
+    let t_hit = select(b - root, b + root, qd < 0.0);
+    if (t_hit <= 0.0) {
+        return vec4<f32>(0.0, 0.0, 0.0, -1.0);
+    }
+    return vec4<f32>(normalize(ray * t_hit - ctr), t_hit);
+}
+
+fn cloud_color(
+    sdir: vec3<f32>,
+    view_dir: vec3<f32>,
+    kind: u32,
+    fabric: f32,
+) -> vec3<f32> {
+    let cover = globals.weather.x;
+    let precip = globals.weather.y;
+    let sun_h = dot(sdir, globals.sun_dir.xyz);
+    let local_day = smoothstep(-0.08, 0.15, sun_h);
+    var col = vec3<f32>(0.96, 0.97, 1.00);
+    if (kind == 0u) {
+        // Low rain-bearing bellies are the darkest formation.
+        let heavy = clamp(0.35 * cover + 0.85 * precip, 0.0, 1.0);
+        col = mix(
+            vec3<f32>(0.82, 0.85, 0.90),
+            vec3<f32>(0.24, 0.27, 0.34),
+            clamp(heavy * (0.65 + 0.45 * fabric), 0.0, 1.0),
+        );
+    } else if (kind == 1u) {
+        // Broken cumulus keeps bright crowns until precipitation builds.
+        let heavy = clamp(0.22 * cover + 0.68 * precip, 0.0, 1.0);
+        col = mix(
+            vec3<f32>(0.97, 0.98, 1.00),
+            vec3<f32>(0.39, 0.42, 0.49),
+            clamp(heavy * (0.35 + 0.75 * fabric), 0.0, 1.0),
+        );
+    } else {
+        // Ice-rich cirrus stays thin, pale, and slightly blue.
+        col = mix(vec3<f32>(0.93, 0.96, 1.00), vec3<f32>(0.75, 0.82, 0.92), 0.18 * cover);
+    }
+    col *= 0.10 + 0.95 * local_day;
+    let toward = pow(max(dot(view_dir, globals.sun_dir.xyz), 0.0), 6.0);
+    let low_sun = 1.0 - smoothstep(0.05, 0.35, sun_h);
+    let sunset = toward * low_sun * local_day * select(0.28, 0.10, kind == 0u);
+    return mix(col, vec3<f32>(0.98, 0.62, 0.38), sunset);
+}
+
+// kind: 0 low storm base, 1 middle cumulus, 2 high cirrus. Shape, coverage,
+// and color read cover/precip/temp; shell position reads only seed plus the
+// advected weather clock, preserving the determinism contract.
+fn cloud_layer_sample(sdir: vec3<f32>, view_dir: vec3<f32>, kind: u32) -> vec4<f32> {
+    let cover = globals.weather.x;
+    let precip = globals.weather.y;
+    let cold = 1.0 - smoothstep(-8.0, 12.0, globals.weather.w);
+    let warm = smoothstep(-2.0, 22.0, globals.weather.w);
+    if (kind == 2u) {
+        let p0 = (sdir - globals.weather2.xyz * 0.72) * globals.weather6.z
+            + cloud_seed_offset(2u);
+        // An anisotropic rotated domain stretches cells into fibrous cirrus.
+        let p = vec3<f32>(
+            p0.x * 0.24 + p0.z * 0.10,
+            p0.y * 1.18 + p0.x * 0.05,
+            p0.z * 0.54 - p0.x * 0.07,
+        );
+        let fabric = 0.68 * vnoise(p)
+            + 0.32 * vnoise(p * 2.07 + vec3<f32>(13.1, 7.7, 29.3));
+        let wisps = smoothstep(0.57 - 0.035 * cold, 0.70 - 0.025 * cold, fabric);
+        let presence = (0.16 + 0.62 * (1.0 - cover)) * (0.78 + 0.22 * cold);
+        let alpha = clamp(wisps * presence * globals.weather7.z, 0.0, 1.0);
+        return vec4<f32>(cloud_color(sdir, view_dir, kind, fabric), alpha);
+    }
+
+    // Low and middle shells share a broad mask. Different hit directions and
+    // detail scales avoid duplication while storm cells align vertically.
+    let broad_p = (sdir - globals.weather2.xyz) * (globals.weather6.x * 0.62)
+        + cloud_seed_offset(7u);
+    let broad = vnoise(broad_p);
+    if (kind == 1u) {
+        let p = (sdir - globals.weather2.xyz) * globals.weather6.y
+            + cloud_seed_offset(1u);
+        let fabric = 0.52 * broad
+            + 0.32 * vnoise(p)
+            + 0.16 * vnoise(p * 2.03 + vec3<f32>(31.7, 17.3, 51.1));
+        let threshold = 0.66 - 0.25 * cover - 0.05 * precip;
+        let puffs = smoothstep(threshold, threshold + 0.12, fabric);
+        let presence = smoothstep(0.10, 0.38, cover) * (0.86 + 0.14 * warm);
+        let alpha = clamp(puffs * presence * globals.weather7.y, 0.0, 1.0);
+        return vec4<f32>(cloud_color(sdir, view_dir, kind, fabric), alpha);
+    }
+
+    let p = (sdir - globals.weather2.xyz * 1.16) * globals.weather6.x
+        + cloud_seed_offset(0u);
+    let fabric = 0.68 * broad
+        + 0.32 * vnoise(p * 1.73 + vec3<f32>(9.3, 41.7, 5.9));
+    let threshold = 0.61 - 0.09 * cover - 0.13 * precip;
+    let bases = smoothstep(threshold, threshold + 0.11, fabric);
+    let storm_presence = max(
+        smoothstep(0.12, 0.70, precip),
+        0.38 * smoothstep(0.82, 0.98, cover),
+    ) * (0.86 + 0.14 * warm);
+    let alpha = clamp(bases * storm_presence * globals.weather7.x, 0.0, 1.0);
+    return vec4<f32>(cloud_color(sdir, view_dir, kind, fabric), alpha);
+}
+
+fn cloud_layer_on_ray(ray: vec3<f32>, altitude_km: f32, kind: u32) -> vec4<f32> {
+    let hit = cloud_shell_hit(ray, altitude_km);
+    if (hit.w < 0.0) {
+        return vec4<f32>(0.0);
+    }
+    return cloud_layer_sample(hit.xyz, ray, kind);
+}
+
+fn cloud_over(acc: vec4<f32>, near_layer: vec4<f32>) -> vec4<f32> {
+    let a = near_layer.a + acc.a * (1.0 - near_layer.a);
+    if (a <= 1e-5) {
+        return vec4<f32>(0.0);
+    }
+    let premul = near_layer.rgb * near_layer.a
+        + acc.rgb * acc.a * (1.0 - near_layer.a);
+    return vec4<f32>(premul / a, a);
+}
+
+fn cloud_orbit_composite(ray: vec3<f32>) -> vec4<f32> {
+    let count = u32(globals.weather5.z + 0.5);
+    var acc = vec4<f32>(0.0);
+    // From orbit, low -> middle -> high is far-to-near.
+    if (count >= 3u) {
+        acc = cloud_over(acc, cloud_layer_on_ray(ray, globals.weather3.z, 0u));
+    }
+    acc = cloud_over(acc, cloud_layer_on_ray(ray, globals.weather5.x, 1u));
+    if (count >= 2u) {
+        acc = cloud_over(acc, cloud_layer_on_ray(ray, globals.weather5.y, 2u));
+    }
+    let handoff = smoothstep(globals.weather5.y, globals.weather3.w, globals.sky.w);
+    // W3's 0.55 default is enforced after stacking, never per layer.
+    acc.a = min(acc.a, globals.weather5.w) * handoff;
+    return acc;
 }
 
 // procedural star field: hash the view direction into cells on a cube
@@ -945,44 +1130,31 @@ fn fs_sky(in: SkyOut) -> @location(0) vec4<f32> {
         // tight halo hugging the disc (not a broad blob)
         c += vec3<f32>(0.55, 0.62, 0.80) * pow(max(dm, 0.0), 2600.0) * 0.30 * moon_vis;
     }
-    // ---- W1 cloud deck (WEATHER.md): a wind-scrolled noise shell a few
-    // km up. Drawn after the sun/moon (clouds cover them) and before the
-    // stars (which dim behind lit cloud via sky_lum). Fades out entirely
-    // by weather3.w camera altitude: W1 renders NO clouds from space — the
-    // capped-opacity orbital layer is W3's job, so the "never obscure the
-    // ground from orbit" constraint holds trivially for now.
-    let cover = globals.weather.x;
-    let deck_fade =
-        1.0 - smoothstep(globals.weather3.z, globals.weather3.w, max(globals.sky.w, 0.0));
-    if (cover > 0.004 && deck_fade > 0.003) {
-        let ctr = globals.center.xyz;
-        let r_shell = length(ctr) - max(globals.sky.w, 0.0) + globals.weather3.z;
-        let b2 = dot(ctr, dir);
-        let qd = dot(ctr, ctr) - r_shell * r_shell; // < 0 while under the deck
-        let disc2 = b2 * b2 - qd;
-        if (disc2 > 0.0 && qd < 0.0) {
-            let t_hit = b2 + sqrt(disc2);
-            let sdir = normalize(dir * t_hit - ctr); // deck point on its sphere
-            // the deck scrolls with the same synoptic drift the weather
-            // field advects by — the storm you see IS the storm you get
-            let den = cloud_fbm((sdir - globals.weather2.xyz) * 900.0);
-            let a_thr = 0.68 - 0.40 * cover;
-            var alpha = smoothstep(a_thr, a_thr + 0.18, den);
-            // grazing rays pack more deck toward the horizon, then the
-            // deck fades below it and thins away to space with the air
-            alpha = min(alpha * (1.0 + 0.7 * (1.0 - clamp(h, 0.0, 1.0))), 1.0);
-            alpha = alpha * smoothstep(-0.02, 0.08, h) * deck_fade * atm;
-            // bright lit tops; heavy rain bellies go slate; a low sun warms
-            // the deck the way it warms the sky
-            let heavy = clamp(globals.weather.y * 0.9 + cover * 0.45, 0.0, 1.0);
-            var ccol = mix(
-                vec3<f32>(0.96, 0.97, 1.00),
-                vec3<f32>(0.36, 0.39, 0.46),
-                clamp(heavy * (0.35 + 0.85 * den), 0.0, 1.0),
-            );
-            ccol = ccol * (0.10 + 0.95 * day);
-            ccol = mix(ccol, vec3<f32>(0.98, 0.62, 0.38), toward * low * 0.4 * day * (1.0 - heavy));
-            c = mix(c, ccol, alpha);
+    // ---- Clouds v2: three cheap concentric 2-D shells, composited
+    // far-to-near. Different altitudes make head/camera motion produce real
+    // parallax; weather selects cirrus, broken cumulus, or aligned storm
+    // bases without a mutable simulation or volume march.
+    let below_fade =
+        1.0 - smoothstep(globals.weather5.y, globals.weather3.w, max(globals.sky.w, 0.0));
+    if (globals.weather.w < 500.0 && below_fade > 0.003) {
+        let count = u32(globals.weather5.z + 0.5);
+        let horizon = smoothstep(-0.02, 0.08, h);
+        let grazing = 1.0 + 0.55 * (1.0 - clamp(h, 0.0, 1.0));
+        let visibility = horizon * below_fade * atm;
+        var layer = vec4<f32>(0.0);
+        // From below, high -> middle -> low is far-to-near.
+        if (count >= 2u) {
+            layer = cloud_layer_on_ray(dir, globals.weather5.y, 2u);
+            layer.a = min(layer.a * grazing, 1.0) * visibility;
+            c = mix(c, layer.rgb, layer.a);
+        }
+        layer = cloud_layer_on_ray(dir, globals.weather5.x, 1u);
+        layer.a = min(layer.a * grazing, 1.0) * visibility;
+        c = mix(c, layer.rgb, layer.a);
+        if (count >= 3u) {
+            layer = cloud_layer_on_ray(dir, globals.weather3.z, 0u);
+            layer.a = min(layer.a * grazing, 1.0) * visibility;
+            c = mix(c, layer.rgb, layer.a);
         }
     }
     // stars own the dark: night ground and open space alike. They dim away
