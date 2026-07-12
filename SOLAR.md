@@ -75,6 +75,14 @@ genuinely hard, the phase plan, and the gates each phase must pass.
 
 ## Phases (each independently gauntlet-green)
 
+STATUS 2026-07-12: P1 SHIPPED (merge 732360e) and P2 SHIPPED (merge
+5fc0612) - physical Kepler bodies on the D-5 clock, eclipses per
+D-16, freecam/focus/roll, generated moon (crater fold, rays, maria),
+moon teleport map tab, two moon reel poses. P1's pinned-sun path
+originally rotated bodies about the observer (non-rigid vs Neisor at
+the origin) and pinned skies could show phantom eclipses - fixed at
+the P2 merge (rotation about Neisor's center). Next: P3 moon landing.
+
 - P1 BODIES + FRAMES: Kepler elements; sun and moon as positioned
   bodies (moon = mesh sphere with large-octave noise at true scale
   ratio ~0.27 R_neisor; sun = emissive mesh); sky suite pins
