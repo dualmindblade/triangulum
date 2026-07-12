@@ -1,0 +1,17 @@
+mode fly
+weather pin 0.0 0.0
+weather time 0
+sun 10.0 0.0
+teleport 10.0 0.0 0.05
+look 0 75
+shot t_sun_up
+teleport 10.0 91.0 0.05
+look -90 3
+shot t_sunset_w
+look 90 3
+shot t_sunset_e
+teleport -9.5 176.9 0.05
+look 0 75
+shot t_moon_up
+look 120 35
+shot t_stars

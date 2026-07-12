@@ -165,6 +165,21 @@ satisfactory and can be tweaked later when textures are added.\]
 
 ## Answered (the design record)
 
+### 2026-07-12 - D-16 Eclipses + solar-system idea verdicts (Andrew,
+brackets in SOLAR.md)
+Eclipses: ANSWERED at proposal time - "much greater rate than on
+Earth, but... irregular, that's somewhat part of the charm; use the
+orbital parameters to tune this factor. Copper-tinting [lunar] is a
+nice feature, and solar eclipses should reduce the light coming from
+the sun proportional to the occluded area until the sky becomes
+night-like." Tides: DEFERRED behind water levels + revisit-time block
+updates (the seasonal-ice prerequisite). Comet collision events:
+DEFERRED behind prerequisites; astronomy/calendar features accepted.
+Sun surface (spots, flares, auroras): accepted, deferrable. Trojan
+asteroid: "good test to add, proceed or defer as is necessary."
+NEW REQUIREMENT: the teleport map must cover the moon once P2
+(moon generation) completes.
+
 ### 2026-07-11 - Andrew's bracket verdicts (in place above, summarized)
 CLOSED as decided: D-1 (seamless stays; color fine-tuning later), D-2
 (mottling ignorable - textures will replace it), D-3 (edge widths

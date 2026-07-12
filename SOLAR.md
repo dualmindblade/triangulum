@@ -94,18 +94,34 @@ genuinely hard, the phase plan, and the gates each phase must pass.
 
 - Eclipse art direction (D-16 candidate): solar eclipses sweeping a
   moon shadow across Neisor; lunar eclipses copper-tinting the moon.
+  \[Eclipses should occur at a much greater rate than on Earth,
+  but I think they should remain irregular as that's somewhat part
+  of the charm in having them, you can use the orbital perameters to
+  tune this factor. Copper-tinting is a nice feature, and solar
+  eclipses should reduce the light coming from the sun proportional
+  to the occluded area until the sky becomes night-like.\]
 - Tides: moon position -> small deterministic sea-level function;
   shores already understand levels. Interacts with the WATER
   CONTRACT - needs its own design pass before any code.
+  \[Defer until water levels and block updates are added (the kind
+  that appear when reloading terrain, as will need to be added to
+  introduce seasonal ice cap coverage.\]
 - Astronomy gameplay: the D-5 calendar IS the moon - phases as the
   in-world clock, navigation by stars, meteor showers when Neisor
   crosses a comet's (eccentric!) orbit - which can deposit NEW craters
   into the moon's crater stream at deterministic times.
+  \[All great features to add. Defer comet collision events until
+  the necessary prerequisites are added.\]
 - Sun surface (spec: "dynamic texturing later"): kgnoise granulation,
   limb darkening, flare events on the weather-style deterministic
   clock; space weather -> polar auroras on Neisor.
+  \[All good. Dark spots, auroras, and solar flares are all
+  awesome features, though these can be deferred for some time.\]
 - Orbitally-locked trojan asteroid as the spec's locked-body case.
-
+  \[Good test to add, proceed or defer as is necessary.\]
+  
+\[Need to have an updated teleport map once phase 2 is completed.\]
+  
 ## Standing constraints for every phase
 
 Gauntlet applies (tests, suites, sync_diff, reel, censuses) plus:
