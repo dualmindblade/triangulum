@@ -32,10 +32,11 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use glam::DVec3;
 use rayon::prelude::*;
 use triangulum_viewer::planet::{face_from_dir, Planet};
-use triangulum_viewer::terrain::{sample, Sample, VOXEL_OCTAVES};
+use triangulum_viewer::terrain::{sample_at_season, Sample, VOXEL_OCTAVES};
 use triangulum_viewer::voxel::{
-    canonical_column, col_ctx, column_of, water_render_top, ColCtx, Edits,
+    canonical_column, col_ctx_at_season, column_of, water_render_top, ColCtx, Edits,
 };
+use triangulum_viewer::weather::{StructuralSeason, WeatherTuning};
 
 const WALL_KM: f64 = 0.002; // 2 m
 const JUMP_KM: f64 = 0.002;
@@ -64,6 +65,7 @@ struct Side {
     river: bool,
     temp_c: f64, // frozen walls (S-3/W-5b) are a backlogged aesthetic call —
                  // the --caps export must touch LIQUID lakes only
+    frozen: bool,
 }
 
 #[derive(Clone)]
@@ -83,13 +85,14 @@ fn side(s: &Sample) -> Side {
         lake: s.lake,
         river: s.river_dist_km.is_finite() && s.river_dist_km < s.river_hw_km,
         temp_c: s.temp_c,
+        frozen: s.frozen,
     }
 }
 
-fn probe(planet: &Planet, dir: DVec3) -> Side {
+fn probe(planet: &Planet, dir: DVec3, season: StructuralSeason) -> Side {
     SAMPLES.fetch_add(1, Ordering::Relaxed);
     let (f, u, v) = face_from_dir(dir);
-    side(&sample(planet, f, u, v, VOXEL_OCTAVES))
+    side(&sample_at_season(planet, f, u, v, VOXEL_OCTAVES, season))
 }
 
 /// The discontinuity class of an adjacent pair, if any.
@@ -114,11 +117,11 @@ fn classify(a: &Side, b: &Side) -> Option<(Class, f64)> {
 /// Bisect a flagged pair down to MIN_SEP_KM. Returns None when the
 /// discontinuity dissolves under refinement (smooth ramp, or a dry levee
 /// higher than both waters — physically fine, not a bug).
-fn refine(planet: &Planet, mut pa: DVec3, mut a: Side, mut pb: DVec3, mut b: Side, r_km: f64) -> Option<Finding> {
+fn refine(planet: &Planet, mut pa: DVec3, mut a: Side, mut pb: DVec3, mut b: Side, r_km: f64, season: StructuralSeason) -> Option<Finding> {
     classify(&a, &b)?;
     while (pa - pb).length() * r_km > MIN_SEP_KM {
         let pm = (pa + pb).normalize();
-        let m = probe(planet, pm);
+        let m = probe(planet, pm, season);
         if classify(&a, &m).is_some() {
             pb = pm;
             b = m;
@@ -136,13 +139,13 @@ fn refine(planet: &Planet, mut pa: DVec3, mut a: Side, mut pb: DVec3, mut b: Sid
 /// Scan an ordered polyline of directions: classify consecutive pairs,
 /// refine candidates (capped so a kilometre-long wall doesn't refine at
 /// every step).
-fn scan_line(planet: &Planet, pts: &[DVec3], r_km: f64, cap: usize, out: &mut Vec<Finding>) {
-    let sides: Vec<Side> = pts.iter().map(|&p| probe(planet, p)).collect();
+fn scan_line(planet: &Planet, pts: &[DVec3], r_km: f64, cap: usize, out: &mut Vec<Finding>, season: StructuralSeason) {
+    let sides: Vec<Side> = pts.iter().map(|&p| probe(planet, p, season)).collect();
     let mut hits = 0usize;
     for i in 1..pts.len() {
         if classify(&sides[i - 1], &sides[i]).is_some() {
             if hits < cap
-                && let Some(f) = refine(planet, pts[i - 1], sides[i - 1], pts[i], sides[i], r_km)
+                && let Some(f) = refine(planet, pts[i - 1], sides[i - 1], pts[i], sides[i], r_km, season)
             {
                 out.push(f);
             }
@@ -160,12 +163,12 @@ fn lat_lon(d: DVec3) -> (f64, f64) {
 /// mesher's shoreline clamp, `water_render_top`) stands above adjacent dry
 /// ground. >= 1 block is a lip a player can stare into. Returns the worst
 /// lip in blocks at this spot.
-fn lip_at(planet: &Planet, edits: &Edits, dir: DVec3) -> i64 {
+fn lip_at(planet: &Planet, edits: &Edits, dir: DVec3, season: StructuralSeason) -> i64 {
     let (face, u, v) = face_from_dir(dir);
     let (ci, cj) = column_of(u, v);
     let ctx = |di: i64, dj: i64| -> ColCtx {
         let (f2, c2, j2) = canonical_column(face, ci as i64 + di, cj as i64 + dj);
-        col_ctx(planet, edits, f2 as usize, c2, j2)
+        col_ctx_at_season(planet, edits, f2 as usize, c2, j2, season)
     };
     let mut worst = 0i64;
     for wi in -1..=1i64 {
@@ -201,22 +204,23 @@ fn lips_on_line(
     edits: &Edits,
     pts: &[DVec3],
     out: &mut Vec<Finding>,
+    season: StructuralSeason,
 ) {
     let mut prev: Option<(DVec3, bool)> = None;
     for &p in pts {
         let (f, u, v) = face_from_dir(p);
-        let s = sample(planet, f, u, v, VOXEL_OCTAVES);
+        let s = sample_at_season(planet, f, u, v, VOXEL_OCTAVES, season);
         SAMPLES.fetch_add(1, Ordering::Relaxed);
         let wet = s.has_water();
         if let Some((pp, pwet)) = prev
             && pwet != wet
         {
             let mid = (pp + p).normalize();
-            let lip = lip_at(planet, edits, mid);
+            let lip = lip_at(planet, edits, mid, season);
             if lip >= 1 {
                 let side_at = |d: DVec3| {
                     let (f, u, v) = face_from_dir(d);
-                    side(&sample(planet, f, u, v, VOXEL_OCTAVES))
+                    side(&sample_at_season(planet, f, u, v, VOXEL_OCTAVES, season))
                 };
                 out.push(Finding {
                     class: Class::Lip,
@@ -271,12 +275,17 @@ fn main() -> anyhow::Result<()> {
     let mut radius = 3.0f64;
     let mut caps_path = String::new();
     let mut body_name = "neisor".to_string();
+    let mut season_frac = 0.45f64;
     let mut i = 1;
     while i < argv.len() {
         let next = |i: usize| argv.get(i + 1).cloned().unwrap_or_default();
         match argv[i].as_str() {
             "--body" => {
                 body_name = next(i).to_ascii_lowercase();
+                i += 1;
+            }
+            "--season" => {
+                season_frac = next(i).parse()?;
                 i += 1;
             }
             "--out" => {
@@ -327,6 +336,7 @@ fn main() -> anyhow::Result<()> {
         out_path = format!("{interchange}/census.md");
     }
     let planet = Planet::load(assets)?;
+    let season = StructuralSeason::quantized(season_frac, &WeatherTuning::load(assets));
     if body_name == "moon" {
         let tuning = triangulum_viewer::orbits::SolarTuning::load(assets);
         let radius_km = tuning.radius_km(
@@ -367,9 +377,9 @@ fn main() -> anyhow::Result<()> {
         for (dy, dx) in [(0i32, 0i32), (0, 1), (0, -1), (1, 0), (-1, 0), (1, 1), (1, -1), (-1, 1), (-1, -1)] {
             let p = (center + (t1 * (dx as f64 * 0.025) + t2 * (dy as f64 * 0.025)) / r_km).normalize();
             let (f, u, v) = face_from_dir(p);
-            let s = sample(&planet, f, u, v, VOXEL_OCTAVES);
+            let s = sample_at_season(&planet, f, u, v, VOXEL_OCTAVES, season);
             // a coarse-mesh view of the same point: LOD wetness agreement
-            let m = sample(&planet, f, u, v, 5);
+            let m = sample_at_season(&planet, f, u, v, 5, season);
             let (plat, plon) = lat_lon(p);
             println!(
                 "({dx:+},{dy:+}) lat {plat:.4} lon {plon:.4}  h={:.1}m e_raw={:.1}m water={} sea={} lake={} riv_d={} hw={:.3}km rlvl={} wet={:.2} rwet={:.2} | mesh5 water={} wet={:.2} rwet={:.2} | ofrac={:.2} wmask={:.2} rough={:.2}",
@@ -425,7 +435,7 @@ fn main() -> anyhow::Result<()> {
                     let pts: Vec<DVec3> = (-15..=15)
                         .map(|o| (p + across * (o as f64 * 0.06 / r_km)).normalize())
                         .collect();
-                    lips_on_line(&planet, &edits, &pts, &mut out);
+                    lips_on_line(&planet, &edits, &pts, &mut out, season);
                 }
                 out
             })
@@ -457,7 +467,7 @@ fn main() -> anyhow::Result<()> {
                             (l.center + radial * (d / r_km)).normalize()
                         })
                         .collect();
-                    lips_on_line(&planet, &edits, &pts, &mut out);
+                    lips_on_line(&planet, &edits, &pts, &mut out, season);
                 }
                 out
             })
@@ -486,14 +496,14 @@ fn main() -> anyhow::Result<()> {
                         (center + (t1 * (ix as f64 * step) + t2 * (iy as f64 * step)) / r_km).normalize()
                     })
                     .collect();
-                scan_line(&planet, &pts, r_km, usize::MAX, &mut out);
+                scan_line(&planet, &pts, r_km, usize::MAX, &mut out, season);
                 // vertical scan line (same index used as column)
                 let pts: Vec<DVec3> = (-n..=n)
                     .map(|ix| {
                         (center + (t1 * (iy as f64 * step) + t2 * (ix as f64 * step)) / r_km).normalize()
                     })
                     .collect();
-                scan_line(&planet, &pts, r_km, usize::MAX, &mut out);
+                scan_line(&planet, &pts, r_km, usize::MAX, &mut out, season);
                 out
             })
             .collect();
@@ -523,7 +533,7 @@ fn main() -> anyhow::Result<()> {
                     }
                     let pts: Vec<DVec3> =
                         offsets.iter().map(|&o| (p + across * (o / r_km)).normalize()).collect();
-                    scan_line(&planet, &pts, r_km, 6, &mut out);
+                    scan_line(&planet, &pts, r_km, 6, &mut out, season);
                 }
                 if si % 2000 == 0 {
                     eprintln!("  seg {si}... ({} samples)", SAMPLES.load(Ordering::Relaxed));
@@ -561,7 +571,7 @@ fn main() -> anyhow::Result<()> {
                             (l.center + radial * (d / r_km)).normalize()
                         })
                         .collect();
-                    scan_line(&planet, &pts, r_km, 4, &mut out);
+                    scan_line(&planet, &pts, r_km, 4, &mut out, season);
                 }
                 out
             })
@@ -627,7 +637,7 @@ fn main() -> anyhow::Result<()> {
             }
             let (wet, dry) =
                 if f.a.water_km.is_finite() { (&f.a, &f.b) } else { (&f.b, &f.a) };
-            if !wet.lake || wet.sea || wet.temp_c < -4.0 {
+            if !wet.lake || wet.sea || wet.frozen {
                 continue;
             }
             let (lat, lon) = lat_lon(f.mid);
@@ -661,6 +671,7 @@ fn main() -> anyhow::Result<()> {
         SAMPLES.load(Ordering::Relaxed),
         t0.elapsed().as_secs_f64()
     );
+    let _ = writeln!(report, "season: {:.8} (bucket {}/{})\n", season.season_frac, season.bucket, season.bucket_count);
     let (mut nw, mut nj, mut ns, mut nl) = (0usize, 0usize, 0usize, 0usize);
     for g in &groups {
         nw += g.wall;
@@ -677,8 +688,7 @@ fn main() -> anyhow::Result<()> {
             .iter()
             .filter(|f| {
                 f.class == Class::Lip
-                    && ((f.a.lake && f.a.temp_c >= -4.0)
-                        || (f.b.lake && f.b.temp_c >= -4.0))
+                    && ((f.a.lake && !f.a.frozen) || (f.b.lake && !f.b.frozen))
             })
             .count();
         let liquid_lake_one_block_lips = findings
@@ -686,8 +696,7 @@ fn main() -> anyhow::Result<()> {
             .filter(|f| {
                 f.class == Class::Lip
                     && f.mag_km <= 0.001 + f64::EPSILON
-                    && ((f.a.lake && f.a.temp_c >= -4.0)
-                        || (f.b.lake && f.b.temp_c >= -4.0))
+                    && ((f.a.lake && !f.a.frozen) || (f.b.lake && !f.b.frozen))
             })
             .count();
         let _ = writeln!(

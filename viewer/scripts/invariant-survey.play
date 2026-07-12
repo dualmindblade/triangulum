@@ -1,4 +1,5 @@
 # Invariant survey: settle the player in walk mode across many biomes and
+weather season 0.45
 # assert the physics/water invariants that must hold everywhere. Any failure
 # makes the run exit non-zero — so this doubles as a regression test AND an
 # automated discovery tool (a broken location fails loudly instead of needing

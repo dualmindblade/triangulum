@@ -40,6 +40,15 @@ pub struct WeatherTuning {
     /// Rain/snow mix band (C): all snow below lo, all rain above hi.
     pub snow_lo_c: f64,
     pub snow_hi_c: f64,
+    /// Structural W4 freeze/thaw thresholds. Cooling water freezes below
+    /// `freeze_c`; warming ice persists until `thaw_c`.
+    pub freeze_c: f64,
+    pub thaw_c: f64,
+    /// Number of immutable structural snapshots per orbit. Geometry changes
+    /// only when this bucket changes, never continuously within a frame.
+    pub season_buckets: u32,
+    /// Strength of the broadleaf autumn/dormancy tint curve.
+    pub deciduous_tint_strength: f64,
     /// Fraction of direct sunlight that survives full overcast.
     pub overcast_sun_floor: f64,
     /// Max rain darkening of ground albedo (0..1).
@@ -95,6 +104,10 @@ impl Default for WeatherTuning {
             precip_wet_norm: 220.0,
             snow_lo_c: -1.5,
             snow_hi_c: 1.5,
+            freeze_c: -5.0,
+            thaw_c: -2.0,
+            season_buckets: 24,
+            deciduous_tint_strength: 0.22,
             overcast_sun_floor: 0.35,
             rain_darken: 0.30,
             rain_crevice_bias: 0.18,
@@ -162,6 +175,9 @@ impl WeatherTuning {
             ("precip_wet_norm", self.precip_wet_norm),
             ("snow_lo_c", self.snow_lo_c),
             ("snow_hi_c", self.snow_hi_c),
+            ("freeze_c", self.freeze_c),
+            ("thaw_c", self.thaw_c),
+            ("deciduous_tint_strength", self.deciduous_tint_strength),
             ("overcast_sun_floor", self.overcast_sun_floor),
             ("rain_darken", self.rain_darken),
             ("rain_crevice_bias", self.rain_crevice_bias),
@@ -198,6 +214,15 @@ impl WeatherTuning {
         }
         if self.snow_lo_c >= self.snow_hi_c {
             return Err("snow_lo_c must be < snow_hi_c".into());
+        }
+        if self.freeze_c >= self.thaw_c {
+            return Err("freeze_c must be < thaw_c".into());
+        }
+        if !(4..=96).contains(&self.season_buckets) {
+            return Err("season_buckets must be in 4..=96".into());
+        }
+        if !(0.0..=1.0).contains(&self.deciduous_tint_strength) {
+            return Err("deciduous_tint_strength must be in [0, 1]".into());
         }
         if !(0.0..=1.0).contains(&self.overcast_sun_floor)
             || !(0.0..=1.0).contains(&self.rain_darken)
@@ -244,6 +269,129 @@ impl WeatherTuning {
 
 }
 
+/// The legacy structural epoch. Its bucket deliberately evaluates the annual
+/// mean byte-for-byte so every pre-W4 baseline has an exact compatibility
+/// point while all other buckets follow the baked seasonal climatology.
+pub const CANONICAL_SEASON_FRAC: f64 = 0.45;
+
+/// Immutable input shared by terrain sampling, meshing, physics, and edits.
+/// `enabled == false` is the weather-off/legacy annual-mean law.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct StructuralSeason {
+    pub enabled: bool,
+    pub bucket: u32,
+    pub bucket_count: u32,
+    pub season_frac: f64,
+    pub sin_phase: f64,
+    pub cos_phase: f64,
+    pub freeze_c: f64,
+    pub thaw_c: f64,
+    pub deciduous_tint_strength: f64,
+}
+
+impl StructuralSeason {
+    pub const ANNUAL_BUCKET: u32 = u32::MAX;
+
+    pub fn annual() -> Self {
+        Self {
+            enabled: false,
+            bucket: Self::ANNUAL_BUCKET,
+            bucket_count: 1,
+            season_frac: CANONICAL_SEASON_FRAC,
+            sin_phase: 0.0,
+            cos_phase: 0.0,
+            freeze_c: -4.0,
+            thaw_c: -4.0,
+            deciduous_tint_strength: 0.0,
+        }
+    }
+
+    pub fn quantized(season_frac: f64, tuning: &WeatherTuning) -> Self {
+        let count = tuning.season_buckets.clamp(4, 96);
+        let frac = if season_frac.is_finite() {
+            season_frac.rem_euclid(1.0)
+        } else {
+            CANONICAL_SEASON_FRAC
+        };
+        let bucket = (frac * count as f64).floor() as u32 % count;
+        let canonical_bucket = (CANONICAL_SEASON_FRAC * count as f64).floor() as u32;
+        // Canonical compatibility is bucket-wide: a short wait in an old
+        // suite cannot nudge its first rebuild away from the blessed state.
+        let sampled = if bucket == canonical_bucket {
+            CANONICAL_SEASON_FRAC
+        } else {
+            (bucket as f64 + 0.5) / count as f64
+        };
+        let (sin_phase, cos_phase) = (std::f64::consts::TAU * sampled).sin_cos();
+        Self {
+            enabled: true,
+            bucket,
+            bucket_count: count,
+            season_frac: sampled,
+            sin_phase,
+            cos_phase,
+            freeze_c: tuning.freeze_c,
+            thaw_c: tuning.thaw_c,
+            deciduous_tint_strength: tuning.deciduous_tint_strength,
+        }
+    }
+
+    pub fn is_canonical(self) -> bool {
+        self.enabled && self.season_frac.to_bits() == CANONICAL_SEASON_FRAC.to_bits()
+    }
+}
+
+impl Default for StructuralSeason {
+    fn default() -> Self {
+        Self::annual()
+    }
+}
+
+/// Subtle broadleaf-only color cycle. Temperature makes the phase local to
+/// latitude/coast/elevation; the derivative distinguishes autumn cooling from
+/// spring warming at the same temperature. Canonical and weather-off calls
+/// return the input bit-for-bit.
+pub fn deciduous_tint(
+    base: [f32; 3],
+    temp_c: f64,
+    trend_c_per_orbit: f64,
+    season: StructuralSeason,
+) -> [f32; 3] {
+    if !season.enabled || season.is_canonical() || season.deciduous_tint_strength <= 0.0 {
+        return base;
+    }
+    let smooth = |lo: f64, hi: f64, value: f64| {
+        let x = ((value - lo) / (hi - lo)).clamp(0.0, 1.0);
+        x * x * (3.0 - 2.0 * x)
+    };
+    let cooling = smooth(0.0, 8.0, -trend_c_per_orbit);
+    let autumn = smooth(14.0, 4.0, temp_c) * smooth(-2.0, 8.0, temp_c) * cooling;
+    let dormant = smooth(4.0, -6.0, temp_c);
+    let target = if dormant > autumn {
+        [0.12, 0.115, 0.055]
+    } else {
+        [0.34, 0.16, 0.025]
+    };
+    let amount = season.deciduous_tint_strength * autumn.max(dormant);
+    std::array::from_fn(|i| {
+        (f64::from(base[i]) + (f64::from(target[i]) - f64::from(base[i])) * amount) as f32
+    })
+}
+
+/// Pure W4 inland-water class law, separated for monotonicity gates. The
+/// comparator is stable in world space; only the warming/cooling branch can
+/// select which edge of the hysteresis band is active.
+pub fn hysteretic_frozen(
+    temp_c: f64,
+    trend_c_per_orbit: f64,
+    comparator: f64,
+    freeze_c: f64,
+    thaw_c: f64,
+) -> bool {
+    let edge = if trend_c_per_orbit >= 0.0 { thaw_c } else { freeze_c };
+    temp_c < edge + (comparator.clamp(0.0, 1.0) - 0.5)
+}
+
 /// One weather sample: what the air is doing at a place and moment.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Weather {
@@ -265,7 +413,8 @@ pub struct Weather {
 // WEA2 keeps temperature at k=1 and adds k=2 cosine/sine terms for the two
 // fields whose real monthly series are commonly bimodal. Internally a legacy
 // WEA1 file is expanded to this layout with those four terms zero-filled.
-const LAYERS: usize = 14;
+const LAYERS: usize = 26;
+const WEA2_LAYERS: usize = 14;
 const WEA1_LAYERS: usize = 10;
 const L_TEMP_A: usize = 0;
 const L_TEMP_B: usize = 1;
@@ -281,6 +430,7 @@ const L_CLD_A2: usize = 10;
 const L_CLD_B2: usize = 11;
 const L_WIND_E: usize = 12;
 const L_WIND_N: usize = 13;
+const L_SEAICE_0: usize = 14;
 
 const WEA1_TO_WEA2: [usize; WEA1_LAYERS] = [
     L_TEMP_A,
@@ -300,6 +450,9 @@ pub struct WeatherField {
     res: usize,
     /// [face][layer] -> res*res raster, v-major, edge-inclusive.
     faces: Vec<Vec<Vec<f32>>>,
+    /// Temperature cosine/sine coefficients interleaved for the W4 hot path.
+    temp_harmonics: Vec<Vec<[f32; 2]>>,
+    has_seaice: bool,
 }
 
 impl WeatherField {
@@ -310,11 +463,12 @@ impl WeatherField {
 
     fn from_bytes(raw: &[u8]) -> anyhow::Result<Self> {
         anyhow::ensure!(raw.len() >= 12, "weather.bin header is truncated");
-        let (source_layers, legacy) = match &raw[0..4] {
-            b"WEA2" => (LAYERS, false),
-            b"WEA1" => (WEA1_LAYERS, true),
+        let (source_layers, version) = match &raw[0..4] {
+            b"WEA3" => (LAYERS, 3),
+            b"WEA2" => (WEA2_LAYERS, 2),
+            b"WEA1" => (WEA1_LAYERS, 1),
             magic => anyhow::bail!(
-                "unsupported weather.bin magic {:?}; expected WEA2 (rerun python scripts/bake_weather.py)",
+                "unsupported weather.bin magic {:?}; expected WEA3 (rerun python scripts/bake_weather.py)",
                 String::from_utf8_lossy(magic)
             ),
         };
@@ -353,7 +507,7 @@ impl WeatherField {
                     "weather.bin contains a non-finite coefficient"
                 );
                 off += n * 4;
-                let layer = if legacy {
+                let layer = if version == 1 {
                     WEA1_TO_WEA2[source_layer]
                 } else {
                     source_layer
@@ -362,13 +516,29 @@ impl WeatherField {
             }
             faces.push(layers);
         }
-        if legacy {
+        if version == 1 {
             eprintln!(
                 "weather.bin legacy WEA1 loaded: precipitation/cloud k=2 terms are zero; \
                  rebake with `python scripts/bake_weather.py output/seed42_r8 256` for WEA2"
             );
+        } else if version == 2 {
+            eprintln!(
+                "weather.bin legacy WEA2 loaded: seasonal sea ice falls back to temperature; \
+                 rebake with `python scripts/bake_weather.py output/seed42_r8 256` for WEA3"
+            );
         }
-        Ok(Self { res, faces })
+        let temp_harmonics = faces
+            .iter()
+            .map(|layers| {
+                layers[L_TEMP_A]
+                    .iter()
+                    .copied()
+                    .zip(layers[L_TEMP_B].iter().copied())
+                    .map(|(a, b)| [a, b])
+                    .collect()
+            })
+            .collect();
+        Ok(Self { res, faces, temp_harmonics, has_seaice: version == 3 })
     }
 
     /// Bilinear layer sample at (face, u, v) — mirrors planet.rs::bilinear.
@@ -384,6 +554,52 @@ impl WeatherField {
         let a = at(x0, y0) * (1.0 - fx) + at(x1, y0) * fx;
         let b = at(x0, y1) * (1.0 - fx) + at(x1, y1) * fx;
         a * (1.0 - fy) + b * fy
+    }
+
+    /// Two co-located layers with one coordinate/bilinear setup. Structural
+    /// temperature stores cosine/sine coefficients separately on disk, but
+    /// they are always consumed as a pair on the sample path.
+    #[inline(always)]
+    fn pair_at(&self, face: usize, layers: [usize; 2], u: f64, v: f64) -> [f64; 2] {
+        let res = self.res as f64;
+        let x = ((u * 0.5 + 0.5) * (res - 1.0)).clamp(0.0, res - 1.0);
+        let y = ((v * 0.5 + 0.5) * (res - 1.0)).clamp(0.0, res - 1.0);
+        let (x0, y0) = (x.floor() as usize, y.floor() as usize);
+        let (x1, y1) = ((x0 + 1).min(self.res - 1), (y0 + 1).min(self.res - 1));
+        let (fx, fy) = (x - x0 as f64, y - y0 as f64);
+        let i00 = y0 * self.res + x0;
+        let i10 = y0 * self.res + x1;
+        let i01 = y1 * self.res + x0;
+        let i11 = y1 * self.res + x1;
+        let interpolate = |data: &[f32]| {
+            let a = data[i00] as f64 * (1.0 - fx) + data[i10] as f64 * fx;
+            let b = data[i01] as f64 * (1.0 - fx) + data[i11] as f64 * fx;
+            a * (1.0 - fy) + b * fy
+        };
+        let face_layers = &self.faces[face];
+        [interpolate(&face_layers[layers[0]]), interpolate(&face_layers[layers[1]])]
+    }
+
+    #[inline(always)]
+    fn temp_pair_at(&self, face: usize, u: f64, v: f64) -> [f64; 2] {
+        let res = self.res as f64;
+        let x = ((u * 0.5 + 0.5) * (res - 1.0)).clamp(0.0, res - 1.0);
+        let y = ((v * 0.5 + 0.5) * (res - 1.0)).clamp(0.0, res - 1.0);
+        let (x0, y0) = (x.floor() as usize, y.floor() as usize);
+        let (x1, y1) = ((x0 + 1).min(self.res - 1), (y0 + 1).min(self.res - 1));
+        let (fx, fy) = (x - x0 as f64, y - y0 as f64);
+        let data = &self.temp_harmonics[face];
+        let p00 = data[y0 * self.res + x0];
+        let p10 = data[y0 * self.res + x1];
+        let p01 = data[y1 * self.res + x0];
+        let p11 = data[y1 * self.res + x1];
+        let ix = 1.0 - fx;
+        let iy = 1.0 - fy;
+        let a0 = p00[0] as f64 * ix + p10[0] as f64 * fx;
+        let b0 = p01[0] as f64 * ix + p11[0] as f64 * fx;
+        let a1 = p00[1] as f64 * ix + p10[1] as f64 * fx;
+        let b1 = p01[1] as f64 * ix + p11[1] as f64 * fx;
+        [a0 * iy + b0 * fy, a1 * iy + b1 * fy]
     }
 
     /// Climatology-only sample (Layer 1, no synoptic noise): seasonal 2 m air
@@ -414,6 +630,111 @@ impl WeatherField {
             + self.at(face, L_PRC_B2, u, v) * sn2)
             .max(0.0);
         (temp_c, precip)
+    }
+
+    /// W4's one structural temperature field. The harmonic anomaly is
+    /// follows the baked Fourier shape in every seasonal bucket. The single
+    /// canonical compatibility bucket is an explicit annual-raster cut line.
+    /// No synoptic/weather-presentation temperature participates.
+    pub fn seasonal_temp_c(
+        &self,
+        planet: &Planet,
+        face: usize,
+        u: f64,
+        v: f64,
+        season_frac: f64,
+    ) -> f64 {
+        self.seasonal_temp_state(planet, face, u, v, season_frac).0
+    }
+
+    /// Temperature plus derivative from one pair of coefficient reads.
+    pub fn seasonal_temp_state(
+        &self,
+        planet: &Planet,
+        face: usize,
+        u: f64,
+        v: f64,
+        season_frac: f64,
+    ) -> (f64, f64) {
+        let annual = planet.temp(face, u, v) as f64;
+        self.seasonal_temp_state_from_annual(annual, face, u, v, season_frac)
+    }
+
+    pub(crate) fn seasonal_temp_state_from_annual(
+        &self,
+        annual: f64,
+        face: usize,
+        u: f64,
+        v: f64,
+        season_frac: f64,
+    ) -> (f64, f64) {
+        let angle = std::f64::consts::TAU * season_frac.rem_euclid(1.0);
+        let (sn, cs) = angle.sin_cos();
+        self.seasonal_temp_state_from_phase(
+            annual,
+            face,
+            u,
+            v,
+            sn,
+            cs,
+            season_frac.to_bits() == CANONICAL_SEASON_FRAC.to_bits(),
+        )
+    }
+
+    pub(crate) fn seasonal_temp_state_from_phase(
+        &self,
+        annual: f64,
+        face: usize,
+        u: f64,
+        v: f64,
+        sn: f64,
+        cs: f64,
+        canonical: bool,
+    ) -> (f64, f64) {
+        let [a, b] = self.temp_pair_at(face, u, v);
+        let temp = if canonical { annual } else { annual + a * cs + b * sn };
+        let trend = std::f64::consts::TAU * (-a * sn + b * cs);
+        (temp, trend)
+    }
+
+    /// Sign of the local Fourier temperature derivative (C per orbit).
+    /// Positive means the hysteresis loop is on its thawing branch.
+    pub fn seasonal_temp_trend(
+        &self,
+        face: usize,
+        u: f64,
+        v: f64,
+        season_frac: f64,
+    ) -> f64 {
+        // This public convenience path is kept for map/probe callers; hot
+        // structural sampling uses `seasonal_temp_state` once.
+        let a = self.at(face, L_TEMP_A, u, v);
+        let b = self.at(face, L_TEMP_B, u, v);
+        let angle = std::f64::consts::TAU * season_frac.rem_euclid(1.0);
+        let (sn, cs) = angle.sin_cos();
+        std::f64::consts::TAU * (-a * sn + b * cs)
+    }
+
+    /// Cyclic linear interpolation of the twelve baked monthly sea-ice
+    /// rasters. Returns None for legacy WEA1/2 assets so callers can fall
+    /// back loudly and deterministically during migration.
+    pub fn sea_ice_fraction(
+        &self,
+        face: usize,
+        u: f64,
+        v: f64,
+        season_frac: f64,
+    ) -> Option<f64> {
+        if !self.has_seaice {
+            return None;
+        }
+        let x = season_frac.rem_euclid(1.0) * 12.0 - 0.5;
+        let m0 = x.floor() as i32;
+        let t = x - x.floor();
+        let i0 = m0.rem_euclid(12) as usize;
+        let i1 = (m0 + 1).rem_euclid(12) as usize;
+        let [a, b] = self.pair_at(face, [L_SEAICE_0 + i0, L_SEAICE_0 + i1], u, v);
+        Some((a * (1.0 - t) + b * t).clamp(0.0, 1.0))
     }
 }
 
@@ -557,10 +878,47 @@ mod tests {
 
     #[test]
     fn wea2_preserves_all_fourier_layers() {
-        let field = WeatherField::from_bytes(&weather_bytes(b"WEA2", LAYERS)).unwrap();
+        let field = WeatherField::from_bytes(&weather_bytes(b"WEA2", WEA2_LAYERS)).unwrap();
         assert_eq!(field.at(0, L_PRC_A2, 0.0, 0.0), L_PRC_A2 as f64);
         assert_eq!(field.at(0, L_CLD_B2, 0.0, 0.0), L_CLD_B2 as f64);
         assert_eq!(field.at(5, L_WIND_N, 0.0, 0.0), 500.0 + L_WIND_N as f64);
+    }
+
+    #[test]
+    fn wea3_preserves_monthly_sea_ice() {
+        let field = WeatherField::from_bytes(&weather_bytes(b"WEA3", LAYERS)).unwrap();
+        assert_eq!(
+            field.sea_ice_fraction(0, 0.0, 0.0, 0.5 / 12.0),
+            Some(1.0)
+        );
+    }
+
+    #[test]
+    fn season_buckets_are_deterministic_and_canonical_is_exact() {
+        let tuning = WeatherTuning::default();
+        let a = StructuralSeason::quantized(0.950_000_000_1, &tuning);
+        let b = StructuralSeason::quantized(0.950_000_000_1, &tuning);
+        assert_eq!(a, b);
+        assert_eq!(a.bucket, 22);
+        let canonical = StructuralSeason::quantized(CANONICAL_SEASON_FRAC, &tuning);
+        assert!(canonical.is_canonical());
+        assert_eq!(canonical.bucket_count, 24);
+    }
+
+    #[test]
+    fn hysteresis_is_monotone_on_each_branch() {
+        let mut cooling = Vec::new();
+        let mut warming = Vec::new();
+        for step in 0..=160 {
+            let temp = -10.0 + step as f64 * 0.05;
+            cooling.push(hysteretic_frozen(temp, -1.0, 0.5, -5.0, -2.0));
+            warming.push(hysteretic_frozen(temp, 1.0, 0.5, -5.0, -2.0));
+        }
+        assert!(cooling.windows(2).all(|w| !(!w[0] && w[1])));
+        assert!(warming.windows(2).all(|w| !(!w[0] && w[1])));
+        for (cold, warm) in cooling.into_iter().zip(warming) {
+            assert!(!cold || warm, "cooling branch froze later than thaw branch");
+        }
     }
 
     #[test]
@@ -569,6 +927,9 @@ mod tests {
             r#"{"storminess":-1}"#,
             r#"{"cover_lo":0.8,"cover_hi":0.2}"#,
             r#"{"snow_lo_c":2,"snow_hi_c":-2}"#,
+            r#"{"freeze_c":-1,"thaw_c":-2}"#,
+            r#"{"season_buckets":2}"#,
+            r#"{"deciduous_tint_strength":1.1}"#,
             r#"{"precip_threshold":1}"#,
             r#"{"particles_max":100001}"#,
             r#"{"rain_crevice_bias":1.01}"#,

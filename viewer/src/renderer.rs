@@ -5,9 +5,9 @@ use crate::camera::Camera;
 use crate::moon::{MoonGenerator, build_tile as build_moon_tile};
 use crate::orbits::{BodyId, SolarState, SolarTuning};
 use crate::planet::{boundary_shader_seedmul, Planet};
-use crate::terrain::{build_tile, select_tiles, TileKey, TileMesh, Vertex};
+use crate::terrain::{build_tile_at_season, select_tiles, TileKey, TileMesh, Vertex};
 use crate::voxel::{
-    build_chunk, select_chunks, ChunkKey, Edits, LunarBody, Torches, VoxelBody,
+    build_chunk, select_chunks, ChunkKey, Edits, LunarBody, SeasonalPlanet, Torches, VoxelBody,
 };
 use anyhow::Result;
 use glam::{DQuat, DVec3, Mat4};
@@ -171,6 +171,8 @@ struct GpuTile {
     /// the draw loop whenever a tile was absent the previous frame;
     /// captures settle it out.
     shown_at: u64,
+    /// Structural season snapshot used to build this geometry/material class.
+    season_bucket: u32,
 }
 
 /// VRAM ceiling for cached chunk meshes: past it, least-recently-used chunks
@@ -288,23 +290,23 @@ pub struct Renderer {
     /// Monotonic request counter: every queued chunk build carries the epoch
     /// it was requested at.
     chunk_epoch: u64,
-    chunk_tx: mpsc::Sender<(ChunkKey, u64, TileMesh)>,
-    chunk_rx: mpsc::Receiver<(ChunkKey, u64, TileMesh)>,
+    chunk_tx: mpsc::Sender<(ChunkKey, u64, u32, TileMesh)>,
+    chunk_rx: mpsc::Receiver<(ChunkKey, u64, u32, TileMesh)>,
     /// Async TILE builds, mirroring the chunk pipeline: LOD ring re-splits
     /// no longer build synchronously inside draw (the single-frame stall
     /// Andrew isolated with his zoom-only experiment). Selected-but-pending
     /// tiles draw a cached ancestor or their four cached children instead.
     tile_pending: HashMap<TileKey, u64>,
     tile_epoch: u64,
-    tile_tx: mpsc::Sender<(TileKey, u64, TileMesh)>,
-    tile_rx: mpsc::Receiver<(TileKey, u64, TileMesh)>,
+    tile_tx: mpsc::Sender<(TileKey, u64, u32, TileMesh)>,
+    tile_rx: mpsc::Receiver<(TileKey, u64, u32, TileMesh)>,
     /// Immutable world-state snapshots shared by in-flight chunk builders.
     /// Refreshed only when edits/torches change, so queuing many chunks does
     /// not clone the whole edited world per request.
     edit_snapshot: Arc<Edits>,
     torch_snapshot: Arc<Torches>,
     /// Living weather (WEATHER.md). None = no weather.bin, sky stays clear.
-    pub weather_field: Option<crate::weather::WeatherField>,
+    pub weather_field: Option<Arc<crate::weather::WeatherField>>,
     pub weather_tuning: crate::weather::WeatherTuning,
     pub solar_tuning: SolarTuning,
     /// Master switch (--weather off, `weather off` in scripts).
@@ -848,6 +850,20 @@ impl Renderer {
             .set_season_frac(absolute_t_s, day_len_s, target);
     }
 
+    /// One immutable W4 input derived from the already-unified orbital clock.
+    /// Weather-off deliberately selects the byte-compatible annual law.
+    pub fn structural_season(&self, planet: &Planet) -> crate::weather::StructuralSeason {
+        if self.weather_on && planet.weather.is_some() {
+            crate::weather::StructuralSeason::quantized(
+                self.solar_tuning
+                    .season_frac(self.weather_time_s(), self.effective_day_len_s()),
+                &self.weather_tuning,
+            )
+        } else {
+            crate::weather::StructuralSeason::annual()
+        }
+    }
+
     /// Drop cached chunk meshes (after edits) so they rebuild next frame.
     /// In-flight builds of these chunks are orphaned: removing the key from
     /// the pending set makes their (stale) results get dropped on arrival.
@@ -872,10 +888,10 @@ impl Renderer {
     /// epoch and is dropped, so the fresh rebuild is the one that lands.
     fn drain_chunks(&mut self) {
         let mut landed = 0usize;
-        while let Ok((k, epoch, mesh)) = self.chunk_rx.try_recv() {
+        while let Ok((k, epoch, bucket, mesh)) = self.chunk_rx.try_recv() {
             if self.chunk_pending.get(&k) == Some(&epoch) {
                 self.chunk_pending.remove(&k);
-                let gpu = self.upload(mesh);
+                let gpu = self.upload(mesh, bucket);
                 self.chunk_cache.insert(k, gpu);
                 landed += 1;
                 if landed.is_multiple_of(16) {
@@ -933,6 +949,7 @@ impl Renderer {
         // upload globals (camera-relative view-projection, f64 -> f32 at the end)
         let t_s = self.render_time_s;
         let weather_t_s = self.weather_time_s();
+        let structural_season = self.structural_season(planet);
         let solar = self.solar_state(cam_pos, planet.radius_km);
         let sun_rel = solar.sun_km - cam_pos;
         let moon_rel = solar.moon_km - cam_pos;
@@ -986,13 +1003,16 @@ impl Renderer {
                 .map(|key| (*key, build_moon_tile(&generator, *key, moon_radius)))
                 .collect();
             for (key, mesh) in built {
-                let gpu = self.upload(mesh);
+                let gpu = self.upload(mesh, crate::weather::StructuralSeason::ANNUAL_BUCKET);
                 self.moon_cache.insert(key, gpu);
             }
         }
         let voxel_body: Option<Arc<dyn VoxelBody>> = match camera.body {
             BodyId::Neisor => {
-                let body: Arc<dyn VoxelBody> = Arc::clone(planet) as Arc<dyn VoxelBody>;
+                let body: Arc<dyn VoxelBody> = Arc::new(SeasonalPlanet::new(
+                    Arc::clone(planet),
+                    structural_season,
+                ));
                 Some(body)
             }
             BodyId::Moon => Some(Arc::new(LunarBody::new(
@@ -1056,7 +1076,12 @@ impl Renderer {
                 .collect();
             ranked.sort_by(|a, b| a.0.total_cmp(&b.0));
             for &(_, (f, ci, cj), dir) in ranked.iter().take(MAX_LIGHTS) {
-                let top = crate::voxel::surface_height_km(&**planet, edits, dir, self.exaggeration);
+                let top = crate::voxel::surface_height_km(
+                    voxel_body.as_ref().expect("Neisor has a voxel body").as_ref(),
+                    edits,
+                    dir,
+                    self.exaggeration,
+                );
                 let pos = dir
                     * (planet.radius_km + top + 0.55 * crate::voxel::VOXEL_KM * self.exaggeration)
                     - cam_pos;
@@ -1069,14 +1094,41 @@ impl Renderer {
         let exagg = self.exaggeration;
         // build missing tiles in parallel (rayon), then upload sequentially
         // accept tile builds that finished on background threads
-        while let Ok((k, epoch, mesh)) = self.tile_rx.try_recv() {
+        while let Ok((k, epoch, bucket, mesh)) = self.tile_rx.try_recv() {
             if self.tile_pending.get(&k) == Some(&epoch) {
                 self.tile_pending.remove(&k);
-                if !self.cache.contains_key(&k) {
-                    let gpu = self.upload(mesh);
+                if bucket == structural_season.bucket {
+                    let gpu = self.upload(mesh, bucket);
                     self.cache.insert(k, gpu);
                 }
             }
+        }
+        // A season-bucket change never drops the visible tile set. Selected
+        // stale tiles keep drawing while replacements stream in, avoiding a
+        // synchronized world rebuild at mid-season.
+        let stale_tiles: Vec<TileKey> = keys
+            .iter()
+            .filter(|key| {
+                self.cache
+                    .get(key)
+                    .is_some_and(|tile| tile.season_bucket != structural_season.bucket)
+            })
+            .copied()
+            .collect();
+        for key in stale_tiles.into_iter().take(8) {
+            if self.tile_pending.contains_key(&key) {
+                continue;
+            }
+            let epoch = self.tile_epoch;
+            self.tile_epoch = self.tile_epoch.wrapping_add(1);
+            self.tile_pending.insert(key, epoch);
+            let tx = self.tile_tx.clone();
+            let planet = Arc::clone(planet);
+            let season = structural_season;
+            rayon::spawn(move || {
+                let mesh = build_tile_at_season(&planet, key, exagg, season);
+                let _ = tx.send((key, epoch, season.bucket, mesh));
+            });
         }
         let missing: Vec<TileKey> = keys
             .iter()
@@ -1135,9 +1187,10 @@ impl Renderer {
                     let tx = self.tile_tx.clone();
                     let planet = Arc::clone(planet);
                     let key = *k;
+                    let season = structural_season;
                     rayon::spawn(move || {
-                        let mesh = build_tile(&planet, key, exagg);
-                        let _ = tx.send((key, epoch, mesh));
+                        let mesh = build_tile_at_season(&planet, key, exagg, season);
+                        let _ = tx.send((key, epoch, season.bucket, mesh));
                     });
                 }
             } else {
@@ -1148,14 +1201,18 @@ impl Renderer {
             use rayon::prelude::*;
             urgent
                 .par_iter()
-                .map(|k| (*k, build_tile(planet, *k, exagg)))
+                .map(|k| (*k, build_tile_at_season(planet, *k, exagg, structural_season)))
                 .collect()
         };
         for (k, mesh) in built {
-            let gpu = self.upload(mesh);
+            let gpu = self.upload(mesh, structural_season.bucket);
             self.cache.insert(k, gpu);
         }
-        self.tiles_deferred = keys.iter().any(|k| !self.cache.contains_key(k));
+        self.tiles_deferred = keys.iter().any(|key| {
+            self.cache
+                .get(key)
+                .is_none_or(|tile| tile.season_bucket != structural_season.bucket)
+        });
         // parent PREFETCH: ascending selects coarser rings whose ancestors
         // were often never built, and partially-cached children cannot
         // stand in without holes - those tiles went urgent and spiked
@@ -1183,9 +1240,10 @@ impl Renderer {
                 self.tile_pending.insert(parent, epoch);
                 let tx = self.tile_tx.clone();
                 let planet = Arc::clone(planet);
+                let season = structural_season;
                 rayon::spawn(move || {
-                    let mesh = build_tile(&planet, parent, exagg);
-                    let _ = tx.send((parent, epoch, mesh));
+                    let mesh = build_tile_at_season(&planet, parent, exagg, season);
+                    let _ = tx.send((parent, epoch, season.bucket, mesh));
                 });
                 prefetched += 1;
             }
@@ -1259,10 +1317,10 @@ impl Renderer {
                 use rayon::prelude::*;
                 let built: Vec<(TileKey, TileMesh)> = leftovers
                     .par_iter()
-                    .map(|k| (*k, build_tile(planet, *k, exagg)))
+                    .map(|k| (*k, build_tile_at_season(planet, *k, exagg, structural_season)))
                     .collect();
                 for (k, mesh) in built {
-                    let gpu = self.upload(mesh);
+                    let gpu = self.upload(mesh, structural_season.bucket);
                     self.cache.insert(k, gpu);
                 }
             }
@@ -1311,9 +1369,15 @@ impl Renderer {
             chunk_keys = select_chunks(cam_local, body.as_ref(), voxel_radius_m);
             let center = camera.local_direction() * body.radius_km();
             let nn = crate::voxel::COLUMNS_PER_FACE as f64;
+            let mut seasonal_refreshes = 0usize;
             for k in &chunk_keys {
                 let cached = self.chunk_cache.contains_key(k);
-                let stale = self.chunk_stale.contains(k);
+                let edit_stale = self.chunk_stale.contains(k);
+                let season_stale = self
+                        .chunk_cache
+                        .get(k)
+                        .is_some_and(|chunk| chunk.season_bucket != structural_season.bucket);
+                let stale = edit_stale || season_stale;
                 if cached && !stale {
                     continue; // current mesh already on screen
                 }
@@ -1329,6 +1393,12 @@ impl Renderer {
                         unbuilt_min_km.min((cdir * body.radius_km() - center).length());
                 }
                 if !self.chunk_pending.contains_key(k) {
+                    if season_stale && !edit_stale {
+                        if seasonal_refreshes >= 16 {
+                            continue;
+                        }
+                        seasonal_refreshes += 1;
+                    }
                     let epoch = self.chunk_epoch;
                     self.chunk_epoch = self.chunk_epoch.wrapping_add(1);
                     self.chunk_pending.insert(*k, epoch);
@@ -1342,13 +1412,21 @@ impl Renderer {
                     } else {
                         Arc::new(Torches::default())
                     };
+                    let season_bucket = structural_season.bucket;
                     rayon::spawn(move || {
                         let mesh =
                             build_chunk(body.as_ref(), edits.as_ref(), torches.as_ref(), key, exagg);
-                        let _ = tx.send((key, epoch, mesh));
+                        let _ = tx.send((key, epoch, season_bucket, mesh));
                     });
                 }
             }
+            self.tiles_deferred |= chunk_keys.iter().any(|key| {
+                self.chunk_pending.contains_key(key)
+                    || self
+                        .chunk_cache
+                        .get(key)
+                        .is_some_and(|chunk| chunk.season_bucket != structural_season.bucket)
+            });
             chunk_keys.retain(|k| self.chunk_cache.contains_key(k));
         }
 
@@ -2007,7 +2085,7 @@ impl Renderer {
         Some((avg, p95, cost))
     }
 
-    fn upload(&self, mesh: TileMesh) -> GpuTile {
+    fn upload(&self, mesh: TileMesh, season_bucket: u32) -> GpuTile {
         let bytes =
             (mesh.vertices.len() * std::mem::size_of::<Vertex>() + mesh.indices.len() * 4) as u64;
         GpuTile {
@@ -2030,6 +2108,7 @@ impl Renderer {
             last_used: self.frame_counter,
             bytes,
             shown_at: self.frame_counter,
+            season_bucket,
         }
     }
 
@@ -2226,10 +2305,10 @@ impl Renderer {
                 .chunk_rx
                 .recv_timeout(std::time::Duration::from_secs(30))
             {
-                Ok((k, epoch, mesh)) => {
+                Ok((k, epoch, bucket, mesh)) => {
                     if self.chunk_pending.get(&k) == Some(&epoch) {
                         self.chunk_pending.remove(&k);
-                        let gpu = self.upload(mesh);
+                        let gpu = self.upload(mesh, bucket);
                         self.chunk_cache.insert(k, gpu);
                         landed += 1;
                         if landed.is_multiple_of(16) {

@@ -1,4 +1,5 @@
 # SOLAR.md P1: numeric ephemeris assertions at the epoch and one absolute
+weather season 0.45
 # timeskip. Body coordinates are Neisor-centered rotating-frame f64 km.
 mode fly
 weather off

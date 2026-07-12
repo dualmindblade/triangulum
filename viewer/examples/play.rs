@@ -65,15 +65,15 @@ use triangulum_viewer::planet::{Planet, face_from_dir};
 use triangulum_viewer::player::{self, Input, Mode, PlayerState};
 use triangulum_viewer::renderer::Renderer;
 use triangulum_viewer::voxel::{
-    Edits, LunarBody, Torches, VoxelBody, ceiling_above_km, support_below_km,
-    surface_height_km, water_surface_km,
+    Edits, LunarBody, SeasonalPlanet, Torches, VoxelBody, ceiling_above_km,
+    support_below_km, surface_height_km, water_surface_km,
 };
 
 const DT: f64 = 1.0 / 60.0; // fixed timestep: scripts are deterministic
 
 fn focused_voxel_body<'a>(
     camera: &Camera,
-    planet: &'a Planet,
+    planet: &'a SeasonalPlanet,
     moon: &'a LunarBody,
 ) -> Option<&'a dyn VoxelBody> {
     match camera.body {
@@ -180,10 +180,7 @@ fn main() -> anyhow::Result<()> {
     // living weather: deterministic here BY CONSTRUCTION — render time is
     // the fixed sim clock (F-20), so even `weather live` scripts reproduce
     // byte-identical frames. weather.bin missing just means clear skies.
-    match triangulum_viewer::weather::WeatherField::load(assets) {
-        Ok(f) => renderer.weather_field = Some(f),
-        Err(e) => eprintln!("weather off ({e})"),
-    }
+    renderer.weather_field = planet.weather.clone();
     renderer.weather_tuning = triangulum_viewer::weather::WeatherTuning::load(assets);
     renderer.solar_tuning = triangulum_viewer::orbits::SolarTuning::load(assets);
     renderer.day_len_s = renderer.solar_tuning.day_length_s;
@@ -226,14 +223,19 @@ fn main() -> anyhow::Result<()> {
                        dir_path: &str|
      -> anyhow::Result<()> {
         let d = camera.local_direction();
-        let body = focused_voxel_body(camera, &planet, &moon_body).unwrap_or(&*planet);
+        let seasonal = SeasonalPlanet::new(
+            Arc::clone(&planet),
+            renderer.structural_season(&planet),
+        );
+        let body = focused_voxel_body(camera, &seasonal, &moon_body).unwrap_or(&seasonal);
         let (face, u, v) = face_from_dir(d);
-        let s = triangulum_viewer::terrain::sample(
+        let s = triangulum_viewer::terrain::sample_at_season(
             &planet,
             face,
             u,
             v,
             triangulum_viewer::terrain::VOXEL_OCTAVES,
+            seasonal.season,
         );
         let feet = camera.ground_km;
         let eye = feet + camera.altitude_km;
@@ -345,12 +347,15 @@ fn main() -> anyhow::Result<()> {
             "support_below_km": support,
             "ceiling_above_km": if ceil.is_finite() { Some(ceil) } else { None },
             "water_surface_km": water,
-            "terrain": {
+                "terrain": {
                 "h_km": s.h_km,
                 "water_km": if s.water_km.is_finite() { Some(s.water_km) } else { None },
                 "sea": s.sea,
                 "lake": s.lake,
-                "temp_c": s.temp_c,
+                    "temp_c": s.temp_c,
+                    "seasonal_temp_c": s.seasonal_temp_c,
+                    "frozen": s.frozen,
+                    "season_bucket": s.structural_season.bucket,
                 "precip_mm": s.precip,
                 "koppen": planet.koppen(face, u, v),
                 "river_dist_km": if s.river_dist_km.is_finite() { Some(s.river_dist_km) } else { None },
@@ -618,7 +623,11 @@ fn main() -> anyhow::Result<()> {
                 }
                 // a mode switch is a pose change; keep underwater consistent
                 // for an immediate shot with no update tick in between
-                let body = focused_voxel_body(&camera, &planet, &moon_body).unwrap();
+                let seasonal = SeasonalPlanet::new(
+                    Arc::clone(&planet),
+                    renderer.structural_season(&planet),
+                );
+                let body = focused_voxel_body(&camera, &seasonal, &moon_body).unwrap();
                 let active_edits = focused_edits(&camera, &edits, &moon_edits);
                 ps.refresh_underwater(body, active_edits, &camera, exagg);
                 renderer.refresh_edits_snapshot(active_edits);
@@ -654,7 +663,11 @@ fn main() -> anyhow::Result<()> {
                             triangulum_viewer::orbits::BodyId::Neisor
                             | triangulum_viewer::orbits::BodyId::Moon,
                         ) => {
-                            let body = focused_voxel_body(&camera, &planet, &moon_body).unwrap();
+                            let seasonal = SeasonalPlanet::new(
+                                Arc::clone(&planet),
+                                renderer.structural_season(&planet),
+                            );
+                            let body = focused_voxel_body(&camera, &seasonal, &moon_body).unwrap();
                             let active_edits = focused_edits(&camera, &edits, &moon_edits);
                             let gravity = renderer
                                 .solar_tuning
@@ -714,7 +727,11 @@ fn main() -> anyhow::Result<()> {
                                 | triangulum_viewer::orbits::BodyId::Moon
                         )
                     ) {
-                        let body = focused_voxel_body(&camera, &planet, &moon_body).unwrap();
+                        let seasonal = SeasonalPlanet::new(
+                            Arc::clone(&planet),
+                            renderer.structural_season(&planet),
+                        );
+                        let body = focused_voxel_body(&camera, &seasonal, &moon_body).unwrap();
                         let active_edits = focused_edits(&camera, &edits, &moon_edits);
                         let gravity = renderer
                             .solar_tuning
@@ -747,7 +764,11 @@ fn main() -> anyhow::Result<()> {
                     Some("space") => ps.jump(),
                     Some("lmb") | Some("rmb") => {
                         let dh = if toks[1] == "rmb" { 1 } else { -1 };
-                        let body = focused_voxel_body(&camera, &planet, &moon_body)
+                        let seasonal = SeasonalPlanet::new(
+                            Arc::clone(&planet),
+                            renderer.structural_season(&planet),
+                        );
+                        let body = focused_voxel_body(&camera, &seasonal, &moon_body)
                             .ok_or_else(|| anyhow::anyhow!(
                                 "line {}: block edit needs neisor or moon focus",
                                 ln + 1
@@ -861,17 +882,26 @@ fn main() -> anyhow::Result<()> {
                 let pdir =
                     glam::DVec3::new(pla.cos() * plo.cos(), pla.cos() * plo.sin(), pla.sin());
                 let (pf, pu, pv) = triangulum_viewer::planet::face_from_dir(pdir);
-                let s = triangulum_viewer::terrain::sample(
+                let season = renderer.structural_season(&planet);
+                let s = triangulum_viewer::terrain::sample_at_season(
                     &planet,
                     pf,
                     pu,
                     pv,
                     triangulum_viewer::terrain::VOXEL_OCTAVES,
+                    season,
                 );
                 let nn = triangulum_viewer::voxel::COLUMNS_PER_FACE as f64;
                 let ci = (((pu + 1.0) * 0.5) * nn).floor() as i64;
                 let cj = (((pv + 1.0) * 0.5) * nn).floor() as i64;
-                let c = triangulum_viewer::voxel::col_ctx_ext(&planet, &edits, pf, ci, cj);
+                let seasonal = SeasonalPlanet::new(Arc::clone(&planet), season);
+                let c = triangulum_viewer::voxel::col_ctx_ext_body(
+                    &seasonal,
+                    &edits,
+                    pf,
+                    ci,
+                    cj,
+                );
                 let fmt_lvl = |x: f64| {
                     if x.is_finite() {
                         format!("{:.1}m", x * 1000.0)
@@ -880,13 +910,16 @@ fn main() -> anyhow::Result<()> {
                     }
                 };
                 trace!(
-                    "[{}] probe {:.5} {:.5}: h={:.1}m water={} lake={} lake_lvl={} pond_lvl={} riv hw={:.1}m wet={:.2} | col ground={} water={} cave_water={}",
+                    "[{}] probe {:.5} {:.5}: h={:.1}m water={} lake={} frozen={} annual={:.2}C seasonal={:.2}C lake_lvl={} pond_lvl={} riv hw={:.1}m wet={:.2} | col ground={} water={} cave_water={}",
                     ln + 1,
                     f(1)?,
                     f(2)?,
                     s.h_km * 1000.0,
                     fmt_lvl(s.water_km),
                     s.lake,
+                    s.frozen,
+                    s.temp_c,
+                    s.seasonal_temp_c,
                     fmt_lvl(s.lake_level_km),
                     fmt_lvl(s.pond_level_km),
                     s.river_hw_km * 1000.0,
@@ -1062,7 +1095,12 @@ fn main() -> anyhow::Result<()> {
                 let eye = feet + camera.altitude_km;
                 let camera_pos = camera.position();
                 let solar = renderer.solar_state(camera_pos, planet.radius_km);
-                let body = focused_voxel_body(&camera, &planet, &moon_body).unwrap_or(&*planet);
+                let seasonal = SeasonalPlanet::new(
+                    Arc::clone(&planet),
+                    renderer.structural_season(&planet),
+                );
+                let body = focused_voxel_body(&camera, &seasonal, &moon_body)
+                    .unwrap_or(&seasonal);
                 let active_edits = focused_edits(&camera, &edits, &moon_edits);
                 let (column_face, column_ci, column_cj) = triangulum_viewer::voxel::column_id(dir);
                 let column = triangulum_viewer::voxel::col_ctx_body(
@@ -1072,6 +1110,26 @@ fn main() -> anyhow::Result<()> {
                     column_ci,
                     column_cj,
                 );
+                let broadleaf_tint = triangulum_viewer::weather::deciduous_tint(
+                    triangulum_viewer::voxel::Mat::LeavesBroad.color([0.0; 3]),
+                    column.seasonal_temp as f64,
+                    column.seasonal_temp_trend as f64,
+                    column.structural_season,
+                );
+                let edited_water_count = active_edits
+                    .iter()
+                    .filter(|(_, delta)| **delta > 0)
+                    .filter(|((face, ci, cj), _)| {
+                        triangulum_viewer::voxel::col_ctx_body(
+                            body,
+                            active_edits,
+                            *face as usize,
+                            *ci,
+                            *cj,
+                        )
+                        .has_water()
+                    })
+                    .count();
                 let actual = match field.as_str() {
                     "grounded" => V::B(ps.grounded),
                     "underwater" => V::B(ps.underwater),
@@ -1114,6 +1172,12 @@ fn main() -> anyhow::Result<()> {
                     "camera_z_km" => V::N(camera_pos.z),
                     "solar_time_s" => V::N(renderer.weather_time_s()),
                     "season_frac" => V::N(solar.season_frac),
+                    "season_bucket" => V::N(column.structural_season.bucket as f64),
+                    "seasonal_temp_c" => V::N(column.seasonal_temp as f64),
+                    "frozen" => V::B(column.frozen),
+                    "broadleaf_r" => V::N(broadleaf_tint[0] as f64),
+                    "broadleaf_g" => V::N(broadleaf_tint[1] as f64),
+                    "broadleaf_b" => V::N(broadleaf_tint[2] as f64),
                     "sun_x_km" => V::N(solar.sun_km.x),
                     "sun_y_km" => V::N(solar.sun_km.y),
                     "sun_z_km" => V::N(solar.sun_km.z),
@@ -1166,6 +1230,7 @@ fn main() -> anyhow::Result<()> {
                         )
                     }
                     "edit_count" => V::N(active_edits.len() as f64),
+                    "edited_water_count" => V::N(edited_water_count as f64),
                     "edit_total_blocks" => {
                         V::N(active_edits.values().copied().sum::<i64>() as f64)
                     }

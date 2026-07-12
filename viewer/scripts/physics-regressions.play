@@ -4,6 +4,7 @@
 # asserts the invariant that must hold post-fix. Any failure makes the run
 # exit non-zero. Run:
 #   ./viewer/target/release/examples/play.exe viewer/scripts/physics-regressions.play
+weather season 0.45
 
 # ---- R1: placing a block straight down in walk mode must not embed the
 # head (self-clip into the new block => ceiling reads non-none / player

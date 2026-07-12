@@ -1,0 +1,28 @@
+# W4 evidence: fixed-pose seasonal sweeps, clear weather and pinned sun.
+mode fly
+weather pin 0.10 0.0
+sun 23.00 72.22
+teleport 58.79455 87.221664 0.300
+look 0 -75
+weather season 0.00
+shot frozen_lake_s00
+weather season 0.25
+shot frozen_lake_s25
+weather season 0.50
+shot frozen_lake_s50
+weather season 0.75
+shot frozen_lake_s75
+
+sun 23.00 25.22
+teleport 83.997 40.220 0.200
+look 0 -35
+weather season 0.00
+shot sea_edge_s00
+weather season 0.25
+shot sea_edge_s25
+weather season 0.50
+shot sea_edge_s50
+weather season 0.54166667
+shot sea_edge_s54
+weather season 0.75
+shot sea_edge_s75

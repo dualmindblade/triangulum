@@ -598,6 +598,9 @@ pub struct Planet {
     /// River courses + lakes from the drainage graph (empty if rivers.bin
     /// is missing — run scripts/bake_rivers.py).
     pub rivers: crate::rivers::RiverIndex,
+    /// Shared baked climatology used by every W4 structural consumer. The
+    /// renderer borrows this same Arc; there is no second seasonal field.
+    pub weather: Option<std::sync::Arc<crate::weather::WeatherField>>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -686,7 +689,14 @@ impl Planet {
                 crate::rivers::RiverIndex::empty(radius_km)
             }
         };
-        Ok(Self { radius_km, seed, faces, rivers })
+        let weather = match crate::weather::WeatherField::load(dir) {
+            Ok(field) => Some(std::sync::Arc::new(field)),
+            Err(error) => {
+                eprintln!("structural seasons unavailable ({error})");
+                None
+            }
+        };
+        Ok(Self { radius_km, seed, faces, rivers, weather })
     }
 
     /// Bilinear sample of a per-face f32 layer at (u, v) in [-1, 1].
@@ -762,6 +772,152 @@ impl Planet {
     pub fn temp_precip(&self, face: usize, u: f64, v: f64) -> (f32, f32) {
         let climate = self.climate_bilinear(face, u, v);
         (climate[0], climate[1])
+    }
+
+    /// W4's single seasonal temperature entry point for world positions.
+    /// Weather-off and missing-bake runs return the old annual raster exactly.
+    pub fn seasonal_temp_c(
+        &self,
+        pos: DVec3,
+        season: crate::weather::StructuralSeason,
+    ) -> f64 {
+        let (face, u, v) = face_from_dir(pos);
+        self.seasonal_temp_c_face(face, u, v, season)
+    }
+
+    #[inline]
+    pub fn seasonal_temp_c_face(
+        &self,
+        face: usize,
+        u: f64,
+        v: f64,
+        season: crate::weather::StructuralSeason,
+    ) -> f64 {
+        if !season.enabled {
+            return self.temp(face, u, v) as f64;
+        }
+        let annual = self.temp(face, u, v) as f64;
+        self.weather.as_ref().map_or(annual, |field| {
+            field
+                .seasonal_temp_state_from_phase(
+                    annual,
+                    face,
+                    u,
+                    v,
+                    season.sin_phase,
+                    season.cos_phase,
+                    season.is_canonical(),
+                )
+                .0
+        })
+    }
+
+    #[inline]
+    pub fn seasonal_temp_trend_face(
+        &self,
+        face: usize,
+        u: f64,
+        v: f64,
+        season: crate::weather::StructuralSeason,
+    ) -> f64 {
+        if !season.enabled {
+            return 0.0;
+        }
+        self.weather.as_ref().map_or(0.0, |field| {
+            field.seasonal_temp_trend(face, u, v, season.season_frac)
+        })
+    }
+
+    /// One stateless hysteresis loop. Cooling uses the freeze edge; warming
+    /// uses the thaw edge. A world-anchored ecotone comparator dithers each
+    /// contour over one degree, preventing a whole shore from flipping as a
+    /// single raster-shaped line.
+    pub fn water_frozen(
+        &self,
+        face: usize,
+        u: f64,
+        v: f64,
+        sea: bool,
+        season: crate::weather::StructuralSeason,
+    ) -> bool {
+        let annual = self.temp(face, u, v) as f64;
+        self.seasonal_water_state_face(face, u, v, annual, sea, season).2
+    }
+
+    /// Hot structural path: temperature, derivative, and water class from
+    /// one pair of Fourier coefficient reads. `annual` comes from the caller's
+    /// already-resident temp/precip raster sample.
+    pub fn seasonal_water_state_face(
+        &self,
+        face: usize,
+        u: f64,
+        v: f64,
+        annual: f64,
+        sea: bool,
+        season: crate::weather::StructuralSeason,
+    ) -> (f64, f64, bool) {
+        let (temp, trend) = self.seasonal_temp_state_face(face, u, v, annual, season);
+        let frozen = self.water_frozen_from_state(
+            face, u, v, annual, temp, trend, sea, season,
+        );
+        (temp, trend, frozen)
+    }
+
+    pub fn seasonal_temp_state_face(
+        &self,
+        face: usize,
+        u: f64,
+        v: f64,
+        annual: f64,
+        season: crate::weather::StructuralSeason,
+    ) -> (f64, f64) {
+        if !season.enabled || season.is_canonical() || self.weather.is_none() {
+            return (annual, 0.0);
+        }
+        self.weather.as_ref().expect("checked above").seasonal_temp_state_from_phase(
+            annual,
+            face,
+            u,
+            v,
+            season.sin_phase,
+            season.cos_phase,
+            false,
+        )
+    }
+
+    pub fn water_frozen_from_state(
+        &self,
+        face: usize,
+        u: f64,
+        v: f64,
+        annual: f64,
+        temp: f64,
+        trend: f64,
+        sea: bool,
+        season: crate::weather::StructuralSeason,
+    ) -> bool {
+        if !season.enabled || season.is_canonical() || self.weather.is_none() {
+            return annual < -4.0;
+        }
+        let field = self.weather.as_ref().expect("checked above");
+        let comparator = ecotone_comparator(
+            face,
+            u,
+            v,
+            self.seed.wrapping_add(0x1CE5_EA),
+        );
+        if sea && let Some(ice) = field.sea_ice_fraction(face, u, v, season.season_frac)
+        {
+            return ice > comparator;
+        }
+        let frozen = crate::weather::hysteretic_frozen(
+            temp,
+            trend,
+            comparator,
+            season.freeze_c,
+            season.thaw_c,
+        );
+        frozen
     }
 
     /// log10(1 + river flow accumulation m3/s), dilated one map cell.
@@ -1605,6 +1761,9 @@ struct ClimateSurfaceBasis {
     world_u: f64,
     world_v: f64,
     temp_c: f64,
+    /// Temperature used only by the snow override and display tints. The
+    /// annual `temp_c` above continues to own biome ranges and vegetation.
+    surface_temp_c: f64,
     precip_mm: f64,
     koppen_anchor: [f32; 3],
     forest: f32,
@@ -1618,6 +1777,30 @@ fn climate_surface_basis(
     unwarped_temp_c: f64,
     unwarped_precip_mm: f64,
     unwarped_sea: bool,
+) -> ClimateSurfaceBasis {
+    climate_surface_basis_at_season(
+        planet,
+        face,
+        u,
+        v,
+        unwarped_temp_c,
+        unwarped_temp_c,
+        unwarped_precip_mm,
+        unwarped_sea,
+        crate::weather::StructuralSeason::annual(),
+    )
+}
+
+fn climate_surface_basis_at_season(
+    planet: &Planet,
+    face: usize,
+    u: f64,
+    v: f64,
+    unwarped_temp_c: f64,
+    unwarped_surface_temp_c: f64,
+    unwarped_precip_mm: f64,
+    unwarped_sea: bool,
+    season: crate::weather::StructuralSeason,
 ) -> ClimateSurfaceBasis {
     let (world_face, world_u, world_v) = canonical_face_uv(face, u, v);
     let lookup =
@@ -1636,6 +1819,13 @@ fn climate_surface_basis(
         world_u,
         world_v,
         temp_c,
+        surface_temp_c: if season.enabled && lookup.warped {
+            planet.seasonal_temp_c_face(p.face, p.u, p.v, season)
+        } else if season.enabled {
+            unwarped_surface_temp_c
+        } else {
+            temp_c
+        },
         precip_mm,
         koppen_anchor,
         forest,
@@ -1719,10 +1909,12 @@ fn apply_snow_override(
 ) -> bool {
     let snow_low = SNOWLINE_CENTER_C - SNOWLINE_HALF_RANGE_C;
     let snow_high = SNOWLINE_CENTER_C + SNOWLINE_HALF_RANGE_C;
-    if basis.temp_c < snow_low {
+    if basis.surface_temp_c < snow_low {
         blocks.fill(MainBlock::Snow);
         return true;
-    } else if basis.temp_c < snow_high && blocks.iter().any(|&b| b != MainBlock::Snow) {
+    } else if basis.surface_temp_c < snow_high
+        && blocks.iter().any(|&b| b != MainBlock::Snow)
+    {
         let snow_comparator = ecotone_comparator(
             basis.world_face,
             basis.world_u,
@@ -1731,7 +1923,7 @@ fn apply_snow_override(
         );
         let snow_threshold = SNOWLINE_CENTER_C
             + (snow_comparator - 0.5) * (SNOWLINE_HALF_RANGE_C * 2.0);
-        if basis.temp_c < snow_threshold {
+        if basis.surface_temp_c < snow_threshold {
             blocks.fill(MainBlock::Snow);
             return true;
         }
@@ -1744,7 +1936,7 @@ fn finish_climate_surface(
     main_block: MainBlock,
     block_weights: [f32; 3],
 ) -> ClimateSurface {
-    let temp = basis.temp_c as f32;
+    let temp = basis.surface_temp_c as f32;
     let precip = basis.precip_mm as f32;
     ClimateSurface {
         main_block,
@@ -1828,6 +2020,7 @@ pub fn vegetation_surface(
             world_u,
             world_v,
             temp_c: unwarped_temp_c,
+            surface_temp_c: unwarped_temp_c,
             precip_mm: unwarped_precip_mm,
             koppen_anchor: [0.0; 3],
             forest: planet.koppen_forest_signature(source),
@@ -1877,14 +2070,40 @@ pub(crate) fn climate_surface_with_biome(
     unwarped_precip_mm: f64,
     unwarped_sea: bool,
 ) -> (ClimateSurface, BiomeClimate) {
-    let basis = climate_surface_basis(
+    climate_surface_with_biome_at_season(
         planet,
         face,
         u,
         v,
         unwarped_temp_c,
+        unwarped_temp_c,
         unwarped_precip_mm,
         unwarped_sea,
+        crate::weather::StructuralSeason::annual(),
+    )
+}
+
+pub(crate) fn climate_surface_with_biome_at_season(
+    planet: &Planet,
+    face: usize,
+    u: f64,
+    v: f64,
+    unwarped_temp_c: f64,
+    unwarped_surface_temp_c: f64,
+    unwarped_precip_mm: f64,
+    unwarped_sea: bool,
+    season: crate::weather::StructuralSeason,
+) -> (ClimateSurface, BiomeClimate) {
+    let basis = climate_surface_basis_at_season(
+        planet,
+        face,
+        u,
+        v,
+        unwarped_temp_c,
+        unwarped_surface_temp_c,
+        unwarped_precip_mm,
+        unwarped_sea,
+        season,
     );
     let mut blocks = [climate_cross_block(planet, basis)];
     apply_snow_override(planet, basis, &mut blocks);
@@ -1948,14 +2167,40 @@ pub(crate) fn climate_surface_pair(
     unwarped_precip_mm: f64,
     unwarped_sea: bool,
 ) -> (ClimateSurface, ClimateRangeSurface) {
-    let basis = climate_surface_basis(
+    climate_surface_pair_at_season(
         planet,
         face,
         u,
         v,
         unwarped_temp_c,
+        unwarped_temp_c,
         unwarped_precip_mm,
         unwarped_sea,
+        crate::weather::StructuralSeason::annual(),
+    )
+}
+
+pub(crate) fn climate_surface_pair_at_season(
+    planet: &Planet,
+    face: usize,
+    u: f64,
+    v: f64,
+    unwarped_temp_c: f64,
+    unwarped_surface_temp_c: f64,
+    unwarped_precip_mm: f64,
+    unwarped_sea: bool,
+    season: crate::weather::StructuralSeason,
+) -> (ClimateSurface, ClimateRangeSurface) {
+    let basis = climate_surface_basis_at_season(
+        planet,
+        face,
+        u,
+        v,
+        unwarped_temp_c,
+        unwarped_surface_temp_c,
+        unwarped_precip_mm,
+        unwarped_sea,
+        season,
     );
     let (boundary, range_weights, range_thresholds, mut mean_weights) =
         climate_boundary_pair_selection(planet, basis);
@@ -2146,6 +2391,7 @@ mod tests {
             seed: 42,
             faces: (0..6).map(|_| face()).collect(),
             rivers: crate::rivers::RiverIndex::empty(1.0),
+            weather: None,
         }
     }
 
