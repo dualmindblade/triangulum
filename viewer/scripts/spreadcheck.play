@@ -1,0 +1,6 @@
+mode fly
+weather time 73.336
+sun 9.959806283743657 55.57
+teleport 19.674 35.265 2.453
+look 175 -31
+shot spread_after

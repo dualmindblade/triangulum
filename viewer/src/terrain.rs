@@ -1452,7 +1452,7 @@ pub fn build_tile(planet: &Planet, key: TileKey, exaggeration: f64) -> TileMesh 
         let (cj0, cj1) = (to_col(v0), to_col(v0 + size));
         let seed = planet.seed;
         let comp = (s * s) as f64; // stride density compensation
-        let mut cands: Vec<(u64, u64, crate::voxel::TreeKind, f64)> = Vec::new();
+        let mut cands: Vec<(u64, u64, crate::voxel::TreeKind, f64, f64)> = Vec::new();
         // enumeration SNAPS to absolute stride multiples: coarser levels
         // then sample a sub-lattice of finer levels' candidates, so (with
         // the lot-ranked cap below) most trees KEEP THEIR PLACES across a
@@ -1509,20 +1509,19 @@ pub fn build_tile(planet: &Planet, key: TileKey, exaggeration: f64) -> TileMesh 
                 if kind == crate::voxel::TreeKind::Shrub || lot >= density * comp {
                     continue;
                 }
-                cands.push((ci, cj, kind, lot));
+                cands.push((ci, cj, kind, lot, density));
             }
         }
         let keep_every = cands.len().div_ceil(impostor_cap).max(1);
         // decimation past the cap keeps visual mass by growing the kept
         // trees (area-conserving sqrt, capped before they read as blobs).
-        // RANKED BY LOT, not positional step_by: the lot is level-independent
-        // per column, so the trees that survive the cap at one LOD are the
-        // same world trees that survive at the next.
+        // PROBABILISTIC, not sorted: keep iff lot < cap/candidates. The lot
+        // is a uniform level-independent hash, so this is spatially EVEN
+        // (a global lot sort clumped the survivors - Austin's mid-distance
+        // discontinuity) and still NESTED across LODs (the finer level's
+        // keep ratio is strictly larger, so every coarse survivor persists).
         let boost = (keep_every as f64).sqrt().min(2.2);
-        if cands.len() > impostor_cap {
-            cands.sort_unstable_by(|a, b| a.3.total_cmp(&b.3));
-            cands.truncate(impostor_cap);
-        }
+        let keep_ratio = (impostor_cap as f64 / cands.len().max(1) as f64).min(1.0);
         let no_edits = crate::voxel::Edits::default();
         // parent-lattice membership: a tree the PARENT tile also shows must
         // not dissolve when this tile lands - Andrew's approach-fade report
@@ -1536,7 +1535,12 @@ pub fn build_tile(planet: &Planet, key: TileKey, exaggeration: f64) -> TileMesh 
             11 => 8,
             _ => 0,
         };
-        for (ci, cj, candidate_kind, lot) in cands {
+        for (ci, cj, candidate_kind, lot, density) in cands {
+            // per-species: each candidate's lot is uniform in
+            // [0, density*comp), so this thins every biome by keep_ratio
+            if lot >= density * comp * keep_ratio {
+                continue;
+            }
             let u = -1.0 + 2.0 * (ci as f64 + 0.5) / nnf;
             let v = -1.0 + 2.0 * (cj as f64 + 0.5) / nnf;
             // The mesh-height sample roots the billboard on this LOD. One
