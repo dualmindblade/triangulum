@@ -4,10 +4,11 @@
 //!   cargo run --release -- --capture shot.png \
 //!       --lat 15 --lon 40 --alt 12000            headless screenshot
 //!
-//! Controls: drag = orbit, scroll = altitude, Esc = quit.
+//! Controls: mouse = look, LMB/RMB = break/place, C = cycle body focus,
+//! Q/E = freecam roll, scroll = Neisor fly altitude, Esc = release/quit.
 
 use anyhow::Result;
-use triangulum_viewer::camera::Camera;
+use triangulum_viewer::camera::{Camera, CameraMode, CameraRig};
 use triangulum_viewer::planet::Planet;
 use triangulum_viewer::renderer::{Renderer, SunState};
 use std::sync::Arc;
@@ -28,7 +29,7 @@ struct Args {
     sun: Option<(f64, f64)>, // (lat, lon) degrees; None = day/night cycle
     /// Seconds per full day/night cycle (0 = no cycle, sun follows the
     /// camera — the legacy always-noon mode).
-    day_len: f64,
+    day_len: Option<f64>,
     /// Voxel patch radius multiplier (chunks stream in asynchronously,
     /// so bigger discs cost memory and build throughput, not frame hitches).
     patch: f64,
@@ -39,8 +40,8 @@ struct Args {
     /// Living weather (WEATHER.md): "live" (default), "off", or
     /// "COVER,PRECIP" to pin the sky (each 0..1) for art shots.
     weather: String,
-    /// Seek only the absolute weather clock. The day/night clock remains at
-    /// its deterministic capture/session phase.
+    /// Seek the absolute game/weather/orbit clock. Photo restore may then
+    /// apply its recorded daily rotation phase as a separate offset.
     weather_time: Option<f64>,
     /// --no-voxels: pure heightfield-mesh render (no chunk streaming, no
     /// hole). The eyeball twin of the sync-diff harness's `voxels off`.
@@ -58,7 +59,7 @@ fn parse_args() -> Args {
         exaggeration: 1.0,
         size: (1600, 900),
         sun: None,
-        day_len: 1200.0,
+        day_len: None,
         patch: 1.0,
         auto_tilt: false,
         weather: "live".into(),
@@ -115,7 +116,7 @@ fn parse_args() -> Args {
                 i += 1;
             }
             "--day-len" => {
-                a.day_len = numf(i, a.day_len);
+                a.day_len = next(i).parse::<f64>().ok().filter(|v| v.is_finite() && *v >= 0.0);
                 i += 1;
             }
             "--patch" => {
@@ -159,6 +160,8 @@ fn apply_weather(renderer: &mut Renderer, spec: &str) {
         Err(e) => eprintln!("weather off ({e}) - run scripts/bake_weather.py"),
     }
     renderer.weather_tuning = triangulum_viewer::weather::WeatherTuning::load(&assets_dir());
+    renderer.solar_tuning = triangulum_viewer::orbits::SolarTuning::load(&assets_dir());
+    renderer.day_len_s = renderer.solar_tuning.day_length_s;
     match spec {
         "off" => {
             renderer.weather_on = false;
@@ -201,6 +204,7 @@ fn main() -> Result<()> {
         ground_km: 0.0,
         yaw: args.yaw.to_radians(),
         pitch: auto_pitch.to_radians(),
+        roll: 0.0,
     };
     camera.ground_km = triangulum_viewer::terrain::ground_height_km(
         &planet,
@@ -223,6 +227,7 @@ fn main() -> Result<()> {
         last_cursor: (0.0, 0.0),
         keys: Default::default(),
         player: PlayerState::default(),
+        camera_rig: CameraRig::default(),
         last_frame: std::time::Instant::now(),
         mouse_locked: false,
         photo_map: triangulum_viewer::ui::PhotoMap::new(interchange_dir().into()),
@@ -261,7 +266,6 @@ fn capture(planet: Arc<Planet>, camera: Camera, args: Args, path: &str) -> Resul
         let (la, lo) = (la.to_radians(), lo.to_radians());
         glam::DVec3::new(la.cos() * lo.cos(), la.cos() * lo.sin(), la.sin())
     });
-    renderer.day_len_s = args.day_len;
     renderer.sun_ref_lon = args.lon.to_radians();
     renderer.patch_scale = args.patch;
     renderer.voxels_on = args.voxels;
@@ -270,6 +274,9 @@ fn capture(planet: Arc<Planet>, camera: Camera, args: Args, path: &str) -> Resul
     renderer.set_torches(load_torches(planet.seed));
     renderer.refresh_world_snapshot(&edits);
     apply_weather(&mut renderer, &args.weather);
+    if let Some(day_len_s) = args.day_len {
+        renderer.day_len_s = day_len_s;
+    }
     if let Some(t_s) = args.weather_time {
         renderer.set_weather_time_s(t_s);
     }
@@ -306,7 +313,7 @@ fn capture_with_recorded_sun(
 ) -> Result<(usize, SunState, bool, f64)> {
     let sun_pinned = renderer.sun_dir.is_some();
     let day_len_s = renderer.day_len_s;
-    let sun = renderer.sun_state(camera.position());
+    let sun = renderer.sun_state(camera.position(), planet.radius_km);
     let old_sun = renderer.sun_dir;
     renderer.sun_dir = Some(sun.dir);
     let result = renderer.capture(planet, camera, edits, path);
@@ -345,14 +352,21 @@ fn write_shot_sidecar(
     // shot exactly reproducible like the sun already is
     let wx = renderer.last_weather;
     let weather_t_s = renderer.weather_time_s();
+    let solar = renderer.solar_state(camera.position(), planet.radius_km);
+    let solar_occlusion = triangulum_viewer::orbits::solar_occlusion_at(
+        camera.position(), solar, &renderer.solar_tuning, planet.radius_km,
+    );
+    let lunar_shadow = triangulum_viewer::orbits::lunar_shadow_fraction(
+        solar, &renderer.solar_tuning, planet.radius_km,
+    );
     let weather_js = serde_json::json!({
         "on": renderer.weather_on,
         "pinned": renderer.weather_pin.map(|(c, p)| vec![c, p]),
         "t_s": weather_t_s,
         "season_frac": triangulum_viewer::weather::season_frac(
             weather_t_s,
-            renderer.day_len_s,
-            &renderer.weather_tuning,
+            renderer.effective_day_len_s(),
+            &renderer.solar_tuning,
         ),
         "cloud_cover": wx.cloud_cover,
         "precip": wx.precip,
@@ -369,6 +383,7 @@ fn write_shot_sidecar(
         "ground_km": camera.ground_km,
         "yaw_deg": camera.yaw.to_degrees(),
         "pitch_deg": camera.pitch.to_degrees(),
+        "roll_deg": camera.roll.to_degrees(),
         "sun_lat_deg": sun_lat,
         "sun_lon_deg": sun_lon,
         "sun_dir": {
@@ -384,6 +399,14 @@ fn write_shot_sidecar(
         "world": world_source(),
         "mode": mode,
         "weather": weather_js,
+        "solar": {
+            "t_s": weather_t_s,
+            "season_frac": solar.season_frac,
+            "sun_km": [solar.sun_km.x, solar.sun_km.y, solar.sun_km.z],
+            "moon_km": [solar.moon_km.x, solar.moon_km.y, solar.moon_km.z],
+            "solar_occlusion": solar_occlusion,
+            "lunar_shadow": lunar_shadow,
+        },
         // which build took this photo — the first triage question after a
         // day of rapid pushes (a long-lived session outlives many commits).
         // option_env: a build-script hiccup must never fail the build.
@@ -422,6 +445,7 @@ struct App {
     last_cursor: (f64, f64),
     keys: std::collections::HashSet<winit::keyboard::KeyCode>,
     player: PlayerState,
+    camera_rig: CameraRig,
     last_frame: std::time::Instant,
     mouse_locked: bool, // pointer captured: raw-motion look, cursor hidden
     /// T opens the photo-map popup (ui.rs): teleport by map, photo, or
@@ -683,7 +707,7 @@ impl App {
         let r = &mut gfx.renderer;
         let sun_pinned = r.sun_dir.is_some();
         let day_len_s = r.day_len_s;
-        let sun = r.sun_state(self.camera.position());
+        let sun = r.sun_state(self.camera.position(), self.planet.radius_km);
         let old_sun = r.sun_dir;
         r.sun_dir = Some(sun.dir);
         let was_on = r.voxels_on;
@@ -820,6 +844,7 @@ impl App {
         if !act.lat.is_finite() || !act.lon.is_finite() || act.lat.abs() > 90.0 {
             return;
         }
+        self.focus_camera(triangulum_viewer::orbits::BodyId::Neisor);
         self.player.teleport(
             &self.planet,
             &self.edits,
@@ -852,17 +877,8 @@ impl App {
         if let Some(p) = act.pitch_deg.filter(|v| v.is_finite()) {
             self.camera.pitch = p.to_radians().clamp(-1.50, 1.50);
         }
-        if let (Some(t), Some(gfx)) = (act.day_time_s.filter(|v| v.is_finite()), self.gfx.as_mut())
-        {
-            // the recorded seconds are a PHASE of the recorded day length;
-            // replay that phase under the current cycle
-            let t = match act.day_len_s.filter(|v| *v > 0.0) {
-                Some(len) if self.args.day_len > 0.0 => {
-                    t.rem_euclid(len) / len * self.args.day_len
-                }
-                _ => t,
-            };
-            gfx.renderer.set_day_time_s(t);
+        if let Some(r) = act.roll_deg.filter(|v| v.is_finite()) {
+            self.camera.roll = r.to_radians().rem_euclid(std::f64::consts::TAU);
         }
         if let (Some(on), Some(gfx)) = (act.weather_on, self.gfx.as_mut()) {
             gfx.renderer.weather_on = on;
@@ -876,6 +892,18 @@ impl App {
             {
                 gfx.renderer.set_weather_time_s(t_s);
             }
+        }
+        if let (Some(t), Some(gfx)) = (act.day_time_s.filter(|v| v.is_finite()), self.gfx.as_mut())
+        {
+            // Apply this AFTER the absolute weather/orbit seek: the daily
+            // offset is defined relative to that absolute coordinate.
+            let t = match act.day_len_s.filter(|v| *v > 0.0) {
+                Some(len) if gfx.renderer.day_len_s > 0.0 => {
+                    t.rem_euclid(len) / len * gfx.renderer.day_len_s
+                }
+                _ => t,
+            };
+            gfx.renderer.set_day_time_s(t);
         }
     }
 
@@ -903,6 +931,37 @@ impl App {
 }
 
 impl App {
+    fn focus_camera(&mut self, body: triangulum_viewer::orbits::BodyId) {
+        let Some(gfx) = &self.gfx else { return };
+        let solar = gfx.renderer.solar_state(self.camera.position(), self.planet.radius_km);
+        let tuning = gfx.renderer.solar_tuning.clone();
+        self.camera_rig.focus(
+            body,
+            solar,
+            &tuning,
+            self.planet.radius_km,
+            &mut self.camera,
+        );
+        if body != triangulum_viewer::orbits::BodyId::Neisor {
+            self.player.set_fly(&mut self.camera);
+        }
+    }
+
+    fn cycle_camera_focus(&mut self) {
+        let Some(gfx) = &self.gfx else { return };
+        let solar = gfx.renderer.solar_state(self.camera.position(), self.planet.radius_km);
+        let tuning = gfx.renderer.solar_tuning.clone();
+        self.camera_rig.cycle(
+            solar,
+            &tuning,
+            self.planet.radius_km,
+            &mut self.camera,
+        );
+        if self.camera_rig.mode != CameraMode::Focused(triangulum_viewer::orbits::BodyId::Neisor) {
+            self.player.set_fly(&mut self.camera);
+        }
+    }
+
     /// Per-frame simulation: resolve held keys into a player Input and run
     /// the shared player physics (player.rs — same code the play harness
     /// scripts drive).
@@ -917,6 +976,10 @@ impl App {
         if let Some(gfx) = self.gfx.as_mut() {
             gfx.renderer.advance_render_time_s(dt);
         }
+        if let Some(gfx) = &self.gfx {
+            let solar = gfx.renderer.solar_state(self.camera.position(), self.planet.radius_km);
+            self.camera_rig.realign(solar, &mut self.camera);
+        }
         // an open photo map owns the keyboard: no movement input
         let input = if self.photo_map.open {
             triangulum_viewer::player::Input::default()
@@ -930,14 +993,32 @@ impl App {
                 swim_up: self.keys.contains(&K::Space),
             }
         };
-        self.player.update(
-            &self.planet,
-            &self.edits,
-            &mut self.camera,
-            &input,
-            self.args.exaggeration,
-            dt,
-        );
+        match self.camera_rig.mode {
+            CameraMode::Focused(triangulum_viewer::orbits::BodyId::Neisor) => {
+                self.player.update(
+                    &self.planet,
+                    &self.edits,
+                    &mut self.camera,
+                    &input,
+                    self.args.exaggeration,
+                    dt,
+                );
+            }
+            CameraMode::Focused(_) => {}
+            CameraMode::Freecam => {
+                let vertical = (self.keys.contains(&K::Space) as i32
+                    - self.keys.contains(&K::ControlLeft) as i32) as f64;
+                let roll = (self.keys.contains(&K::KeyE) as i32
+                    - self.keys.contains(&K::KeyQ) as i32) as f64;
+                self.camera.roll = (self.camera.roll + roll * dt * 1.2)
+                    .rem_euclid(std::f64::consts::TAU);
+                let speed = (self.camera.altitude_km.abs() * 0.5).clamp(0.02, 1500.0)
+                    * if input.sprint { 4.0 } else { 1.0 };
+                self.camera.translate_free(input.strafe, vertical, input.fwd, speed * dt);
+                self.player.underwater = false;
+                self.player.grounded = false;
+            }
+        }
 
         // window title as a tiny HUD, twice a second (the teleport prompt
         // owns the title while it's open)
@@ -1033,13 +1114,15 @@ impl ApplicationHandler for App {
             let (la, lo) = (la.to_radians(), lo.to_radians());
             glam::DVec3::new(la.cos() * lo.cos(), la.cos() * lo.sin(), la.sin())
         });
-        renderer.day_len_s = self.args.day_len;
         renderer.sun_ref_lon = self.args.lon.to_radians();
         renderer.patch_scale = self.args.patch;
         renderer.voxels_on = self.args.voxels;
         renderer.set_torches(self.torches.clone());
         renderer.refresh_world_snapshot(&self.edits);
         apply_weather(&mut renderer, &self.args.weather);
+        if let Some(day_len_s) = self.args.day_len {
+            renderer.day_len_s = day_len_s;
+        }
         if let Some(t_s) = self.args.weather_time {
             renderer.set_weather_time_s(t_s);
         }
@@ -1109,11 +1192,16 @@ impl ApplicationHandler for App {
                             self.keys.insert(code);
                             if !event.repeat {
                                 match code {
-                                    K::KeyG => self.player.set_walk(&mut self.camera),
-                                    K::KeyF => self.player.set_fly(&mut self.camera),
+                                    K::KeyG => {
+                                        self.focus_camera(triangulum_viewer::orbits::BodyId::Neisor);
+                                        self.player.set_walk(&mut self.camera);
+                                    }
+                                    K::KeyF => {
+                                        self.focus_camera(triangulum_viewer::orbits::BodyId::Neisor);
+                                        self.player.set_fly(&mut self.camera);
+                                    }
+                                    K::KeyC => self.cycle_camera_focus(),
                                     K::Space => self.player.jump(),
-                                    K::KeyQ => self.edit_block(-1),
-                                    K::KeyE => self.edit_block(1),
                                     K::KeyR => self.toggle_torch(),
                                     K::KeyT => {
                                         // the photo map owns input while open, so
@@ -1146,8 +1234,20 @@ impl ApplicationHandler for App {
                 // releases); drag-look remains as the uncaptured fallback
                 if state == ElementState::Pressed && !self.mouse_locked {
                     self.set_mouse_lock(true);
+                } else if state == ElementState::Pressed
+                    && self.camera_rig.mode
+                        == CameraMode::Focused(triangulum_viewer::orbits::BodyId::Neisor)
+                {
+                    self.edit_block(-1);
                 }
                 self.dragging = state == ElementState::Pressed;
+            }
+            WindowEvent::MouseInput { state: ElementState::Pressed, button: MouseButton::Right, .. } => {
+                if self.camera_rig.mode
+                    == CameraMode::Focused(triangulum_viewer::orbits::BodyId::Neisor)
+                {
+                    self.edit_block(1);
+                }
             }
             WindowEvent::CursorMoved { position, .. } => {
                 let (dx, dy) =
@@ -1162,7 +1262,10 @@ impl ApplicationHandler for App {
                 }
             }
             WindowEvent::MouseWheel { delta, .. } => {
-                if self.player.mode == Mode::Fly {
+                if self.player.mode == Mode::Fly
+                    && self.camera_rig.mode
+                        == CameraMode::Focused(triangulum_viewer::orbits::BodyId::Neisor)
+                {
                     let amount = match delta {
                         MouseScrollDelta::LineDelta(_, y) => y as f64,
                         MouseScrollDelta::PixelDelta(p) => p.y / 60.0,
@@ -1209,8 +1312,9 @@ impl ApplicationHandler for App {
                         planet: &self.planet,
                         weather_field: renderer.weather_field.as_ref(),
                         weather_tuning: &renderer.weather_tuning,
+                        solar_tuning: &renderer.solar_tuning,
                         weather_time_s: renderer.weather_time_s(),
-                        day_len_s: renderer.day_len_s,
+                        day_len_s: renderer.effective_day_len_s(),
                         weather_on: renderer.weather_on,
                         weather_pin: renderer.weather_pin,
                         cur_lat: self.camera.lat.to_degrees(),

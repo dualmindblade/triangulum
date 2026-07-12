@@ -19,9 +19,9 @@ shot after-walk
 
 log build a small tower and place a torch on it
 look 268 -60
-tap e
-tap e
-tap e
+tap rmb
+tap rmb
+tap rmb
 look 268 -30
 tap r
 hold s 1.5          # step back to see it

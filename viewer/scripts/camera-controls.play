@@ -86,3 +86,44 @@ assert lat_deg ~ 2.9752 0.05
 # here. Verified by code inspection + an app run: default no pan (scroll leaves
 # pitch untouched), --auto-tilt restores the descent cinematic.
 log C-3 auto-tilt is a window-app launch flag (default off); not harness-assertable
+
+# ================= SOLAR P1: focus state + true 6DOF freecam ================
+# C cycles Neisor -> moon -> Sun -> freecam in the app. The play `focus`
+# command addresses the same states directly; focus_id is numeric so scripts
+# do not depend on display strings (-1 free, 0 Neisor, 1 moon, 2 Sun).
+log Solar camera: freecam translates on three local axes and owns Q/E roll
+teleport 0 0 100
+look 0 0
+focus free
+assert focus_id ~ -1 0.0001
+roll 0
+hold e 1
+assert roll_deg ~ 68.7549 0.01
+roll 0
+assert camera_z_km ~ 0 0.01
+hold w 1
+assert camera_z_km > 45
+hold space 1
+assert camera_x_km > 8800
+hold ctrl 1
+assert camera_x_km < 8810
+
+log Focused moon follows an absolute timeskip without changing standoff
+focus moon
+assert focus_id ~ 1 0.0001
+assert focus_distance_km ~ 7014.8058 0.1
+assert focus_alignment ~ 1 0.0001
+weather time 120000
+assert focus_distance_km ~ 7014.8058 0.1
+assert focus_alignment ~ 1 0.0001
+
+log Focused Sun uses the same state machine; returning to Neisor restores pose
+focus sun
+assert focus_id ~ 2 0.0001
+assert focus_distance_km ~ 2831903.075 1.0
+assert focus_alignment ~ 1 0.0001
+weather time 240000
+assert focus_distance_km ~ 2831903.075 1.0
+focus neisor
+assert focus_id ~ 0 0.0001
+assert roll_deg ~ 0 0.0001

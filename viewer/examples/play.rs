@@ -15,9 +15,11 @@
 //!   turn DYAW DPITCH              relative view change, degrees
 //!   mode walk|fly                 like G / F
 //!   hold KEYS SECONDS             movement keys held for a duration at a
-//!                                 fixed 60 Hz timestep; KEYS is any of
-//!                                 w,a,s,d,shift,space joined by '+'
-//!   tap space|q|e|r               jump / break / place / torch
+//!                                 fixed 60 Hz timestep; freecam also accepts
+//!                                 q/e roll and space/ctrl vertical motion
+//!   tap space|lmb|rmb|r           jump / break / place / torch
+//!   focus neisor|moon|sun|free    switch the camera state machine
+//!   roll DEGREES                  set freecam roll numerically
 //!   wait SECONDS                  time passes with no input (gravity acts)
 //!   shot NAME                     render a frame (waits for streaming) +
 //!                                 write NAME.json state sidecar
@@ -37,7 +39,7 @@
 //!                                 default lights every location at local noon.
 //!   weather off|live              disable/enable the deterministic field
 //!   weather pin COVER PRECIP      pin visible intensity (both 0..1)
-//!   weather time T_S              seek absolute weather time only
+//!   weather time T_S              seek absolute weather/orbital game time
 //!   weather season FRAC           make the next shot use this year phase
 //!   probe LAT LON                 dump sampler + column truth at a point
 //!                                 into the transcript (h, water, lake/pond
@@ -52,7 +54,7 @@
 use std::io::Write as IoWrite;
 use std::sync::Arc;
 
-use triangulum_viewer::camera::Camera;
+use triangulum_viewer::camera::{Camera, CameraMode, CameraRig};
 use triangulum_viewer::planet::{face_from_dir, Planet};
 use triangulum_viewer::player::{self, Input, Mode, PlayerState};
 use triangulum_viewer::renderer::Renderer;
@@ -152,14 +154,17 @@ fn main() -> anyhow::Result<()> {
         Err(e) => eprintln!("weather off ({e})"),
     }
     renderer.weather_tuning = triangulum_viewer::weather::WeatherTuning::load(assets);
-    // deterministic by default: no day cycle (always day where you stand);
-    // the `sun` command pins an exact sun for lighting-specific scripts
+    renderer.solar_tuning = triangulum_viewer::orbits::SolarTuning::load(assets);
+    renderer.day_len_s = renderer.solar_tuning.day_length_s;
+    // deterministic physical day/orbit by default; `sun` remains an explicit
+    // art/repro pin that rotates the complete Sun-Neisor-moon frame.
 
     // scripts run in a CLEAN world (no saved player edits/torches), so the
     // same script always produces the same frames on the same planet
     let mut edits = Edits::default();
     let mut torches = Torches::default();
     let mut ps = PlayerState::default();
+    let mut camera_rig = CameraRig::default();
     let mut camera = Camera {
         lon: 30f64.to_radians(),
         lat: 10f64.to_radians(),
@@ -168,11 +173,14 @@ fn main() -> anyhow::Result<()> {
         ground_km: 0.0,
         yaw: 0.0,
         pitch: 0.0,
+        roll: 0.0,
     };
     ps.teleport(&planet, &edits, &mut camera, 10.0, 30.0, Some(100.0), exagg);
 
     let write_state = |name: &str,
                        camera: &Camera,
+                       camera_rig: &CameraRig,
+                       renderer: &Renderer,
                        ps: &PlayerState,
                        edits: &Edits,
                        dir_path: &str|
@@ -191,6 +199,16 @@ fn main() -> anyhow::Result<()> {
         let support = support_below_km(&planet, edits, d, feet + 1e-7, exagg);
         let ceil = ceiling_above_km(&planet, edits, d, feet + player::EYE_KM, exagg);
         let water = water_surface_km(&planet, edits, d, eye, exagg);
+        let solar = renderer.solar_state(camera.position(), planet.radius_km);
+        let solar_occlusion = triangulum_viewer::orbits::solar_occlusion_at(
+            camera.position(), solar, &renderer.solar_tuning, planet.radius_km,
+        );
+        let lunar_shadow = triangulum_viewer::orbits::lunar_shadow_fraction(
+            solar, &renderer.solar_tuning, planet.radius_km,
+        );
+        let focus_distance = camera_rig.focus_distance_km(solar, camera);
+        let focus_alignment = camera_rig.focus_alignment(solar, camera);
+        let camera_pos = camera.position();
         let js = serde_json::json!({
             "lat_deg": camera.lat.to_degrees(),
             "lon_deg": camera.lon.to_degrees(),
@@ -198,6 +216,23 @@ fn main() -> anyhow::Result<()> {
             "radius_km": camera.radius_km + camera.ground_km + camera.altitude_km,
             "yaw_deg": camera.yaw.to_degrees(),
             "pitch_deg": camera.pitch.to_degrees(),
+            "roll_deg": camera.roll.to_degrees(),
+            "focus_id": camera_rig.numeric_focus_id(),
+            "camera_x_km": camera_pos.x,
+            "camera_y_km": camera_pos.y,
+            "camera_z_km": camera_pos.z,
+            "focus_distance_km": if focus_distance.is_finite() { Some(focus_distance) } else { None },
+            "focus_alignment": if focus_alignment.is_finite() { Some(focus_alignment) } else { None },
+            "solar_time_s": renderer.weather_time_s(),
+            "season_frac": solar.season_frac,
+            "sun_x_km": solar.sun_km.x,
+            "sun_y_km": solar.sun_km.y,
+            "sun_z_km": solar.sun_km.z,
+            "moon_x_km": solar.moon_km.x,
+            "moon_y_km": solar.moon_km.y,
+            "moon_z_km": solar.moon_km.z,
+            "solar_occlusion": solar_occlusion,
+            "lunar_shadow": lunar_shadow,
             "mode": if ps.mode == Mode::Walk { "walk" } else { "fly" },
             "grounded": ps.grounded,
             "underwater": ps.underwater,
@@ -241,6 +276,16 @@ fn main() -> anyhow::Result<()> {
         };
         match toks[0].to_ascii_lowercase().as_str() {
             "teleport" => {
+                renderer.set_render_time_s(sim_ticks as f64 * DT);
+                let solar = renderer.solar_state(camera.position(), planet.radius_km);
+                let tuning = renderer.solar_tuning.clone();
+                camera_rig.focus(
+                    triangulum_viewer::orbits::BodyId::Neisor,
+                    solar,
+                    &tuning,
+                    planet.radius_km,
+                    &mut camera,
+                );
                 ps.teleport(&planet, &edits, &mut camera, f(1)?, f(2)?, f(3).ok(), exagg);
                 trace!("[{}] teleport -> lat {:.6} lon {:.6} alt {:.5} km",
                     ln + 1, f(1)?, f(2)?, camera.altitude_km);
@@ -256,7 +301,66 @@ fn main() -> anyhow::Result<()> {
                 trace!("[{}] turn -> yaw {:.0} pitch {:.0}",
                     ln + 1, camera.yaw.to_degrees(), camera.pitch.to_degrees());
             }
+            "focus" => {
+                renderer.set_render_time_s(sim_ticks as f64 * DT);
+                let solar = renderer.solar_state(camera.position(), planet.radius_km);
+                let tuning = renderer.solar_tuning.clone();
+                match toks.get(1).copied() {
+                    Some("neisor") => camera_rig.focus(
+                        triangulum_viewer::orbits::BodyId::Neisor,
+                        solar,
+                        &tuning,
+                        planet.radius_km,
+                        &mut camera,
+                    ),
+                    Some("moon") => {
+                        camera_rig.focus(
+                            triangulum_viewer::orbits::BodyId::Moon,
+                            solar,
+                            &tuning,
+                            planet.radius_km,
+                            &mut camera,
+                        );
+                        ps.set_fly(&mut camera);
+                    }
+                    Some("sun") => {
+                        camera_rig.focus(
+                            triangulum_viewer::orbits::BodyId::Sun,
+                            solar,
+                            &tuning,
+                            planet.radius_km,
+                            &mut camera,
+                        );
+                        ps.set_fly(&mut camera);
+                    }
+                    Some("free") | Some("freecam") => {
+                        camera_rig.freecam(&camera);
+                        ps.set_fly(&mut camera);
+                    }
+                    _ => anyhow::bail!("line {}: focus neisor|moon|sun|free", ln + 1),
+                }
+                trace!("[{}] focus {} (id {:.0})", ln + 1, toks[1], camera_rig.numeric_focus_id());
+            }
+            "roll" => {
+                anyhow::ensure!(
+                    camera_rig.mode == CameraMode::Freecam,
+                    "line {}: roll is freecam-only",
+                    ln + 1
+                );
+                camera.roll = f(1)?.to_radians().rem_euclid(std::f64::consts::TAU);
+                trace!("[{}] roll {:.3} deg", ln + 1, camera.roll.to_degrees());
+            }
             "mode" => {
+                renderer.set_render_time_s(sim_ticks as f64 * DT);
+                let solar = renderer.solar_state(camera.position(), planet.radius_km);
+                let tuning = renderer.solar_tuning.clone();
+                camera_rig.focus(
+                    triangulum_viewer::orbits::BodyId::Neisor,
+                    solar,
+                    &tuning,
+                    planet.radius_km,
+                    &mut camera,
+                );
                 match toks.get(1).copied() {
                     Some("walk") => ps.set_walk(&mut camera),
                     Some("fly") => ps.set_fly(&mut camera),
@@ -274,6 +378,8 @@ fn main() -> anyhow::Result<()> {
                     .to_ascii_lowercase();
                 let secs = f(2)?;
                 let mut input = Input::default();
+                let mut roll_axis = 0.0f64;
+                let mut free_down = false;
                 for k in keys.split('+') {
                     match k {
                         "w" => input.fwd += 1.0,
@@ -282,13 +388,40 @@ fn main() -> anyhow::Result<()> {
                         "a" => input.strafe -= 1.0,
                         "shift" => input.sprint = true,
                         "space" => input.swim_up = true,
+                        "ctrl" => free_down = true,
+                        "q" => roll_axis -= 1.0,
+                        "e" => roll_axis += 1.0,
                         other => anyhow::bail!("line {}: unknown key `{other}`", ln + 1),
                     }
                 }
                 let steps = (secs / DT).round().max(1.0) as usize;
                 for _ in 0..steps {
-                    ps.update(&planet, &edits, &mut camera, &input, exagg, DT);
+                    match camera_rig.mode {
+                        CameraMode::Focused(triangulum_viewer::orbits::BodyId::Neisor) => {
+                            ps.update(&planet, &edits, &mut camera, &input, exagg, DT);
+                        }
+                        CameraMode::Focused(_) => {}
+                        CameraMode::Freecam => {
+                            camera.roll = (camera.roll + roll_axis * DT * 1.2)
+                                .rem_euclid(std::f64::consts::TAU);
+                            let vertical = input.swim_up as i32 as f64 - free_down as i32 as f64;
+                            let speed = (camera.altitude_km.abs() * 0.5)
+                                .clamp(0.02, 1500.0)
+                                * if input.sprint { 4.0 } else { 1.0 };
+                            camera.translate_free(
+                                input.strafe,
+                                vertical,
+                                input.fwd,
+                                speed * DT,
+                            );
+                            ps.underwater = false;
+                            ps.grounded = false;
+                        }
+                    }
                     sim_ticks += 1;
+                    renderer.set_render_time_s(sim_ticks as f64 * DT);
+                    let solar = renderer.solar_state(camera.position(), planet.radius_km);
+                    camera_rig.realign(solar, &mut camera);
                 }
                 trace!("[{}] hold {keys} {secs}s -> lat {:.6} lon {:.6} alt {:.5} grounded {}",
                     ln + 1, camera.lat.to_degrees(), camera.lon.to_degrees(),
@@ -298,8 +431,15 @@ fn main() -> anyhow::Result<()> {
                 let steps = (f(1)? / DT).round().max(1.0) as usize;
                 let input = Input::default();
                 for _ in 0..steps {
-                    ps.update(&planet, &edits, &mut camera, &input, exagg, DT);
+                    if camera_rig.mode
+                        == CameraMode::Focused(triangulum_viewer::orbits::BodyId::Neisor)
+                    {
+                        ps.update(&planet, &edits, &mut camera, &input, exagg, DT);
+                    }
                     sim_ticks += 1;
+                    renderer.set_render_time_s(sim_ticks as f64 * DT);
+                    let solar = renderer.solar_state(camera.position(), planet.radius_km);
+                    camera_rig.realign(solar, &mut camera);
                 }
                 trace!("[{}] wait {}s -> alt {:.4} grounded {}",
                     ln + 1, f(1)?, camera.altitude_km, ps.grounded);
@@ -307,8 +447,8 @@ fn main() -> anyhow::Result<()> {
             "tap" => {
                 match toks.get(1).copied() {
                     Some("space") => ps.jump(),
-                    Some("q") | Some("e") => {
-                        let dh = if toks[1] == "e" { 1 } else { -1 };
+                    Some("lmb") | Some("rmb") => {
+                        let dh = if toks[1] == "rmb" { 1 } else { -1 };
                         if let Some(dirty) =
                             player::edit_block(&planet, &mut edits, &camera, ps.mode, dh, exagg)
                         {
@@ -330,7 +470,7 @@ fn main() -> anyhow::Result<()> {
                             trace!("[{}] tap r hit nothing in reach", ln + 1);
                         }
                     }
-                    _ => anyhow::bail!("line {}: tap space|q|e|r", ln + 1),
+                    _ => anyhow::bail!("line {}: tap space|lmb|rmb|r", ln + 1),
                 }
                 trace!("[{}] tap {}", ln + 1, toks[1]);
             }
@@ -353,6 +493,8 @@ fn main() -> anyhow::Result<()> {
             "bench" => {
                 let n: usize = f(1)? as usize;
                 renderer.set_render_time_s(sim_ticks as f64 * DT);
+                let solar = renderer.solar_state(camera.position(), planet.radius_km);
+                camera_rig.realign(solar, &mut camera);
                 renderer.underwater = ps.underwater;
                 let mut times = Vec::with_capacity(n);
                 let tex = renderer.device.create_texture(&wgpu::TextureDescriptor {
@@ -465,7 +607,7 @@ fn main() -> anyhow::Result<()> {
                         Some((c.clamp(0.0, 1.0) as f32, p.clamp(0.0, 1.0) as f32));
                     trace!("[{}] weather pin cover {c:.2} precip {p:.2}", ln + 1);
                 }
-                // jump the year: seasons are a phase of the weather clock,
+                // jump the year: season is Neisor's orbital mean-anomaly phase,
                 // so a script can shoot the same forest in deep winter and
                 // high summer without simulating months of ticks
                 Some("season") => {
@@ -477,12 +619,9 @@ fn main() -> anyhow::Result<()> {
                     );
                     let frac = requested.rem_euclid(1.0);
                     renderer.set_render_time_s(sim_ticks as f64 * DT);
-                    let weather_t_s = renderer.weather_time_s();
-                    renderer.weather_tuning.set_season_frac(
-                        weather_t_s,
-                        renderer.day_len_s,
-                        frac,
-                    );
+                    renderer.set_season_frac(frac);
+                    let solar = renderer.solar_state(camera.position(), planet.radius_km);
+                    camera_rig.realign(solar, &mut camera);
                     trace!("[{}] weather season {frac:.2}", ln + 1);
                 }
                 Some("time") => {
@@ -497,6 +636,8 @@ fn main() -> anyhow::Result<()> {
                     // waits advance from exactly this absolute weather time.
                     renderer.set_render_time_s(sim_ticks as f64 * DT);
                     renderer.set_weather_time_s(t_s);
+                    let solar = renderer.solar_state(camera.position(), planet.radius_km);
+                    camera_rig.realign(solar, &mut camera);
                     trace!("[{}] weather time {t_s:.6}", ln + 1);
                 }
                 _ => anyhow::bail!(
@@ -507,16 +648,18 @@ fn main() -> anyhow::Result<()> {
             "shot" => {
                 let name = toks.get(1).copied().unwrap_or("frame");
                 renderer.set_render_time_s(sim_ticks as f64 * DT);
+                let solar = renderer.solar_state(camera.position(), planet.radius_km);
+                camera_rig.realign(solar, &mut camera);
                 renderer.underwater = ps.underwater;
                 let n = renderer.capture(&planet, &camera, &edits, &format!("{dir}/{name}.png"))?;
-                write_state(name, &camera, &ps, &edits, &dir)?;
+                write_state(name, &camera, &camera_rig, &renderer, &ps, &edits, &dir)?;
                 trace!("[{}] shot {name} ({n} draws) at lat {:.6} lon {:.6} alt {:.5} yaw {:.0} pitch {:.0}",
                     ln + 1, camera.lat.to_degrees(), camera.lon.to_degrees(),
                     camera.altitude_km, camera.yaw.to_degrees(), camera.pitch.to_degrees());
             }
             "state" => {
                 let name = toks.get(1).copied().unwrap_or("state");
-                write_state(name, &camera, &ps, &edits, &dir)?;
+                write_state(name, &camera, &camera_rig, &renderer, &ps, &edits, &dir)?;
                 trace!("[{}] state {name}", ln + 1);
             }
             "log" => {
@@ -551,6 +694,8 @@ fn main() -> anyhow::Result<()> {
                 let dir = camera.position().normalize();
                 let feet = camera.ground_km;
                 let eye = feet + camera.altitude_km;
+                let camera_pos = camera.position();
+                let solar = renderer.solar_state(camera_pos, planet.radius_km);
                 let actual = match field.as_str() {
                     "grounded" => V::B(ps.grounded),
                     "underwater" => V::B(ps.underwater),
@@ -569,6 +714,38 @@ fn main() -> anyhow::Result<()> {
                     "lon_deg" => V::N(camera.lon.to_degrees()),
                     "yaw_deg" => V::N(camera.yaw.to_degrees()),
                     "pitch_deg" => V::N(camera.pitch.to_degrees()),
+                    "roll_deg" => V::N(camera.roll.to_degrees()),
+                    "focus_id" => V::N(camera_rig.numeric_focus_id()),
+                    "camera_x_km" => V::N(camera_pos.x),
+                    "camera_y_km" => V::N(camera_pos.y),
+                    "camera_z_km" => V::N(camera_pos.z),
+                    "solar_time_s" => V::N(renderer.weather_time_s()),
+                    "season_frac" => V::N(solar.season_frac),
+                    "sun_x_km" => V::N(solar.sun_km.x),
+                    "sun_y_km" => V::N(solar.sun_km.y),
+                    "sun_z_km" => V::N(solar.sun_km.z),
+                    "moon_x_km" => V::N(solar.moon_km.x),
+                    "moon_y_km" => V::N(solar.moon_km.y),
+                    "moon_z_km" => V::N(solar.moon_km.z),
+                    "solar_occlusion" => V::N(triangulum_viewer::orbits::solar_occlusion_at(
+                        camera_pos,
+                        solar,
+                        &renderer.solar_tuning,
+                        planet.radius_km,
+                    )),
+                    "lunar_shadow" => V::N(triangulum_viewer::orbits::lunar_shadow_fraction(
+                        solar,
+                        &renderer.solar_tuning,
+                        planet.radius_km,
+                    )),
+                    "focus_distance_km" => {
+                        let value = camera_rig.focus_distance_km(solar, &camera);
+                        if value.is_finite() { V::N(value) } else { V::None }
+                    }
+                    "focus_alignment" => {
+                        let value = camera_rig.focus_alignment(solar, &camera);
+                        if value.is_finite() { V::N(value) } else { V::None }
+                    }
                     "support_below_km" => {
                         V::N(support_below_km(&planet, &edits, dir, feet + 1e-7, exagg))
                     }

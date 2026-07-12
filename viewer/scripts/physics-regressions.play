@@ -13,12 +13,12 @@ teleport 1.510 40.490 0.004
 look 0 -80
 mode walk
 wait 1
-tap e
+tap rmb
 wait 0.2
 assert ceiling_above_km none
 assert grounded true
 shot r1_place1
-tap e
+tap rmb
 wait 0.2
 assert ceiling_above_km none
 assert grounded true
@@ -66,7 +66,7 @@ teleport 1.510 40.490 0.004
 look 0 -80
 mode walk
 wait 1
-tap q
+tap lmb
 wait 0.5
 look 0 -5
 hold w 3
@@ -83,7 +83,7 @@ look 0 -80
 mode walk
 wait 1
 assert grounded true
-tap q
+tap lmb
 assert grounded false
 wait 0.5
 assert grounded true
