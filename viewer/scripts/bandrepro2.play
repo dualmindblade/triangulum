@@ -1,0 +1,6 @@
+mode fly
+weather time 348.921
+sun 10.0 -34.569
+teleport 50.759 -86.619 2.042
+look 3 -27
+shot orig_band

@@ -1,0 +1,12 @@
+mode fly
+weather time 49.935
+sun 10.0 55.126
+teleport 60.704 89.662 3.355
+look 2 -35
+shot band_a
+teleport 60.705 89.680 0.004
+look 0 -33
+shot band_b
+teleport 60.704 89.662 24.029
+look -2 -76
+shot band_c

@@ -628,7 +628,11 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         // from eye height warmed the ground 6.5 C per km of climb (review
         // #2 finding 1 - the snow line receded as the camera rose)
         let t_pix = globals.weather.w - 6.5 * (elev_km - globals.misc.w);
-        let dith = hash31(floor(wp * 40.0)) * 1.8 - 0.9;
+        // hash3i, not hash31: this domain reaches ~82k cells at planet
+        // magnitude, where the fract() hash sheds its low bits and the
+        // dither collapses into world-axis stripes (Andrew's irregular
+        // banding, 60.70 89.66 - same degeneration the cloud deck hit)
+        let dith = hash3i(vec3<i32>(floor(wp * 40.0))) * 1.8 - 0.9;
         let cold = 1.0 - smoothstep(-globals.weather3.y, 1.0, t_pix + dith);
         // x(1-wflag): open water takes neither snow dusting nor rain
         // soaking - on mesh tiles the wet mix already masked this, but
