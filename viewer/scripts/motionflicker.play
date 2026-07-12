@@ -1,0 +1,13 @@
+mode fly
+weather time 349
+teleport -0.906 -67.804 0.094
+look -210 -17
+bench 30
+teleport -0.9063 -67.804 0.094
+shot f_a
+teleport -0.9066 -67.804 0.094
+shot f_b
+teleport -0.9069 -67.804 0.094
+shot f_c
+teleport -0.9072 -67.804 0.094
+shot f_d

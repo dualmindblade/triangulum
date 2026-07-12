@@ -160,6 +160,13 @@ struct GpuTile {
     index_count: u32,
     last_used: u64,
     bytes: u64,
+    /// Frame this mesh last (re)entered the DRAWN set: fresh builds AND
+    /// tiles released from an ancestor stand-in both ease from parent
+    /// geometry (temporal morph) and dissolve their impostors in, instead
+    /// of snapping - the two halves of the motion flicker. Refreshed in
+    /// the draw loop whenever a tile was absent the previous frame;
+    /// captures settle it out.
+    shown_at: u64,
 }
 
 /// VRAM ceiling for cached chunk meshes: past it, least-recently-used chunks
@@ -214,6 +221,9 @@ pub struct Renderer {
     /// budget - captures loop draw until it clears so screenshots stay
     /// byte-deterministic.
     pub tiles_deferred: bool,
+    /// True while a (non-raw) capture settles the frame: temporal eases
+    /// are zeroed so instruments stay byte-deterministic.
+    settle_visuals: bool,
     frame_mark: Option<std::time::Instant>,
     frame_intervals_ms: std::collections::VecDeque<f32>,
     draw_cost_ms: std::collections::VecDeque<f32>,
@@ -359,7 +369,9 @@ impl Renderer {
                 },
                 wgpu::BindGroupLayoutEntry {
                     binding: 1,
-                    visibility: wgpu::ShaderStages::VERTEX,
+                    // FRAGMENT too: the impostor dissolve reads the tile's
+                    // temporal ease (tile.morph.z) per fragment
+                    visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
                     ty: wgpu::BindingType::Buffer {
                         ty: wgpu::BufferBindingType::Uniform,
                         has_dynamic_offset: true,
@@ -643,6 +655,7 @@ impl Renderer {
             chunk_stale: HashSet::new(),
             frame_counter: 0,
             tiles_deferred: false,
+            settle_visuals: false,
             frame_mark: None,
             frame_intervals_ms: std::collections::VecDeque::new(),
             draw_cost_ms: std::collections::VecDeque::new(),
@@ -1208,6 +1221,32 @@ impl Renderer {
                     self.cache.insert(k, gpu);
                 }
             }
+            // ANCESTOR STAND-INS SUPPRESS THEIR DRAWN DESCENDANTS: when a
+            // parent stands in for one missing child, its three cached
+            // siblings still made the list - the parent's full quad then
+            // overlapped them (z-fighting mesh, DOUBLE impostor trees) for
+            // as long as the build stayed pending. One slow build used to
+            // be a one-frame blink; with heavier tiles it became Andrew's
+            // motion flicker (2026-07-12). Render the whole family at the
+            // ancestor's level instead, coherently, until the child lands.
+            let chosen: HashSet<TileKey> = resolved.iter().copied().collect();
+            let has_live_ancestor = |k: &TileKey| -> bool {
+                let mut cur = *k;
+                while cur.level > 0 {
+                    cur = TileKey {
+                        face: cur.face,
+                        level: cur.level - 1,
+                        ix: cur.ix / 2,
+                        iy: cur.iy / 2,
+                        deep: false,
+                    };
+                    if chosen.contains(&cur) {
+                        return true;
+                    }
+                }
+                false
+            };
+            resolved.retain(|k| !has_live_ancestor(k));
             resolved
         };
 
@@ -1601,6 +1640,11 @@ impl Renderer {
                 DrawKey::Tile(k) => self.cache.get_mut(&k).unwrap(),
                 DrawKey::Chunk(k) => self.chunk_cache.get_mut(&k).unwrap(),
             };
+            // re-entering the drawn set after ANY absence (fresh build,
+            // stand-in release, eviction return) restarts the ease window
+            if tile.last_used + 1 < self.frame_counter {
+                tile.shown_at = self.frame_counter;
+            }
             tile.last_used = self.frame_counter;
             let off = tile.origin_km - cam_pos;
             // w: 0 = voxel chunk, 1 = far tile (soft water tint), 2 = deep
@@ -1622,8 +1666,32 @@ impl Renderer {
                         let s = k.size_km(planet.radius_km);
                         let start = s * (1.0 / ERR_TARGET + 0.75);
                         let end = s * (2.0 / ERR_TARGET - 1.45);
-                        [start as f32, end as f32, 0.0, 0.0]
+                        // temporal ease: a just-landed tile starts at its
+                        // parent's geometry and settles over ~18 frames.
+                        // Deep tiles are exempt (they must match the voxel
+                        // patch exactly, and they never defer anyway), as
+                        // are settling captures (byte-determinism).
+                        let ease = if k.deep || self.settle_visuals {
+                            0.0
+                        } else {
+                            let age = self
+                                .frame_counter
+                                .saturating_sub(self.cache[&k].shown_at);
+                            (1.0 - age as f32 / 18.0).clamp(0.0, 1.0)
+                        };
+                        [start as f32, end as f32, ease, 0.0]
                     }
+                }
+                DrawKey::Chunk(k) if !self.settle_visuals => {
+                    // chunk twin of the temporal ease: fresh blocks rise
+                    // from the mesh surface (full rim-sink) instead of
+                    // popping in - blocks cannot geomorph, but they can
+                    // emerge. morph.z rides the same shader lane.
+                    let age = self
+                        .frame_counter
+                        .saturating_sub(self.chunk_cache[&k].shown_at);
+                    let ease = (1.0 - age as f32 / 18.0).clamp(0.0, 1.0);
+                    [0.0, 0.0, ease, 0.0]
                 }
                 _ => [0.0f32; 4],
             };
@@ -1839,6 +1907,7 @@ impl Renderer {
             index_count: mesh.indices.len() as u32,
             last_used: self.frame_counter,
             bytes,
+            shown_at: self.frame_counter,
         }
     }
 
@@ -1875,8 +1944,12 @@ impl Renderer {
         if total <= TILE_VRAM_BUDGET {
             return;
         }
-        const EVICT_PROTECT_FRAMES: u64 = 180;
-        let protected = self.frame_counter.saturating_sub(EVICT_PROTECT_FRAMES);
+        // Captures drain to completion and cannot flicker - during them the
+        // strict budget rules (teleport-heavy instruments like the 26-pose
+        // reel would otherwise hold every prior pose alive and OOM small
+        // adapters). Live frames get the full anti-thrash window.
+        let window = if self.settle_visuals { 0 } else { 180 };
+        let protected = self.frame_counter.saturating_sub(window);
         let mut by_age: Vec<(u64, TileKey, u64)> = self
             .cache
             .iter()
@@ -1911,11 +1984,16 @@ impl Renderer {
         by_age.sort_unstable_by(|a, b| b.0.cmp(&a.0)); // newest first
         let mut acc = 0u64;
         let mut keep = HashSet::new();
+        // RECENCY IS SACRED (same law as tiles): a large patch's working
+        // set exceeds the whole budget, and a current-frame-only exemption
+        // then evicts live chunks every frame while moving - the patch
+        // edge perpetually rebuilds and near-field blocks + voxel trees
+        // pop in and out (Andrew's ground flicker, 2026-07-12). Overshoot
+        // the budget briefly rather than thrash.
+        let window = if self.settle_visuals { 0 } else { 180 };
+        let protected = self.frame_counter.saturating_sub(window);
         for (used, k, b) in by_age {
-            // Chunks used THIS frame are about to be drawn (the render pass
-            // indexes chunk_cache[k] unconditionally) -- never evict them,
-            // even if the visible set alone exceeds the retain target.
-            if used == self.frame_counter || acc + b <= CHUNK_VRAM_RETAIN {
+            if used >= protected || acc + b <= CHUNK_VRAM_RETAIN {
                 acc += b;
                 keep.insert(k);
             }
@@ -1991,12 +2069,18 @@ impl Renderer {
         });
         let view = texture.create_view(&Default::default());
         let mut n_tiles = self.draw(&view, planet, camera, edits);
+        // TRI_RAW_CAPTURE: diagnostic mode - capture EXACTLY the single
+        // live frame, no chunk wait, no tile drain. This is the only lens
+        // that can see stand-in churn and motion flicker (the drains below
+        // deliberately hide them for byte-determinism).
+        let raw = std::env::var_os("TRI_RAW_CAPTURE").is_some();
+        self.settle_visuals = !raw;
         // a screenshot is a complete frame: block (bounded) until every
         // streamed chunk has landed, then draw again with full coverage
         let mut waited = false;
         let mut landed = 0usize;
         for _ in 0..8192 {
-            if self.chunk_pending.is_empty() {
+            if raw || self.chunk_pending.is_empty() {
                 break;
             }
             match self
@@ -2028,7 +2112,7 @@ impl Renderer {
         // build budget so captures are independent of how many frames
         // preceded them (byte-determinism for every instrument)
         for _ in 0..256 {
-            if !self.tiles_deferred {
+            if raw || !self.tiles_deferred {
                 break;
             }
             n_tiles = self.draw(&view, planet, camera, edits);
@@ -2065,6 +2149,7 @@ impl Renderer {
         );
         self.queue.submit([encoder.finish()]);
 
+        self.settle_visuals = false;
         let slice = readback.slice(..);
         slice.map_async(wgpu::MapMode::Read, |_| {});
         self.device

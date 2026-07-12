@@ -525,7 +525,13 @@ fn vs_main(in: VsIn) -> VsOut {
         // Geomorphing: slide to the parent triangle's height and its actual
         // triangle-interpolated river paint. The scalar radial slide retains
         // only the measured <= 0.13 m residual in the V-6 level-9 probes.
-        let m = clamp((d - tile.morph.x) / (tile.morph.y - tile.morph.x), 0.0, 1.0);
+        // morph.z is the TEMPORAL ease: a freshly-landed async tile starts
+        // at its parent's geometry and settles in, so late builds arrive
+        // as a slide instead of a snap.
+        let m = max(
+            clamp((d - tile.morph.x) / (tile.morph.y - tile.morph.x), 0.0, 1.0),
+            tile.morph.z,
+        );
         let radial = normalize(rel - globals.center.xyz);
         rel += radial * (in.morph.x * m);
         wet = mix(in.water.a, in.morph.y, m);
@@ -556,6 +562,10 @@ fn vs_main(in: VsIn) -> VsOut {
             let sink = smoothstep(globals.misc.z * 0.85, globals.misc.z * 1.06, horiz);
             rel -= globals.hole_up.xyz * (globals.center.w * 1.1 * sink);
         }
+        // temporal emergence: freshly-landed chunks start sunk flush with
+        // the mesh (full lift) and rise in over ~18 frames - the block
+        // counterpart of the tile ease above (morph.z, captures settle it)
+        rel -= globals.hole_up.xyz * (globals.center.w * tile.morph.z);
     }
     out.clip = globals.view_proj * vec4<f32>(rel, 1.0);
     out.normal = in.normal;
@@ -683,6 +693,19 @@ fn solar_occlusion_at(rel: vec3<f32>) -> f32 {
 
 @fragment
 fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
+    // Freshly-landed tiles (tile.morph.z = temporal ease) DISSOLVE their
+    // impostor trees in with a screen dither instead of materializing a
+    // denser LOD's canopy in one frame - the flashiest motion pop. The
+    // marker is heuristic but tight: tile geometry (rel_flag.w), payload
+    // off (beach.z), not water (wflag), no shore field - only impostor
+    // quads satisfy all four.
+    if (in.rel_flag.w > 0.5 && tile.morph.z > 0.0
+        && in.beach.z < 0.5 && in.wflag < 0.5 && in.shore < -0.5) {
+        let n = hash31(vec3<f32>(floor(in.clip.xy), 7.0));
+        if (n < tile.morph.z) {
+            discard;
+        }
+    }
     // cut the heightfield away inside the voxel patch: every pixel belongs
     // to exactly one system (blocks own the near disc, the mesh the rest).
     // The vertical slab test keeps far-side geometry out of the cylinder.
@@ -771,7 +794,12 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
                 && biome_endpoints[family].a >= biome_endpoints[family - 1].a;
         }
     }
-    let beach_mode = in.beach.z > 0.5;
+    // STRICT validity: in.beach.z interpolates 0..1 across a triangle
+    // that spans land (valid) and water/voxel (payload-off) vertices - a
+    // 0.5 cut painted half of every shoreline triangle with half-blended
+    // sand (tan streaks ON the lake, 2026-07-12 flicker triage). Only a
+    // fully-valid interior owns beach; the blocks own the exact shoreline.
+    let beach_mode = in.beach.z > 0.98;
     var range_ground = in.color;
     if (biome_valid) {
         range_ground = vec3<f32>(0.0);

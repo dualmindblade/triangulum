@@ -1453,8 +1453,14 @@ pub fn build_tile(planet: &Planet, key: TileKey, exaggeration: f64) -> TileMesh 
         let seed = planet.seed;
         let comp = (s * s) as f64; // stride density compensation
         let mut cands: Vec<(u64, u64, crate::voxel::TreeKind, f64)> = Vec::new();
-        for ci in (ci0..=ci1).step_by(s as usize) {
-            for cj in (cj0..=cj1).step_by(s as usize) {
+        // enumeration SNAPS to absolute stride multiples: coarser levels
+        // then sample a sub-lattice of finer levels' candidates, so (with
+        // the lot-ranked cap below) most trees KEEP THEIR PLACES across a
+        // LOD swap instead of re-rolling - the parent/child impostor-set
+        // mismatch was the flashiest half of the motion flicker
+        let snap = |x: u64| x.div_ceil(s) * s;
+        for ci in (snap(ci0)..=ci1).step_by(s as usize) {
+            for cj in (snap(cj0)..=cj1).step_by(s as usize) {
                 let lot = crate::voxel::tree_hash01(face as u8, ci, cj, seed);
                 if lot >= crate::voxel::MAX_TREE_DENSITY * comp {
                     continue; // cheapest gate: above every biome's density
@@ -1508,10 +1514,17 @@ pub fn build_tile(planet: &Planet, key: TileKey, exaggeration: f64) -> TileMesh 
         }
         let keep_every = cands.len().div_ceil(impostor_cap).max(1);
         // decimation past the cap keeps visual mass by growing the kept
-        // trees (area-conserving sqrt, capped before they read as blobs)
+        // trees (area-conserving sqrt, capped before they read as blobs).
+        // RANKED BY LOT, not positional step_by: the lot is level-independent
+        // per column, so the trees that survive the cap at one LOD are the
+        // same world trees that survive at the next.
         let boost = (keep_every as f64).sqrt().min(2.2);
+        if cands.len() > impostor_cap {
+            cands.sort_unstable_by(|a, b| a.3.total_cmp(&b.3));
+            cands.truncate(impostor_cap);
+        }
         let no_edits = crate::voxel::Edits::default();
-        for (ci, cj, _candidate_kind, lot) in cands.into_iter().step_by(keep_every) {
+        for (ci, cj, _candidate_kind, lot) in cands {
             let u = -1.0 + 2.0 * (ci as f64 + 0.5) / nnf;
             let v = -1.0 + 2.0 * (cj as f64 + 0.5) / nnf;
             // The mesh-height sample roots the billboard on this LOD. One

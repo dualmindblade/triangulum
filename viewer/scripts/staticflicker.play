@@ -1,0 +1,10 @@
+mode fly
+weather time 349
+teleport -0.906 -67.804 0.094
+look -210 -17
+hold w 1.5
+shot s_a
+shot s_b
+shot s_c
+shot s_d
+shot s_e
