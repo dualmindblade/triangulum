@@ -1,0 +1,4 @@
+moonprobe -15.958 0.9340
+assert moon_surface_height_km > -99
+moonprobe -15.958 0.9465
+assert moon_surface_height_km > -99

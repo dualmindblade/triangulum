@@ -1,0 +1,512 @@
+moonprobe -15.9980 0.9065
+assert moon_surface_height_km > -99
+moonprobe -15.9980 0.9115
+assert moon_surface_height_km > -99
+moonprobe -15.9980 0.9165
+assert moon_surface_height_km > -99
+moonprobe -15.9980 0.9215
+assert moon_surface_height_km > -99
+moonprobe -15.9980 0.9265
+assert moon_surface_height_km > -99
+moonprobe -15.9980 0.9315
+assert moon_surface_height_km > -99
+moonprobe -15.9980 0.9365
+assert moon_surface_height_km > -99
+moonprobe -15.9980 0.9415
+assert moon_surface_height_km > -99
+moonprobe -15.9980 0.9465
+assert moon_surface_height_km > -99
+moonprobe -15.9980 0.9515
+assert moon_surface_height_km > -99
+moonprobe -15.9980 0.9565
+assert moon_surface_height_km > -99
+moonprobe -15.9980 0.9615
+assert moon_surface_height_km > -99
+moonprobe -15.9980 0.9665
+assert moon_surface_height_km > -99
+moonprobe -15.9980 0.9715
+assert moon_surface_height_km > -99
+moonprobe -15.9980 0.9765
+assert moon_surface_height_km > -99
+moonprobe -15.9980 0.9815
+assert moon_surface_height_km > -99
+moonprobe -15.9930 0.9065
+assert moon_surface_height_km > -99
+moonprobe -15.9930 0.9115
+assert moon_surface_height_km > -99
+moonprobe -15.9930 0.9165
+assert moon_surface_height_km > -99
+moonprobe -15.9930 0.9215
+assert moon_surface_height_km > -99
+moonprobe -15.9930 0.9265
+assert moon_surface_height_km > -99
+moonprobe -15.9930 0.9315
+assert moon_surface_height_km > -99
+moonprobe -15.9930 0.9365
+assert moon_surface_height_km > -99
+moonprobe -15.9930 0.9415
+assert moon_surface_height_km > -99
+moonprobe -15.9930 0.9465
+assert moon_surface_height_km > -99
+moonprobe -15.9930 0.9515
+assert moon_surface_height_km > -99
+moonprobe -15.9930 0.9565
+assert moon_surface_height_km > -99
+moonprobe -15.9930 0.9615
+assert moon_surface_height_km > -99
+moonprobe -15.9930 0.9665
+assert moon_surface_height_km > -99
+moonprobe -15.9930 0.9715
+assert moon_surface_height_km > -99
+moonprobe -15.9930 0.9765
+assert moon_surface_height_km > -99
+moonprobe -15.9930 0.9815
+assert moon_surface_height_km > -99
+moonprobe -15.9880 0.9065
+assert moon_surface_height_km > -99
+moonprobe -15.9880 0.9115
+assert moon_surface_height_km > -99
+moonprobe -15.9880 0.9165
+assert moon_surface_height_km > -99
+moonprobe -15.9880 0.9215
+assert moon_surface_height_km > -99
+moonprobe -15.9880 0.9265
+assert moon_surface_height_km > -99
+moonprobe -15.9880 0.9315
+assert moon_surface_height_km > -99
+moonprobe -15.9880 0.9365
+assert moon_surface_height_km > -99
+moonprobe -15.9880 0.9415
+assert moon_surface_height_km > -99
+moonprobe -15.9880 0.9465
+assert moon_surface_height_km > -99
+moonprobe -15.9880 0.9515
+assert moon_surface_height_km > -99
+moonprobe -15.9880 0.9565
+assert moon_surface_height_km > -99
+moonprobe -15.9880 0.9615
+assert moon_surface_height_km > -99
+moonprobe -15.9880 0.9665
+assert moon_surface_height_km > -99
+moonprobe -15.9880 0.9715
+assert moon_surface_height_km > -99
+moonprobe -15.9880 0.9765
+assert moon_surface_height_km > -99
+moonprobe -15.9880 0.9815
+assert moon_surface_height_km > -99
+moonprobe -15.9830 0.9065
+assert moon_surface_height_km > -99
+moonprobe -15.9830 0.9115
+assert moon_surface_height_km > -99
+moonprobe -15.9830 0.9165
+assert moon_surface_height_km > -99
+moonprobe -15.9830 0.9215
+assert moon_surface_height_km > -99
+moonprobe -15.9830 0.9265
+assert moon_surface_height_km > -99
+moonprobe -15.9830 0.9315
+assert moon_surface_height_km > -99
+moonprobe -15.9830 0.9365
+assert moon_surface_height_km > -99
+moonprobe -15.9830 0.9415
+assert moon_surface_height_km > -99
+moonprobe -15.9830 0.9465
+assert moon_surface_height_km > -99
+moonprobe -15.9830 0.9515
+assert moon_surface_height_km > -99
+moonprobe -15.9830 0.9565
+assert moon_surface_height_km > -99
+moonprobe -15.9830 0.9615
+assert moon_surface_height_km > -99
+moonprobe -15.9830 0.9665
+assert moon_surface_height_km > -99
+moonprobe -15.9830 0.9715
+assert moon_surface_height_km > -99
+moonprobe -15.9830 0.9765
+assert moon_surface_height_km > -99
+moonprobe -15.9830 0.9815
+assert moon_surface_height_km > -99
+moonprobe -15.9780 0.9065
+assert moon_surface_height_km > -99
+moonprobe -15.9780 0.9115
+assert moon_surface_height_km > -99
+moonprobe -15.9780 0.9165
+assert moon_surface_height_km > -99
+moonprobe -15.9780 0.9215
+assert moon_surface_height_km > -99
+moonprobe -15.9780 0.9265
+assert moon_surface_height_km > -99
+moonprobe -15.9780 0.9315
+assert moon_surface_height_km > -99
+moonprobe -15.9780 0.9365
+assert moon_surface_height_km > -99
+moonprobe -15.9780 0.9415
+assert moon_surface_height_km > -99
+moonprobe -15.9780 0.9465
+assert moon_surface_height_km > -99
+moonprobe -15.9780 0.9515
+assert moon_surface_height_km > -99
+moonprobe -15.9780 0.9565
+assert moon_surface_height_km > -99
+moonprobe -15.9780 0.9615
+assert moon_surface_height_km > -99
+moonprobe -15.9780 0.9665
+assert moon_surface_height_km > -99
+moonprobe -15.9780 0.9715
+assert moon_surface_height_km > -99
+moonprobe -15.9780 0.9765
+assert moon_surface_height_km > -99
+moonprobe -15.9780 0.9815
+assert moon_surface_height_km > -99
+moonprobe -15.9730 0.9065
+assert moon_surface_height_km > -99
+moonprobe -15.9730 0.9115
+assert moon_surface_height_km > -99
+moonprobe -15.9730 0.9165
+assert moon_surface_height_km > -99
+moonprobe -15.9730 0.9215
+assert moon_surface_height_km > -99
+moonprobe -15.9730 0.9265
+assert moon_surface_height_km > -99
+moonprobe -15.9730 0.9315
+assert moon_surface_height_km > -99
+moonprobe -15.9730 0.9365
+assert moon_surface_height_km > -99
+moonprobe -15.9730 0.9415
+assert moon_surface_height_km > -99
+moonprobe -15.9730 0.9465
+assert moon_surface_height_km > -99
+moonprobe -15.9730 0.9515
+assert moon_surface_height_km > -99
+moonprobe -15.9730 0.9565
+assert moon_surface_height_km > -99
+moonprobe -15.9730 0.9615
+assert moon_surface_height_km > -99
+moonprobe -15.9730 0.9665
+assert moon_surface_height_km > -99
+moonprobe -15.9730 0.9715
+assert moon_surface_height_km > -99
+moonprobe -15.9730 0.9765
+assert moon_surface_height_km > -99
+moonprobe -15.9730 0.9815
+assert moon_surface_height_km > -99
+moonprobe -15.9680 0.9065
+assert moon_surface_height_km > -99
+moonprobe -15.9680 0.9115
+assert moon_surface_height_km > -99
+moonprobe -15.9680 0.9165
+assert moon_surface_height_km > -99
+moonprobe -15.9680 0.9215
+assert moon_surface_height_km > -99
+moonprobe -15.9680 0.9265
+assert moon_surface_height_km > -99
+moonprobe -15.9680 0.9315
+assert moon_surface_height_km > -99
+moonprobe -15.9680 0.9365
+assert moon_surface_height_km > -99
+moonprobe -15.9680 0.9415
+assert moon_surface_height_km > -99
+moonprobe -15.9680 0.9465
+assert moon_surface_height_km > -99
+moonprobe -15.9680 0.9515
+assert moon_surface_height_km > -99
+moonprobe -15.9680 0.9565
+assert moon_surface_height_km > -99
+moonprobe -15.9680 0.9615
+assert moon_surface_height_km > -99
+moonprobe -15.9680 0.9665
+assert moon_surface_height_km > -99
+moonprobe -15.9680 0.9715
+assert moon_surface_height_km > -99
+moonprobe -15.9680 0.9765
+assert moon_surface_height_km > -99
+moonprobe -15.9680 0.9815
+assert moon_surface_height_km > -99
+moonprobe -15.9630 0.9065
+assert moon_surface_height_km > -99
+moonprobe -15.9630 0.9115
+assert moon_surface_height_km > -99
+moonprobe -15.9630 0.9165
+assert moon_surface_height_km > -99
+moonprobe -15.9630 0.9215
+assert moon_surface_height_km > -99
+moonprobe -15.9630 0.9265
+assert moon_surface_height_km > -99
+moonprobe -15.9630 0.9315
+assert moon_surface_height_km > -99
+moonprobe -15.9630 0.9365
+assert moon_surface_height_km > -99
+moonprobe -15.9630 0.9415
+assert moon_surface_height_km > -99
+moonprobe -15.9630 0.9465
+assert moon_surface_height_km > -99
+moonprobe -15.9630 0.9515
+assert moon_surface_height_km > -99
+moonprobe -15.9630 0.9565
+assert moon_surface_height_km > -99
+moonprobe -15.9630 0.9615
+assert moon_surface_height_km > -99
+moonprobe -15.9630 0.9665
+assert moon_surface_height_km > -99
+moonprobe -15.9630 0.9715
+assert moon_surface_height_km > -99
+moonprobe -15.9630 0.9765
+assert moon_surface_height_km > -99
+moonprobe -15.9630 0.9815
+assert moon_surface_height_km > -99
+moonprobe -15.9580 0.9065
+assert moon_surface_height_km > -99
+moonprobe -15.9580 0.9115
+assert moon_surface_height_km > -99
+moonprobe -15.9580 0.9165
+assert moon_surface_height_km > -99
+moonprobe -15.9580 0.9215
+assert moon_surface_height_km > -99
+moonprobe -15.9580 0.9265
+assert moon_surface_height_km > -99
+moonprobe -15.9580 0.9315
+assert moon_surface_height_km > -99
+moonprobe -15.9580 0.9365
+assert moon_surface_height_km > -99
+moonprobe -15.9580 0.9415
+assert moon_surface_height_km > -99
+moonprobe -15.9580 0.9465
+assert moon_surface_height_km > -99
+moonprobe -15.9580 0.9515
+assert moon_surface_height_km > -99
+moonprobe -15.9580 0.9565
+assert moon_surface_height_km > -99
+moonprobe -15.9580 0.9615
+assert moon_surface_height_km > -99
+moonprobe -15.9580 0.9665
+assert moon_surface_height_km > -99
+moonprobe -15.9580 0.9715
+assert moon_surface_height_km > -99
+moonprobe -15.9580 0.9765
+assert moon_surface_height_km > -99
+moonprobe -15.9580 0.9815
+assert moon_surface_height_km > -99
+moonprobe -15.9530 0.9065
+assert moon_surface_height_km > -99
+moonprobe -15.9530 0.9115
+assert moon_surface_height_km > -99
+moonprobe -15.9530 0.9165
+assert moon_surface_height_km > -99
+moonprobe -15.9530 0.9215
+assert moon_surface_height_km > -99
+moonprobe -15.9530 0.9265
+assert moon_surface_height_km > -99
+moonprobe -15.9530 0.9315
+assert moon_surface_height_km > -99
+moonprobe -15.9530 0.9365
+assert moon_surface_height_km > -99
+moonprobe -15.9530 0.9415
+assert moon_surface_height_km > -99
+moonprobe -15.9530 0.9465
+assert moon_surface_height_km > -99
+moonprobe -15.9530 0.9515
+assert moon_surface_height_km > -99
+moonprobe -15.9530 0.9565
+assert moon_surface_height_km > -99
+moonprobe -15.9530 0.9615
+assert moon_surface_height_km > -99
+moonprobe -15.9530 0.9665
+assert moon_surface_height_km > -99
+moonprobe -15.9530 0.9715
+assert moon_surface_height_km > -99
+moonprobe -15.9530 0.9765
+assert moon_surface_height_km > -99
+moonprobe -15.9530 0.9815
+assert moon_surface_height_km > -99
+moonprobe -15.9480 0.9065
+assert moon_surface_height_km > -99
+moonprobe -15.9480 0.9115
+assert moon_surface_height_km > -99
+moonprobe -15.9480 0.9165
+assert moon_surface_height_km > -99
+moonprobe -15.9480 0.9215
+assert moon_surface_height_km > -99
+moonprobe -15.9480 0.9265
+assert moon_surface_height_km > -99
+moonprobe -15.9480 0.9315
+assert moon_surface_height_km > -99
+moonprobe -15.9480 0.9365
+assert moon_surface_height_km > -99
+moonprobe -15.9480 0.9415
+assert moon_surface_height_km > -99
+moonprobe -15.9480 0.9465
+assert moon_surface_height_km > -99
+moonprobe -15.9480 0.9515
+assert moon_surface_height_km > -99
+moonprobe -15.9480 0.9565
+assert moon_surface_height_km > -99
+moonprobe -15.9480 0.9615
+assert moon_surface_height_km > -99
+moonprobe -15.9480 0.9665
+assert moon_surface_height_km > -99
+moonprobe -15.9480 0.9715
+assert moon_surface_height_km > -99
+moonprobe -15.9480 0.9765
+assert moon_surface_height_km > -99
+moonprobe -15.9480 0.9815
+assert moon_surface_height_km > -99
+moonprobe -15.9430 0.9065
+assert moon_surface_height_km > -99
+moonprobe -15.9430 0.9115
+assert moon_surface_height_km > -99
+moonprobe -15.9430 0.9165
+assert moon_surface_height_km > -99
+moonprobe -15.9430 0.9215
+assert moon_surface_height_km > -99
+moonprobe -15.9430 0.9265
+assert moon_surface_height_km > -99
+moonprobe -15.9430 0.9315
+assert moon_surface_height_km > -99
+moonprobe -15.9430 0.9365
+assert moon_surface_height_km > -99
+moonprobe -15.9430 0.9415
+assert moon_surface_height_km > -99
+moonprobe -15.9430 0.9465
+assert moon_surface_height_km > -99
+moonprobe -15.9430 0.9515
+assert moon_surface_height_km > -99
+moonprobe -15.9430 0.9565
+assert moon_surface_height_km > -99
+moonprobe -15.9430 0.9615
+assert moon_surface_height_km > -99
+moonprobe -15.9430 0.9665
+assert moon_surface_height_km > -99
+moonprobe -15.9430 0.9715
+assert moon_surface_height_km > -99
+moonprobe -15.9430 0.9765
+assert moon_surface_height_km > -99
+moonprobe -15.9430 0.9815
+assert moon_surface_height_km > -99
+moonprobe -15.9380 0.9065
+assert moon_surface_height_km > -99
+moonprobe -15.9380 0.9115
+assert moon_surface_height_km > -99
+moonprobe -15.9380 0.9165
+assert moon_surface_height_km > -99
+moonprobe -15.9380 0.9215
+assert moon_surface_height_km > -99
+moonprobe -15.9380 0.9265
+assert moon_surface_height_km > -99
+moonprobe -15.9380 0.9315
+assert moon_surface_height_km > -99
+moonprobe -15.9380 0.9365
+assert moon_surface_height_km > -99
+moonprobe -15.9380 0.9415
+assert moon_surface_height_km > -99
+moonprobe -15.9380 0.9465
+assert moon_surface_height_km > -99
+moonprobe -15.9380 0.9515
+assert moon_surface_height_km > -99
+moonprobe -15.9380 0.9565
+assert moon_surface_height_km > -99
+moonprobe -15.9380 0.9615
+assert moon_surface_height_km > -99
+moonprobe -15.9380 0.9665
+assert moon_surface_height_km > -99
+moonprobe -15.9380 0.9715
+assert moon_surface_height_km > -99
+moonprobe -15.9380 0.9765
+assert moon_surface_height_km > -99
+moonprobe -15.9380 0.9815
+assert moon_surface_height_km > -99
+moonprobe -15.9330 0.9065
+assert moon_surface_height_km > -99
+moonprobe -15.9330 0.9115
+assert moon_surface_height_km > -99
+moonprobe -15.9330 0.9165
+assert moon_surface_height_km > -99
+moonprobe -15.9330 0.9215
+assert moon_surface_height_km > -99
+moonprobe -15.9330 0.9265
+assert moon_surface_height_km > -99
+moonprobe -15.9330 0.9315
+assert moon_surface_height_km > -99
+moonprobe -15.9330 0.9365
+assert moon_surface_height_km > -99
+moonprobe -15.9330 0.9415
+assert moon_surface_height_km > -99
+moonprobe -15.9330 0.9465
+assert moon_surface_height_km > -99
+moonprobe -15.9330 0.9515
+assert moon_surface_height_km > -99
+moonprobe -15.9330 0.9565
+assert moon_surface_height_km > -99
+moonprobe -15.9330 0.9615
+assert moon_surface_height_km > -99
+moonprobe -15.9330 0.9665
+assert moon_surface_height_km > -99
+moonprobe -15.9330 0.9715
+assert moon_surface_height_km > -99
+moonprobe -15.9330 0.9765
+assert moon_surface_height_km > -99
+moonprobe -15.9330 0.9815
+assert moon_surface_height_km > -99
+moonprobe -15.9280 0.9065
+assert moon_surface_height_km > -99
+moonprobe -15.9280 0.9115
+assert moon_surface_height_km > -99
+moonprobe -15.9280 0.9165
+assert moon_surface_height_km > -99
+moonprobe -15.9280 0.9215
+assert moon_surface_height_km > -99
+moonprobe -15.9280 0.9265
+assert moon_surface_height_km > -99
+moonprobe -15.9280 0.9315
+assert moon_surface_height_km > -99
+moonprobe -15.9280 0.9365
+assert moon_surface_height_km > -99
+moonprobe -15.9280 0.9415
+assert moon_surface_height_km > -99
+moonprobe -15.9280 0.9465
+assert moon_surface_height_km > -99
+moonprobe -15.9280 0.9515
+assert moon_surface_height_km > -99
+moonprobe -15.9280 0.9565
+assert moon_surface_height_km > -99
+moonprobe -15.9280 0.9615
+assert moon_surface_height_km > -99
+moonprobe -15.9280 0.9665
+assert moon_surface_height_km > -99
+moonprobe -15.9280 0.9715
+assert moon_surface_height_km > -99
+moonprobe -15.9280 0.9765
+assert moon_surface_height_km > -99
+moonprobe -15.9280 0.9815
+assert moon_surface_height_km > -99
+moonprobe -15.9230 0.9065
+assert moon_surface_height_km > -99
+moonprobe -15.9230 0.9115
+assert moon_surface_height_km > -99
+moonprobe -15.9230 0.9165
+assert moon_surface_height_km > -99
+moonprobe -15.9230 0.9215
+assert moon_surface_height_km > -99
+moonprobe -15.9230 0.9265
+assert moon_surface_height_km > -99
+moonprobe -15.9230 0.9315
+assert moon_surface_height_km > -99
+moonprobe -15.9230 0.9365
+assert moon_surface_height_km > -99
+moonprobe -15.9230 0.9415
+assert moon_surface_height_km > -99
+moonprobe -15.9230 0.9465
+assert moon_surface_height_km > -99
+moonprobe -15.9230 0.9515
+assert moon_surface_height_km > -99
+moonprobe -15.9230 0.9565
+assert moon_surface_height_km > -99
+moonprobe -15.9230 0.9615
+assert moon_surface_height_km > -99
+moonprobe -15.9230 0.9665
+assert moon_surface_height_km > -99
+moonprobe -15.9230 0.9715
+assert moon_surface_height_km > -99
+moonprobe -15.9230 0.9765
+assert moon_surface_height_km > -99
+moonprobe -15.9230 0.9815
+assert moon_surface_height_km > -99

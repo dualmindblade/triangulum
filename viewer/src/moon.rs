@@ -664,7 +664,14 @@ impl MoonGenerator {
         let mut smoothness: f64 = 0.0;
 
         for mare in &self.maria {
-            let reach = mare.radius * mare.elongation * 1.24;
+            // The reach cutoff must cover the mask's WORST-CASE support:
+            // `irregular` bottoms out at 0.775, stretching the height
+            // feather to q = 1.10/0.775 = 1.42. The old 1.24 cutoff sliced
+            // through live mask values and dropped up to ~20% of the floor
+            // in one step - Andrew's 492 m "discrete cliff" arcs, with the
+            // sin(5b)/sin(11b) terms drawing his squished sine stripes
+            // along the cut (transect + 16x16 field scan, 2026-07-12).
+            let reach = mare.radius * mare.elongation * 1.48;
             if direction.dot(mare.center) < reach.cos() {
                 continue;
             }
@@ -680,13 +687,19 @@ impl MoonGenerator {
                 + 0.14 * gradient_noise(direction * 7.0, mare.seed)
                 + 0.060 * (5.0 * bearing + mare.phase).sin()
                 + 0.025 * (11.0 * bearing - mare.phase * 0.4).sin();
-            let mask = 1.0 - smoothstep(0.74, 1.10, q * irregular);
-            if mask <= 0.0 {
+            // HEIGHT and ALBEDO separate here (Andrew's art direction):
+            // geometry keeps the wide feather - basalt floods a basin, it
+            // does not build walls - while the color edge is a tight band,
+            // so the mare interior reads one consistent dark tone with
+            // variation only at the border, like the real near side.
+            let height_mask = 1.0 - smoothstep(0.74, 1.10, q * irregular);
+            let albedo_mask = 1.0 - smoothstep(0.965, 1.075, q * irregular);
+            if height_mask <= 0.0 {
                 continue;
             }
-            height = height * (1.0 - 0.84 * mask) - mare.floor_drop * mask;
-            albedo -= mare.darkness * mask;
-            smoothness = smoothness.max(mask * if mare.large { 0.96 } else { 0.86 });
+            height = height * (1.0 - 0.84 * height_mask) - mare.floor_drop * height_mask;
+            albedo -= mare.darkness * albedo_mask;
+            smoothness = smoothness.max(albedo_mask * if mare.large { 0.96 } else { 0.86 });
         }
 
         BaseSample {
@@ -910,11 +923,13 @@ impl MoonGenerator {
         } else {
             (-((q - 1.0) / outside_width).powi(2)).exp()
         };
-        let outer_falloff = if q >= 1.0 {
-            1.0 - smoothstep(1.0, tuning::CRATER_OUTER_RADII, q)
-        } else {
-            0.0
-        };
+        // The ejecta blanket RAMPS from zero at the crest: the old branch
+        // jumped 0 -> 1 exactly at q = 1, stamping a discontinuous ledge
+        // (0.42*rim_lift + the disturbed term) along every crater's crest
+        // line - 492 m on the largest basin, Andrew's "discrete cliff
+        // faces... affect all craters at the rim" (traced 2026-07-12).
+        let outer_falloff = smoothstep(1.0, 1.10, q)
+            * (1.0 - smoothstep(1.0, tuning::CRATER_OUTER_RADII, q));
         let ridge = (0.80
             + 0.20 * (crater.rim_lobes * bearing + crater.rim_phase).sin()
             + 0.08 * ((crater.rim_lobes * 2.0 + 3.0) * bearing - crater.rim_phase * 0.71).sin())
@@ -925,9 +940,16 @@ impl MoonGenerator {
             * (0.48 + 0.52 * (17.0 * q + crater.rim_phase + 3.0 * bearing).sin().abs());
         state.height += crater.depth_ratio * 0.014 * disturbed;
 
-        let exposed = (rim_core * 0.72 + disturbed * 0.13).clamp(0.0, 0.88);
+        // Universal bright rims read cartoonish (Andrew: "significantly
+        // curb this effect") - only genuinely FRESH craters flash their
+        // rims now; the rest keep a whisper. Rim contrast should come
+        // from lighting, not paint.
+        let fresh_gate = 0.12
+            + 0.88 * smoothstep(0.80, 0.96, (crater.fresh_albedo - 0.72) / 0.12);
+        let exposed =
+            (rim_core * 0.72 + disturbed * 0.13).clamp(0.0, 0.88) * fresh_gate;
         state.albedo = mix(state.albedo, crater.fresh_albedo, exposed);
-        state.albedo += 0.035 * rim_core * ridge;
+        state.albedo += 0.012 * rim_core * ridge * fresh_gate;
         state.smoothness *= 1.0 - (rim_core * 0.68 + disturbed * 0.16).clamp(0.0, 0.84);
         state.ray *= 1.0 - (rim_core * 0.75 + disturbed * 0.30).clamp(0.0, 0.92);
     }
@@ -1050,7 +1072,15 @@ impl MoonGenerator {
         let mut craters = [Crater::EMPTY; tuning::RAY_CELL_VISITS];
         let locator = face_from_dir(direction);
 
+        // diagnostic: TRI_MOON_SKIP_OCTAVE=N removes one crater octave -
+        // the bisection tool that found the ejecta-ledge cliff (B-3)
+        let skip_octave: Option<usize> = std::env::var("TRI_MOON_SKIP_OCTAVE")
+            .ok()
+            .and_then(|v| v.parse().ok());
         for octave in 0..tuning::CRATER_OCTAVES {
+            if skip_octave == Some(octave) {
+                continue;
+            }
             let grid = 1u32 << octave;
             let key_count = nearby_crater_cells(locator, grid, &mut keys);
             let mut crater_count = 0usize;
