@@ -9,6 +9,35 @@ are `teleport LAT LON [ALT_KM]` viewer args at `--exagg 1` unless noted.
 
 ## OPEN
 
+### F-24 Deep-tile stand-ins: double grids, mesh-among-voxels, ground
+'clouds', multi-second frames — FIXED 79cee18
+Andrew's 2026-07-12 field report (photos at -44.507 -114.451 and
+-44.483 -114.444): two incoherently-offset grids on ground voxels,
+mesh apparently rendering with the voxel map, pale cloud-like tint on
+terrain, frames of 2+ s in the same areas. One root cause: the async
+tile pipeline (a6f5976) let DEEP tiles defer, drawing their non-deep
+ancestor as a stand-in - 8-octave geometry meters off the 12-octave
+patch, in w=1 far-tile mode (the soft water tint = the 'cloud' film).
+The no-stand-in fallback also built sequentially per key (the
+multi-second bursts). Fix: deep keys always build urgently; leftovers
+build as one parallel batch. Reel 24/24 byte-identical; groundhop.play
+worst frame 190 ms on 200 m ground hops. Verify in-game near any voxel
+patch while flying laterally.
+
+### F-25 Dusting dither banding (both of Andrew's banding reports) —
+FIXED c833071
+Regular stripes at 50.759 -86.619 (07-11) and irregular N-S stripes +
+ground white-out at 60.704 89.662 (07-12, 'not aligned with voxel
+grid' - correct, it wasn't the lattice). The snow-dusting breakup
+dither fed hash31 cells at planet magnitude (~82k) where the fract()
+hash degenerates into axis shards - the documented failure that
+already moved the cloud deck to hash3i. Same cure, same 25 m cells;
+both renderers share the path. Repro: bandrepro.play / bandrepro2.play
+pin the photos' exact weather times (sidecar t_s -> weather time).
+NOTE: the reel pins weather, so dusting appearance is OUTSIDE reel
+coverage - the repro scripts are the specimen pair; a dusted pose
+belongs in any future weather-visual reel.
+
 ### A-4/A-5 FIXED on the second pass (gauntlet-constrained redo, 29188ec)
 FIXED: the dam family (water, dig, bench, fill, apron) now suppresses
 together and continuously - rampart site LIP/EDGE 215/136 -> 0/0, all
