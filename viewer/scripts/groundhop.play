@@ -1,0 +1,19 @@
+mode fly
+weather pin 0.1 0
+teleport 13.348 -4.807 0.011
+look 178 -19
+bench 10
+teleport 13.348 -4.805 0.011
+bench 5
+teleport 13.348 -4.803 0.011
+bench 5
+teleport 13.348 -4.801 0.011
+bench 5
+teleport 13.349 -4.801 0.011
+bench 5
+teleport 13.350 -4.801 0.011
+bench 5
+teleport 13.350 -4.801 0.030
+bench 5
+teleport 13.350 -4.801 0.011
+bench 5

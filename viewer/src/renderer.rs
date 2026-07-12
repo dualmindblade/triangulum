@@ -739,7 +739,13 @@ impl Renderer {
         }
         let mut urgent: Vec<TileKey> = Vec::new();
         for k in &missing {
-            if covered(&self.cache, k) {
+            // DEEP tiles never defer and never accept stand-ins: they exist
+            // to match the voxel patch at 12 octaves, and an 8-octave
+            // ancestor standing in interpenetrates the blocks - two offset
+            // grids on the ground, mesh fragments among voxels, pale water
+            // plane bits reading as ground clouds (Andrew's field report,
+            // 2026-07-12). They are few (patch-adjacent only).
+            if !k.deep && covered(&self.cache, k) {
                 if !self.tile_pending.contains_key(k) {
                     let epoch = self.tile_epoch;
                     self.tile_epoch = self.tile_epoch.wrapping_add(1);
@@ -808,6 +814,7 @@ impl Renderer {
         let keys: Vec<TileKey> = {
             let mut resolved: Vec<TileKey> = Vec::with_capacity(keys.len());
             let mut seen: HashSet<TileKey> = HashSet::with_capacity(keys.len());
+            let mut leftovers: Vec<TileKey> = Vec::new();
             for k in keys {
                 if self.cache.contains_key(&k) {
                     if seen.insert(k) {
@@ -855,12 +862,24 @@ impl Renderer {
                     }
                     continue;
                 }
-                // belt-and-braces: nothing can stand in (should have been
-                // built urgently above) - build now, correctness first
-                let gpu = self.upload(build_tile(planet, k, exagg));
-                self.cache.insert(k, gpu);
+                // nothing can stand in (rare; urgent builds above should
+                // cover it) - collect for ONE parallel batch below instead
+                // of building sequentially here (a sequential burst of
+                // these was the multi-second frame class)
+                leftovers.push(k);
                 if seen.insert(k) {
                     resolved.push(k);
+                }
+            }
+            if !leftovers.is_empty() {
+                use rayon::prelude::*;
+                let built: Vec<(TileKey, TileMesh)> = leftovers
+                    .par_iter()
+                    .map(|k| (*k, build_tile(planet, *k, exagg)))
+                    .collect();
+                for (k, mesh) in built {
+                    let gpu = self.upload(mesh);
+                    self.cache.insert(k, gpu);
                 }
             }
             resolved
