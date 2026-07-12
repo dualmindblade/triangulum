@@ -49,7 +49,8 @@ fn build_set(planet: &Planet, keys: &[TileKey]) -> (usize, u64, u64, u64) {
                         vertex
                             .color
                             .into_iter()
-                            .chain(vertex.far_color_delta.map(f32::from))
+                            .chain(vertex.biome.into_iter().flatten().map(f32::from))
+                            .chain(vertex.beach.map(f32::from))
                             .chain(vertex.water)
                             .chain([vertex.morph_wet, vertex.wflag]),
                     );

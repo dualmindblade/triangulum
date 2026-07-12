@@ -18,7 +18,9 @@
 use crate::planet::{
     climate_surface_with_biome, face_dir, hash01, hash_u64, ClimateSurface, MainBlock, Planet,
 };
-use crate::terrain::{sample, Sample, TileMesh, Vertex, VOXEL_OCTAVES};
+use crate::terrain::{
+    sample, Sample, TileMesh, Vertex, NO_BIOME_PAYLOAD, VOXEL_OCTAVES,
+};
 use glam::DVec3;
 use std::collections::{HashMap, HashSet};
 
@@ -1204,11 +1206,16 @@ pub fn build_chunk(
                 // +4 lum whole-sea divergence (review #2 aftermath)
                 wflag,
                 shore: -1.0, // blocks ARE the exact shoreline already
-                far_color_delta: [
+                biome: NO_BIOME_PAYLOAD,
+                // payload-off, but beach.w still carries the D-8 rain
+                // concavity (UNORM c/2 + 0.5) - block quads rain-bias too
+                beach: [
                     0,
                     0,
                     0,
-                    (quad_rain_concavity.get().clamp(-1.0, 1.0) * 127.0).round() as i8,
+                    ((quad_rain_concavity.get().clamp(-1.0, 1.0) * 0.5 + 0.5)
+                        * 255.0)
+                        .round() as u8,
                 ],
             });
         }

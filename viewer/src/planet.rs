@@ -6,7 +6,7 @@
 use anyhow::{Context, Result};
 use glam::DVec3;
 
-use crate::noise::normal_value_noise;
+use crate::noise::{gradient_noise, normal_value_noise};
 
 pub const FACES: [(DVec3, DVec3, DVec3); 6] = [
     (DVec3::new(1.0, 0.0, 0.0), DVec3::new(0.0, 1.0, 0.0), DVec3::new(0.0, 0.0, 1.0)),
@@ -56,9 +56,9 @@ const BIOME_WARP_SEED_OFFSET: i64 = 0x0B10_0A2E;
 // Cross-material boundaries use one 8 km probability zone in voxels and every
 // mesh LOD. The old range path added two independent coarse layers to a local
 // four-layer/300 m treatment; the shader then cross-faded between disagreeing
-// silhouettes at 4..12 km. This single stack continues the DOMAIN-WARP field
-// below its five displacement octaves, so orbit, flight, and ground sample the
-// same lobes rather than two independently normalized noise families.
+// silhouettes at 4..12 km. The categorical stack shares the domain warp's
+// rotated domains, frequencies, and seed schedule; its gradient lattice also
+// has an exact WGSL twin, so orbit, flight, and ground follow one field.
 pub const BIOME_BOUNDARY_ZONE_KM: f64 = 8.0;
 pub const BIOME_BOUNDARY_ZONE_MAX_TEXEL_FRACTION: f64 = 0.90;
 /// Symmetric categorical prefilter applied to the one all-range path.
@@ -75,6 +75,83 @@ const BIOME_BOUNDARY_PREFILTER_SUPPORT_TEXELS: isize = 2;
 pub const BIOME_BOUNDARY_FIELD_OCTAVES: u32 = 10;
 pub const BIOME_BOUNDARY_FIELD_SECOND_COARSE_AMPLITUDE: f64 = 0.55;
 pub const BIOME_BOUNDARY_FIELD_FINE_PERSISTENCE: f64 = 0.5;
+/// Prefix rendered as explicit far-mesh patches. On Neisor these are the
+/// approximately 85, 24, 6.5, 1.8, and 0.5 km layers. Fragment evaluation
+/// (rather than vertex sampling) keeps the last layers lattice-safe. Finer
+/// layers stay in the exact local decision and contribute their variance as
+/// the range mean below.
+pub const BIOME_RANGE_RESOLVED_OCTAVES: u32 = 5;
+
+const fn boundary_field_amplitude(octave: u32) -> f64 {
+    if octave == 0 {
+        return 1.0;
+    }
+    if octave == 1 {
+        return BIOME_BOUNDARY_FIELD_SECOND_COARSE_AMPLITUDE;
+    }
+    let mut amplitude = 1.0;
+    let mut at = 2;
+    while at < octave {
+        amplitude *= BIOME_BOUNDARY_FIELD_FINE_PERSISTENCE;
+        at += 1;
+    }
+    amplitude
+}
+
+const fn boundary_field_variance(first_octave: u32) -> f64 {
+    let mut variance = 0.0;
+    let mut octave = first_octave;
+    while octave < BIOME_BOUNDARY_FIELD_OCTAVES {
+        let amplitude = boundary_field_amplitude(octave);
+        variance += amplitude * amplitude;
+        octave += 1;
+    }
+    variance
+}
+
+/// Fraction of categorical variance below the explicit range-patch lattice.
+/// Each packed range endpoint retains exactly this much of the smooth expected
+/// color. It is derived from the same octave amplitudes, not an independent
+/// fixed-contrast art knob (approximately 0.1264 with the defaults).
+pub const BIOME_RANGE_UNRESOLVED_MEAN: f32 =
+    (boundary_field_variance(BIOME_RANGE_RESOLVED_OCTAVES)
+        / boundary_field_variance(0)) as f32;
+/// `gradient_noise` is narrower than N(0,1). The shared CPU/WGSL comparator
+/// applies this calibration before the normal CDF so requested coverage stays
+/// area-neutral. Locked by the categorical occupancy test below.
+pub const BIOME_BOUNDARY_GRADIENT_NORMALIZE: f64 = 2.70;
+pub const BIOME_RANGE_FAMILIES: usize = 8;
+
+fn climate_range_family(class: u8, climate: [f32; 2]) -> usize {
+    match koppen_main_block(class) {
+        MainBlock::Sand => 6,
+        MainBlock::Snow => 7,
+        MainBlock::Grass => {
+            let color = climate_grass(climate[0], climate[1]);
+            let greenness = color[1] - 0.5 * (color[0] + color[2]);
+            if greenness < 0.060 {
+                0
+            } else if greenness < 0.085 {
+                1
+            } else if greenness < 0.110 {
+                2
+            } else if greenness < 0.135 {
+                3
+            } else if greenness < 0.160 {
+                4
+            } else {
+                5
+            }
+        }
+    }
+}
+
+const BIOME_RANGE_FAMILY_REPRESENTATIVE: [u8; BIOME_RANGE_FAMILIES] =
+    [28, 6, 18, 25, 13, 0, 3, 29];
+const BIOME_RANGE_FAMILY_TEMP_C: [f32; BIOME_RANGE_FAMILIES] =
+    [-8.0, 8.0, 8.0, 8.0, 8.0, 24.0, 18.0, -20.0];
+const BIOME_RANGE_FAMILY_PRECIP_MM: [f32; BIOME_RANGE_FAMILIES] =
+    [100.0, 450.0, 700.0, 900.0, 1300.0, 1800.0, 100.0, 300.0];
 /// Comparator polarity is otherwise arbitrary (block order assigns the two
 /// sides). Negative retains the approved grass ownership at the pond dossier
 /// while using the exact same warp lobes and unchanged area statistics.
@@ -126,13 +203,28 @@ pub struct ClimateSurface {
     grass: [f32; 3],
     sand: [f32; 3],
     snow: [f32; 3],
-    /// Expected Grass/Sand/Snow coverage. Local surfaces store a one-hot
-    /// vector; the range surface retains its continuous area weights so the
-    /// terrain can soften mesh-lattice contrast without changing ownership.
+    /// Grass/Sand/Snow ownership weights. Exact and fixed range-family
+    /// endpoints are one-hot; range coverage itself lives beside the palette.
     block_weights: [f32; 3],
     /// Existing far-canopy approximation, spatially blended so it cannot put
     /// a second hard line back across a smooth same-block transition.
     pub forest: f32,
+}
+
+/// Fixed semantic Koppen-family channels for the far mesh. Every vertex uses
+/// the same channel identity, preventing candidate-slot changes from exposing
+/// the triangle lattice while retaining class-level climate anchors.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct ClimateRangeSurface {
+    pub candidates: [ClimateSurface; BIOME_RANGE_FAMILIES],
+    pub weights: [f32; BIOME_RANGE_FAMILIES],
+    /// Original continuous climate mean, retained as the common-mode color.
+    /// Categorical endpoints are corrected around it, so one-family interiors
+    /// keep their approved tint without letting this mean own the interface.
+    pub mean: ClimateSurface,
+    /// Cumulative candidate coverages; the fragment shader compares its
+    /// world-anchored resolved field against these thresholds.
+    pub thresholds: [f32; BIOME_RANGE_FAMILIES],
 }
 
 /// Climate values sampled at the one shared, domain-warped biome position.
@@ -287,6 +379,28 @@ fn biome_scalar_noise(dir: DVec3, frequency: f64, seed: i64, octave: usize) -> f
     normal_value_noise(domain * frequency, octave_seed)
 }
 
+/// Shader-evaluable twin used for categorical boundary ownership. It keeps
+/// the warp's rotated domains, frequencies, and seed schedule, but uses the
+/// repository's gradient lattice (`kgnoise` in WGSL) so fragments can recover
+/// contours below the vertex lattice instead of interpolating biome colors.
+#[inline]
+fn boundary_scalar_noise(dir: DVec3, frequency: f64, seed: i64, octave: usize) -> f64 {
+    let axes = BIOME_WARP_AXES[octave % BIOME_WARP_AXES.len()];
+    let domain = DVec3::new(dir.dot(axes[0]), dir.dot(axes[1]), dir.dot(axes[2]));
+    let octave_seed = seed
+        .wrapping_add(BIOME_WARP_SEED_OFFSET)
+        .wrapping_mul(7_919)
+        .wrapping_add(octave as i64 * 131);
+    gradient_noise(domain * frequency, octave_seed)
+}
+
+pub(crate) fn boundary_shader_seedmul(seed: i64) -> u32 {
+    let octave_zero = seed
+        .wrapping_add(BIOME_WARP_SEED_OFFSET)
+        .wrapping_mul(7_919);
+    (octave_zero.wrapping_mul(0x9E37_79B1) & 0xFFFF_FFFF) as u32
+}
+
 #[inline]
 fn biome_vector_noise(dir: DVec3, frequency: f64, seed: i64, octave: usize) -> DVec3 {
     let axes = BIOME_WARP_AXES[octave % BIOME_WARP_AXES.len()];
@@ -382,33 +496,69 @@ fn ecotone_comparator(face: usize, u: f64, v: f64, seed: i64) -> f64 {
     standard_normal_cdf(sum / variance.sqrt()).clamp(0.0, 1.0)
 }
 
-/// One boundary comparator at every range. Its first five scalar samples are
-/// bit-for-bit the fields that drive `biome_warp_dir`; the remaining five
-/// continue their lacunarity/persistence down to column scale. Normalization
-/// keeps the probability transform area-neutral without renormalizing a second
-/// independent local stack during descent.
-fn boundary_zone_comparator(face: usize, u: f64, v: f64, res: usize, seed: i64) -> f64 {
+/// One boundary comparator at every range. Its first five scalar samples use
+/// the domain warp's exact geometric/seed schedule on the shader-compatible
+/// gradient lattice; the remaining five continue down to column scale.
+/// Normalization keeps the probability transform area-neutral.
+#[derive(Clone, Copy)]
+struct BoundaryZoneSignal {
+    full_comparator: f64,
+}
+
+fn boundary_zone_signal(face: usize, u: f64, v: f64, res: usize, seed: i64) -> BoundaryZoneSignal {
     let dir = ecotone_column_dir(face, u, v);
     let texel_angle = 2.0 / (res - 1) as f64;
     let mut frequency = 1.0 / (texel_angle * BIOME_WARP_BASE_WAVELENGTH_TEXELS);
     let mut sum = 0.0;
     let mut variance = 0.0;
     for octave in 0..BIOME_BOUNDARY_FIELD_OCTAVES as usize {
-        let amplitude = match octave {
-            0 => 1.0,
-            1 => BIOME_BOUNDARY_FIELD_SECOND_COARSE_AMPLITUDE,
-            _ => BIOME_BOUNDARY_FIELD_FINE_PERSISTENCE.powi(octave as i32 - 2),
-        };
-        sum += amplitude * biome_scalar_noise(dir, frequency, seed, octave);
+        let amplitude = boundary_field_amplitude(octave as u32);
+        let value = amplitude * boundary_scalar_noise(dir, frequency, seed, octave);
+        sum += value;
         variance += amplitude * amplitude;
         frequency *= BIOME_WARP_LACUNARITY;
     }
-    standard_normal_cdf(BIOME_BOUNDARY_FIELD_POLARITY * sum / variance.sqrt()).clamp(0.0, 1.0)
+    BoundaryZoneSignal {
+        full_comparator: standard_normal_cdf(
+            BIOME_BOUNDARY_FIELD_POLARITY * BIOME_BOUNDARY_GRADIENT_NORMALIZE
+                * sum / variance.sqrt(),
+        )
+        .clamp(0.0, 1.0),
+    }
+}
+
+fn boundary_zone_comparator(face: usize, u: f64, v: f64, res: usize, seed: i64) -> f64 {
+    boundary_zone_signal(face, u, v, res, seed).full_comparator
+}
+
+#[cfg(test)]
+fn boundary_range_comparator(face: usize, u: f64, v: f64, res: usize, seed: i64) -> f64 {
+    let dir = ecotone_column_dir(face, u, v);
+    let texel_angle = 2.0 / (res - 1) as f64;
+    let mut frequency = 1.0 / (texel_angle * BIOME_WARP_BASE_WAVELENGTH_TEXELS);
+    let mut sum = 0.0;
+    let mut variance = 0.0;
+    for octave in 0..BIOME_RANGE_RESOLVED_OCTAVES as usize {
+        let amplitude = boundary_field_amplitude(octave as u32);
+        sum += amplitude * boundary_scalar_noise(dir, frequency, seed, octave);
+        variance += amplitude * amplitude;
+        frequency *= BIOME_WARP_LACUNARITY;
+    }
+    standard_normal_cdf(
+        BIOME_BOUNDARY_FIELD_POLARITY * BIOME_BOUNDARY_GRADIENT_NORMALIZE
+            * sum / variance.sqrt(),
+    )
+    .clamp(0.0, 1.0)
 }
 
 #[cfg(test)]
 fn production_boundary_zone_comparator(face: usize, u: f64, v: f64, seed: i64) -> f64 {
     boundary_zone_comparator(face, u, v, 1_024, seed)
+}
+
+#[cfg(test)]
+fn production_boundary_range_comparator(face: usize, u: f64, v: f64, seed: i64) -> f64 {
+    boundary_range_comparator(face, u, v, 1_024, seed)
 }
 
 pub struct FaceRaster {
@@ -418,6 +568,10 @@ pub struct FaceRaster {
     /// 1 where the conservative warp + range-filter neighborhood contains
     /// another class. Broad same-class interiors skip procedural evaluation.
     climate_edge: Vec<u64>,
+    /// 1 where the range-appearance family changes inside the 4x4 coverage
+    /// support. This is deliberately separate: one Koppen class can span a
+    /// visible dry/wet tint transition.
+    range_edge: Vec<u64>,
     pub rough_km: Vec<f32>,     // mean |elevation delta| between map cells
     /// Interleaved [annual mean temperature C, annual precipitation mm].
     /// These are read together by terrain and biome tint paths, so one cache
@@ -455,6 +609,7 @@ struct RasterPosition {
     y: f64,
     here: u8,
     climate_edge: bool,
+    range_edge: bool,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -492,7 +647,9 @@ impl Planet {
             let rough_km = f32s(n * 5);
             let precip_mm_yr = f32s(n * 9);
             let temp_c = f32s(n * 13);
-            let climate = temp_c.into_iter().zip(precip_mm_yr).map(|(t, p)| [t, p]).collect();
+            let climate: Vec<[f32; 2]> =
+                temp_c.into_iter().zip(precip_mm_yr).map(|(t, p)| [t, p]).collect();
+            let range_edge = climate_range_edge_mask(&koppen, &climate, res);
             let flow_log10 = f32s(n * 17);
             let ocean = blur_mask(&koppen, res, 2);
             let water = koppen.iter().map(|&k| (k == 255) as u8 as f32).collect();
@@ -501,6 +658,7 @@ impl Planet {
                 elev_km,
                 koppen,
                 climate_edge,
+                range_edge,
                 rough_km,
                 climate,
                 flow_log10,
@@ -669,6 +827,7 @@ impl Planet {
             y,
             here: r.koppen[index],
             climate_edge: (r.climate_edge[index >> 6] >> (index & 63)) & 1 != 0,
+            range_edge: (r.range_edge[index >> 6] >> (index & 63)) & 1 != 0,
         }
     }
 
@@ -796,6 +955,24 @@ impl Planet {
         let v = -1.0 + 2.0 * y as f64 / d;
         let (f2, u2, v2) = face_from_dir(face_dir(face, u, v));
         self.raw_koppen(f2, u2, v2)
+    }
+
+    /// Class and climate at one categorical texel, with the same real
+    /// cross-face neighbor rule as `koppen_texel`.
+    fn koppen_climate_texel(&self, face: usize, x: i64, y: i64) -> (u8, [f32; 2]) {
+        let r = &self.faces[face];
+        if x >= 0 && x < r.res as i64 && y >= 0 && y < r.res as i64 {
+            let index = y as usize * r.res + x as usize;
+            return (r.koppen[index], r.climate[index]);
+        }
+        let d = (r.res - 1) as f64;
+        let u = -1.0 + 2.0 * x as f64 / d;
+        let v = -1.0 + 2.0 * y as f64 / d;
+        let (f2, u2, v2) = face_from_dir(face_dir(face, u, v));
+        let p = self.raster_position(f2, u2, v2);
+        let rr = &self.faces[p.face];
+        let index = p.y.round() as usize * rr.res + p.x.round() as usize;
+        (rr.koppen[index], rr.climate[index])
     }
 
     /// Smooth the old palette anchor and far-forest weight over the categorical
@@ -943,6 +1120,95 @@ impl Planet {
         (here, weights, representatives)
     }
 
+    /// Appearance-family counterpart to `koppen_block_weights_at` for range color.
+    /// The material path deliberately aggregates to three main blocks; doing
+    /// that to display color erased temperate/steppe/tundra identity and left
+    /// a smooth tint wash even when material ownership was categorical. Fold
+    /// the taps into eight globally stable visual/material families.
+    fn koppen_range_weights_at(
+        &self,
+        p: RasterPosition,
+        requested_width_km: f64,
+    ) -> [f32; BIOME_RANGE_FAMILIES] {
+        let r = &self.faces[p.face];
+        // The semantic mask covers the complete 4x4 range-filter footprint.
+        // Most vertices are therefore a proven one-family interior: return a
+        // one-hot payload before doing footprint metric/filter work. Besides
+        // being exact, this keeps the tile-build cost near the round-3 path.
+        if requested_width_km > CROSS_BLOCK_ECOTONE_KM && !p.range_edge {
+            let x = p.x.round().clamp(0.0, (r.res - 1) as f64) as usize;
+            let y = p.y.round().clamp(0.0, (r.res - 1) as f64) as usize;
+            let index = y * r.res + x;
+            let family = climate_range_family(r.koppen[index], r.climate[index]);
+            return std::array::from_fn(|slot| if slot == family { 1.0 } else { 0.0 });
+        }
+        let d = (r.res - 1) as f64;
+        let denom = 1.0 + p.u * p.u + p.v * p.v;
+        let texel_uv = 2.0 / d;
+        let km_x = self.radius_km * texel_uv * (1.0 + p.v * p.v).sqrt() / denom;
+        let km_y = self.radius_km * texel_uv * (1.0 + p.u * p.u).sqrt() / denom;
+        let width_km = requested_width_km
+            .max(CROSS_BLOCK_ECOTONE_KM)
+            .min(BIOME_BOUNDARY_ZONE_MAX_TEXEL_FRACTION * km_x.min(km_y));
+        let half = width_km * 0.5;
+        let axis_weight = |coord: f64, edge: f64, km_per_texel: f64| {
+            let t = (0.5 + (coord - edge) * km_per_texel / (2.0 * half)).clamp(0.0, 1.0);
+            t * t * (3.0 - 2.0 * t)
+        };
+        let (x0, y0) = (p.x.floor() as i64, p.y.floor() as i64);
+        let wx = axis_weight(p.x, x0 as f64 + 0.5, km_x);
+        let wy = axis_weight(p.y, y0 as f64 + 0.5, km_y);
+
+        let mut family_weight = [0.0f64; BIOME_RANGE_FAMILIES];
+        let mut add = |class: u8, climate: [f32; 2], weight: f64| {
+            if weight <= 0.0 {
+                return;
+            }
+            let family = climate_range_family(class, climate);
+            family_weight[family] += weight;
+        };
+        let mut add_texel = |x: i64, y: i64, weight: f64| {
+            let (class, climate) = self.koppen_climate_texel(p.face, x, y);
+            add(class, climate, weight);
+        };
+
+        if requested_width_km <= CROSS_BLOCK_ECOTONE_KM {
+            for (x, y, weight) in [
+                (x0, y0, (1.0 - wx) * (1.0 - wy)),
+                (x0 + 1, y0, wx * (1.0 - wy)),
+                (x0, y0 + 1, (1.0 - wx) * wy),
+                (x0 + 1, y0 + 1, wx * wy),
+            ] {
+                add_texel(x, y, weight);
+            }
+        } else {
+            let side = BIOME_BOUNDARY_PREFILTER_SIDE_WEIGHT;
+            let center = 1.0 - 2.0 * side;
+            let filtered_axis = |w: f64| {
+                [
+                    (1.0 - w) * side,
+                    (1.0 - w) * center + w * side,
+                    (1.0 - w) * side + w * center,
+                    w * side,
+                ]
+            };
+            let x_weights = filtered_axis(wx);
+            let y_weights = filtered_axis(wy);
+            for (dy, y_weight) in y_weights.into_iter().enumerate() {
+                for (dx, x_weight) in x_weights.into_iter().enumerate() {
+                    add_texel(
+                        x0 + dx as i64 - 1,
+                        y0 + dy as i64 - 1,
+                        x_weight * y_weight,
+                    );
+                }
+            }
+        }
+
+        debug_assert!((family_weight.iter().sum::<f64>() - 1.0).abs() < 1e-9);
+        family_weight.map(|weight| weight as f32)
+    }
+
     /// Dither against the continuous four-texel weights in a stable block
     /// order. Same-block neighborhoods return the nearest class exactly and
     /// therefore retain all climate/material statistics outside ecotones.
@@ -1025,6 +1291,45 @@ fn climate_edge_mask(koppen: &[u8], res: usize) -> Vec<u64> {
                         let xx = (x as isize + dx) as usize;
                         let yy = (y as isize + dy) as usize;
                         differs |= koppen[yy * res + xx] != here;
+                    }
+                }
+            }
+            if differs {
+                let index = y * res + x;
+                edge[index >> 6] |= 1u64 << (index & 63);
+            }
+        }
+    }
+    edge
+}
+
+/// Conservative interior mask for the range appearance quantizer. Koppen's
+/// byte alone is insufficient: temperature/precipitation can cross a visual
+/// bin inside one class. The radius encloses the 4x4 coverage prefilter; face
+/// borders remain marked for real neighbor resolution.
+fn climate_range_edge_mask(koppen: &[u8], climate: &[[f32; 2]], res: usize) -> Vec<u64> {
+    let mut edge = vec![0u64; koppen.len().div_ceil(64)];
+    let families: Vec<u8> = koppen
+        .iter()
+        .zip(climate)
+        .map(|(&class, &values)| climate_range_family(class, values) as u8)
+        .collect();
+    let radius = BIOME_BOUNDARY_PREFILTER_SUPPORT_TEXELS;
+    for y in 0..res {
+        for x in 0..res {
+            let mut differs = x < radius as usize
+                || y < radius as usize
+                || x + radius as usize >= res
+                || y + radius as usize >= res;
+            if !differs {
+                let index = y * res + x;
+                let here = families[index];
+                for dy in -radius..=radius {
+                    for dx in -radius..=radius {
+                        let xx = (x as isize + dx) as usize;
+                        let yy = (y as isize + dy) as usize;
+                        let at = yy * res + xx;
+                        differs |= families[at] != here;
                     }
                 }
             }
@@ -1338,13 +1643,13 @@ fn climate_surface_basis(
 }
 
 fn climate_cross_block(planet: &Planet, basis: ClimateSurfaceBasis) -> MainBlock {
-    climate_boundary_selection(planet, basis).0
+    climate_boundary_selection(planet, basis)
 }
 
 fn climate_boundary_selection(
     planet: &Planet,
     basis: ClimateSurfaceBasis,
-) -> (MainBlock, [f32; 3]) {
+) -> MainBlock {
     let (here, weights, representatives) =
         planet.koppen_block_weights_at(basis.p, BIOME_BOUNDARY_ZONE_KM);
     let chosen = Planet::choose_dithered_koppen(here, weights, representatives, || {
@@ -1356,9 +1661,54 @@ fn climate_boundary_selection(
             planet.seed,
         )
     });
+    koppen_main_block(chosen)
+}
+
+/// Exact local material selection plus eight stable appearance-family weights.
+/// Thresholds are their cumulative coverages in fixed semantic order.
+/// The fragment shader evaluates the resolved comparator directly, defining
+/// categorical contours even when all candidates share one main block (the
+/// specimen's Dfb/tundra wash).
+fn climate_boundary_pair_selection(
+    planet: &Planet,
+    basis: ClimateSurfaceBasis,
+) -> (
+    MainBlock,
+    [f32; BIOME_RANGE_FAMILIES],
+    [f32; BIOME_RANGE_FAMILIES],
+    [f32; 3],
+) {
+    let (here, weights, representatives) =
+        planet.koppen_block_weights_at(basis.p, BIOME_BOUNDARY_ZONE_KM);
+    let range_weights = planet.koppen_range_weights_at(basis.p, BIOME_BOUNDARY_ZONE_KM);
+    let block_mixed = weights.iter().filter(|&&weight| weight > 0.0).count() > 1;
+    let signal = block_mixed.then(|| {
+        boundary_zone_signal(
+            basis.world_face,
+            basis.world_u,
+            basis.world_v,
+            planet.faces[basis.p.face].res,
+            planet.seed,
+        )
+    });
+    let chosen = if block_mixed {
+        let signal = signal.expect("mixed block weights require a boundary signal");
+        Planet::choose_dithered_koppen(here, weights, representatives, || {
+            signal.full_comparator
+        })
+    } else {
+        here
+    };
+    let mut cumulative = 0.0f32;
+    let thresholds = std::array::from_fn(|family| {
+        cumulative += range_weights[family];
+        cumulative.min(1.0)
+    });
     (
         koppen_main_block(chosen),
-        [weights[0] as f32, weights[1] as f32, weights[2] as f32],
+        range_weights,
+        thresholds,
+        weights.map(|weight| weight as f32),
     )
 }
 
@@ -1404,6 +1754,41 @@ fn finish_climate_surface(
         block_weights,
         forest: basis.forest,
     }
+}
+
+fn finish_range_candidate(family: usize, force_snow: bool) -> ClimateSurface {
+    let representative = BIOME_RANGE_FAMILY_REPRESENTATIVE[family];
+    let temp = BIOME_RANGE_FAMILY_TEMP_C[family];
+    let precip = BIOME_RANGE_FAMILY_PRECIP_MM[family];
+    let main_block = if force_snow {
+        MainBlock::Snow
+    } else {
+        koppen_main_block(representative)
+    };
+    let one_hot = match main_block {
+        MainBlock::Grass => [1.0, 0.0, 0.0],
+        MainBlock::Sand => [0.0, 1.0, 0.0],
+        MainBlock::Snow => [0.0, 0.0, 1.0],
+    };
+    ClimateSurface {
+        main_block,
+        grass: hue_nudge(climate_grass(temp, precip), ground_tint(representative)),
+        sand: climate_sand(temp, precip),
+        snow: climate_snow(temp, precip),
+        block_weights: one_hot,
+        forest: koppen_forest(representative),
+    }
+}
+
+fn range_candidate_palette(force_snow: bool) -> &'static [ClimateSurface; BIOME_RANGE_FAMILIES] {
+    static NORMAL: std::sync::OnceLock<[ClimateSurface; BIOME_RANGE_FAMILIES]> =
+        std::sync::OnceLock::new();
+    static SNOW: std::sync::OnceLock<[ClimateSurface; BIOME_RANGE_FAMILIES]> =
+        std::sync::OnceLock::new();
+    let palette = if force_snow { &SNOW } else { &NORMAL };
+    palette.get_or_init(|| {
+        std::array::from_fn(|family| finish_range_candidate(family, force_snow))
+    })
 }
 
 #[inline]
@@ -1548,10 +1933,12 @@ pub fn climate_surface(
 }
 
 /// Local + range appearances from one raster/warp lookup and ONE categorical
-/// boundary choice. Terrain vertices carry a one-hot near appearance plus an
-/// area-smoothed far appearance; the shader may soften contrast with distance,
-/// but it cannot hand off to a different silhouette. Voxel callers consume the
-/// same boundary choice through the public local API above.
+/// field. Terrain vertices carry a one-hot exact appearance plus eight fixed
+/// appearance-family endpoints and cumulative thresholds for fragment
+/// patches. Candidate climates are categorical texel averages, so continuous
+/// temperature/precipitation interpolation cannot restore the old tint wash.
+/// Voxel callers consume the same exact boundary choice through the public
+/// local API above.
 pub(crate) fn climate_surface_pair(
     planet: &Planet,
     face: usize,
@@ -1560,7 +1947,7 @@ pub(crate) fn climate_surface_pair(
     unwarped_temp_c: f64,
     unwarped_precip_mm: f64,
     unwarped_sea: bool,
-) -> (ClimateSurface, ClimateSurface) {
+) -> (ClimateSurface, ClimateRangeSurface) {
     let basis = climate_surface_basis(
         planet,
         face,
@@ -1570,10 +1957,12 @@ pub(crate) fn climate_surface_pair(
         unwarped_precip_mm,
         unwarped_sea,
     );
-    let (boundary, mut range_weights) = climate_boundary_selection(planet, basis);
-    let mut blocks = [boundary, boundary];
-    if apply_snow_override(planet, basis, &mut blocks) {
-        range_weights = [0.0, 0.0, 1.0];
+    let (boundary, range_weights, range_thresholds, mut mean_weights) =
+        climate_boundary_pair_selection(planet, basis);
+    let mut blocks = [boundary];
+    let force_snow = apply_snow_override(planet, basis, &mut blocks);
+    if force_snow {
+        mean_weights = [0.0, 0.0, 1.0];
     }
     let local_weights = match blocks[0] {
         MainBlock::Grass => [1.0, 0.0, 0.0],
@@ -1582,7 +1971,12 @@ pub(crate) fn climate_surface_pair(
     };
     (
         finish_climate_surface(basis, blocks[0], local_weights),
-        finish_climate_surface(basis, blocks[1], range_weights),
+        ClimateRangeSurface {
+            candidates: *range_candidate_palette(force_snow),
+            weights: range_weights,
+            mean: finish_climate_surface(basis, blocks[0], mean_weights),
+            thresholds: range_thresholds,
+        },
     )
 }
 
@@ -1607,7 +2001,123 @@ pub fn koppen_color(id: u8) -> [f32; 3] {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::camera::Camera;
     use crate::terrain;
+
+    /// Audit the primary round-4 specimen through the exact mesh climate path.
+    /// Ignored because it loads the full baked planet and exists as an
+    /// evidence probe rather than a unit gate. Run with:
+    /// `cargo test --release --lib reported_9km_range_transect -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn reported_9km_range_transect() {
+        let assets = if std::path::Path::new("assets/meta.json").exists() {
+            "assets"
+        } else {
+            "viewer/assets"
+        };
+        let planet = Planet::load(assets).expect("range probe requires baked viewer assets");
+        let camera = Camera {
+            lat: 52.991f64.to_radians(),
+            lon: 100.016f64.to_radians(),
+            altitude_km: 9.070,
+            radius_km: planet.radius_km,
+            ground_km: 0.003_321_985_203_788_121_3,
+            yaw: -84.0f64.to_radians(),
+            pitch: -83.0f64.to_radians(),
+            roll: 0.0,
+        };
+        let eye = camera.position();
+        let forward = camera.look_dir();
+        let up_hint = camera.frame().0;
+        let right = forward.cross(up_hint).normalize();
+        let view_up = right.cross(forward).normalize();
+        let tan_half_fov = (65.0f64.to_radians() * 0.5).tan();
+        let aspect = 1280.0 / 720.0;
+        let surface_dir_at_pixel = |pixel_x: f64, pixel_y: f64| {
+            let ndc_x = 2.0 * (pixel_x + 0.5) / 1280.0 - 1.0;
+            let ndc_y = 1.0 - 2.0 * (pixel_y + 0.5) / 720.0;
+            let ray = (forward
+                + right * (ndc_x * aspect * tan_half_fov)
+                + view_up * (ndc_y * tan_half_fov))
+                .normalize();
+            let mut radius = planet.radius_km;
+            let mut direction = eye.normalize();
+            for _ in 0..4 {
+                let b = eye.dot(ray);
+                let c = eye.length_squared() - radius * radius;
+                let disc = b * b - c;
+                assert!(disc >= 0.0, "pixel ({pixel_x},{pixel_y}) misses planet");
+                let distance = -b - disc.sqrt();
+                assert!(distance > 0.0, "pixel ({pixel_x},{pixel_y}) hits behind eye");
+                direction = (eye + ray * distance).normalize();
+                radius = planet.radius_km + terrain::ground_height_km(&planet, direction, 1.0);
+            }
+            direction
+        };
+
+        println!("| # | pixel | lat | lon | Koppen | family coverages 0..7 | temp C | precip mm | path | beach coverage / gain | unlit RGB byte | active endpoint span |");
+        println!("|---:|---:|---:|---:|---:|---|---:|---:|---|---:|---|---:|");
+        for sample_index in 0..10 {
+            let t = sample_index as f64 / 9.0;
+            let pixel_x = 650.0 + (950.0 - 650.0) * t;
+            let pixel_y = 120.0 + (500.0 - 120.0) * t;
+            let dir = surface_dir_at_pixel(pixel_x, pixel_y);
+            let lat = dir.z.asin().to_degrees();
+            let lon = dir.y.atan2(dir.x).to_degrees();
+            let (face, u, v) = face_from_dir(dir);
+            let sampled = terrain::sample(&planet, face, u, v, terrain::VOXEL_OCTAVES);
+            let basis = climate_surface_basis(
+                &planet,
+                face,
+                u,
+                v,
+                sampled.temp_c,
+                sampled.precip,
+                sampled.sea,
+            );
+            let weights = planet.koppen_range_weights_at(basis.p, BIOME_BOUNDARY_ZONE_KM);
+            let path = if !basis.p.range_edge { "interior fast" } else { "range_edge complete" };
+            let coverages = weights
+                .map(|weight| format!("{weight:.4}"))
+                .join(" / ");
+            let (ground, endpoints, beach) =
+                terrain::debug_range_ground_payload(&planet, face, u, v, &sampled);
+            let ground_bytes = ground.map(|channel| (channel * 255.0).round() as u8);
+            let active: Vec<[u8; 3]> = endpoints
+                .into_iter()
+                .zip(weights)
+                .enumerate()
+                .filter(|(family, (_, weight))| *weight > 0.0 || (*family == 6 && beach[0] > 0))
+                .map(|(_, (endpoint, _))| [endpoint[0], endpoint[1], endpoint[2]])
+                .collect();
+            let endpoint_span = (0..3)
+                .map(|channel| {
+                    let lo = active.iter().map(|color| color[channel]).min().unwrap();
+                    let hi = active.iter().map(|color| color[channel]).max().unwrap();
+                    hi - lo
+                })
+                .max()
+                .unwrap();
+            println!(
+                "| {} | ({:.0},{:.0}) | {:.6} | {:.6} | {} | {} | {:.3} | {:.1} | {} | {:.4} / {:.4} | {:?} | {} |",
+                sample_index + 1,
+                pixel_x,
+                pixel_y,
+                lat,
+                lon,
+                basis.p.here,
+                coverages,
+                basis.temp_c,
+                basis.precip_mm,
+                path,
+                beach[0] as f32 / 255.0,
+                beach[1] as f32 / 255.0,
+                ground_bytes,
+                endpoint_span,
+            );
+        }
+    }
 
     fn climate_test_planet_res(right_class: u8, res: usize) -> Planet {
         assert!(res >= 4 && res.is_multiple_of(2));
@@ -1622,6 +2132,7 @@ mod tests {
             elev_km: vec![0.2; n],
             koppen: koppen.clone(),
             climate_edge: climate_edge_mask(&koppen, res),
+            range_edge: climate_range_edge_mask(&koppen, &vec![[8.0, 500.0]; n], res),
             rough_km: vec![0.0; n],
             climate: vec![[8.0, 500.0]; n],
             flow_log10: vec![0.0; n],
@@ -1655,6 +2166,63 @@ mod tests {
             );
         }
         assert_eq!(left.forest.to_bits(), right.forest.to_bits());
+    }
+
+    #[test]
+    fn range_edge_mask_detects_tint_boundaries_inside_one_koppen_class() {
+        let res = 32;
+        let n = res * res;
+        let koppen = vec![25; n]; // Dfb on both sides: class mask sees no edge.
+        let climate: Vec<[f32; 2]> = (0..res)
+            .flat_map(|_| {
+                (0..res).map(|x| {
+                    if x < res / 2 { [8.0, 700.0] } else { [8.0, 1_300.0] }
+                })
+            })
+            .collect();
+        assert_ne!(
+            climate_range_family(25, [8.0, 700.0]),
+            climate_range_family(25, [8.0, 1_300.0]),
+        );
+        let class_edge = climate_edge_mask(&koppen, res);
+        let range_edge = climate_range_edge_mask(&koppen, &climate, res);
+        let marked = |mask: &[u64], x: usize, y: usize| {
+            let index = y * res + x;
+            (mask[index >> 6] >> (index & 63)) & 1 != 0
+        };
+        assert!(!marked(&class_edge, res / 2 - 1, res / 2));
+        assert!(marked(&range_edge, res / 2 - 1, res / 2));
+        assert!(!marked(&range_edge, res / 4, res / 2));
+    }
+
+    #[test]
+    fn range_family_weights_are_normalized_and_thresholds_monotone() {
+        let planet = climate_test_planet_res(4, 32);
+        for (u, v) in [(-0.60, 0.12), (-0.08, -0.31), (0.0, 0.0), (0.08, 0.27), (0.60, -0.19)] {
+            let p = planet.raster_position(0, u, v);
+            let weights = planet.koppen_range_weights_at(p, BIOME_BOUNDARY_ZONE_KM);
+            assert!(weights.iter().all(|weight| *weight >= 0.0));
+            let sum = weights.iter().sum::<f32>();
+            assert!((sum - 1.0).abs() <= 2e-6, "weights sum to {sum} at {u},{v}");
+            let mut cumulative = 0.0;
+            let mut previous = 0.0;
+            for weight in weights {
+                cumulative += weight;
+                assert!(cumulative + 1e-7 >= previous);
+                previous = cumulative;
+            }
+            assert!((cumulative - 1.0).abs() <= 2e-6);
+        }
+    }
+
+    #[test]
+    fn one_family_range_mean_preserves_the_exact_local_appearance() {
+        let planet = climate_test_planet_res(6, 32);
+        for (temp, precip) in [(8.0, 500.0), (-20.0, 300.0)] {
+            let (local, range) =
+                climate_surface_pair(&planet, 0, -0.35, 0.20, temp, precip, false);
+            assert_surface_bits_eq(local, range.mean);
+        }
     }
 
     #[test]
@@ -1829,7 +2397,7 @@ mod tests {
     }
 
     #[test]
-    fn boundary_field_reuses_the_exact_warp_carriers() {
+    fn biome_warp_scalar_and_vector_noise_share_exact_carriers() {
         assert!(BIOME_BOUNDARY_FIELD_OCTAVES >= BIOME_WARP_OCTAVES);
         let seed = 42;
         let res = 1_024;
@@ -1898,9 +2466,11 @@ mod tests {
                 let v = -0.75 + 1.5 * (j as f64 + 0.5) / 128.0;
                 let (near, range) =
                     climate_surface_pair(&cross, 0, u, v, 8.0, 900.0, false);
-                assert_eq!(
-                    near.main_block, range.main_block,
-                    "altitude handoff changed category at u={u} v={v}"
+                assert!(
+                    range.candidates.into_iter().zip(range.weights)
+                        .any(|(candidate, weight)| weight > 0.0
+                            && candidate.main_block == near.main_block),
+                    "exact material disappeared from range candidates at u={u} v={v}"
                 );
             }
         }
@@ -2087,6 +2657,11 @@ mod tests {
                 production_boundary_zone_comparator,
                 boundary_seeds.as_slice(),
             ),
+            (
+                "range",
+                production_boundary_range_comparator,
+                boundary_seeds.as_slice(),
+            ),
         ] {
             for &seed in seeds {
                 let mut occupied = [0usize; 3];
@@ -2129,6 +2704,43 @@ mod tests {
     }
 
     #[test]
+    fn range_prefix_is_deterministic_and_tracks_the_full_boundary_field() {
+        const SAMPLES: usize = 32_768;
+        let seed = 42;
+        let mut same_half = 0usize;
+        for sample in 0..SAMPLES {
+            let face = sample % FACES.len();
+            let a = hash_u64(
+                face as u8,
+                sample as u64,
+                (sample as u64).wrapping_mul(0x9E37_79B9),
+                0xA11C_E101,
+            );
+            let b = hash_u64(
+                face as u8,
+                a,
+                (sample as u64).wrapping_mul(0x85EB_CA77),
+                0xA11C_E102,
+            );
+            let n = COLUMNS_PER_FACE as f64;
+            let u = -1.0 + 2.0 * ((a % COLUMNS_PER_FACE) as f64 + 0.5) / n;
+            let v = -1.0 + 2.0 * ((b % COLUMNS_PER_FACE) as f64 + 0.5) / n;
+            let range = production_boundary_range_comparator(face, u, v, seed);
+            let full = production_boundary_zone_comparator(face, u, v, seed);
+            assert_eq!(
+                range.to_bits(),
+                production_boundary_range_comparator(face, u, v, seed).to_bits(),
+            );
+            same_half += usize::from((range < 0.5) == (full < 0.5));
+        }
+        let agreement = same_half as f64 / SAMPLES as f64;
+        assert!(
+            agreement >= 0.82,
+            "resolved prefix/full category agreement fell to {agreement:.5}"
+        );
+    }
+
+    #[test]
     fn categorical_comparators_are_one_value_per_canonical_column() {
         let n = COLUMNS_PER_FACE as f64;
         let (ci, cj) = (4_321_987u64, 7_654_321u64);
@@ -2138,6 +2750,7 @@ mod tests {
         for (label, field) in [
             ("local", ecotone_comparator as fn(usize, f64, f64, i64) -> f64),
             ("boundary", production_boundary_zone_comparator),
+            ("range", production_boundary_range_comparator),
         ] {
             let expected = field(2, u, v, seed).to_bits();
             for (du, dv) in [(-0.20, -0.20), (0.20, -0.20), (-0.20, 0.20), (0.20, 0.20)] {
@@ -2185,6 +2798,7 @@ mod tests {
         for (label, field) in [
             ("local", ecotone_comparator as fn(usize, f64, f64, i64) -> f64),
             ("boundary", production_boundary_zone_comparator),
+            ("range", production_boundary_range_comparator),
         ] {
             // Interior points on an edge plus both adjacent cube corners.
             for dir in [
