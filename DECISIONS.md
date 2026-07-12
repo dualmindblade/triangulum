@@ -44,7 +44,7 @@ foam.
 
 \[Single-block increments are a result of rivers flowing downhill
 and do not necessarily represent discrete jumps in water height.
-These increments will probably dissapear at some point id water
+These increments will probably disappear at some point id water
 levels are added, allowing for smoother-looking rivers. In areas with
 rougher terrain, waterfalls with up to several dozen-block jumps could
 be implemented into generation and white particles could apppear along

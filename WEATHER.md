@@ -193,6 +193,14 @@ constant, and weather-off intentionally draws an empty cloud overlay.
     quantize season_frac so mid-season play never rebuilds).
   - EDITS WIN: player-placed blocks override seasonal class (existing
     per-body edit machinery already does this).
+	\[This is an okay consequence for now, but realistically, player-
+	placed blocks should follow the same rules according to
+	temperature. With this behavior, incidental behavior like picking
+	up a bucket of water, digging for sand or shoal on the coast, or
+	creating an irrigation channel would unrealistically override the
+	expected natural phenomena. Again, if block temperature is ever
+	implemented this can change according to player-made or natural
+	heating or cooling mechanisms.\]
   - PHYSICS FOLLOWS CLASS: walkable ice in winter, swimmable water in
     summer, at the same coordinates. The census/colcensus/sync_diff
     instruments and every W1-W8 invariant hold AT EVERY SEASON.
@@ -242,6 +250,10 @@ constant, and weather-off intentionally draws an empty cloud overlay.
   none touch weather replay, sidecar restore, or double-run byte
   determinism. Natural mission size: 1+2+6 first (pure look), then
   3+4+5 (structure) with an orbital reel pose per term.
+  \[All agreed upon. Time-dependency and all of the behavior listed
+  above are both things we'd like to add. Speaking of "Jupiter-style
+  zonal sheer, a similar type of simulation would be an awesome touch
+  to stars and gas giants.\]
 
 ## Decision points for Andrew
 
