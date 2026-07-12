@@ -765,6 +765,41 @@ impl Renderer {
             self.cache.insert(k, gpu);
         }
         self.tiles_deferred = keys.iter().any(|k| !self.cache.contains_key(k));
+        // parent PREFETCH: ascending selects coarser rings whose ancestors
+        // were often never built, and partially-cached children cannot
+        // stand in without holes - those tiles went urgent and spiked
+        // (Andrew: rare 1 s pauses, mostly while ascending). Speculatively
+        // build a few parents of the CURRENT rings per frame in the
+        // background so the coarser ring is ready before it is selected.
+        let mut prefetched = 0usize;
+        for k in &keys {
+            if prefetched >= 4 {
+                break;
+            }
+            if k.level == 0 {
+                continue;
+            }
+            let parent = TileKey {
+                face: k.face,
+                level: k.level - 1,
+                ix: k.ix / 2,
+                iy: k.iy / 2,
+                deep: false,
+            };
+            if !self.cache.contains_key(&parent) && !self.tile_pending.contains_key(&parent)
+            {
+                let epoch = self.tile_epoch;
+                self.tile_epoch = self.tile_epoch.wrapping_add(1);
+                self.tile_pending.insert(parent, epoch);
+                let tx = self.tile_tx.clone();
+                let planet = Arc::clone(planet);
+                rayon::spawn(move || {
+                    let mesh = build_tile(&planet, parent, exagg);
+                    let _ = tx.send((parent, epoch, mesh));
+                });
+                prefetched += 1;
+            }
+        }
         // coverage resolution for the budget: any selected tile still
         // unbuilt draws its nearest CACHED ancestor instead (dedup) - the
         // geomorph makes a parent at swap distance near-identical, so a

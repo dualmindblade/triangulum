@@ -1,0 +1,14 @@
+mode fly
+weather pin 0.1 0
+teleport 64.120 -46.429 0.012
+shot w
+teleport 64.120 -46.429 0.05
+bench 20
+teleport 64.120 -46.429 0.2
+bench 20
+teleport 64.120 -46.429 0.8
+bench 20
+teleport 64.120 -46.429 3.0
+bench 20
+teleport 64.120 -46.429 10.0
+bench 20
