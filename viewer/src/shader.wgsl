@@ -701,8 +701,11 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     // quads satisfy all four.
     if (in.rel_flag.w > 0.5 && tile.morph.z > 0.0
         && in.beach.z < 0.5 && in.wflag < 0.5 && in.shore < -0.5) {
+        // beach.x = 1 marks parent-lattice trees: they were ALREADY standing
+        // on the coarser stand-in, so they must not blink out and refade
+        // (Andrew's approach-fade report) - only the density DELTA dissolves.
         let n = hash31(vec3<f32>(floor(in.clip.xy), 7.0));
-        if (n < tile.morph.z) {
+        if (n < tile.morph.z * (1.0 - in.beach.x)) {
             discard;
         }
     }

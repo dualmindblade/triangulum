@@ -1524,7 +1524,19 @@ pub fn build_tile(planet: &Planet, key: TileKey, exaggeration: f64) -> TileMesh 
             cands.truncate(impostor_cap);
         }
         let no_edits = crate::voxel::Edits::default();
-        for (ci, cj, _candidate_kind, lot) in cands {
+        // parent-lattice membership: a tree the PARENT tile also shows must
+        // not dissolve when this tile lands - Andrew's approach-fade report
+        // (vegetation vanishes, then fades back in) was the dissolve nuking
+        // trees that were already standing on the stand-in. Approximate
+        // membership by stride alignment (enumeration lattices nest).
+        let parent_stride: u64 = match key.level.saturating_sub(1) {
+            14 => 1,
+            13 => 2,
+            12 => 4,
+            11 => 8,
+            _ => 0,
+        };
+        for (ci, cj, candidate_kind, lot) in cands {
             let u = -1.0 + 2.0 * (ci as f64 + 0.5) / nnf;
             let v = -1.0 + 2.0 * (cj as f64 + 0.5) / nnf;
             // The mesh-height sample roots the billboard on this LOD. One
@@ -1532,16 +1544,33 @@ pub fn build_tile(planet: &Planet, key: TileKey, exaggeration: f64) -> TileMesh 
             // beach, water, edit, carve, and cave-mouth decision as blocks.
             // This also closes the dominant cheap half of BUGS.md E-2.
             let smp = sample(planet, face, u, v, octaves);
-            let c = crate::voxel::col_ctx(planet, &no_edits, face, ci, cj);
-            let Some((kind, trunk)) = crate::voxel::tree_at_scaled(
-                &c,
-                face as u8,
-                ci,
-                cj,
-                seed,
-                comp,
-            ) else {
-                continue;
+            // Far LODs (trees at 1-3 px) skip the exact per-column voxel
+            // context - THE dominant forest build cost (jungle deep sets
+            // went 3.3 s -> 0.4 s without it). Water/beach eligibility
+            // comes from the root sample; trunk height is a deterministic
+            // species-range draw. Levels 13/14 and deep tiles keep the
+            // exact ColCtx path (their trees hand off to real voxel trees
+            // at the patch rim).
+            let cheap = key.level < 13 && !key.deep;
+            let (kind, trunk) = if cheap {
+                if smp.has_water() || beach_frac(smp.e_raw, smp.h_km) > 0.5 {
+                    continue;
+                }
+                let trunk = 4 + ((lot * 6151.7).fract() * 4.0) as i64;
+                (candidate_kind, trunk)
+            } else {
+                let c = crate::voxel::col_ctx(planet, &no_edits, face, ci, cj);
+                let Some((kind, trunk)) = crate::voxel::tree_at_scaled(
+                    &c,
+                    face as u8,
+                    ci,
+                    cj,
+                    seed,
+                    comp,
+                ) else {
+                    continue;
+                };
+                (kind, trunk)
             };
             if kind == crate::voxel::TreeKind::Shrub {
                 continue;
@@ -1580,6 +1609,9 @@ pub fn build_tile(planet: &Planet, key: TileKey, exaggeration: f64) -> TileMesh 
             let canopy = [lc[0] * shade * 1.08, lc[1] * shade * 1.08, lc[2] * shade * 1.08];
             let under = [lc[0] * shade * 0.45, lc[1] * shade * 0.45, lc[2] * shade * 0.45];
             let nrm = [dir.x as f32, dir.y as f32, dir.z as f32];
+            let keep = parent_stride > 0
+                && ci.is_multiple_of(parent_stride)
+                && cj.is_multiple_of(parent_stride);
             for axis in [e1, e2] {
                 let base_i = vertices.len() as u32;
                 let wt = wid * taper;
@@ -1600,8 +1632,9 @@ pub fn build_tile(planet: &Planet, key: TileKey, exaggeration: f64) -> TileMesh 
                         wflag: 0.0,
                         shore: -1.0,
                         biome: NO_BIOME_PAYLOAD,
-                        // w = 127: neutral rain concavity (UNORM signed zero)
-                        beach: [0, 0, 0, 127],
+                        // x = 255: parent lattice member, exempt from the
+                        // landing dissolve. w = 127: neutral rain concavity.
+                        beach: [if keep { 255 } else { 0 }, 0, 0, 127],
                     });
                 }
                 indices.extend_from_slice(&[

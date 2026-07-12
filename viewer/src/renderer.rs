@@ -185,6 +185,11 @@ const CHUNK_VRAM_RETAIN: u64 = 384 << 20;
 /// adapters. Same current-frame exemption as chunks.
 const TILE_VRAM_BUDGET: u64 = 512 << 20;
 const TILE_VRAM_RETAIN: u64 = 384 << 20;
+/// Absolute ceilings the anti-thrash recency protection may NOT exceed:
+/// on a 6 GB adapter the caches plus swapchain/moon/app buffers must never
+/// approach the physical limit (Andrew's in-game OOM crashes, 2026-07-12).
+const TILE_VRAM_HARD: u64 = 1024 << 20;
+const CHUNK_VRAM_HARD: u64 = 1024 << 20;
 /// Moon tiles are much cheaper than voxel chunks but can accumulate during a
 /// long low flyby.  Keep enough history for smooth reversals without letting
 /// a circumnavigation grow without bound.
@@ -1947,7 +1952,9 @@ impl Renderer {
         // Captures drain to completion and cannot flicker - during them the
         // strict budget rules (teleport-heavy instruments like the 26-pose
         // reel would otherwise hold every prior pose alive and OOM small
-        // adapters). Live frames get the full anti-thrash window.
+        // adapters). Live frames get the full anti-thrash window, but the
+        // HARD ceiling wins over protection: a crash is worse than a
+        // one-frame rebuild (Andrew's in-game OOMs, incl. at photo press).
         let window = if self.settle_visuals { 0 } else { 180 };
         let protected = self.frame_counter.saturating_sub(window);
         let mut by_age: Vec<(u64, TileKey, u64)> = self
@@ -1959,7 +1966,8 @@ impl Renderer {
         let mut acc = 0u64;
         let mut keep = HashSet::new();
         for (used, k, b) in by_age {
-            if used >= protected || acc + b <= TILE_VRAM_RETAIN {
+            let within_hard = acc + b <= TILE_VRAM_HARD;
+            if (used >= protected && within_hard) || acc + b <= TILE_VRAM_RETAIN {
                 acc += b;
                 keep.insert(k);
             }
@@ -1993,7 +2001,8 @@ impl Renderer {
         let window = if self.settle_visuals { 0 } else { 180 };
         let protected = self.frame_counter.saturating_sub(window);
         for (used, k, b) in by_age {
-            if used >= protected || acc + b <= CHUNK_VRAM_RETAIN {
+            let within_hard = acc + b <= CHUNK_VRAM_HARD;
+            if (used >= protected && within_hard) || acc + b <= CHUNK_VRAM_RETAIN {
                 acc += b;
                 keep.insert(k);
             }
@@ -2075,6 +2084,11 @@ impl Renderer {
         // deliberately hide them for byte-determinism).
         let raw = std::env::var_os("TRI_RAW_CAPTURE").is_some();
         self.settle_visuals = !raw;
+        if !raw {
+            // free the anti-thrash overshoot BEFORE allocating the capture
+            // texture + readback: photo-press was an OOM trigger in play
+            self.evict();
+        }
         // a screenshot is a complete frame: block (bounded) until every
         // streamed chunk has landed, then draw again with full coverage
         let mut waited = false;

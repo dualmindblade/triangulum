@@ -1,0 +1,15 @@
+mode fly
+weather time 349
+teleport 19.75 35.265 2.0
+look 175 -25
+bench 25
+hold w 1.0
+shot a_1
+hold w 0.5
+shot a_2
+hold w 0.5
+shot a_3
+hold w 0.5
+shot a_4
+hold w 0.5
+shot a_5
