@@ -9,6 +9,15 @@ are `teleport LAT LON [ALT_KM]` viewer args at `--exagg 1` unless noted.
 
 ## OPEN
 
+### B-1 Distant impostor treeline reads as a faint grid (banked)
+At the outermost impostor ring (level 11 -> 10, where impostor_stride
+ends) forests stop at tile boundaries - a subtle grid-aligned treeline
+at the altitudes with the pre-existing build-cost issues (Austin
+2026-07-12, "quite subtle", banked by agreement). Proper fix rides the
+lean-impostor-vertex perf mission: encode the tree lot in beach.y and
+distance-fade trees per-fragment so density reaches zero BEFORE the
+ring ends (continuous treeline into the far forest tint).
+
 ### F-24 Deep-tile stand-ins: double grids, mesh-among-voxels, ground
 'clouds', multi-second frames — FIXED 79cee18
 Andrew's 2026-07-12 field report (photos at -44.507 -114.451 and
