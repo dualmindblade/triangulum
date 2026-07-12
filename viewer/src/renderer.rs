@@ -2,7 +2,7 @@
 //! offscreen capture path (renders to a texture and saves a PNG — no window).
 
 use crate::camera::Camera;
-use crate::planet::Planet;
+use crate::planet::{boundary_shader_seedmul, Planet};
 use crate::terrain::{build_tile, select_tiles, TileKey, TileMesh, Vertex};
 use crate::voxel::{build_chunk, select_chunks, ChunkKey, Edits, Torches};
 use anyhow::Result;
@@ -92,7 +92,8 @@ struct Globals {
     // premultiplied cave-noise seeds for the karst breach hint (V-10):
     // low 32 bits of (seed+K).wrapping_mul(0x9E37_79B1) for K = 40961
     // (region gate), 31337 (tube n1), 51413 (tube n2). The shader's u32
-    // hash twin consumes these to evaluate the EXACT cave field.
+    // hash twin consumes these to evaluate the EXACT cave field. w is the
+    // corresponding octave-zero seedmul for the range-biome comparator.
     karst: [u32; 4],
     // dusting-dither anchor: planet-centered f32 positions quantize at
     // ~0.24 m, so noise fed raw wp renders 25 cm plateaus that crawl with
@@ -132,10 +133,16 @@ struct GpuTile {
     bytes: u64,
 }
 
-/// VRAM ceiling for cached chunk meshes: past it, least-recently-used
-/// chunks are dropped regardless of age. Sized so --patch 2.0 fits with
-/// room for the rest of the frame on a 6 GB card.
-const CHUNK_VRAM_BUDGET: u64 = 1500 << 20;
+/// VRAM ceiling for cached chunk meshes: past it, least-recently-used chunks
+/// are dropped regardless of age. Keep a full teleport's upload headroom
+/// above the retained cache: eviction happens after streaming results land,
+/// and the biome payload made that transient overlap large enough for the
+/// 24-pose reel to exhaust smaller adapters at the old 1.5 GiB ceiling.
+/// Current-frame chunks are exempt below, so --patch 2.0 remains complete.
+const CHUNK_VRAM_BUDGET: u64 = 512 << 20;
+/// Evict below the ceiling so a streamed batch has useful headroom before the
+/// next LRU pass, instead of sorting after every individual chunk.
+const CHUNK_VRAM_RETAIN: u64 = 384 << 20;
 
 pub struct Renderer {
     pub device: wgpu::Device,
@@ -323,7 +330,7 @@ impl Renderer {
                 buffers: &[Some(wgpu::VertexBufferLayout {
                     array_stride: std::mem::size_of::<Vertex>() as u64,
                     step_mode: wgpu::VertexStepMode::Vertex,
-                    attributes: &wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3, 2 => Float32x3, 3 => Float32x4, 4 => Float32, 5 => Float32, 6 => Float32, 7 => Float32, 8 => Snorm8x4],
+                    attributes: &wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3, 2 => Float32x3, 3 => Float32x4, 4 => Float32x4, 5 => Unorm8x4, 6 => Unorm8x4, 7 => Unorm8x4, 8 => Unorm8x4, 9 => Unorm8x4, 10 => Unorm8x4, 11 => Unorm8x4, 12 => Unorm8x4, 13 => Unorm8x4],
                 })],
             },
             fragment: Some(wgpu::FragmentState {
@@ -604,12 +611,20 @@ impl Renderer {
     /// left over from before an invalidation (stale edits) carries an older
     /// epoch and is dropped, so the fresh rebuild is the one that lands.
     fn drain_chunks(&mut self) {
+        let mut landed = 0usize;
         while let Ok((k, epoch, mesh)) = self.chunk_rx.try_recv() {
             if self.chunk_pending.get(&k) == Some(&epoch) {
                 self.chunk_pending.remove(&k);
                 let gpu = self.upload(mesh);
                 self.chunk_cache.insert(k, gpu);
+                landed += 1;
+                if landed.is_multiple_of(16) {
+                    self.enforce_chunk_budget();
+                }
             }
+        }
+        if landed > 0 {
+            self.enforce_chunk_budget();
         }
     }
 
@@ -1077,7 +1092,12 @@ impl Renderer {
                     (planet.seed.wrapping_add(k).wrapping_mul(0x9E37_79B1) & 0xFFFF_FFFF)
                         as u32
                 };
-                [kseed(40961), kseed(31337), kseed(51413), 0]
+                [
+                    kseed(40961),
+                    kseed(31337),
+                    kseed(51413),
+                    boundary_shader_seedmul(planet.seed),
+                ]
             },
             danchor: {
                 let ax = (cam_pos.x * 40.0).floor();
@@ -1273,28 +1293,34 @@ impl Renderer {
         // hard VRAM budget: newest chunks win, the LRU tail is dropped —
         // without this, fast flight at big patch sizes accumulates buffers
         // faster than the age-based eviction can retire them (OOM)
+        self.enforce_chunk_budget();
+    }
+
+    /// Enforce the byte budget during streaming as well as before drawing;
+    /// otherwise a teleport's completed batch can OOM before `evict` runs.
+    fn enforce_chunk_budget(&mut self) {
         let total: u64 = self.chunk_cache.values().map(|t| t.bytes).sum();
-        if total > CHUNK_VRAM_BUDGET {
-            let mut by_age: Vec<(u64, ChunkKey, u64)> = self
-                .chunk_cache
-                .iter()
-                .map(|(k, t)| (t.last_used, *k, t.bytes))
-                .collect();
-            by_age.sort_unstable_by(|a, b| b.0.cmp(&a.0)); // newest first
-            let mut acc = 0u64;
-            let mut keep = HashSet::new();
-            for (used, k, b) in by_age {
-                // chunks used THIS frame are about to be drawn (the render
-                // pass indexes chunk_cache[k] unconditionally) — never evict
-                // them, even if the visible set alone exceeds the budget, or
-                // the draw call panics on a missing key.
-                if used == self.frame_counter || acc + b <= CHUNK_VRAM_BUDGET {
-                    acc += b;
-                    keep.insert(k);
-                }
-            }
-            self.chunk_cache.retain(|k, _| keep.contains(k));
+        if total <= CHUNK_VRAM_BUDGET {
+            return;
         }
+        let mut by_age: Vec<(u64, ChunkKey, u64)> = self
+            .chunk_cache
+            .iter()
+            .map(|(k, t)| (t.last_used, *k, t.bytes))
+            .collect();
+        by_age.sort_unstable_by(|a, b| b.0.cmp(&a.0)); // newest first
+        let mut acc = 0u64;
+        let mut keep = HashSet::new();
+        for (used, k, b) in by_age {
+            // Chunks used THIS frame are about to be drawn (the render pass
+            // indexes chunk_cache[k] unconditionally) -- never evict them,
+            // even if the visible set alone exceeds the retain target.
+            if used == self.frame_counter || acc + b <= CHUNK_VRAM_RETAIN {
+                acc += b;
+                keep.insert(k);
+            }
+        }
+        self.chunk_cache.retain(|k, _| keep.contains(k));
     }
 
     /// Render one frame offscreen and save it as a PNG (no window required).
@@ -1346,6 +1372,7 @@ impl Renderer {
         // a screenshot is a complete frame: block (bounded) until every
         // streamed chunk has landed, then draw again with full coverage
         let mut waited = false;
+        let mut landed = 0usize;
         for _ in 0..8192 {
             if self.chunk_pending.is_empty() {
                 break;
@@ -1356,11 +1383,18 @@ impl Renderer {
                         self.chunk_pending.remove(&k);
                         let gpu = self.upload(mesh);
                         self.chunk_cache.insert(k, gpu);
+                        landed += 1;
+                        if landed.is_multiple_of(16) {
+                            self.enforce_chunk_budget();
+                        }
                     }
                     waited = true;
                 }
                 Err(_) => break,
             }
+        }
+        if landed > 0 {
+            self.enforce_chunk_budget();
         }
         if waited {
             n_tiles = self.draw(&view, planet, camera, edits);

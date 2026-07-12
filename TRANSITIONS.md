@@ -201,3 +201,55 @@ document. This program's entries there: D-1 rim dial, D-2 texture
 energy, D-3 per-pair ecotone widths, D-10 slope shading truth, D-15 the
 texture/palette pass. The 2026-07-09 verdicts that shaped this program
 are recorded in its Answered section.
+
+## Round 4: range-safe categorical biome color (2026-07-12)
+
+The range mesh no longer interpolates the 8 km climate-weight mean as its
+visible interface. Vertices carry cumulative coverage for eight stable
+appearance families; the fragment shader compares those thresholds with the
+same world-anchored categorical field used by local surface truth. Its first
+five octaves (~85, 24, 6.5, 1.8, and 0.5 km on Neisor) are evaluated per pixel,
+so patch ownership cannot reveal the vertex triangles. Blocks, vegetation,
+beaches, and the near mesh still consume the full ten-octave decision.
+
+Fixed family deviations are centered on the original continuous color mean.
+That makes a one-family interior retain its approved tint, while a mixed zone
+reads as discrete nested patches. Only the variance below the five safe
+octaves contributes smooth contrast (`BIOME_RANGE_UNRESOLVED_MEAN`, derived as
+~0.1264). From 120--240 km the categorical share eases to the already-approved
+orbital value 0.45; this is the deliberate coarse-lattice safety valve, not a
+second boundary field. The load-time `range_edge` mask separately detects tint
+families that change inside one Koppen byte, preserving the fast interior path.
+
+Primary knobs are `BIOME_BOUNDARY_ZONE_KM`,
+`BIOME_RANGE_RESOLVED_OCTAVES`, the boundary amplitude/lacunarity constants and
+`BIOME_BOUNDARY_GRADIENT_NORMALIZE` in `planet.rs`; range handoff, orbital fade,
+and orbital contrast live together beside `BIOME_RANGE_BLEND_*` in
+`shader.wgsl`.
+
+### Round 4B: generic beach is a range category, not a tint (2026-07-12)
+
+The 9 km follow-up probe found that the reported tan wash was not owned by the
+climate mean. Its ten vertices were all Köppen 25 and 97.0--99.6% one grass
+appearance family, but `beach_frac` fell smoothly from 0.506 to zero across the
+same transect. `shade_ground_weights` had applied that fraction to every
+climate endpoint after reconstruction, collapsing all endpoint contrast toward
+one sand tint and restoring the multi-kilometre ramp.
+
+Generic beach now carries its own four-byte range payload (coverage, adaptive
+fine gain, validity, reserved). Its local material comparator and WGSL twin use
+one shader-evaluable gradient lattice: blocks resolve all four established
+carriers, while range fragments resolve the safe 7 km and ~440 m prefix; the
+440 m carrier retires over the existing 120--240 km orbital handoff before it
+can alias, while the 7 km owner remains. The same coverage still controls area,
+and the CPU centers the independent climate and beach deviations so their
+combined expected RGB is exactly the former continuous mean. The orbital fade
+therefore still converges to 0.45 categorical contrast without moving the
+approved orbital color.
+
+The payload grows `Vertex` from 100 to 104 bytes. Four adjacent scalar fields
+are exposed to the GPU as one `Float32x4`, leaving the shader below the vertex
+attribute limit. Primary beach knobs remain `BEACH_RASTER_*`,
+`BEACH_SURFACE_*`, `COAST_NOISE_*`, and `ECOTONE_*` in `terrain.rs`; the only
+new reconstruction constants are `BEACH_RANGE_RESOLVED_OCTAVES` and
+`BEACH_GRADIENT_NORMALIZE`.

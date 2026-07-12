@@ -8,11 +8,12 @@
 //! can carry, so descending never runs out of detail and coarser tiles are
 //! consistent averages of finer ones.
 
-use crate::noise::{fbm_band, normal_value_noise, ridged_band};
+use crate::noise::{fbm_band, gradient_noise, ridged_band};
 use crate::planet::{
     climate_surface_pair, face_dir, sea_from_fields, vegetation_surface, ClimateSurface,
-    MainBlock, Planet, COLUMNS_PER_FACE, ECOTONE_BASE_PATCH_COLUMNS,
-    ECOTONE_FIELD_OCTAVES, ECOTONE_LACUNARITY, ECOTONE_PERSISTENCE,
+    MainBlock, Planet, BIOME_RANGE_FAMILIES, BIOME_RANGE_UNRESOLVED_MEAN, COLUMNS_PER_FACE,
+    ECOTONE_BASE_PATCH_COLUMNS, ECOTONE_FIELD_OCTAVES, ECOTONE_LACUNARITY,
+    ECOTONE_PERSISTENCE,
 };
 use glam::DVec3;
 
@@ -24,23 +25,38 @@ pub const MAX_LEVEL: u8 = 14; // ~0.8 km tiles, ~26 m vertex spacing at the cap
 // photos at 15.024 17.648 are the exhibit.)
 const DETAIL_BASE_FREQ: f64 = 700.0; // first detail octave ~12 km at R=8660
 const MAX_DETAIL_OCTAVES: u32 = 8;
-/// Far patches retain this much categorical contrast over their continuous,
-/// area-preserving weights. Lower values soften coarse-mesh diamonds.
-pub const BIOME_RANGE_CATEGORICAL_CONTRAST: f32 = 0.45;
-/// Range color is stored as a signed delta at half-scale: SNORM8 precision is
-/// just under 0.004 linear-color units, while a zero delta remains exactly
-/// zero for voxel, water, and impostor vertices. This keeps `Vertex` at its
-/// pre-range-treatment 72 bytes and avoids expanding the GPU tile cache.
-pub const BIOME_RANGE_COLOR_DELTA_SCALE: f32 = 0.5;
+/// Invalid cumulative-margin ordering marks vertices that do not participate
+/// in far-mesh biome reconstruction (voxels, water, and tree impostors).
+pub const NO_BIOME_PAYLOAD: [[u8; 4]; BIOME_RANGE_FAMILIES] = [
+    [0, 0, 0, 255],
+    [0, 0, 0, 0],
+    [0, 0, 0, 0],
+    [0, 0, 0, 0],
+    [0, 0, 0, 0],
+    [0, 0, 0, 0],
+    [0, 0, 0, 0],
+    [0, 0, 0, 0],
+];
 
-fn pack_range_color_delta(color: [f32; 3], far_color: [f32; 3]) -> [i8; 4] {
-    let pack = |i: usize| {
-        (((far_color[i] - color[i]) / BIOME_RANGE_COLOR_DELTA_SCALE)
-            .clamp(-1.0, 1.0)
-            * 127.0)
-            .round() as i8
+#[derive(Clone, Copy)]
+struct BiomePayload {
+    endpoints: [[u8; 4]; BIOME_RANGE_FAMILIES],
+    /// x = generic beach coverage, y = roughness-adapted fine gain,
+    /// z = valid marker, w = reserved. Kept separate from climate thresholds
+    /// so snow/grass interpolation cannot manufacture a sand outline.
+    beach: [u8; 4],
+}
+
+impl BiomePayload {
+    const NONE: Self = Self {
+        endpoints: NO_BIOME_PAYLOAD,
+        beach: [0; 4],
     };
-    [pack(0), pack(1), pack(2), 0]
+}
+
+fn pack_biome_endpoint(color: [f32; 3], scalar: f32) -> [u8; 4] {
+    let pack = |value: f32| (value.clamp(0.0, 1.0) * 255.0).round() as u8;
+    [pack(color[0]), pack(color[1]), pack(color[2]), pack(scalar)]
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
@@ -89,9 +105,15 @@ pub struct Vertex {
     /// polygons and orphan blue cells). -1.0 = no standing water nearby
     /// (also on voxel chunks and impostors, which are already exact).
     pub shore: f32,
-    /// SNORM8 range-only color delta. The shader reconstructs the far color
-    /// from `color`; voxel/impostor vertices use exact zero deltas.
-    pub far_color_delta: [i8; 4],
+    /// Eight fixed Koppen-family endpoints in linear UNORM8 RGB; alpha is each
+    /// family's cumulative coverage threshold. The fragment shader evaluates
+    /// the resolved comparator inside the triangle. Descending alpha marks
+    /// voxel, water, and impostor vertices as payload-off.
+    pub biome: [[u8; 4]; BIOME_RANGE_FAMILIES],
+    /// Generic beach coverage + field gain, packed as UNORM8x4. This material
+    /// has an independent all-range comparator and therefore cannot share a
+    /// one-dimensional climate threshold without losing either silhouette.
+    pub beach: [u8; 4],
 }
 
 pub struct TileMesh {
@@ -1302,7 +1324,7 @@ pub fn build_tile(planet: &Planet, key: TileKey, exaggeration: f64) -> TileMesh 
             // the sea is real geometry at its surface — its "ground" color
             // is the water color so the wetness blend is a no-op there and
             // it stays fully blue at every distance
-            let (ground, far_color) = if class_s.sea || class_s.lake || class_s.lake_shoal {
+            let (ground, biome) = if class_s.sea || class_s.lake || class_s.lake_shoal {
                 // a frozen sheet is solid walkable ice — give it a snow-dusted,
                 // LOD-stable surface so it reads as ground, not a flat plane
                 let color = if class_s.temp_c < -4.0 {
@@ -1310,7 +1332,7 @@ pub fn build_tile(planet: &Planet, key: TileKey, exaggeration: f64) -> TileMesh 
                 } else {
                     wc
                 };
-                (color, color)
+                (color, BiomePayload::NONE)
             } else {
                 shade_ground_pair(planet, face, uu, vv, class_s, slope)
             };
@@ -1329,7 +1351,8 @@ pub fn build_tile(planet: &Planet, key: TileKey, exaggeration: f64) -> TileMesh 
                 morph_wet: wet_parent as f32,
                 wflag: if s.sea || s.lake { 1.0 } else { 0.0 },
                 shore,
-                far_color_delta: pack_range_color_delta(ground, far_color),
+                biome: biome.endpoints,
+                beach: biome.beach,
             });
         }
     }
@@ -1365,7 +1388,8 @@ pub fn build_tile(planet: &Planet, key: TileKey, exaggeration: f64) -> TileMesh 
             morph_wet: v.morph_wet,
             wflag: v.wflag,
             shore: v.shore,
-            far_color_delta: v.far_color_delta,
+            biome: v.biome,
+            beach: v.beach,
         });
     }
     let skirt_base = (n * n) as u32;
@@ -1547,7 +1571,8 @@ pub fn build_tile(planet: &Planet, key: TileKey, exaggeration: f64) -> TileMesh 
                         morph_wet: 0.0,
                         wflag: 0.0,
                         shore: -1.0,
-                        far_color_delta: [0; 4],
+                        biome: NO_BIOME_PAYLOAD,
+                        beach: [0; 4],
                     });
                 }
                 indices.extend_from_slice(&[
@@ -1595,6 +1620,19 @@ const BEACH_RASTER_END_KM: f64 = 0.013;
 const BEACH_SURFACE_FULL_KM: f64 = 0.010;
 const BEACH_SURFACE_END_KM: f64 = 0.016;
 const BEACH_FIELD_SEED_OFFSET: i64 = 0x0BEA_C4EC;
+/// Add to `boundary_shader_seedmul(seed)` to recover beach octave zero in
+/// WGSL without consuming another uniform slot. Locked by the beach-field
+/// test because both sides rely on u32 wrapping arithmetic.
+#[cfg(test)]
+const BEACH_SHADER_SEED_DELTA: u32 = 0xAB20_C0C2;
+/// The broad 7 km and nested ~440 m beach carriers are reconstructed per
+/// fragment. The 27 m / 1.7 m tail remains in exact block ownership; at range
+/// it is below (or near) the pixel footprint and cannot safely own a contour.
+pub const BEACH_RANGE_RESOLVED_OCTAVES: u32 = 2;
+/// `gradient_noise` is narrower than N(0,1). This calibration keeps the
+/// unrotated beach carrier's 0.25/0.50/0.75 occupancy within 1.5%; WGSL uses
+/// the same value.
+pub const BEACH_GRADIENT_NORMALIZE: f64 = 2.56;
 /// Per-sample roughness below this is a calm lowland coast. `rough_km` is
 /// already the baked mean absolute elevation delta to neighboring map cells,
 /// bilinearly sampled here, so it is the requested local average rather than a
@@ -1659,12 +1697,41 @@ pub fn beach_blend_comparator(
     for octave in 0..ECOTONE_FIELD_OCTAVES as i64 {
         let octave_seed = field_seed.wrapping_mul(7_919).wrapping_add(octave * 131);
         let adapted_amplitude = amplitude * if octave == 0 { 1.0 } else { fine_gain };
-        sum += adapted_amplitude * normal_value_noise(dir * frequency, octave_seed);
+        sum += adapted_amplitude * gradient_noise(dir * frequency, octave_seed);
         variance += adapted_amplitude * adapted_amplitude;
         frequency *= ECOTONE_LACUNARITY;
         amplitude *= ECOTONE_PERSISTENCE;
     }
-    blend_normal_cdf(sum / variance.sqrt()).clamp(0.0, 1.0)
+    blend_normal_cdf(BEACH_GRADIENT_NORMALIZE * sum / variance.sqrt()).clamp(0.0, 1.0)
+}
+
+#[cfg(test)]
+fn beach_range_comparator(
+    face: u8,
+    ci: u64,
+    cj: u64,
+    seed: i64,
+    rough_km: f64,
+) -> f64 {
+    let n = COLUMNS_PER_FACE as f64;
+    let u = -1.0 + 2.0 * (ci as f64 + 0.5) / n;
+    let v = -1.0 + 2.0 * (cj as f64 + 0.5) / n;
+    let dir = face_dir(face as usize, u, v);
+    let field_seed = seed.wrapping_add(BEACH_FIELD_SEED_OFFSET);
+    let mut frequency = n / (2.0 * ECOTONE_BASE_PATCH_COLUMNS);
+    let mut amplitude = 1.0;
+    let mut sum = 0.0;
+    let mut variance = 0.0;
+    let fine_gain = coast_noise_fine_gain(rough_km);
+    for octave in 0..BEACH_RANGE_RESOLVED_OCTAVES as i64 {
+        let octave_seed = field_seed.wrapping_mul(7_919).wrapping_add(octave * 131);
+        let adapted_amplitude = amplitude * if octave == 0 { 1.0 } else { fine_gain };
+        sum += adapted_amplitude * gradient_noise(dir * frequency, octave_seed);
+        variance += adapted_amplitude * adapted_amplitude;
+        frequency *= ECOTONE_LACUNARITY;
+        amplitude *= ECOTONE_PERSISTENCE;
+    }
+    blend_normal_cdf(BEACH_GRADIENT_NORMALIZE * sum / variance.sqrt()).clamp(0.0, 1.0)
 }
 
 /// THE beach decision (TRANSITIONS.md): sand on low coastal ground, one
@@ -1779,12 +1846,81 @@ fn shade_ground_pair(
     v: f64,
     s: &Sample,
     slope: f64,
-) -> ([f32; 3], [f32; 3]) {
-    let (local, range) = climate_surface_pair(planet, face, u, v, s.temp_c, s.precip, s.sea);
+) -> ([f32; 3], BiomePayload) {
+    let (local, range) =
+        climate_surface_pair(planet, face, u, v, s.temp_c, s.precip, s.sea);
+    let ground = shade_ground_climate(local, s, slope, false, true);
+    let categorical = range.candidates.map(|candidate| {
+        // Range endpoints must not bake the spacing-capped mesh normal back
+        // into categorical color: adjacent LODs legitimately have different
+        // slopes, which becomes a rectangular tint seam at high contrast.
+        // Generic beach is also omitted here: its own categorical comparator
+        // selects the fixed sand endpoint in the fragment. Exact near color
+        // retains both the voxel-matched rock and smooth coverage averages.
+        shade_ground_climate(candidate, s, 0.0, false, false)
+    });
+    let mut palette_mean = [0.0f32; 3];
+    for (color, weight) in categorical.into_iter().zip(range.weights) {
+        for channel in 0..3 {
+            palette_mean[channel] += color[channel] * weight;
+        }
+    }
+    // Preserve the old continuous range tint as the expected color, but put
+    // all visible contrast in fixed categorical deviations. Generic beach is
+    // a second categorical owner: at range its coverage selects family 6's
+    // sand endpoint through the beach field instead of being mixed smoothly
+    // into every endpoint (the round-4B 9 km wash).
+    let target_mean = shade_ground_climate(range.mean, s, 0.0, true, true);
+    let beach_payload = local.main_block != MainBlock::Snow
+        && range.weights[7] <= f32::EPSILON;
+    let beach_fraction = if beach_payload && !s.lake_level_km.is_finite() {
+        beach_frac(s.e_raw, s.h_km) as f32
+    } else {
+        0.0
+    };
+    let beach_byte = (beach_fraction.clamp(0.0, 1.0) * 255.0).round() as u8;
+    let beach_coverage = beach_byte as f32 / 255.0;
+    let resolved = 1.0 - BIOME_RANGE_UNRESOLVED_MEAN;
+    let deviations: [[f32; 3]; BIOME_RANGE_FAMILIES] = std::array::from_fn(|slot| {
+        std::array::from_fn(|channel| {
+            (categorical[slot][channel] - palette_mean[channel]) * resolved
+        })
+    });
+    // Independent climate and beach comparators have expectations
+    // `palette_mean` and `beach_coverage`. Centering the common base by the
+    // sand deviation makes their combined expected RGB exactly target_mean.
+    let common_base: [f32; 3] = std::array::from_fn(|channel| {
+        target_mean[channel] - beach_coverage * deviations[6][channel]
+    });
+    let endpoint = |slot: usize, scalar: f32| {
+        let color = std::array::from_fn(|channel| {
+            common_base[channel] + deviations[slot][channel]
+        });
+        pack_biome_endpoint(color, scalar)
+    };
+    let endpoints = std::array::from_fn(|family| {
+        endpoint(family, range.thresholds[family])
+    });
+    let beach_gain = (coast_noise_fine_gain(s.rough) * 255.0).round() as u8;
     (
-        shade_ground_climate(local, s, slope, false),
-        shade_ground_climate(range, s, slope, true),
+        ground,
+        BiomePayload {
+            endpoints,
+            beach: [beach_byte, beach_gain, 255, 0],
+        },
     )
+}
+
+#[cfg(test)]
+pub(crate) fn debug_range_ground_payload(
+    planet: &Planet,
+    face: usize,
+    u: f64,
+    v: f64,
+    sample: &Sample,
+) -> ([f32; 3], [[u8; 4]; BIOME_RANGE_FAMILIES], [u8; 4]) {
+    let (ground, payload) = shade_ground_pair(planet, face, u, v, sample, 0.0);
+    (ground, payload.endpoints, payload.beach)
 }
 
 fn shade_ground_climate(
@@ -1792,13 +1928,28 @@ fn shade_ground_climate(
     s: &Sample,
     slope: f64,
     soften_range: bool,
+    smooth_generic_beach: bool,
 ) -> [f32; 3] {
-    let contrast = if soften_range {
-        BIOME_RANGE_CATEGORICAL_CONTRAST
-    } else {
-        1.0
-    };
+    let contrast = if soften_range { 0.0 } else { 1.0 };
     let weights = climate.display_weights(contrast);
+    shade_ground_weights(
+        climate,
+        s,
+        slope,
+        weights,
+        !soften_range,
+        smooth_generic_beach,
+    )
+}
+
+fn shade_ground_weights(
+    climate: ClimateSurface,
+    s: &Sample,
+    slope: f64,
+    weights: [f32; 3],
+    snow_priority: bool,
+    smooth_generic_beach: bool,
+) -> [f32; 3] {
     let grass_tint = climate.tint(MainBlock::Grass);
     let sand = climate.tint(MainBlock::Sand);
     let snow = climate.tint(MainBlock::Snow);
@@ -1820,7 +1971,7 @@ fn shade_ground_climate(
     // Letting the generic low-elevation beach fall through would immediately
     // repaint a near-sea-level lake's whole territory and make the bounded
     // V-7 rule a visual no-op (the 47.80, 14.42 lagoon repro).
-    let sandy = if s.lake_level_km.is_finite() {
+    let sandy = if !smooth_generic_beach || s.lake_level_km.is_finite() {
         0.0
     } else {
         beach_frac(s.e_raw, s.h_km) as f32
@@ -1837,7 +1988,7 @@ fn shade_ground_climate(
     // The local snow decision uses the same world-column hash and threshold as
     // voxels. Re-apply it after rock/beach because voxel snow has priority.
     // Range snow is already represented continuously in the weights above.
-    if !soften_range {
+    if snow_priority {
         c = mix3(c, snow, weights[2]);
     }
     // Lake-shore sand uses the SAME fraction the blocks dither on. Apply
@@ -1857,17 +2008,16 @@ mod tests {
     use super::*;
 
     #[test]
-    fn packed_range_color_keeps_the_original_vertex_footprint() {
-        assert_eq!(std::mem::size_of::<Vertex>(), 72);
-        let local = [0.10, 0.25, 0.80];
-        assert_eq!(pack_range_color_delta(local, local), [0; 4]);
-        let far = [0.42, 0.08, 0.51];
-        let packed = pack_range_color_delta(local, far);
+    fn packed_biome_payload_is_compact_and_precise() {
+        assert_eq!(std::mem::size_of::<Vertex>(), 104);
+        let color = [0.10, 0.25, 0.80];
+        let packed = pack_biome_endpoint(color, 0.37);
         for i in 0..3 {
-            let restored = local[i]
-                + BIOME_RANGE_COLOR_DELTA_SCALE * packed[i] as f32 / 127.0;
-            assert!((restored - far[i]).abs() <= 0.0021);
+            let restored = packed[i] as f32 / 255.0;
+            assert!((restored - color[i]).abs() <= 1.0 / 510.0);
         }
+        assert!((packed[3] as f32 / 255.0 - 0.37).abs() <= 1.0 / 510.0);
+        assert!(NO_BIOME_PAYLOAD[1][3] < NO_BIOME_PAYLOAD[0][3]);
     }
 
     fn test_planet() -> &'static Planet {
@@ -1905,6 +2055,18 @@ mod tests {
 
     #[test]
     fn coastal_beach_noise_tracks_roughness_and_preserves_coverage() {
+        for seed in [i64::MIN, -1, 0, 42, i64::MAX] {
+            let beach_octave_zero = seed
+                .wrapping_add(BEACH_FIELD_SEED_OFFSET)
+                .wrapping_mul(7_919);
+            let expected =
+                (beach_octave_zero.wrapping_mul(0x9E37_79B1) & 0xFFFF_FFFF) as u32;
+            assert_eq!(
+                crate::planet::boundary_shader_seedmul(seed)
+                    .wrapping_add(BEACH_SHADER_SEED_DELTA),
+                expected,
+            );
+        }
         let face = 0u8;
         let (ci, cj) = (5_100_000u64, 4_900_000u64);
         let seed = 42;
@@ -1937,23 +2099,57 @@ mod tests {
         // variance normalization used by the CDF.
         for rough in [calm, rugged] {
             let mut below = [0usize; 3];
+            let mut range_below = [0usize; 3];
+            let mut prefix_agreement = 0usize;
             for k in 0..32_768u64 {
                 let x = crate::planet::hash_u64(face, k, k.wrapping_mul(17), 0xC045_7001)
                     % COLUMNS_PER_FACE;
                 let y = crate::planet::hash_u64(face, k, k.wrapping_mul(31), 0xC045_7002)
                     % COLUMNS_PER_FACE;
                 let value = beach_blend_comparator(face, x, y, seed, rough);
+                let range_value = beach_range_comparator(face, x, y, seed, rough);
+                assert_eq!(
+                    range_value.to_bits(),
+                    beach_range_comparator(face, x, y, seed, rough).to_bits(),
+                );
+                prefix_agreement += usize::from((value < 0.5) == (range_value < 0.5));
                 for (count, fraction) in below.iter_mut().zip([0.25, 0.50, 0.75]) {
                     *count += usize::from(value < fraction);
+                }
+                for (count, fraction) in
+                    range_below.iter_mut().zip([0.25, 0.50, 0.75])
+                {
+                    *count += usize::from(range_value < fraction);
                 }
             }
             for (count, expected) in below.into_iter().zip([0.25, 0.50, 0.75]) {
                 let measured = count as f64 / 32_768.0;
+                eprintln!(
+                    "beach occupancy rough={rough:.3} expected={expected:.2} measured={measured:.5}"
+                );
                 assert!(
                     (measured - expected).abs() < 0.015,
                     "rough={rough} expected={expected} measured={measured}"
                 );
             }
+            for (count, expected) in range_below.into_iter().zip([0.25, 0.50, 0.75]) {
+                let measured = count as f64 / 32_768.0;
+                eprintln!(
+                    "beach range occupancy rough={rough:.3} expected={expected:.2} measured={measured:.5}"
+                );
+                assert!(
+                    (measured - expected).abs() < 0.015,
+                    "range rough={rough} expected={expected} measured={measured}"
+                );
+            }
+            let agreement = prefix_agreement as f64 / 32_768.0;
+            eprintln!(
+                "beach resolved/full half-space agreement rough={rough:.3}: {agreement:.5}"
+            );
+            assert!(
+                agreement >= 0.82,
+                "beach resolved/full category agreement fell to {agreement:.5} at rough={rough}"
+            );
         }
     }
 

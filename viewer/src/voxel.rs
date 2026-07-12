@@ -18,7 +18,9 @@
 use crate::planet::{
     climate_surface_with_biome, face_dir, hash01, hash_u64, ClimateSurface, MainBlock, Planet,
 };
-use crate::terrain::{sample, Sample, TileMesh, Vertex, VOXEL_OCTAVES};
+use crate::terrain::{
+    sample, Sample, TileMesh, Vertex, NO_BIOME_PAYLOAD, VOXEL_OCTAVES,
+};
 use glam::DVec3;
 use std::collections::{HashMap, HashSet};
 
@@ -1199,7 +1201,8 @@ pub fn build_chunk(
                 // +4 lum whole-sea divergence (review #2 aftermath)
                 wflag,
                 shore: -1.0, // blocks ARE the exact shoreline already
-                far_color_delta: [0; 4],
+                biome: NO_BIOME_PAYLOAD,
+                beach: [0; 4],
             });
         }
         indices.extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);

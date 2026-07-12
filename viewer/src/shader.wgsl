@@ -31,7 +31,8 @@ struct Globals {
     weather4: vec4<f32>,
     // premultiplied cave-noise seeds (low 32 bits of
     // (seed+K).wrapping_mul(0x9E37_79B1)) for the karst breach hint:
-    // x = region gate (+40961), y = tube n1 (+31337), z = tube n2 (+51413)
+    // x = region gate (+40961), y = tube n1 (+31337), z = tube n2 (+51413),
+    // w = range-biome comparator octave-zero seed
     karst: vec4<u32>,
     // dusting-dither anchor (see renderer.rs Globals): xyz = the camera's
     // dither-lattice corner relative to the camera (km, <= 25 m), and the
@@ -64,20 +65,24 @@ struct VsIn {
     // rgb = water color, a = wetness flag on mesh tiles / cave-darkness
     // factor on voxel chunks
     @location(3) water: vec4<f32>,
-    // radial delta (km) to the parent triangle's interpolated height here
-    @location(4) morph_dh: f32,
-    // wetness the parent triangle actually interpolates here (the thread
-    // width is level-dependent, so unmorphed paint pops at every tile split)
-    @location(5) morph_wet: f32,
-    // 1.0 on a sea/lake water-surface vertex: the heightfield hole does NOT
-    // cut these, so the mesh water plane stays under the voxel patch and
-    // backs any perimeter crack with water instead of the (void) sky.
-    @location(6) wflag: f32,
-    // signed water-minus-ground delta (km): its interpolated zero crossing
-    // IS the shoreline, stepped per fragment (-1 = no standing water)
-    @location(7) shore: f32,
-    // packed range-visible color delta; zero on voxels/impostors/water
-    @location(8) far_color_delta: vec4<f32>,
+    // x = parent height delta, y = parent wetness, z = standing-water flag,
+    // w = signed shoreline field. These four contiguous f32 struct members
+    // share one attribute so the compact categorical payload stays within
+    // the guaranteed vertex-attribute count.
+    @location(4) morph: vec4<f32>,
+    // Fixed Koppen-family endpoints. RGB is linear UNORM8; alpha is the
+    // cumulative class-coverage threshold. Descending thresholds disable the
+    // payload on voxels, water, and impostors.
+    @location(5) biome0: vec4<f32>,
+    @location(6) biome1: vec4<f32>,
+    @location(7) biome2: vec4<f32>,
+    @location(8) biome3: vec4<f32>,
+    @location(9) biome4: vec4<f32>,
+    @location(10) biome5: vec4<f32>,
+    @location(11) biome6: vec4<f32>,
+    @location(12) biome7: vec4<f32>,
+    // x = coverage, y = roughness-adapted fine gain, z = valid marker.
+    @location(13) beach: vec4<f32>,
 };
 struct VsOut {
     @builtin(position) clip: vec4<f32>,
@@ -89,14 +94,29 @@ struct VsOut {
     @location(4) water: vec4<f32>,
     @location(5) wflag: f32,
     @location(6) shore: f32,
-    @location(7) far_color: vec3<f32>,
+    @location(7) biome0: vec4<f32>,
+    @location(8) biome1: vec4<f32>,
+    @location(9) biome2: vec4<f32>,
+    @location(10) biome3: vec4<f32>,
+    @location(11) biome4: vec4<f32>,
+    @location(12) biome5: vec4<f32>,
+    @location(13) biome6: vec4<f32>,
+    @location(14) biome7: vec4<f32>,
+    @location(15) beach: vec4<f32>,
 };
 
 // Keep the approved local 300 m ecotone through near flight, then hand off
 // continuously to the wide multiscale boundary before the 15 km review range.
 const BIOME_RANGE_BLEND_START_KM = 4.0;
-const BIOME_RANGE_BLEND_END_KM = 12.0;
-const BIOME_RANGE_COLOR_DELTA_SCALE = 0.5;
+const BIOME_RANGE_BLEND_END_KM = 8.0;
+// Below orbit the 8 km coverage zone is resolved by enough mesh vertices for
+// the fragment comparator to carry full categorical contrast.  Once distance
+// makes that coverage field coarser than its own zone, converge to round 3's
+// approved orbital contrast: the unresolved area mean suppresses LOD-lattice
+// contours while the 0.45 categorical share preserves the broad patchwork.
+const BIOME_ORBIT_CONTRAST_FADE_START_KM = 120.0;
+const BIOME_ORBIT_CONTRAST_FADE_END_KM = 240.0;
+const BIOME_ORBIT_CATEGORICAL_CONTRAST = 0.45;
 
 // Karst twin of noise.rs GRAD (generated from noise_grad.rs - the
 // planetgen parity table; do not hand-edit).
@@ -396,21 +416,94 @@ fn kgnoise(p: vec3<f32>, seedmul: u32) -> f32 {
     return total * 1.9;
 }
 
+// The categorical boundary field's three range-safe rotated domains. This is
+// the f32 twin of planet.rs BIOME_WARP_AXES; kgnoise supplies the exact shared
+// gradient lattice and globals.karst.w its octave-zero premultiplied seed.
+const BIOME_RANGE_AXES = array<mat3x3<f32>, 3>(
+    mat3x3<f32>(
+        vec3<f32>(0.811107106, 0.324442842, -0.486664263),
+        vec3<f32>(-0.235702260, 0.942809042, 0.235702260),
+        vec3<f32>(0.371390676, -0.557086015, 0.742781353),
+    ),
+    mat3x3<f32>(
+        vec3<f32>(-0.685994341, 0.514495755, 0.514495755),
+        vec3<f32>(0.696310624, 0.696310624, -0.174077656),
+        vec3<f32>(-0.365148371, 0.182574185, 0.912870929),
+    ),
+    mat3x3<f32>(
+        vec3<f32>(0.486664263, -0.811107106, -0.324442842),
+        vec3<f32>(0.169030851, 0.507092553, 0.845154255),
+        vec3<f32>(0.745355992, -0.298142397, 0.596284794),
+    ),
+);
+
+fn biome_normal_cdf(x: f32) -> f32 {
+    let z = abs(x);
+    let t = 1.0 / (1.0 + 0.2316419 * z);
+    let tail = 0.39894228 * exp(-0.5 * z * z) * t
+        * (0.31938153 + t * (-0.356563782
+            + t * (1.781477937 + t * (-1.821255978 + t * 1.330274429))));
+    return select(1.0 - tail, tail, x < 0.0);
+}
+
+fn biome_range_comparator(dir: vec3<f32>) -> f32 {
+    // Production climate raster is 1024: 1 / ((2/1023) * 5 texels).
+    var frequency = 102.3;
+    var sum = 0.0;
+    var variance = 0.0;
+    for (var octave = 0; octave < 5; octave = octave + 1) {
+        let axes = BIOME_RANGE_AXES[octave % 3];
+        let domain = vec3<f32>(dot(dir, axes[0]), dot(dir, axes[1]), dot(dir, axes[2]));
+        var amplitude = 1.0;
+        if (octave == 1) {
+            amplitude = 0.55;
+        } else if (octave > 2) {
+            amplitude = pow(0.5, f32(octave - 2));
+        }
+        let seedmul = globals.karst.w
+            + u32(octave) * 131u * 0x9E3779B1u;
+        sum += amplitude * kgnoise(domain * frequency, seedmul);
+        variance += amplitude * amplitude;
+        frequency *= 3.6;
+    }
+    return clamp(biome_normal_cdf(-2.70 * sum / sqrt(variance)), 0.0, 1.0);
+}
+
+fn beach_range_comparator(dir: vec3<f32>, fine_gain: f32) -> f32 {
+    // COLUMNS_PER_FACE / (2 * ECOTONE_BASE_PATCH_COLUMNS).
+    // The seed delta converts the range-biome base seed already in karst.w
+    // into ((planet_seed + BEACH_FIELD_SEED_OFFSET) * 7919) * hash multiplier.
+    var frequency = 1220.703125;
+    var amplitude = 1.0;
+    var sum = 0.0;
+    var variance = 0.0;
+    for (var octave = 0; octave < 2; octave = octave + 1) {
+        let adapted = amplitude * select(fine_gain, 1.0, octave == 0);
+        let seedmul = globals.karst.w + 0xAB20C0C2u
+            + u32(octave) * 131u * 0x9E3779B1u;
+        sum += adapted * kgnoise(dir * frequency, seedmul);
+        variance += adapted * adapted;
+        frequency *= 16.0;
+        amplitude *= 0.5;
+    }
+    return clamp(biome_normal_cdf(2.56 * sum / sqrt(variance)), 0.0, 1.0);
+}
+
 @vertex
 fn vs_main(in: VsIn) -> VsOut {
     var out: VsOut;
     var rel = in.pos + tile.offset.xyz;
     let d = length(rel);
     var wet = in.water.a;
-    var shore = in.shore;
+    var shore = in.morph.w;
     if (tile.morph.y > 0.0) {
         // Geomorphing: slide to the parent triangle's height and its actual
         // triangle-interpolated river paint. The scalar radial slide retains
         // only the measured <= 0.13 m residual in the V-6 level-9 probes.
         let m = clamp((d - tile.morph.x) / (tile.morph.y - tile.morph.x), 0.0, 1.0);
         let radial = normalize(rel - globals.center.xyz);
-        rel += radial * (in.morph_dh * m);
-        wet = mix(in.water.a, in.morph_wet, m);
+        rel += radial * (in.morph.x * m);
+        wet = mix(in.water.a, in.morph.y, m);
     }
     if (tile.offset.w < 0.5 && globals.misc.z > 0.0) {
         // voxel chunks: toward the SELECTED patch radius (misc.z) the
@@ -421,7 +514,7 @@ fn vs_main(in: VsIn) -> VsOut {
         let q = rel - globals.hole.xyz;
         let vert = dot(q, globals.hole_up.xyz);
         let horiz = length(q - globals.hole_up.xyz * vert);
-        if (in.wflag > 1.5) {
+        if (in.morph.z > 1.5) {
             // A-5: this marked lake/river-overlap top first moves from its
             // lattice ceiling to the shared analog level (morph_dh), then
             // sheds the patch lift through the established outer rim band.
@@ -430,9 +523,9 @@ fn vs_main(in: VsIn) -> VsOut {
             // outer side to that one plane before the voxel top can cross it.
             let handoff = globals.misc.z;
             let flush = smoothstep(handoff * 0.85, handoff, horiz);
-            let top_weight = clamp(in.morph_wet, 0.0, 1.0);
+            let top_weight = clamp(in.morph.y, 0.0, 1.0);
             rel += globals.hole_up.xyz
-                * (in.morph_dh - globals.center.w * flush * top_weight);
+                * (in.morph.x - globals.center.w * flush * top_weight);
             shore = handoff - horiz;
         } else {
             let sink = smoothstep(globals.misc.z * 0.85, globals.misc.z * 1.06, horiz);
@@ -445,13 +538,17 @@ fn vs_main(in: VsIn) -> VsOut {
     out.dist_km = length(rel);
     out.rel_flag = vec4<f32>(rel, tile.offset.w);
     out.water = vec4<f32>(in.water.rgb, wet);
-    out.wflag = in.wflag;
+    out.wflag = in.morph.z;
     out.shore = shore;
-    out.far_color = clamp(
-        in.color + BIOME_RANGE_COLOR_DELTA_SCALE * in.far_color_delta.rgb,
-        vec3<f32>(0.0),
-        vec3<f32>(1.0),
-    );
+    out.biome0 = in.biome0;
+    out.biome1 = in.biome1;
+    out.biome2 = in.biome2;
+    out.biome3 = in.biome3;
+    out.biome4 = in.biome4;
+    out.biome5 = in.biome5;
+    out.biome6 = in.biome6;
+    out.biome7 = in.biome7;
+    out.beach = in.beach;
     return out;
 }
 
@@ -516,7 +613,103 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         BIOME_RANGE_BLEND_END_KM,
         in.dist_km,
     );
-    var ground = mix(in.color, in.far_color, biome_range);
+    // Range ownership is a CONTOUR, not an interpolated vertex color.
+    // Climate uses the shared 85/24/6.5/1.8/0.5 km comparator. Generic beach
+    // reuses the same broad 7 km + 440 m prefix as exact voxel beach material;
+    // its coverage no longer gets smoothly mixed into every climate endpoint.
+    // Invalid early threshold ordering remains the payload-off marker for
+    // voxel/water/impostor vertices.
+    let surface_dir = normalize(in.rel_flag.xyz - globals.center.xyz);
+    let biome_q = biome_range_comparator(surface_dir);
+    let biome_endpoints = array<vec4<f32>, 8>(
+        in.biome0, in.biome1, in.biome2, in.biome3,
+        in.biome4, in.biome5, in.biome6, in.biome7,
+    );
+    var biome_below: array<f32, 8>;
+    var biome_valid = true;
+    for (var family = 0; family < 8; family = family + 1) {
+        let margin = biome_endpoints[family].a - biome_q;
+        let aa = max(fwidth(margin), 2.0 / 255.0);
+        biome_below[family] = smoothstep(-aa, aa, margin);
+        if (family > 0) {
+            biome_valid = biome_valid
+                && biome_endpoints[family].a >= biome_endpoints[family - 1].a;
+        }
+    }
+    let beach_mode = in.beach.z > 0.5;
+    var range_ground = in.color;
+    if (biome_valid) {
+        range_ground = vec3<f32>(0.0);
+        var range_mean = vec3<f32>(0.0);
+        var range_weight = 0.0;
+        var mean_weight = 0.0;
+        var previous = 0.0;
+        var previous_threshold = 0.0;
+        for (var family = 0; family < 7; family = family + 1) {
+            let interval = biome_endpoints[family].a - previous_threshold;
+            let exists = smoothstep(0.5 / 255.0, 1.5 / 255.0, interval);
+            let weight = max(biome_below[family] - previous, 0.0) * exists;
+            range_ground += biome_endpoints[family].rgb * weight;
+            range_weight += weight;
+            range_mean += biome_endpoints[family].rgb * interval;
+            mean_weight += interval;
+            previous = biome_below[family];
+            previous_threshold = biome_endpoints[family].a;
+        }
+        let final_exists = smoothstep(
+            0.5 / 255.0,
+            1.5 / 255.0,
+            1.0 - previous_threshold,
+        );
+        let final_weight = max(1.0 - previous, 0.0) * final_exists;
+        range_ground += biome_endpoints[7].rgb * final_weight;
+        range_weight += final_weight;
+        let final_interval = max(1.0 - previous_threshold, 0.0);
+        range_mean += biome_endpoints[7].rgb * final_interval;
+        mean_weight += final_interval;
+        range_ground /= max(range_weight, 1e-5);
+        range_mean /= max(mean_weight, 1e-5);
+        if (beach_mode) {
+            let beach_coverage = clamp(in.beach.x, 0.0, 1.0);
+            // CPU endpoint centering makes this combined expectation exactly
+            // the former smooth beach mean, so orbit can reduce contrast
+            // without shifting the approved continental/coastal color.
+            range_mean = mix(range_mean, biome_endpoints[6].rgb, beach_coverage);
+            if (beach_coverage > 0.5 / 255.0) {
+                // The ~440 m carrier is safe through the 95 km review range
+                // but undersampled from orbit. Retire only that nested detail
+                // with the existing orbital handoff; the broad 7 km beach
+                // owner and its 0.45 contrast remain.
+                let beach_detail = 1.0 - smoothstep(
+                    BIOME_ORBIT_CONTRAST_FADE_START_KM,
+                    BIOME_ORBIT_CONTRAST_FADE_END_KM,
+                    in.dist_km,
+                );
+                let fine_gain = clamp(in.beach.y, 0.08, 1.0) * beach_detail;
+                let beach_q = beach_range_comparator(surface_dir, fine_gain);
+                let margin = beach_coverage - beach_q;
+                let aa = max(fwidth(margin), 2.0 / 255.0);
+                let beach_owner = smoothstep(-aa, aa, margin);
+                range_ground = mix(
+                    range_ground,
+                    biome_endpoints[6].rgb,
+                    beach_owner,
+                );
+            }
+        }
+        let orbit_undersampling = smoothstep(
+            BIOME_ORBIT_CONTRAST_FADE_START_KM,
+            BIOME_ORBIT_CONTRAST_FADE_END_KM,
+            in.dist_km,
+        );
+        let categorical_contrast = mix(
+            1.0,
+            BIOME_ORBIT_CATEGORICAL_CONTRAST,
+            orbit_undersampling,
+        );
+        range_ground = mix(range_mean, range_ground, categorical_contrast);
+    }
+    var ground = mix(in.color, range_ground, biome_range);
     let up = globals.sky.xyz;
     let day = smoothstep(-0.08, 0.15, dot(globals.sun_dir.xyz, up));
     // ---- shared micro-texture (TRANSITIONS.md A, kills the V-1 disk) ----
