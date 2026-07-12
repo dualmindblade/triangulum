@@ -1,0 +1,74 @@
+# Solar P3 two-world regression: the same player/voxel machinery lands,
+# walks, jumps, edits, and collides on the deterministic lunar law.
+weather off
+weather time 0
+sun physical
+
+# Neisor control: pin the established 5.2 m/s jump under 9.81 m/s^2.
+teleport 1.510 40.490 0.004
+mode walk
+wait 1
+assert body neisor
+assert grounded true
+assert gravity_mps2 ~ 9.81 0.000001
+tap space
+wait 0.5333333333
+assert clearance_m ~ 1.334533 0.02
+state neisor_jump_apex
+wait 1
+assert grounded true
+
+# Maria landing: surface teleport enters focused lunar walk immediately.
+teleport-to-moon-surface -36.2094 -1 0 -8
+wait 1
+assert body moon
+assert focus_id == 1
+assert mode walk
+assert grounded true
+assert underwater false
+assert has_water false
+assert gravity_mps2 ~ 1.635 0.000001
+assert lunar_material maria
+shot maria_grounded
+
+# Same launch speed, one-sixth gravity: roughly six times the apex height.
+tap space
+wait 3.1833333333
+assert grounded false
+assert clearance_m ~ 8.225733 0.04
+shot lunar_jump_apex
+wait 4
+assert grounded true
+
+# Break one exact lunar column, expose darker regolith, then place a block
+# while airborne so the self-body guard permits restoring one block.
+look 0 -80
+tap lmb
+assert edit_count == 1
+assert edit_total_blocks == -1
+shot dug_regolith
+tap space
+wait 0.4
+assert clearance_m > 1.5
+look 0 -80
+tap rmb
+assert edit_total_blocks == 0
+wait 7
+assert grounded true
+
+# Large-crater central wall: step off the deterministic peak, land on its
+# floor, and prove a neighboring 42-block wall produces a finite head probe.
+moonland -5.8583 -10.4143 0 -8
+assert column_step_max > 50
+hold w 0.5
+wait 15
+assert grounded true
+assert column_step_max > 20
+assert neighbor_ceiling_km != none
+state crater_wall_ceiling_probe
+
+# A surviving ray column carries the ray-bright material family.
+moonland -2.5186 -10.4143 180 -15
+assert lunar_material ray
+assert column_albedo > 0.79
+shot ray_field_close

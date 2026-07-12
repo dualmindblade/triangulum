@@ -104,9 +104,9 @@ shot karst_vox
 voxels off
 shot karst_mesh
 voxels on
-teleport 24.482000 24.967000 0.120000
-look -35.00 -30.00
-sun 23.00 9.97
+teleport -51.425100 24.460700 0.120000
+look 0.00 -30.00
+sun -23.00 9.46
 weather pin 0.10 0.0
 shot sea_calib_vox
 voxels off

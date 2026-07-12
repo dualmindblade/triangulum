@@ -10,7 +10,7 @@ use glam::{DQuat, DVec3};
 
 const TAU: f64 = std::f64::consts::TAU;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum BodyId {
     Sun,
@@ -107,6 +107,9 @@ impl KeplerElements {
 pub struct BodyTuning {
     pub parent: Option<BodyId>,
     pub radius_neisor: f64,
+    /// Surface gravity used by focused-body walk physics.  It belongs beside
+    /// radius/orbit because every landable body supplies the same contract.
+    pub surface_gravity_mps2: f64,
     pub orbit: Option<KeplerElements>,
 }
 
@@ -115,6 +118,7 @@ impl Default for BodyTuning {
         Self {
             parent: None,
             radius_neisor: 1.0,
+            surface_gravity_mps2: 9.81,
             orbit: None,
         }
     }
@@ -157,11 +161,13 @@ impl Default for SolarTuning {
                 // scale chosen so the physical limb matches the old 0.51 deg
                 // shader core from Neisor's surface.
                 radius_neisor: 109.0,
+                surface_gravity_mps2: 274.0,
                 orbit: None,
             },
             neisor: BodyTuning {
                 parent: Some(BodyId::Sun),
                 radius_neisor: 1.0,
+                surface_gravity_mps2: 9.81,
                 orbit: Some(KeplerElements {
                     semi_major_axis_neisor_radii: 12_190.0,
                     eccentricity: 0.035,
@@ -176,6 +182,7 @@ impl Default for SolarTuning {
             moon: BodyTuning {
                 parent: Some(BodyId::Neisor),
                 radius_neisor: 0.27,
+                surface_gravity_mps2: 1.635,
                 orbit: Some(KeplerElements {
                     // Visually compressed: at mean distance the 0.27 R body
                     // subtends the old sky reel's ~0.021 rad radius.
@@ -251,6 +258,11 @@ impl SolarTuning {
             if !body.radius_neisor.is_finite() || body.radius_neisor <= 0.0 {
                 return Err(format!("{name}.radius_neisor must be finite and > 0"));
             }
+            if !body.surface_gravity_mps2.is_finite() || body.surface_gravity_mps2 <= 0.0 {
+                return Err(format!(
+                    "{name}.surface_gravity_mps2 must be finite and > 0"
+                ));
+            }
             if let Some(orbit) = &body.orbit {
                 orbit.validate(&format!("{name}.orbit"))?;
             }
@@ -295,6 +307,10 @@ impl SolarTuning {
 
     pub fn radius_km(&self, id: BodyId, neisor_radius_km: f64) -> f64 {
         self.body(id).radius_neisor * neisor_radius_km
+    }
+
+    pub fn surface_gravity_mps2(&self, id: BodyId) -> f64 {
+        self.body(id).surface_gravity_mps2
     }
 
     pub fn year_days(&self) -> f64 {
@@ -592,6 +608,18 @@ mod tests {
         assert_eq!(t.year_days(), 84.0);
         assert_eq!(t.year_days() / t.lunar_days(), 12.0);
         assert!(t.validate().is_ok());
+    }
+
+    #[test]
+    fn lunar_surface_gravity_is_tunable_one_sixth_default() {
+        let t = SolarTuning::default();
+        let ratio = t.surface_gravity_mps2(BodyId::Moon)
+            / t.surface_gravity_mps2(BodyId::Neisor);
+        assert!((ratio - 1.0 / 6.0).abs() < 1e-15, "ratio={ratio:.17}");
+        let mut changed = t.clone();
+        changed.moon.surface_gravity_mps2 = 2.0;
+        assert_eq!(changed.surface_gravity_mps2(BodyId::Moon), 2.0);
+        assert!(changed.validate().is_ok());
     }
 
     #[test]

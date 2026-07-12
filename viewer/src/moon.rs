@@ -68,6 +68,28 @@ pub struct MoonSample {
     pub ray: f64,
 }
 
+/// Discrete lunar surface family consumed by both the adaptive mesh payload
+/// and metre columns.  It is derived solely from channels already produced by
+/// the crater/maria/ray fold, so it cannot drift into a second terrain law.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MoonMaterial {
+    Highland,
+    Maria,
+    Ray,
+}
+
+impl MoonSample {
+    pub fn material(self) -> MoonMaterial {
+        if self.ray >= 0.08 {
+            MoonMaterial::Ray
+        } else if self.smoothness >= 0.45 {
+            MoonMaterial::Maria
+        } else {
+            MoonMaterial::Highland
+        }
+    }
+}
+
 #[derive(Clone)]
 struct Mare {
     center: DVec3,

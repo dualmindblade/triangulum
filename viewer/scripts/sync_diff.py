@@ -49,7 +49,10 @@ POSES = [
     ("groves",          3.960000, -32.560000,  0.150,   60.0, -25.0, "open groves, scattered trees"),
     ("ice_top",        83.997000,  40.220000,  0.200,    0.0, -35.0, "polar ice sheet"),
     ("karst",          13.346000,  -4.807000,  0.289,  -78.0, -55.0, "flooded-cave breach field (V-10 hint)"),
-    ("sea_calib",      24.482000,  24.967000,  0.120,  -35.0, -30.0, "open sea: must stay ~0 (calibration)"),
+    # A deep-ocean census point keeps the control free of the distant coastal
+    # pixels that had crept into the old 24.482/24.967 horizon. This is a pure
+    # water comparison: mesh and voxel renders must be exactly identical.
+    ("sea_calib",     -51.425100,  24.460700,  0.120,    0.0, -30.0, "open sea: must stay ~0 (calibration)"),
 ]
 
 NOISE_FLOOR = 2  # |delta| <= this (out of 255) counts as identical

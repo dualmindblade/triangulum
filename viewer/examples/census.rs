@@ -7,6 +7,7 @@
 //!   cargo run --release --example census -- --at LAT LON --radius KM
 //!                                                         # one site, dense
 //!   census -- [--out FILE] [--quick N] (sample every Nth feature)
+//!   census -- --body moon [--probe LAT LON] # dry lunar-law census/probe
 //!
 //! Method: walk every river segment (cross-channel transects) and every lake
 //! cell (radial spokes over the shore/flood annulus), sampling
@@ -269,10 +270,15 @@ fn main() -> anyhow::Result<()> {
     let mut lips = false;
     let mut radius = 3.0f64;
     let mut caps_path = String::new();
+    let mut body_name = "neisor".to_string();
     let mut i = 1;
     while i < argv.len() {
         let next = |i: usize| argv.get(i + 1).cloned().unwrap_or_default();
         match argv[i].as_str() {
+            "--body" => {
+                body_name = next(i).to_ascii_lowercase();
+                i += 1;
+            }
             "--out" => {
                 out_path = next(i);
                 i += 1;
@@ -321,6 +327,32 @@ fn main() -> anyhow::Result<()> {
         out_path = format!("{interchange}/census.md");
     }
     let planet = Planet::load(assets)?;
+    if body_name == "moon" {
+        let tuning = triangulum_viewer::orbits::SolarTuning::load(assets);
+        let radius_km = tuning.radius_km(
+            triangulum_viewer::orbits::BodyId::Moon,
+            planet.radius_km,
+        );
+        let generator = triangulum_viewer::moon::MoonGenerator::new(planet.seed);
+        let (lat, lon) = probe_at.or(at).unwrap_or((0.0, 0.0));
+        let (la, lo) = (lat.to_radians(), lon.to_radians());
+        let direction = DVec3::new(la.cos() * lo.cos(), la.cos() * lo.sin(), la.sin());
+        let sample = generator.sample(direction);
+        println!("body: moon");
+        println!("water columns: 0 (dry-body contract)");
+        println!("trees/weather/biomes: disabled");
+        println!(
+            "probe {lat:.6} {lon:.6}: height={:.6} km material={:?} albedo={:.6} smoothness={:.6} ray={:.6}",
+            sample.height_ratio * radius_km,
+            sample.material(),
+            sample.albedo,
+            sample.smoothness,
+            sample.ray,
+        );
+        return Ok(());
+    } else if body_name != "neisor" {
+        anyhow::bail!("--body must be neisor or moon");
+    }
     let r_km = planet.radius_km;
     let t0 = std::time::Instant::now();
 

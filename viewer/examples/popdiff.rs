@@ -42,6 +42,8 @@ fn main() -> anyhow::Result<()> {
     renderer.patch_scale = get(8, 1.0);
 
     let mut camera = Camera {
+        body: triangulum_viewer::orbits::BodyId::Neisor,
+        center_km: glam::DVec3::ZERO,
         lon: lon.to_radians(),
         lat: lat.to_radians(),
         altitude_km: alt,

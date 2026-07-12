@@ -204,6 +204,8 @@ fn main() -> Result<()> {
         args.pitch.clamp(-86.0, 86.0)
     };
     let mut camera = Camera {
+        body: triangulum_viewer::orbits::BodyId::Neisor,
+        center_km: glam::DVec3::ZERO,
         lon: args.lon.to_radians(),
         lat: args.lat.to_radians(),
         altitude_km: args.alt,
@@ -214,7 +216,7 @@ fn main() -> Result<()> {
         roll: 0.0,
     };
     camera.ground_km = triangulum_viewer::terrain::ground_height_km(
-        &planet,
+        &*planet,
         camera.position().normalize(),
         args.exaggeration,
     );
@@ -225,6 +227,9 @@ fn main() -> Result<()> {
 
     let event_loop = EventLoop::new()?;
     let planet_seed = planet.seed;
+    let mut body_edits = triangulum_viewer::voxel::BodyEdits::from_neisor(load_edits(planet_seed));
+    *body_edits.for_body_mut(triangulum_viewer::orbits::BodyId::Moon) =
+        load_moon_edits(planet_seed);
     let mut app = App {
         planet,
         camera,
@@ -242,8 +247,9 @@ fn main() -> Result<()> {
         egui_state: None,
         egui_paint: None,
         title_timer: 0.0,
-        edits: load_edits(planet_seed),
+        edits: body_edits,
         torches: load_torches(planet_seed),
+        moon_body: None,
     };
     event_loop.run_app(&mut app)?;
     Ok(())
@@ -288,7 +294,7 @@ fn capture(planet: Arc<Planet>, camera: Camera, args: Args, path: &str) -> Resul
     }
     let eye_km = camera.ground_km + camera.altitude_km;
     renderer.underwater = triangulum_viewer::voxel::water_surface_km(
-        &planet,
+        &*planet,
         &edits,
         camera.position().normalize(),
         eye_km,
@@ -524,8 +530,9 @@ struct App {
     egui_state: Option<egui_winit::State>,
     egui_paint: Option<triangulum_viewer::ui::EguiPaint>,
     title_timer: f64,
-    edits: triangulum_viewer::voxel::Edits,
+    edits: triangulum_viewer::voxel::BodyEdits,
     torches: triangulum_viewer::voxel::Torches,
+    moon_body: Option<triangulum_viewer::voxel::LunarBody>,
 }
 
 /// Where in-game screenshots land (matches the interchange workflow).
@@ -540,6 +547,10 @@ fn interchange_dir() -> &'static str {
 /// Player block edits persist here, keyed by planet seed.
 fn edits_path(seed: i64) -> String {
     format!("{}/edits_seed{}.bin", assets_dir(), seed)
+}
+
+fn moon_edits_path(seed: i64) -> String {
+    format!("{}/edits_moon_seed{}.bin", assets_dir(), seed)
 }
 
 /// Player-placed torches persist here, keyed by planet seed.
@@ -613,8 +624,16 @@ fn save_torches(seed: i64, torches: &triangulum_viewer::voxel::Torches) {
 }
 
 fn load_edits(seed: i64) -> triangulum_viewer::voxel::Edits {
+    load_edits_path(&edits_path(seed))
+}
+
+fn load_moon_edits(seed: i64) -> triangulum_viewer::voxel::Edits {
+    load_edits_path(&moon_edits_path(seed))
+}
+
+fn load_edits_path(path: &str) -> triangulum_viewer::voxel::Edits {
     let mut out = triangulum_viewer::voxel::Edits::default();
-    let Ok(raw) = std::fs::read(edits_path(seed)) else {
+    let Ok(raw) = std::fs::read(path) else {
         return out;
     };
     if raw.len() < 8 || &raw[0..4] != b"EDT1" {
@@ -646,7 +665,7 @@ fn load_edits(seed: i64) -> triangulum_viewer::voxel::Edits {
     out
 }
 
-fn save_edits(seed: i64, edits: &triangulum_viewer::voxel::Edits) {
+fn save_edits(seed: i64, body: triangulum_viewer::orbits::BodyId, edits: &triangulum_viewer::voxel::Edits) {
     let mut buf = Vec::with_capacity(8 + edits.len() * 25);
     buf.extend_from_slice(b"EDT1");
     buf.extend_from_slice(&(edits.len() as u32).to_le_bytes());
@@ -656,7 +675,12 @@ fn save_edits(seed: i64, edits: &triangulum_viewer::voxel::Edits) {
         buf.extend_from_slice(&cj.to_le_bytes());
         buf.extend_from_slice(&dh.to_le_bytes());
     }
-    if let Err(e) = write_atomic(&edits_path(seed), &buf) {
+    let path = if body == triangulum_viewer::orbits::BodyId::Moon {
+        moon_edits_path(seed)
+    } else {
+        edits_path(seed)
+    };
+    if let Err(e) = write_atomic(&path, &buf) {
         eprintln!("could not save edits: {e}");
     }
 }
@@ -669,33 +693,47 @@ impl App {
     /// top face grows that column. Edits are per-column height deltas, so a
     /// placed block always lands on its column's top.
     fn edit_block(&mut self, dh: i64) {
+        let body_id = self.camera.body;
+        let body: &dyn triangulum_viewer::voxel::VoxelBody = match body_id {
+            triangulum_viewer::orbits::BodyId::Neisor => &*self.planet,
+            triangulum_viewer::orbits::BodyId::Moon => {
+                let Some(body) = self.moon_body.as_ref() else { return };
+                body
+            }
+            triangulum_viewer::orbits::BodyId::Sun => return,
+        };
+        let edits = self.edits.for_body_mut(body_id);
         if let Some(dirty) = triangulum_viewer::player::edit_block(
-            &self.planet,
-            &mut self.edits,
+            body,
+            edits,
             &self.camera,
             self.player.mode,
             dh,
             self.args.exaggeration,
         ) {
             if let Some(gfx) = self.gfx.as_mut() {
-                gfx.renderer.refresh_edits_snapshot(&self.edits);
+                gfx.renderer.refresh_edits_snapshot(edits);
                 gfx.renderer.invalidate_chunks(&dirty);
             }
             self.player.refresh_after_edit(
-                &self.planet,
-                &self.edits,
+                body,
+                edits,
                 &self.camera,
                 self.args.exaggeration,
             );
-            save_edits(self.planet.seed, &self.edits);
+            save_edits(self.planet.seed, body_id, edits);
         }
     }
 
     /// R: toggle a torch on the walkable top of the targeted column.
     fn toggle_torch(&mut self) {
+        if self.camera.body != triangulum_viewer::orbits::BodyId::Neisor {
+            return;
+        }
+        let edits = self.edits.for_body(triangulum_viewer::orbits::BodyId::Neisor);
         if let Some(dirty) = triangulum_viewer::player::toggle_torch(
-            &self.planet,
-            &self.edits,
+            &*self.planet,
+            edits,
             &mut self.torches,
             &self.camera,
             self.player.mode,
@@ -729,6 +767,7 @@ impl App {
             n += 1;
         }
         let Some(gfx) = self.gfx.as_mut() else { return };
+        let edits = self.edits.for_body(self.camera.body);
         let mode = if self.player.mode == Mode::Walk {
             "walk"
         } else {
@@ -738,7 +777,7 @@ impl App {
             &mut gfx.renderer,
             &self.planet,
             &self.camera,
-            &self.edits,
+            edits,
             &path,
         ) {
             Ok((_, sun, sun_pinned, day_len_s)) => match write_shot_sidecar(
@@ -784,6 +823,7 @@ impl App {
         } else {
             "fly"
         };
+        let edits = self.edits.for_body(self.camera.body);
         let Some(gfx) = self.gfx.as_mut() else { return };
         let r = &mut gfx.renderer;
         let sun_pinned = r.sun_dir.is_some();
@@ -793,9 +833,9 @@ impl App {
         r.sun_dir = Some(sun.dir);
         let was_on = r.voxels_on;
         r.voxels_on = true;
-        let vox = r.capture_rgba(&self.planet, &self.camera, &self.edits);
+        let vox = r.capture_rgba(&self.planet, &self.camera, edits);
         r.voxels_on = false;
-        let mesh = r.capture_rgba(&self.planet, &self.camera, &self.edits);
+        let mesh = r.capture_rgba(&self.planet, &self.camera, edits);
         r.voxels_on = was_on;
         r.sun_dir = old_sun;
         let msg = match (vox, mesh) {
@@ -929,13 +969,18 @@ impl App {
             self.focus_camera(triangulum_viewer::orbits::BodyId::Neisor);
             self.player.teleport(
                 &self.planet,
-                &self.edits,
+                self.edits.for_body(triangulum_viewer::orbits::BodyId::Neisor),
                 &mut self.camera,
                 act.lat,
                 act.lon,
                 act.alt_km.filter(|a| a.is_finite()),
                 self.args.exaggeration,
             );
+            if let Some(gfx) = self.gfx.as_mut() {
+                gfx.renderer.refresh_edits_snapshot(
+                    self.edits.for_body(triangulum_viewer::orbits::BodyId::Neisor),
+                );
+            }
             // exact photo restore: put the camera back on the PHOTOGRAPHED
             // ground (a cave floor, an ice sheet — not the generic far-terrain
             // surface the teleport derives) and back in the photographed mode.
@@ -964,6 +1009,8 @@ impl App {
             }
         } else {
             let Some(gfx) = self.gfx.as_ref() else { return };
+            let has_photo_view = act.yaw_deg.is_some() || act.pitch_deg.is_some();
+            let landing = act.walk || !has_photo_view;
             let solar = gfx
                 .renderer
                 .solar_state(self.camera.position(), self.planet.radius_km);
@@ -974,16 +1021,32 @@ impl App {
             let (lat, lon) = (act.lat.to_radians(), act.lon.to_radians());
             let direction =
                 glam::DVec3::new(lat.cos() * lon.cos(), lat.cos() * lon.sin(), lat.sin());
-            let height = triangulum_viewer::moon::MoonGenerator::new(self.planet.seed)
-                .height_km(direction, radius);
-            // P2 is mesh-only: generic clicks stay safely in flight; a photo
-            // may restore a closer, but still positive, flyby altitude.
-            let altitude = act
-                .alt_km
-                .filter(|v| v.is_finite() && *v > 0.0)
-                .unwrap_or(25.0)
-                .max(0.05);
-            let position = solar.moon_km + direction * (radius + height + altitude);
+            let Some(moon_body) = self.moon_body.as_ref() else { return };
+            let moon_edits = self.edits.for_body(triangulum_viewer::orbits::BodyId::Moon);
+            let (surface, altitude) = if landing {
+                (
+                    triangulum_viewer::voxel::surface_height_km(
+                        moon_body,
+                        moon_edits,
+                        direction,
+                        self.args.exaggeration,
+                    ),
+                    triangulum_viewer::player::EYE_KM,
+                )
+            } else {
+                (
+                    triangulum_viewer::voxel::VoxelBody::ground_height_km(
+                        moon_body,
+                        direction,
+                        self.args.exaggeration,
+                    ),
+                    act.alt_km
+                        .filter(|v| v.is_finite() && *v > 0.0)
+                        .unwrap_or(25.0)
+                        .max(0.05),
+                )
+            };
+            let position = solar.moon_km + direction * (radius + surface + altitude);
             let east0 = glam::DVec3::Z.cross(direction);
             let east = if east0.length_squared() > 0.5 {
                 east0.normalize()
@@ -999,7 +1062,7 @@ impl App {
             let pitch = act
                 .pitch_deg
                 .filter(|v| v.is_finite())
-                .unwrap_or(-86.0)
+                .unwrap_or(if landing { -8.0 } else { -86.0 })
                 .to_radians()
                 .clamp(-1.50, 1.50);
             let horizontal = north * yaw.cos() + east * yaw.sin();
@@ -1017,18 +1080,31 @@ impl App {
             // A photo carries a local view and must remain free so focused
             // realignment cannot replace it with a center-look next frame.
             // Bare map clicks preserve the caller's focused/freecam mode.
-            let has_photo_view = act.yaw_deg.is_some() || act.pitch_deg.is_some();
-            let focused = !has_photo_view && self.camera_rig.mode != CameraMode::Freecam;
+            let focused = landing || (!has_photo_view && self.camera_rig.mode != CameraMode::Freecam);
             self.camera_rig.place_near_body(
                 triangulum_viewer::orbits::BodyId::Moon,
                 solar,
+                radius,
                 position,
                 look,
                 view_up,
                 focused,
                 &mut self.camera,
             );
-            self.player.set_fly(&mut self.camera);
+            if landing {
+                self.player.set_walk(&mut self.camera);
+                self.player.refresh_after_edit(
+                    moon_body,
+                    moon_edits,
+                    &self.camera,
+                    self.args.exaggeration,
+                );
+            } else {
+                self.player.set_fly(&mut self.camera);
+            }
+            if let Some(gfx) = self.gfx.as_mut() {
+                gfx.renderer.refresh_edits_snapshot(moon_edits);
+            }
         }
         if let (Some(on), Some(gfx)) = (act.weather_on, self.gfx.as_mut()) {
             gfx.renderer.weather_on = on;
@@ -1058,7 +1134,7 @@ impl App {
 
     /// Capture or release the cursor for raw mouse-look.
     fn set_mouse_lock(&mut self, lock: bool) {
-        let Some(gfx) = &self.gfx else { return };
+        let Some(gfx) = self.gfx.as_mut() else { return };
         use winit::window::CursorGrabMode as G;
         if lock {
             let ok = gfx
@@ -1080,7 +1156,7 @@ impl App {
 
 impl App {
     fn focus_camera(&mut self, body: triangulum_viewer::orbits::BodyId) {
-        let Some(gfx) = &self.gfx else { return };
+        let Some(gfx) = self.gfx.as_mut() else { return };
         let solar = gfx
             .renderer
             .solar_state(self.camera.position(), self.planet.radius_km);
@@ -1092,19 +1168,27 @@ impl App {
             self.planet.radius_km,
             &mut self.camera,
         );
+        gfx.renderer
+            .refresh_edits_snapshot(self.edits.for_body(body));
         if body != triangulum_viewer::orbits::BodyId::Neisor {
             self.player.set_fly(&mut self.camera);
         }
     }
 
     fn cycle_camera_focus(&mut self) {
-        let Some(gfx) = &self.gfx else { return };
+        let Some(gfx) = self.gfx.as_mut() else { return };
         let solar = gfx
             .renderer
             .solar_state(self.camera.position(), self.planet.radius_km);
         let tuning = gfx.renderer.solar_tuning.clone();
         self.camera_rig
             .cycle(solar, &tuning, self.planet.radius_km, &mut self.camera);
+        if let Some(body) = self.camera_rig.focused_body()
+            && body != triangulum_viewer::orbits::BodyId::Sun
+        {
+            gfx.renderer
+                .refresh_edits_snapshot(self.edits.for_body(body));
+        }
         if self.camera_rig.mode != CameraMode::Focused(triangulum_viewer::orbits::BodyId::Neisor) {
             self.player.set_fly(&mut self.camera);
         }
@@ -1144,10 +1228,29 @@ impl App {
             }
         };
         match self.camera_rig.mode {
-            CameraMode::Focused(triangulum_viewer::orbits::BodyId::Neisor) => {
+            CameraMode::Focused(body_id @ (triangulum_viewer::orbits::BodyId::Neisor
+                | triangulum_viewer::orbits::BodyId::Moon)) => {
+                let gravity_mps2 = self
+                    .gfx
+                    .as_ref()
+                    .map(|gfx| gfx.renderer.solar_tuning.surface_gravity_mps2(body_id))
+                    .unwrap_or(if body_id == triangulum_viewer::orbits::BodyId::Moon {
+                        1.635
+                    } else {
+                        9.81
+                    });
+                let body: &dyn triangulum_viewer::voxel::VoxelBody = match body_id {
+                    triangulum_viewer::orbits::BodyId::Neisor => &*self.planet,
+                    triangulum_viewer::orbits::BodyId::Moon => {
+                        let Some(body) = self.moon_body.as_ref() else { return };
+                        body
+                    }
+                    _ => unreachable!(),
+                };
                 self.player.update(
-                    &self.planet,
-                    &self.edits,
+                    body,
+                    self.edits.for_body(body_id),
+                    gravity_mps2,
                     &mut self.camera,
                     &input,
                     self.args.exaggeration,
@@ -1284,7 +1387,9 @@ impl ApplicationHandler for App {
         renderer.patch_scale = self.args.patch;
         renderer.voxels_on = self.args.voxels;
         renderer.set_torches(self.torches.clone());
-        renderer.refresh_world_snapshot(&self.edits);
+        renderer.refresh_world_snapshot(
+            self.edits.for_body(triangulum_viewer::orbits::BodyId::Neisor),
+        );
         apply_weather(&mut renderer, &self.args.weather);
         if let Some(day_len_s) = self.args.day_len {
             renderer.day_len_s = day_len_s;
@@ -1292,6 +1397,13 @@ impl ApplicationHandler for App {
         if let Some(t_s) = self.args.weather_time {
             renderer.set_weather_time_s(t_s);
         }
+        self.moon_body = Some(triangulum_viewer::voxel::LunarBody::new(
+            renderer.solar_tuning.radius_km(
+                triangulum_viewer::orbits::BodyId::Moon,
+                self.planet.radius_km,
+            ),
+            Arc::new(triangulum_viewer::moon::MoonGenerator::new(self.planet.seed)),
+        ));
         self.egui_state = Some(egui_winit::State::new(
             self.egui_ctx.clone(),
             egui::ViewportId::ROOT,
@@ -1415,8 +1527,13 @@ impl ApplicationHandler for App {
                 if state == ElementState::Pressed && !self.mouse_locked {
                     self.set_mouse_lock(true);
                 } else if state == ElementState::Pressed
-                    && self.camera_rig.mode
-                        == CameraMode::Focused(triangulum_viewer::orbits::BodyId::Neisor)
+                    && matches!(
+                        self.camera_rig.mode,
+                        CameraMode::Focused(
+                            triangulum_viewer::orbits::BodyId::Neisor
+                                | triangulum_viewer::orbits::BodyId::Moon
+                        )
+                    )
                 {
                     self.edit_block(-1);
                 }
@@ -1427,8 +1544,13 @@ impl ApplicationHandler for App {
                 button: MouseButton::Right,
                 ..
             } => {
-                if self.camera_rig.mode
-                    == CameraMode::Focused(triangulum_viewer::orbits::BodyId::Neisor)
+                if matches!(
+                    self.camera_rig.mode,
+                    CameraMode::Focused(
+                        triangulum_viewer::orbits::BodyId::Neisor
+                            | triangulum_viewer::orbits::BodyId::Moon
+                    )
+                )
                 {
                     self.edit_block(1);
                 }
@@ -1449,8 +1571,13 @@ impl ApplicationHandler for App {
             }
             WindowEvent::MouseWheel { delta, .. } => {
                 if self.player.mode == Mode::Fly
-                    && self.camera_rig.mode
-                        == CameraMode::Focused(triangulum_viewer::orbits::BodyId::Neisor)
+                    && matches!(
+                        self.camera_rig.mode,
+                        CameraMode::Focused(
+                            triangulum_viewer::orbits::BodyId::Neisor
+                                | triangulum_viewer::orbits::BodyId::Moon
+                        )
+                    )
                 {
                     let amount = match delta {
                         MouseScrollDelta::LineDelta(_, y) => y as f64,
@@ -1547,8 +1674,8 @@ impl ApplicationHandler for App {
                 };
                 let view = frame.texture.create_view(&Default::default());
                 gfx.renderer.underwater = self.player.underwater;
-                gfx.renderer
-                    .draw(&view, &self.planet, &self.camera, &self.edits);
+                let edits = self.edits.for_body(self.camera.body);
+                gfx.renderer.draw(&view, &self.planet, &self.camera, edits);
                 if let (Some((prims, deltas, ppp)), Some(paint)) =
                     (ui_frame, self.egui_paint.as_mut())
                 {

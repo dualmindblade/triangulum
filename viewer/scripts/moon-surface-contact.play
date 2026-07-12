@@ -1,0 +1,27 @@
+# P3 lunar surface evidence: four full-resolution landed frames.
+weather off
+sun physical
+
+weather time 0
+moonland -5 -10 180 -5
+assert grounded true
+shot crater_floor
+
+# Quarter lunar phase: Neisor is separated from the Sun, half-lit, and its
+# physical ~4.1 degree radius reads huge over a dark maria plain.
+weather time 3150
+moonland -40 -180 30.374 24.810
+assert lunar_material maria
+shot maria_neisor_horizon
+
+weather time 0
+moonland -2.5186 -10.4143 180 -15
+assert lunar_material ray
+assert column_albedo > 0.79
+shot ray_field_close
+
+moonland -36.2094 -1 0 -80
+tap lmb
+assert edit_count == 1
+assert edit_total_blocks == -1
+shot dug_regolith

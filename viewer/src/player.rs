@@ -7,8 +7,8 @@
 use crate::camera::Camera;
 use crate::planet::Planet;
 use crate::voxel::{
-    ceiling_above_km, chunks_touching_column, column_id, raycast_column, support_below_km,
-    surface_height_km, water_surface_km, ChunkKey, Edits, Torches, VOXEL_KM,
+    ceiling_above_km, chunks_touching_column_body, column_id, raycast_column, support_below_km,
+    surface_height_km, water_surface_km, ChunkKey, Edits, Torches, VoxelBody, VOXEL_KM,
 };
 
 /// Player eye height above the feet, km.
@@ -109,6 +109,7 @@ impl PlayerState {
         alt_km: Option<f64>,
         exaggeration: f64,
     ) {
+        camera.bind_body(crate::orbits::BodyId::Neisor, glam::DVec3::ZERO, planet.radius_km);
         camera.lat = lat_deg.to_radians();
         camera.lon = lon_deg.to_radians();
         if let Some(alt) = alt_km {
@@ -140,14 +141,14 @@ impl PlayerState {
     /// above water left a stale `true` until the next tick.
     pub fn refresh_underwater(
         &mut self,
-        planet: &Planet,
+        body: &dyn VoxelBody,
         edits: &Edits,
         camera: &Camera,
         exaggeration: f64,
     ) {
-        let dir = camera.position().normalize();
+        let dir = camera.local_direction();
         let eye = camera.ground_km + camera.altitude_km;
-        self.underwater = water_surface_km(planet, edits, dir, eye, exaggeration)
+        self.underwater = water_surface_km(body, edits, dir, eye, exaggeration)
             .is_some_and(|w| eye < w - 0.0003);
     }
 
@@ -157,7 +158,7 @@ impl PlayerState {
     /// new support until the next tick. Walk mode only (fly never grounds).
     pub fn refresh_grounded(
         &mut self,
-        planet: &Planet,
+        body: &dyn VoxelBody,
         edits: &Edits,
         camera: &Camera,
         exaggeration: f64,
@@ -165,9 +166,9 @@ impl PlayerState {
         if self.mode != Mode::Walk {
             return;
         }
-        let dir = camera.position().normalize();
+        let dir = camera.local_direction();
         let feet = camera.ground_km;
-        let support = support_below_km(planet, edits, dir, feet + 1e-7, exaggeration);
+        let support = support_below_km(body, edits, dir, feet + 1e-7, exaggeration);
         // grounded only while the feet are essentially resting on the support
         self.grounded = feet - support <= 1e-6;
     }
@@ -177,20 +178,21 @@ impl PlayerState {
     /// can change. Paired so a caller can't refresh one and forget the other.
     pub fn refresh_after_edit(
         &mut self,
-        planet: &Planet,
+        body: &dyn VoxelBody,
         edits: &Edits,
         camera: &Camera,
         exaggeration: f64,
     ) {
-        self.refresh_grounded(planet, edits, camera, exaggeration);
-        self.refresh_underwater(planet, edits, camera, exaggeration);
+        self.refresh_grounded(body, edits, camera, exaggeration);
+        self.refresh_underwater(body, edits, camera, exaggeration);
     }
 
     /// One simulation tick: movement, ground following, gravity, collision.
     pub fn update(
         &mut self,
-        planet: &Planet,
+        body: &dyn VoxelBody,
         edits: &Edits,
+        gravity_mps2: f64,
         camera: &mut Camera,
         input: &Input,
         exaggeration: f64,
@@ -218,7 +220,7 @@ impl PlayerState {
                     let h = camera.heading(strafe, fwd);
                     camera.translate(h, speed_kms * sprint * dt);
                 }
-                let dir2 = camera.position().normalize();
+                let dir2 = camera.local_direction();
                 if voxels_live {
                     // near the ground, absolute height is preserved when the
                     // ground re-samples, so a cave pit passing underneath no
@@ -226,8 +228,8 @@ impl PlayerState {
                     // in. The reference is the voxel *support* under the
                     // camera (cave floors count) and roofs are solid.
                     let cur = camera.ground_km + camera.altitude_km;
-                    let ground = support_below_km(planet, edits, dir2, cur - 1e-9, exagg);
-                    let ceil = ceiling_above_km(planet, edits, dir2, ground + 1e-6, exagg);
+                    let ground = support_below_km(body, edits, dir2, cur - 1e-9, exagg);
+                    let ceil = ceiling_above_km(body, edits, dir2, ground + 1e-6, exagg);
                     let height = cur
                         .max(ground + 0.0025)
                         .min(ceil - 0.0008)
@@ -253,7 +255,7 @@ impl PlayerState {
                     // terrain). Continuous with the voxel branch, which also
                     // preserves ground_km + altitude_km, so crossing the 2.5 km
                     // boundary doesn't snap.
-                    let ground = crate::terrain::ground_height_km(planet, dir2, exagg);
+                    let ground = body.ground_height_km(dir2, exagg);
                     let floor = ground + CRUISE_FLOOR_KM;
                     if !self.fly_riding {
                         self.fly_elev_km = camera.ground_km + camera.altitude_km;
@@ -273,16 +275,16 @@ impl PlayerState {
                     let h = camera.heading(strafe, fwd);
                     let saved = (camera.lat, camera.lon, camera.yaw);
                     camera.translate(h, 0.0043 * sprint * dt); // 4.3 m/s
-                    let ndir = camera.position().normalize();
+                    let ndir = camera.local_direction();
                     let block = VOXEL_KM * exagg;
                     let step = if self.grounded { 1.05 * block } else { 0.05 * block };
                     let head = feet + EYE_KM + 0.0003;
                     // highest solid under the head in the target column: at or
                     // below the feet it's floor (walk on / fall past), within a
                     // step it's a stair, above that it's a wall
-                    let s_head = support_below_km(planet, edits, ndir, head, exagg);
+                    let s_head = support_below_km(body, edits, ndir, head, exagg);
                     let new_feet = feet.max(s_head);
-                    let headroom = ceiling_above_km(planet, edits, ndir, new_feet + 1e-6, exagg)
+                    let headroom = ceiling_above_km(body, edits, ndir, new_feet + 1e-6, exagg)
                         - new_feet
                         > EYE_KM + 0.0004;
                     let mut blocked = s_head > feet + step + 1e-9 || !headroom;
@@ -298,7 +300,7 @@ impl PlayerState {
                     // approach.
                     if !blocked {
                         let r_km = 0.35 * block;
-                        let pos = camera.position();
+                        let pos = camera.local_position();
                         let (_, north, east) = camera.frame();
                         for k in 0..8 {
                             let a = k as f64 * std::f64::consts::FRAC_PI_4;
@@ -307,7 +309,7 @@ impl PlayerState {
                                 continue; // not moving toward this probe
                             }
                             let pdir = (pos + probe * r_km).normalize();
-                            let s = support_below_km(planet, edits, pdir, head, exagg);
+                            let s = support_below_km(body, edits, pdir, head, exagg);
                             // headroom is measured above where the body would
                             // rest on THIS probe's support (its step-up level),
                             // not above the current low feet — otherwise a
@@ -315,7 +317,7 @@ impl PlayerState {
                             // headroom wall and traps you (e.g. a dug hole).
                             let foot = new_feet.max(s);
                             if s > new_feet + step + 1e-9
-                                || ceiling_above_km(planet, edits, pdir, foot + 1e-6, exagg)
+                                || ceiling_above_km(body, edits, pdir, foot + 1e-6, exagg)
                                     - foot
                                     <= EYE_KM + 0.0004
                             {
@@ -333,9 +335,9 @@ impl PlayerState {
                         }
                     }
                 }
-                let dir2 = camera.position().normalize();
+                let dir2 = camera.local_direction();
                 // -- vertical: gravity (or buoyancy), landing, head bump
-                let water = water_surface_km(planet, edits, dir2, feet, exagg);
+                let water = water_surface_km(body, edits, dir2, feet, exagg);
                 let in_water = water.is_some_and(|w| feet + 0.0009 < w);
                 if in_water {
                     // sink slowly; hold Space to swim up
@@ -343,17 +345,18 @@ impl PlayerState {
                     let blend = (6.0 * dt).min(1.0);
                     self.vert_vel_mps += (target - self.vert_vel_mps) * blend;
                 } else {
-                    self.vert_vel_mps = (self.vert_vel_mps - 9.81 * dt).max(-80.0);
+                    self.vert_vel_mps =
+                        (self.vert_vel_mps - gravity_mps2 * dt).max(-80.0);
                 }
                 let mut new_feet = feet + self.vert_vel_mps * dt / 1000.0;
-                let support = support_below_km(planet, edits, dir2, feet + 1e-7, exagg);
+                let support = support_below_km(body, edits, dir2, feet + 1e-7, exagg);
                 self.grounded = false;
                 if new_feet <= support {
                     new_feet = support;
                     self.vert_vel_mps = 0.0;
                     self.grounded = true;
                 } else if self.vert_vel_mps > 0.0 {
-                    let ceil = ceiling_above_km(planet, edits, dir2, feet + EYE_KM, exagg);
+                    let ceil = ceiling_above_km(body, edits, dir2, feet + EYE_KM, exagg);
                     if new_feet + EYE_KM + 0.0004 > ceil {
                         new_feet = (ceil - EYE_KM - 0.0004).max(support);
                         self.vert_vel_mps = 0.0;
@@ -364,7 +367,7 @@ impl PlayerState {
             }
         }
         // one place decides `underwater`, for both modes, from the final pose
-        self.refresh_underwater(planet, edits, camera, exagg);
+        self.refresh_underwater(body, edits, camera, exagg);
     }
 }
 
@@ -374,7 +377,7 @@ impl PlayerState {
 /// front of it. Returns the chunks whose meshes went stale, or None if
 /// nothing was in reach.
 pub fn edit_block(
-    planet: &Planet,
+    body: &dyn VoxelBody,
     edits: &mut Edits,
     camera: &Camera,
     mode: Mode,
@@ -383,9 +386,9 @@ pub fn edit_block(
 ) -> Option<Vec<ChunkKey>> {
     let reach_m = if mode == Mode::Walk { 8.0 } else { 60.0 };
     let (hit, prev) = raycast_column(
-        planet,
+        body,
         edits,
-        camera.position(),
+        camera.local_position(),
         camera.look_dir(),
         reach_m,
         exaggeration,
@@ -396,8 +399,8 @@ pub fn edit_block(
     // block lands at your feet — without this it embeds the head in solid rock
     // and renders the block interior (a starfield void). Fly mode is noclip, so
     // this only guards the walking body.
-    if dh > 0 && mode == Mode::Walk && (face, ci, cj) == column_id(camera.position().normalize()) {
-        let surf_top = surface_height_km(planet, edits, camera.position().normalize(), exaggeration);
+    if dh > 0 && mode == Mode::Walk && (face, ci, cj) == column_id(camera.local_direction()) {
+        let surf_top = surface_height_km(body, edits, camera.local_direction(), exaggeration);
         let block = VOXEL_KM * exaggeration;
         let feet = camera.ground_km;
         let head = feet + EYE_KM;
@@ -409,13 +412,13 @@ pub fn edit_block(
         }
     }
     *edits.entry((face, ci, cj)).or_insert(0) += dh;
-    Some(chunks_touching_column(face, ci, cj))
+    Some(chunks_touching_column_body(body.body_id(), face, ci, cj))
 }
 
 /// Toggle a torch on the walkable top of the targeted column. Returns the
 /// stale chunks, or None if nothing was in reach.
 pub fn toggle_torch(
-    planet: &Planet,
+    body: &dyn VoxelBody,
     edits: &Edits,
     torches: &mut Torches,
     camera: &Camera,
@@ -424,9 +427,9 @@ pub fn toggle_torch(
 ) -> Option<Vec<ChunkKey>> {
     let reach_m = if mode == Mode::Walk { 8.0 } else { 60.0 };
     let ((face, ci, cj), _) = raycast_column(
-        planet,
+        body,
         edits,
-        camera.position(),
+        camera.local_position(),
         camera.look_dir(),
         reach_m,
         exaggeration,
@@ -434,5 +437,5 @@ pub fn toggle_torch(
     if !torches.remove(&(face, ci, cj)) {
         torches.insert((face, ci, cj));
     }
-    Some(chunks_touching_column(face, ci, cj))
+    Some(chunks_touching_column_body(body.body_id(), face, ci, cj))
 }

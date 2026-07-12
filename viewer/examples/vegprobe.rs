@@ -71,7 +71,7 @@ fn main() -> anyhow::Result<()> {
             }
             total += 1;
             let c = col_ctx(&planet, &edits, cf as usize, ci, cj);
-            let climate = c.climate;
+            let climate = c.climate.expect("Neisor vegetation probe requires climate");
             climate_blocks[match climate.main_block {
                 MainBlock::Grass => 0,
                 MainBlock::Sand => 1,

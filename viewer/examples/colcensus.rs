@@ -11,11 +11,14 @@
 //! Prints class totals, worst sites as teleport commands, and per-class
 //! coordinates for the play harness to re-shoot.
 //!
-//!   cargo run --release --example colcensus -- LAT LON [RADIUS_KM]
+//!   cargo run --release --example colcensus -- [--body neisor|moon] LAT LON [RADIUS_KM]
+use std::sync::Arc;
 use glam::DVec3;
 use rayon::prelude::*;
 use triangulum_viewer::planet::{face_from_dir, Planet};
-use triangulum_viewer::voxel::{col_ctx_ext, ColCtx, Edits, COLUMNS_PER_FACE};
+use triangulum_viewer::voxel::{
+    col_ctx_ext_body, ColCtx, Edits, LunarBody, VoxelBody, COLUMNS_PER_FACE,
+};
 
 struct Hit {
     class: &'static str,
@@ -26,15 +29,33 @@ struct Hit {
 
 fn main() -> anyhow::Result<()> {
     let args: Vec<String> = std::env::args().collect();
-    let lat: f64 = args[1].parse()?;
-    let lon: f64 = args[2].parse()?;
-    let radius_km: f64 = args.get(3).map(|s| s.parse().unwrap_or(0.25)).unwrap_or(0.25);
+    let (body_name, first) = if args.get(1).is_some_and(|s| s == "--body") {
+        (args.get(2).map(String::as_str).unwrap_or(""), 3usize)
+    } else {
+        ("neisor", 1usize)
+    };
+    let lat: f64 = args[first].parse()?;
+    let lon: f64 = args[first + 1].parse()?;
+    let radius_km: f64 = args
+        .get(first + 2)
+        .map(|s| s.parse().unwrap_or(0.25))
+        .unwrap_or(0.25);
     let assets = if std::path::Path::new("viewer/assets/meta.json").exists() {
         "viewer/assets"
     } else {
         "assets"
     };
     let planet = Planet::load(assets)?;
+    let solar = triangulum_viewer::orbits::SolarTuning::load(assets);
+    let moon = LunarBody::new(
+        solar.radius_km(triangulum_viewer::orbits::BodyId::Moon, planet.radius_km),
+        Arc::new(triangulum_viewer::moon::MoonGenerator::new(planet.seed)),
+    );
+    let body: &dyn VoxelBody = match body_name.to_ascii_lowercase().as_str() {
+        "neisor" => &planet,
+        "moon" => &moon,
+        _ => anyhow::bail!("--body must be neisor or moon"),
+    };
     let edits = Edits::default();
     let (la, lo) = (lat.to_radians(), lon.to_radians());
     let dir = DVec3::new(la.cos() * lo.cos(), la.cos() * lo.sin(), la.sin());
@@ -49,7 +70,9 @@ fn main() -> anyhow::Result<()> {
         (2 * half + 1) * (2 * half + 1)
     );
 
-    let ctx = |di: i64, dj: i64| -> ColCtx { col_ctx_ext(&planet, &edits, face, ci + di, cj + dj) };
+    let ctx = |di: i64, dj: i64| -> ColCtx {
+        col_ctx_ext_body(body, &edits, face, ci + di, cj + dj)
+    };
     // a real great-circle disc, not the index square: gnomonic columns are
     // anisotropic (~1.7 x 1.0 m), so the [-half,half]^2 lattice both
     // over-reaches on one axis and would attribute corner findings to a
@@ -65,7 +88,7 @@ fn main() -> anyhow::Result<()> {
         let u = -1.0 + 2.0 * ((ci + di) as f64 + 0.5) / nn;
         let v = -1.0 + 2.0 * ((cj + dj) as f64 + 0.5) / nn;
         let d = triangulum_viewer::planet::face_dir(face, u, v);
-        (d - center_dir).length_squared() * planet.radius_km * planet.radius_km <= radius_km_2
+        (d - center_dir).length_squared() * body.radius_km() * body.radius_km() <= radius_km_2
     };
     let rows: Vec<Vec<Hit>> = (-half..=half)
         .into_par_iter()
@@ -112,6 +135,25 @@ fn main() -> anyhow::Result<()> {
         .collect();
 
     let mut all: Vec<Hit> = rows.into_iter().flatten().collect();
+    if body.body_id() == triangulum_viewer::orbits::BodyId::Moon {
+        let center = ctx(0, 0);
+        let material = center
+            .lunar
+            .map(|l| format!("{:?}", l.material))
+            .unwrap_or_else(|| "none".into());
+        let max_step = [ctx(1, 0), ctx(-1, 0), ctx(0, 1), ctx(0, -1)]
+            .into_iter()
+            .map(|n| (center.ground0 - n.ground0).abs())
+            .max()
+            .unwrap_or(0);
+        println!(
+            "moon center: ground={} material={} albedo={:.4} max-neighbor-step={} blocks",
+            center.ground0,
+            material,
+            center.lunar.map_or(0.0, |l| l.albedo),
+            max_step
+        );
+    }
     for class in ["LIP", "EDGE", "SHOAL", "CAVEP"] {
         let mut hits: Vec<&Hit> = all.iter().filter(|h| h.class == class).collect();
         hits.sort_by_key(|h| -h.drop);
@@ -123,7 +165,12 @@ fn main() -> anyhow::Result<()> {
             let d = triangulum_viewer::planet::face_dir(face, uu, vv);
             let hlat = d.z.asin().to_degrees();
             let hlon = d.y.atan2(d.x).to_degrees();
-            println!("  drop {} blocks  teleport {hlat:.5} {hlon:.5} 0.02", h.drop);
+            let command = if body.body_id() == triangulum_viewer::orbits::BodyId::Moon {
+                "moonland"
+            } else {
+                "teleport"
+            };
+            println!("  drop {} blocks  {command} {hlat:.5} {hlon:.5} 0.02", h.drop);
         }
     }
     all.retain(|h| h.class == "LIP");

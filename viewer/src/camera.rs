@@ -9,6 +9,11 @@ use glam::{DMat4, DVec3};
 
 #[derive(Clone, Copy, Debug)]
 pub struct Camera {
+    /// Body whose local spherical frame owns lat/lon/altitude.  Neisor keeps
+    /// the historical zero-centered frame; landed moon cameras use the exact
+    /// f64 orbital center without ever narrowing the world translation.
+    pub body: crate::orbits::BodyId,
+    pub center_km: DVec3,
     pub lon: f64, // radians
     pub lat: f64,
     pub altitude_km: f64, // above the local surface (see ground_km)
@@ -21,7 +26,10 @@ pub struct Camera {
 }
 
 impl Camera {
-    pub fn position(&self) -> DVec3 {
+    /// Position relative to the focused body's center.  Keeping this separate
+    /// from [`position`](Self::position) is the key two-worlds precision seam:
+    /// metre-scale walking math never subtracts a 120,000 km orbit in f32.
+    pub fn local_position(&self) -> DVec3 {
         let r = self.radius_km + self.ground_km + self.altitude_km;
         DVec3::new(
             r * self.lat.cos() * self.lon.cos(),
@@ -30,9 +38,17 @@ impl Camera {
         )
     }
 
+    pub fn local_direction(&self) -> DVec3 {
+        self.local_position().normalize_or_zero()
+    }
+
+    pub fn position(&self) -> DVec3 {
+        self.center_km + self.local_position()
+    }
+
     /// Local tangent frame at the camera: (radial up, north, east).
     pub fn frame(&self) -> (DVec3, DVec3, DVec3) {
-        let up = self.position().normalize();
+        let up = self.local_position().normalize();
         let east = DVec3::Z.cross(up).normalize_or_zero();
         let east = if east.length_squared() < 0.5 {
             DVec3::X
@@ -84,7 +100,7 @@ impl Camera {
         }
         let r = self.radius_km + self.ground_km + self.altitude_km;
         let theta = dist_km / r;
-        let pos = self.position().normalize();
+        let pos = self.local_position().normalize();
         let t = (dir - pos * dir.dot(pos)).normalize_or_zero();
 
         // world-space forward before the move (what the player "means")
@@ -114,12 +130,31 @@ impl Camera {
         if !position_km.is_finite() || position_km.length_squared() < 1.0 {
             return;
         }
-        let r = position_km.length();
-        self.lat = (position_km.z / r).clamp(-1.0, 1.0).asin();
-        self.lon = position_km.y.atan2(position_km.x);
+        let local = position_km - self.center_km;
+        let r = local.length();
+        if !r.is_finite() || r < 1.0 {
+            return;
+        }
+        self.lat = (local.z / r).clamp(-1.0, 1.0).asin();
+        self.lon = local.y.atan2(local.x);
         self.ground_km = 0.0;
         self.altitude_km = r - self.radius_km;
         self.set_world_orientation(look, view_up);
+    }
+
+    /// Rebind the local spherical frame before placing/focusing a camera.
+    /// Callers that want to preserve an absolute freecam pose should save it
+    /// and call `set_world_pose` after this; focused bodies intentionally keep
+    /// their local offset while their f64 center advances along the orbit.
+    pub fn bind_body(
+        &mut self,
+        body: crate::orbits::BodyId,
+        center_km: DVec3,
+        radius_km: f64,
+    ) {
+        self.body = body;
+        self.center_km = center_km;
+        self.radius_km = radius_km;
     }
 
     pub fn set_world_orientation(&mut self, look: DVec3, view_up: DVec3) {
@@ -197,7 +232,14 @@ pub fn nearest_surface_altitude_km(
 ) -> f64 {
     let position = camera.position();
     let mut nearest = camera.altitude_km.abs();
-    for body in [crate::orbits::BodyId::Moon, crate::orbits::BodyId::Sun] {
+    for body in [
+        crate::orbits::BodyId::Neisor,
+        crate::orbits::BodyId::Moon,
+        crate::orbits::BodyId::Sun,
+    ] {
+        if body == camera.body {
+            continue;
+        }
         let radius = tuning.radius_km(body, neisor_radius_km);
         let above = (position.distance(solar.position_km(body)) - radius).max(0.0);
         nearest = nearest.min(above);
@@ -257,6 +299,8 @@ impl CameraRig {
         if target == BodyId::Neisor {
             if let Some(saved) = self.neisor_camera.take() {
                 *camera = saved;
+            } else {
+                camera.bind_body(BodyId::Neisor, DVec3::ZERO, neisor_radius_km);
             }
             camera.roll = 0.0;
             self.mode = CameraMode::Focused(BodyId::Neisor);
@@ -283,6 +327,7 @@ impl CameraRig {
         } else {
             DVec3::Y
         };
+        camera.bind_body(target, center, radius);
         camera.set_world_pose(position, look, view_up);
         camera.roll = 0.0;
         self.mode = CameraMode::Focused(target);
@@ -302,6 +347,7 @@ impl CameraRig {
         &mut self,
         target: crate::orbits::BodyId,
         solar: crate::orbits::SolarState,
+        radius_km: f64,
         position_km: DVec3,
         look: DVec3,
         view_up: DVec3,
@@ -311,6 +357,7 @@ impl CameraRig {
         if self.mode == CameraMode::Focused(crate::orbits::BodyId::Neisor) {
             self.neisor_camera = Some(*camera);
         }
+        camera.bind_body(target, solar.position_km(target), radius_km);
         camera.set_world_pose(position_km, look, view_up);
         if focused {
             self.mode = CameraMode::Focused(target);
@@ -349,10 +396,12 @@ impl CameraRig {
         if body == crate::orbits::BodyId::Neisor {
             return;
         }
-        let center = solar.position_km(body);
-        let position = center + self.focus_offset_km;
-        let (_, old_up, _) = camera.view_basis();
-        camera.set_world_pose(position, center - position, old_up);
+        // The camera now stores a body-local f64 spherical pose. Advancing an
+        // orbit only translates its center; local walk position and yaw/pitch
+        // remain exact. This also keeps the old 3-radius focus alignment,
+        // because that pose already looks radially inward in the same frame.
+        camera.center_km = solar.position_km(body);
+        self.focus_offset_km = camera.local_position();
     }
 
     pub fn focus_distance_km(&self, solar: crate::orbits::SolarState, camera: &Camera) -> f64 {

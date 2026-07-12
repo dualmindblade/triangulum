@@ -2018,6 +2018,8 @@ mod tests {
         };
         let planet = Planet::load(assets).expect("range probe requires baked viewer assets");
         let camera = Camera {
+            body: crate::orbits::BodyId::Neisor,
+            center_km: DVec3::ZERO,
             lat: 52.991f64.to_radians(),
             lon: 100.016f64.to_radians(),
             altitude_km: 9.070,

@@ -26,6 +26,8 @@ struct Globals {
     sky: vec4<f32>,
     // xyz = planet center relative to the camera (km), w = voxel patch lift
     center: vec4<f32>,
+    // xyz = focused body center relative to camera; w = numeric body id.
+    body_frame: vec4<f32>,
     // x = number of active torch lights, y = time (s, wraps hourly)
     misc: vec4<f32>,
     // weather at the camera: x cloud cover, y precip, z snow fraction,
@@ -601,11 +603,19 @@ fn vs_moon(in: VsIn) -> VsOut {
         let radial = normalize(rel - globals.moon_body.xyz);
         rel += radial * (in.morph.x * m);
     }
+    if (tile.offset.w > 3.5 && globals.misc.z > 0.0) {
+        let q = rel - globals.hole.xyz;
+        let vert = dot(q, globals.hole_up.xyz);
+        let horiz = length(q - globals.hole_up.xyz * vert);
+        let sink = smoothstep(globals.misc.z * 0.85, globals.misc.z * 1.06, horiz);
+        rel -= globals.hole_up.xyz * (globals.center.w * 1.1 * sink);
+        rel -= globals.hole_up.xyz * (globals.center.w * tile.morph.z);
+    }
     out.clip = globals.view_proj * vec4<f32>(rel, 1.0);
     out.normal = in.normal;
     out.color = in.color;
     out.dist_km = d;
-    out.rel_flag = vec4<f32>(rel, 3.0);
+    out.rel_flag = vec4<f32>(rel, tile.offset.w);
     // MoonGenerator stores mare smoothness in water.a and ray survival in
     // wflag; neither channel invokes Neisor water/weather behavior here.
     out.water = in.water;
@@ -630,8 +640,16 @@ fn fs_moon(in: VsOut) -> @location(0) vec4<f32> {
     let n = normalize(in.normal);
     // Cube-sphere selection is conservative at the horizon and skirts are
     // two-sided; retain only the camera-facing physical surface.
-    if (dot(n, -normalize(in.rel_flag.xyz)) <= 0.0) {
+    if (in.rel_flag.w < 3.5 && dot(n, -normalize(in.rel_flag.xyz)) <= 0.0) {
         discard;
+    }
+    if (in.rel_flag.w < 3.5 && globals.body_frame.w > 0.5 && globals.hole.w > 0.0) {
+        let q = in.rel_flag.xyz - globals.hole.xyz;
+        let vert = dot(q, globals.hole_up.xyz);
+        let horiz = q - globals.hole_up.xyz * vert;
+        if (abs(vert) < 25.0 && length(horiz) < globals.hole.w) {
+            discard;
+        }
     }
     let to_sun = normalize(globals.sun_body.xyz - globals.moon_body.xyz);
     let lambert = max(dot(n, to_sun), 0.0);
@@ -882,7 +900,7 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     // never enters through a raw world coordinate. At ground range pixel_up
     // converges to camera up; in orbit it exposes the full terminator.
     let camera_day_geom = smoothstep(-0.08, 0.15, dot(globals.sun_dir.xyz, globals.sky.xyz));
-    let planet_day_weight = smoothstep(2.5, 40.0, max(globals.sky.w, 0.0));
+    let planet_day_weight = smoothstep(2.5, 40.0, max(globals.weather8.w, 0.0));
     var pixel_up = globals.sky.xyz;
     var pixel_sun = globals.sun_dir.xyz;
     var pixel_day_geom = camera_day_geom;
@@ -953,7 +971,7 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
                 let e_big = length(globals.center.xyz);
                 let radial = dot(in.rel_flag.xyz, u_r);
                 let d2 = dot(in.rel_flag.xyz, in.rel_flag.xyz);
-                let zm = (globals.sky.w + radial + (d2 - radial * radial) / (2.0 * e_big))
+                let zm = (globals.weather8.w + radial + (d2 - radial * radial) / (2.0 * e_big))
                     * 1000.0;
                 let a1 = abs(kgnoise(dirp * (90000.0 + zm / 12.0), globals.karst.y));
                 if (a1 < 0.085) {
@@ -1010,10 +1028,10 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     // flicker, ice 126 vs 152 RGB across 1.7 deg of latitude). All
     // camera-anchored ground responses fade to neutral above the weather
     // layer: full in the troposphere, gone by 40 km.
-    let wcam = 1.0 - smoothstep(8.0, 40.0, max(globals.sky.w, 0.0));
+    let wcam = 1.0 - smoothstep(8.0, 40.0, max(globals.weather8.w, 0.0));
     if (globals.weather.w < 500.0 && wcam > 0.0) {
         let wp = in.rel_flag.xyz - globals.center.xyz;
-        let r_sphere = length(globals.center.xyz) - max(globals.sky.w, 0.0);
+        let r_sphere = length(globals.center.xyz) - max(globals.weather8.w, 0.0);
         let elev_km = length(wp) - r_sphere;
         // lapse from the WEATHER SAMPLE's ground elevation (misc.w), not
         // the eye: the sample is surface air under the camera, and lapsing
@@ -1120,7 +1138,7 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     }
     // aerial perspective: distant terrain melts toward the same horizon
     // color the sky pass uses; the effect thins away with camera altitude
-    let atm = exp(-max(globals.sky.w, 0.0) / 45.0);
+    let atm = exp(-max(globals.weather8.w, 0.0) / 45.0);
     // moonlight: a cool directional lift plus a faint ambient floor so night
     // terrain reads as moonlit rather than flat black. Present only at night
     // (fades as the sun rises) and only while the moon is above the horizon.
@@ -1148,7 +1166,7 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     // the same three deterministic formations over terrain pixels. The
     // helper stacks far-to-near shell hits and hard-caps the combined alpha,
     // so clouds can never fully obscure orbital ground.
-    if (globals.weather.w < 500.0 && globals.sky.w > globals.weather5.y) {
+    if (globals.weather.w < 500.0 && globals.weather8.w > globals.weather5.y) {
         let orbital = cloud_orbit_composite(normalize(in.rel_flag.xyz));
         c = mix(c, orbital.rgb, orbital.a);
     }
@@ -1251,7 +1269,7 @@ fn cloud_shell_hit(ray: vec3<f32>, altitude_km: f32) -> vec4<f32> {
     // Below a shell the positive far root is overhead; outside it the near
     // root lies between an orbital eye and the ground. w < 0 means no hit.
     let ctr = globals.center.xyz;
-    let r_ground = length(ctr) - max(globals.sky.w, 0.0);
+    let r_ground = length(ctr) - max(globals.weather8.w, 0.0);
     let r_shell = r_ground + altitude_km;
     let b = dot(ctr, ray);
     let qd = dot(ctr, ctr) - r_shell * r_shell;
@@ -1468,7 +1486,8 @@ fn fs_sky(in: SkyOut) -> @location(0) vec4<f32> {
     // below the horizon line, fade toward space-dark
     c *= smoothstep(-0.10, 0.03, h);
     // the atmosphere thins away with altitude: space is black
-    let atm = exp(-max(globals.sky.w, 0.0) / 45.0);
+    let atmosphere = select(1.0, 0.0, globals.body_frame.w > 0.5);
+    let atm = exp(-max(globals.sky.w, 0.0) / 45.0) * atmosphere;
     c *= atm;
     // limb glow: from orbit, rays that graze past the planet pass through
     // its atmosphere shell — a thin lit rim hugging the dark disc. The ray
@@ -1478,7 +1497,7 @@ fn fs_sky(in: SkyOut) -> @location(0) vec4<f32> {
         let ctr = globals.center.xyz;
         let along = dot(ctr, dir);
         if (along > 0.0) {
-            let r_planet = length(ctr) - max(globals.sky.w, 0.0);
+            let r_planet = length(ctr) - max(globals.weather8.w, 0.0);
             let cp = dir * along; // closest point on the ray to the center
             let b = length(cp - ctr); // miss distance from planet center
             let n = normalize(cp - ctr);
