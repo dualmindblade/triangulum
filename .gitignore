@@ -13,3 +13,4 @@ viewer/interchange/*
 __pycache__/
 *.pyc
 viewer/target/
+/target/

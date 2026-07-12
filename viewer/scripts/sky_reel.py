@@ -36,6 +36,9 @@ POSES = [
 
 CHANGE_MEAN = 1.0
 CHANGE_FRAC = 0.01
+MOON_ROI_HALF = 48
+MOON_ROI_MEAN = 1.0
+MOON_ROI_FRAC = 0.05
 
 
 def build_play(path: Path):
@@ -118,6 +121,21 @@ def main():
                         f"{name}: CHANGED vs accepted (mean {mean:.3f}, "
                         f"frac {frac:.4f})"
                     )
+                if name == "moon_zenith":
+                    # The physical disc is only ~0.04% of the frame, so a
+                    # whole-frame 1% detector mathematically cannot see a new
+                    # face. This fixed-pose ROI covers disc + tight halo and
+                    # leaves the global threshold intact for all other sky.
+                    cy, cx = int(im.shape[0] * 0.286), im.shape[1] // 2
+                    r = MOON_ROI_HALF
+                    roi = d[cy-r:cy+r, cx-r:cx+r]
+                    roi_mean = float(roi.mean())
+                    roi_frac = float((roi > 6).mean())
+                    if roi_mean > MOON_ROI_MEAN or roi_frac > MOON_ROI_FRAC:
+                        findings.append(
+                            f"{name}: CHANGED moon ROI (mean {roi_mean:.3f}, "
+                            f"frac {roi_frac:.4f})"
+                        )
 
     if args.accept:
         accepted.mkdir(parents=True, exist_ok=True)

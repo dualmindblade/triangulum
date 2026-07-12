@@ -9,13 +9,13 @@ use glam::{DMat4, DVec3};
 
 #[derive(Clone, Copy, Debug)]
 pub struct Camera {
-    pub lon: f64,           // radians
+    pub lon: f64, // radians
     pub lat: f64,
-    pub altitude_km: f64,   // above the local surface (see ground_km)
+    pub altitude_km: f64, // above the local surface (see ground_km)
     pub radius_km: f64,
-    pub ground_km: f64,     // local surface height, updated per frame
-    pub yaw: f64,           // radians
-    pub pitch: f64,         // radians
+    pub ground_km: f64, // local surface height, updated per frame
+    pub yaw: f64,       // radians
+    pub pitch: f64,     // radians
     /// View-axis rotation. Focused Neisor keeps this at zero; freecam owns it.
     pub roll: f64,
 }
@@ -34,7 +34,11 @@ impl Camera {
     pub fn frame(&self) -> (DVec3, DVec3, DVec3) {
         let up = self.position().normalize();
         let east = DVec3::Z.cross(up).normalize_or_zero();
-        let east = if east.length_squared() < 0.5 { DVec3::X } else { east };
+        let east = if east.length_squared() < 0.5 {
+            DVec3::X
+        } else {
+            east
+        };
         let north = up.cross(east).normalize();
         (up, north, east)
     }
@@ -149,8 +153,8 @@ impl Camera {
             return;
         }
         let (look, view_up, view_right) = self.view_basis();
-        let direction = (view_right * strafe + view_up * vertical + look * forward)
-            .normalize_or_zero();
+        let direction =
+            (view_right * strafe + view_up * vertical + look * forward).normalize_or_zero();
         if direction.length_squared() < 0.5 {
             return;
         }
@@ -161,6 +165,13 @@ impl Camera {
     /// Pitch is clamped short of vertical (main.rs), so radial up is always
     /// valid — switching up-vectors near nadir caused a visible view flip.
     pub fn view_proj(&self, aspect: f64) -> DMat4 {
+        self.view_proj_for_surface_altitude(aspect, self.altitude_km)
+    }
+
+    /// Same projection, but with the near plane keyed to the nearest body.
+    /// The stored altitude remains Neisor-centered so world position stays
+    /// exact even while this value is only a few kilometres above the moon.
+    pub fn view_proj_for_surface_altitude(&self, aspect: f64, surface_altitude_km: f64) -> DMat4 {
         let (look, view_up, _) = self.view_basis();
         let view = DMat4::look_at_rh(DVec3::ZERO, look, view_up);
         // reversed-Z with an infinite far plane: f32 depth precision becomes
@@ -169,10 +180,29 @@ impl Camera {
         // plane poked through walls and tree trunks in walk mode. At eye
         // height this gives ~14 cm — the screen-corner ray reaches 1.65x
         // that (~24 cm), safely inside the walker's 35 cm body radius.
-        let near = (self.altitude_km * 0.08).clamp(0.0001, 50.0);
+        let near = (surface_altitude_km.abs() * 0.08).clamp(0.0001, 50.0);
         let proj = DMat4::perspective_infinite_reverse_rh(65f64.to_radians(), aspect, near);
         proj * view
     }
+}
+
+/// Distance used for freecam speed and projection precision. The Neisor term
+/// is exactly the established camera altitude; moon/Sun terms only lower it
+/// when the camera actually approaches another physical surface.
+pub fn nearest_surface_altitude_km(
+    camera: &Camera,
+    solar: crate::orbits::SolarState,
+    tuning: &crate::orbits::SolarTuning,
+    neisor_radius_km: f64,
+) -> f64 {
+    let position = camera.position();
+    let mut nearest = camera.altitude_km.abs();
+    for body in [crate::orbits::BodyId::Moon, crate::orbits::BodyId::Sun] {
+        let radius = tuning.radius_km(body, neisor_radius_km);
+        let above = (position.distance(solar.position_km(body)) - radius).max(0.0);
+        nearest = nearest.min(above);
+    }
+    nearest
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -238,13 +268,21 @@ impl CameraRig {
         }
         let center = solar.position_km(target);
         let outward = center.normalize_or_zero();
-        let outward = if outward.length_squared() > 0.5 { outward } else { DVec3::X };
+        let outward = if outward.length_squared() > 0.5 {
+            outward
+        } else {
+            DVec3::X
+        };
         let radius = tuning.radius_km(target, neisor_radius_km);
         self.focus_offset_km = outward * radius * 3.0;
         let position = center + self.focus_offset_km;
         let look = -outward;
         let view_up = (DVec3::Z - look * DVec3::Z.dot(look)).normalize_or_zero();
-        let view_up = if view_up.length_squared() > 0.5 { view_up } else { DVec3::Y };
+        let view_up = if view_up.length_squared() > 0.5 {
+            view_up
+        } else {
+            DVec3::Y
+        };
         camera.set_world_pose(position, look, view_up);
         camera.roll = 0.0;
         self.mode = CameraMode::Focused(target);
@@ -255,6 +293,31 @@ impl CameraRig {
             self.neisor_camera = Some(*camera);
         }
         self.mode = CameraMode::Freecam;
+    }
+
+    /// Place the camera at a body-local map coordinate. Focused placement
+    /// records the new f64 body offset so timeskips carry the pose; callers
+    /// can preserve a pre-existing freecam by passing `focused = false`.
+    pub fn place_near_body(
+        &mut self,
+        target: crate::orbits::BodyId,
+        solar: crate::orbits::SolarState,
+        position_km: DVec3,
+        look: DVec3,
+        view_up: DVec3,
+        focused: bool,
+        camera: &mut Camera,
+    ) {
+        if self.mode == CameraMode::Focused(crate::orbits::BodyId::Neisor) {
+            self.neisor_camera = Some(*camera);
+        }
+        camera.set_world_pose(position_km, look, view_up);
+        if focused {
+            self.mode = CameraMode::Focused(target);
+            self.focus_offset_km = position_km - solar.position_km(target);
+        } else {
+            self.mode = CameraMode::Freecam;
+        }
     }
 
     pub fn cycle(
@@ -280,7 +343,9 @@ impl CameraRig {
     }
 
     pub fn realign(&mut self, solar: crate::orbits::SolarState, camera: &mut Camera) {
-        let Some(body) = self.focused_body() else { return };
+        let Some(body) = self.focused_body() else {
+            return;
+        };
         if body == crate::orbits::BodyId::Neisor {
             return;
         }
@@ -290,21 +355,13 @@ impl CameraRig {
         camera.set_world_pose(position, center - position, old_up);
     }
 
-    pub fn focus_distance_km(
-        &self,
-        solar: crate::orbits::SolarState,
-        camera: &Camera,
-    ) -> f64 {
+    pub fn focus_distance_km(&self, solar: crate::orbits::SolarState, camera: &Camera) -> f64 {
         self.focused_body()
             .map(|body| camera.position().distance(solar.position_km(body)))
             .unwrap_or(f64::NAN)
     }
 
-    pub fn focus_alignment(
-        &self,
-        solar: crate::orbits::SolarState,
-        camera: &Camera,
-    ) -> f64 {
+    pub fn focus_alignment(&self, solar: crate::orbits::SolarState, camera: &Camera) -> f64 {
         self.focused_body()
             .map(|body| {
                 camera

@@ -8,10 +8,10 @@
 //! Q/E = freecam roll, scroll = Neisor fly altitude, Esc = release/quit.
 
 use anyhow::Result;
+use std::sync::Arc;
 use triangulum_viewer::camera::{Camera, CameraMode, CameraRig};
 use triangulum_viewer::planet::Planet;
 use triangulum_viewer::renderer::{Renderer, SunState};
-use std::sync::Arc;
 use winit::application::ApplicationHandler;
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, EventLoop};
@@ -74,7 +74,11 @@ fn parse_args() -> Args {
         // comparison goes false: culling dies, tile selection explodes,
         // torch sorting panics) — numeric args accept finite values only
         let numf = |i: usize, d: f64| {
-            next(i).parse::<f64>().ok().filter(|v| v.is_finite()).unwrap_or(d)
+            next(i)
+                .parse::<f64>()
+                .ok()
+                .filter(|v| v.is_finite())
+                .unwrap_or(d)
         };
         match argv[i].as_str() {
             "--capture" => {
@@ -116,7 +120,10 @@ fn parse_args() -> Args {
                 i += 1;
             }
             "--day-len" => {
-                a.day_len = next(i).parse::<f64>().ok().filter(|v| v.is_finite() && *v >= 0.0);
+                a.day_len = next(i)
+                    .parse::<f64>()
+                    .ok()
+                    .filter(|v| v.is_finite() && *v >= 0.0);
                 i += 1;
             }
             "--patch" => {
@@ -245,8 +252,7 @@ fn main() -> Result<()> {
 // ---------------------------------------------------------------- capture
 
 fn capture(planet: Arc<Planet>, camera: Camera, args: Args, path: &str) -> Result<()> {
-    let instance =
-        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
     let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
         power_preference: wgpu::PowerPreference::HighPerformance,
         compatible_surface: None,
@@ -354,11 +360,67 @@ fn write_shot_sidecar(
     let weather_t_s = renderer.weather_time_s();
     let solar = renderer.solar_state(camera.position(), planet.radius_km);
     let solar_occlusion = triangulum_viewer::orbits::solar_occlusion_at(
-        camera.position(), solar, &renderer.solar_tuning, planet.radius_km,
+        camera.position(),
+        solar,
+        &renderer.solar_tuning,
+        planet.radius_km,
     );
     let lunar_shadow = triangulum_viewer::orbits::lunar_shadow_fraction(
-        solar, &renderer.solar_tuning, planet.radius_km,
+        solar,
+        &renderer.solar_tuning,
+        planet.radius_km,
     );
+    let moon_radius = renderer
+        .solar_tuning
+        .radius_km(triangulum_viewer::orbits::BodyId::Moon, planet.radius_km);
+    let moon_relative = camera.position() - solar.moon_km;
+    let moon_alt_nominal = (moon_relative.length() - moon_radius).abs();
+    let on_moon = moon_alt_nominal < camera.altitude_km.abs();
+    let body_direction = if on_moon {
+        moon_relative.normalize_or_zero()
+    } else {
+        camera.position().normalize_or_zero()
+    };
+    let body_lat = body_direction.z.clamp(-1.0, 1.0).asin().to_degrees();
+    let body_lon = body_direction.y.atan2(body_direction.x).to_degrees();
+    let body_alt = if on_moon {
+        let relief = triangulum_viewer::moon::MoonGenerator::new(planet.seed)
+            .height_km(body_direction, moon_radius);
+        moon_relative.length() - moon_radius - relief
+    } else {
+        camera.altitude_km
+    };
+    let (body_yaw, body_pitch, body_roll) = if on_moon {
+        let east0 = glam::DVec3::Z.cross(body_direction);
+        let east = if east0.length_squared() > 0.5 {
+            east0.normalize()
+        } else {
+            glam::DVec3::X
+        };
+        let north = body_direction.cross(east).normalize();
+        let (look, view_up, _) = camera.view_basis();
+        let pitch = look.dot(body_direction).clamp(-1.0, 1.0).asin();
+        let horizontal = (look - body_direction * look.dot(body_direction)).normalize_or_zero();
+        let yaw = horizontal.dot(east).atan2(horizontal.dot(north));
+        let mut base_right = look.cross(body_direction).normalize_or_zero();
+        if base_right.length_squared() < 0.5 {
+            base_right = east;
+        }
+        let base_up = base_right.cross(look).normalize();
+        let target_up = (view_up - look * view_up.dot(look)).normalize_or_zero();
+        let roll = if target_up.length_squared() > 0.5 {
+            target_up.dot(base_right).atan2(target_up.dot(base_up))
+        } else {
+            0.0
+        };
+        (yaw.to_degrees(), pitch.to_degrees(), roll.to_degrees())
+    } else {
+        (
+            camera.yaw.to_degrees(),
+            camera.pitch.to_degrees(),
+            camera.roll.to_degrees(),
+        )
+    };
     let weather_js = serde_json::json!({
         "on": renderer.weather_on,
         "pinned": renderer.weather_pin.map(|(c, p)| vec![c, p]),
@@ -377,6 +439,13 @@ fn write_shot_sidecar(
         "lat_deg": camera.lat.to_degrees(),
         "lon_deg": camera.lon.to_degrees(),
         "alt_km": camera.altitude_km,
+        "body": if on_moon { "moon" } else { "neisor" },
+        "body_lat_deg": body_lat,
+        "body_lon_deg": body_lon,
+        "body_alt_km": body_alt,
+        "body_yaw_deg": body_yaw,
+        "body_pitch_deg": body_pitch,
+        "body_roll_deg": body_roll,
         // absolute ground height under the camera: alt_km alone can't
         // reproduce a shot (photo-map restore otherwise re-derives ground
         // from the far terrain surface — wrong in caves and on ice)
@@ -501,7 +570,9 @@ fn write_atomic(path: &str, buf: &[u8]) -> std::io::Result<()> {
 
 fn load_torches(seed: i64) -> triangulum_viewer::voxel::Torches {
     let mut out = triangulum_viewer::voxel::Torches::default();
-    let Ok(raw) = std::fs::read(torches_path(seed)) else { return out };
+    let Ok(raw) = std::fs::read(torches_path(seed)) else {
+        return out;
+    };
     if raw.len() < 8 || &raw[0..4] != b"TRC1" {
         return out;
     }
@@ -543,7 +614,9 @@ fn save_torches(seed: i64, torches: &triangulum_viewer::voxel::Torches) {
 
 fn load_edits(seed: i64) -> triangulum_viewer::voxel::Edits {
     let mut out = triangulum_viewer::voxel::Edits::default();
-    let Ok(raw) = std::fs::read(edits_path(seed)) else { return out };
+    let Ok(raw) = std::fs::read(edits_path(seed)) else {
+        return out;
+    };
     if raw.len() < 8 || &raw[0..4] != b"EDT1" {
         return out;
     }
@@ -656,7 +729,11 @@ impl App {
             n += 1;
         }
         let Some(gfx) = self.gfx.as_mut() else { return };
-        let mode = if self.player.mode == Mode::Walk { "walk" } else { "fly" };
+        let mode = if self.player.mode == Mode::Walk {
+            "walk"
+        } else {
+            "fly"
+        };
         let msg = match capture_with_recorded_sun(
             &mut gfx.renderer,
             &self.planet,
@@ -702,7 +779,11 @@ impl App {
             self.camera.yaw.to_degrees(),
             self.camera.pitch.to_degrees(),
         );
-        let mode = if self.player.mode == Mode::Walk { "walk" } else { "fly" };
+        let mode = if self.player.mode == Mode::Walk {
+            "walk"
+        } else {
+            "fly"
+        };
         let Some(gfx) = self.gfx.as_mut() else { return };
         let r = &mut gfx.renderer;
         let sun_pinned = r.sun_dir.is_some();
@@ -737,8 +818,8 @@ impl App {
                             + 0.0722 * (f64::from(vox[i + 2]) - f64::from(mesh[i + 2]));
                     }
                     // heatmap: dimmed mesh frame, divergence burned in red
-                    heat[i] = (f64::from(mesh[i]) * 0.35)
-                        .max((f64::from(d) * 3.0).min(255.0)) as u8;
+                    heat[i] =
+                        (f64::from(mesh[i]) * 0.35).max((f64::from(d) * 3.0).min(255.0)) as u8;
                     heat[i + 1] = (f64::from(mesh[i + 1]) * 0.35) as u8;
                     heat[i + 2] = (f64::from(mesh[i + 2]) * 0.35) as u8;
                 }
@@ -844,52 +925,120 @@ impl App {
         if !act.lat.is_finite() || !act.lon.is_finite() || act.lat.abs() > 90.0 {
             return;
         }
-        self.focus_camera(triangulum_viewer::orbits::BodyId::Neisor);
-        self.player.teleport(
-            &self.planet,
-            &self.edits,
-            &mut self.camera,
-            act.lat,
-            act.lon,
-            act.alt_km.filter(|a| a.is_finite()),
-            self.args.exaggeration,
-        );
-        // exact photo restore: put the camera back on the PHOTOGRAPHED
-        // ground (a cave floor, an ice sheet — not the generic far-terrain
-        // surface the teleport derives) and back in the photographed mode.
-        // Seed-gated: a recorded ground height on a different world would
-        // embed the camera in rock. Walk physics then re-settles feet on
-        // the real support, so a stale-but-same-seed height self-corrects.
-        if act.seed == Some(self.planet.seed)
-            && let Some(g) = act.ground_km.filter(|v| v.is_finite())
-        {
-            self.camera.ground_km = g;
-            if let Some(a) = act.alt_km.filter(|v| v.is_finite()) {
-                self.camera.altitude_km = a;
+        if act.body == triangulum_viewer::ui::MapBody::Neisor {
+            self.focus_camera(triangulum_viewer::orbits::BodyId::Neisor);
+            self.player.teleport(
+                &self.planet,
+                &self.edits,
+                &mut self.camera,
+                act.lat,
+                act.lon,
+                act.alt_km.filter(|a| a.is_finite()),
+                self.args.exaggeration,
+            );
+            // exact photo restore: put the camera back on the PHOTOGRAPHED
+            // ground (a cave floor, an ice sheet — not the generic far-terrain
+            // surface the teleport derives) and back in the photographed mode.
+            // Seed-gated: a recorded ground height on a different world would
+            // embed the camera in rock. Walk physics then re-settles feet on
+            // the real support, so a stale-but-same-seed height self-corrects.
+            if act.seed == Some(self.planet.seed)
+                && let Some(g) = act.ground_km.filter(|v| v.is_finite())
+            {
+                self.camera.ground_km = g;
+                if let Some(a) = act.alt_km.filter(|v| v.is_finite()) {
+                    self.camera.altitude_km = a;
+                }
+                if act.walk {
+                    self.player.set_walk(&mut self.camera);
+                }
             }
-            if act.walk {
-                self.player.set_walk(&mut self.camera);
+            if let Some(y) = act.yaw_deg.filter(|v| v.is_finite()) {
+                self.camera.yaw = y.to_radians();
             }
-        }
-        if let Some(y) = act.yaw_deg.filter(|v| v.is_finite()) {
-            self.camera.yaw = y.to_radians();
-        }
-        if let Some(p) = act.pitch_deg.filter(|v| v.is_finite()) {
-            self.camera.pitch = p.to_radians().clamp(-1.50, 1.50);
-        }
-        if let Some(r) = act.roll_deg.filter(|v| v.is_finite()) {
-            self.camera.roll = r.to_radians().rem_euclid(std::f64::consts::TAU);
+            if let Some(p) = act.pitch_deg.filter(|v| v.is_finite()) {
+                self.camera.pitch = p.to_radians().clamp(-1.50, 1.50);
+            }
+            if let Some(r) = act.roll_deg.filter(|v| v.is_finite()) {
+                self.camera.roll = r.to_radians().rem_euclid(std::f64::consts::TAU);
+            }
+        } else {
+            let Some(gfx) = self.gfx.as_ref() else { return };
+            let solar = gfx
+                .renderer
+                .solar_state(self.camera.position(), self.planet.radius_km);
+            let radius = gfx.renderer.solar_tuning.radius_km(
+                triangulum_viewer::orbits::BodyId::Moon,
+                self.planet.radius_km,
+            );
+            let (lat, lon) = (act.lat.to_radians(), act.lon.to_radians());
+            let direction =
+                glam::DVec3::new(lat.cos() * lon.cos(), lat.cos() * lon.sin(), lat.sin());
+            let height = triangulum_viewer::moon::MoonGenerator::new(self.planet.seed)
+                .height_km(direction, radius);
+            // P2 is mesh-only: generic clicks stay safely in flight; a photo
+            // may restore a closer, but still positive, flyby altitude.
+            let altitude = act
+                .alt_km
+                .filter(|v| v.is_finite() && *v > 0.0)
+                .unwrap_or(25.0)
+                .max(0.05);
+            let position = solar.moon_km + direction * (radius + height + altitude);
+            let east0 = glam::DVec3::Z.cross(direction);
+            let east = if east0.length_squared() > 0.5 {
+                east0.normalize()
+            } else {
+                glam::DVec3::X
+            };
+            let north = direction.cross(east).normalize();
+            let yaw = act
+                .yaw_deg
+                .filter(|v| v.is_finite())
+                .unwrap_or(0.0)
+                .to_radians();
+            let pitch = act
+                .pitch_deg
+                .filter(|v| v.is_finite())
+                .unwrap_or(-86.0)
+                .to_radians()
+                .clamp(-1.50, 1.50);
+            let horizontal = north * yaw.cos() + east * yaw.sin();
+            let look = (horizontal * pitch.cos() + direction * pitch.sin()).normalize();
+            let mut right = look.cross(direction).normalize_or_zero();
+            if right.length_squared() < 0.5 {
+                right = east;
+            }
+            let mut view_up = right.cross(look).normalize();
+            if let Some(roll) = act.roll_deg.filter(|v| v.is_finite()) {
+                let right = look.cross(view_up).normalize();
+                let (s, c) = roll.to_radians().sin_cos();
+                view_up = (view_up * c + right * s).normalize();
+            }
+            // A photo carries a local view and must remain free so focused
+            // realignment cannot replace it with a center-look next frame.
+            // Bare map clicks preserve the caller's focused/freecam mode.
+            let has_photo_view = act.yaw_deg.is_some() || act.pitch_deg.is_some();
+            let focused = !has_photo_view && self.camera_rig.mode != CameraMode::Freecam;
+            self.camera_rig.place_near_body(
+                triangulum_viewer::orbits::BodyId::Moon,
+                solar,
+                position,
+                look,
+                view_up,
+                focused,
+                &mut self.camera,
+            );
+            self.player.set_fly(&mut self.camera);
         }
         if let (Some(on), Some(gfx)) = (act.weather_on, self.gfx.as_mut()) {
             gfx.renderer.weather_on = on;
             gfx.renderer.weather_pin = if on {
-                act.weather_pin.map(|(c, p)| (c.clamp(0.0, 1.0), p.clamp(0.0, 1.0)))
+                act.weather_pin
+                    .map(|(c, p)| (c.clamp(0.0, 1.0), p.clamp(0.0, 1.0)))
             } else {
                 None
             };
-            if on
-                && let Some(t_s) = act.weather_time_s.filter(|v| v.is_finite() && *v >= 0.0)
-            {
+            if on && let Some(t_s) = act.weather_time_s.filter(|v| v.is_finite() && *v >= 0.0) {
                 gfx.renderer.set_weather_time_s(t_s);
             }
         }
@@ -927,13 +1076,14 @@ impl App {
             self.mouse_locked = false;
         }
     }
-
 }
 
 impl App {
     fn focus_camera(&mut self, body: triangulum_viewer::orbits::BodyId) {
         let Some(gfx) = &self.gfx else { return };
-        let solar = gfx.renderer.solar_state(self.camera.position(), self.planet.radius_km);
+        let solar = gfx
+            .renderer
+            .solar_state(self.camera.position(), self.planet.radius_km);
         let tuning = gfx.renderer.solar_tuning.clone();
         self.camera_rig.focus(
             body,
@@ -949,14 +1099,12 @@ impl App {
 
     fn cycle_camera_focus(&mut self) {
         let Some(gfx) = &self.gfx else { return };
-        let solar = gfx.renderer.solar_state(self.camera.position(), self.planet.radius_km);
+        let solar = gfx
+            .renderer
+            .solar_state(self.camera.position(), self.planet.radius_km);
         let tuning = gfx.renderer.solar_tuning.clone();
-        self.camera_rig.cycle(
-            solar,
-            &tuning,
-            self.planet.radius_km,
-            &mut self.camera,
-        );
+        self.camera_rig
+            .cycle(solar, &tuning, self.planet.radius_km, &mut self.camera);
         if self.camera_rig.mode != CameraMode::Focused(triangulum_viewer::orbits::BodyId::Neisor) {
             self.player.set_fly(&mut self.camera);
         }
@@ -977,7 +1125,9 @@ impl App {
             gfx.renderer.advance_render_time_s(dt);
         }
         if let Some(gfx) = &self.gfx {
-            let solar = gfx.renderer.solar_state(self.camera.position(), self.planet.radius_km);
+            let solar = gfx
+                .renderer
+                .solar_state(self.camera.position(), self.planet.radius_km);
             self.camera_rig.realign(solar, &mut self.camera);
         }
         // an open photo map owns the keyboard: no movement input
@@ -985,10 +1135,10 @@ impl App {
             triangulum_viewer::player::Input::default()
         } else {
             triangulum_viewer::player::Input {
-                fwd: (self.keys.contains(&K::KeyW) as i32
-                    - self.keys.contains(&K::KeyS) as i32) as f64,
-                strafe: (self.keys.contains(&K::KeyD) as i32
-                    - self.keys.contains(&K::KeyA) as i32) as f64,
+                fwd: (self.keys.contains(&K::KeyW) as i32 - self.keys.contains(&K::KeyS) as i32)
+                    as f64,
+                strafe: (self.keys.contains(&K::KeyD) as i32 - self.keys.contains(&K::KeyA) as i32)
+                    as f64,
                 sprint: self.keys.contains(&K::ShiftLeft),
                 swim_up: self.keys.contains(&K::Space),
             }
@@ -1007,14 +1157,30 @@ impl App {
             CameraMode::Focused(_) => {}
             CameraMode::Freecam => {
                 let vertical = (self.keys.contains(&K::Space) as i32
-                    - self.keys.contains(&K::ControlLeft) as i32) as f64;
+                    - self.keys.contains(&K::ControlLeft) as i32)
+                    as f64;
                 let roll = (self.keys.contains(&K::KeyE) as i32
                     - self.keys.contains(&K::KeyQ) as i32) as f64;
-                self.camera.roll = (self.camera.roll + roll * dt * 1.2)
-                    .rem_euclid(std::f64::consts::TAU);
-                let speed = (self.camera.altitude_km.abs() * 0.5).clamp(0.02, 1500.0)
-                    * if input.sprint { 4.0 } else { 1.0 };
-                self.camera.translate_free(input.strafe, vertical, input.fwd, speed * dt);
+                self.camera.roll =
+                    (self.camera.roll + roll * dt * 1.2).rem_euclid(std::f64::consts::TAU);
+                let nav_altitude = self
+                    .gfx
+                    .as_ref()
+                    .map_or(self.camera.altitude_km.abs(), |gfx| {
+                        let solar = gfx
+                            .renderer
+                            .solar_state(self.camera.position(), self.planet.radius_km);
+                        triangulum_viewer::camera::nearest_surface_altitude_km(
+                            &self.camera,
+                            solar,
+                            &gfx.renderer.solar_tuning,
+                            self.planet.radius_km,
+                        )
+                    });
+                let speed =
+                    (nav_altitude * 0.5).clamp(0.02, 1500.0) * if input.sprint { 4.0 } else { 1.0 };
+                self.camera
+                    .translate_free(input.strafe, vertical, input.fwd, speed * dt);
                 self.player.underwater = false;
                 self.player.grounded = false;
             }
@@ -1134,9 +1300,16 @@ impl ApplicationHandler for App {
             None,
             None,
         ));
-        self.egui_paint =
-            Some(triangulum_viewer::ui::EguiPaint::new(&renderer.device, format));
-        self.gfx = Some(Gfx { window, surface, config, renderer });
+        self.egui_paint = Some(triangulum_viewer::ui::EguiPaint::new(
+            &renderer.device,
+            format,
+        ));
+        self.gfx = Some(Gfx {
+            window,
+            surface,
+            config,
+            renderer,
+        });
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
@@ -1158,8 +1331,7 @@ impl ApplicationHandler for App {
         {
             if let WindowEvent::KeyboardInput { event: ke, .. } = &event
                 && ke.state == ElementState::Pressed
-                && ke.logical_key
-                    == winit::keyboard::Key::Named(winit::keyboard::NamedKey::Escape)
+                && ke.logical_key == winit::keyboard::Key::Named(winit::keyboard::NamedKey::Escape)
             {
                 self.photo_map.open = false;
                 self.title_timer = 1.0;
@@ -1193,11 +1365,15 @@ impl ApplicationHandler for App {
                             if !event.repeat {
                                 match code {
                                     K::KeyG => {
-                                        self.focus_camera(triangulum_viewer::orbits::BodyId::Neisor);
+                                        self.focus_camera(
+                                            triangulum_viewer::orbits::BodyId::Neisor,
+                                        );
                                         self.player.set_walk(&mut self.camera);
                                     }
                                     K::KeyF => {
-                                        self.focus_camera(triangulum_viewer::orbits::BodyId::Neisor);
+                                        self.focus_camera(
+                                            triangulum_viewer::orbits::BodyId::Neisor,
+                                        );
                                         self.player.set_fly(&mut self.camera);
                                     }
                                     K::KeyC => self.cycle_camera_focus(),
@@ -1229,7 +1405,11 @@ impl ApplicationHandler for App {
                 gfx.surface.configure(&gfx.renderer.device, &gfx.config);
                 gfx.renderer.resize((gfx.config.width, gfx.config.height));
             }
-            WindowEvent::MouseInput { state, button: MouseButton::Left, .. } => {
+            WindowEvent::MouseInput {
+                state,
+                button: MouseButton::Left,
+                ..
+            } => {
                 // first click captures the mouse for raw free-look (Esc
                 // releases); drag-look remains as the uncaptured fallback
                 if state == ElementState::Pressed && !self.mouse_locked {
@@ -1242,7 +1422,11 @@ impl ApplicationHandler for App {
                 }
                 self.dragging = state == ElementState::Pressed;
             }
-            WindowEvent::MouseInput { state: ElementState::Pressed, button: MouseButton::Right, .. } => {
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Right,
+                ..
+            } => {
                 if self.camera_rig.mode
                     == CameraMode::Focused(triangulum_viewer::orbits::BodyId::Neisor)
                 {
@@ -1250,8 +1434,10 @@ impl ApplicationHandler for App {
                 }
             }
             WindowEvent::CursorMoved { position, .. } => {
-                let (dx, dy) =
-                    (position.x - self.last_cursor.0, position.y - self.last_cursor.1);
+                let (dx, dy) = (
+                    position.x - self.last_cursor.0,
+                    position.y - self.last_cursor.1,
+                );
                 self.last_cursor = (position.x, position.y);
                 if self.dragging && !self.mouse_locked {
                     // free look: drag turns the head, not the globe.
@@ -1286,8 +1472,7 @@ impl ApplicationHandler for App {
                     if self.args.auto_tilt && alt > FREE_LOOK_ALT_KM {
                         let t = (alt / 8000.0).clamp(0.0, 1.0);
                         let target = (-12.0 - 73.0 * t).to_radians();
-                        let engage = ((alt / FREE_LOOK_ALT_KM).ln() / 8.0f64.ln())
-                            .clamp(0.0, 1.0);
+                        let engage = ((alt / FREE_LOOK_ALT_KM).ln() / 8.0f64.ln()).clamp(0.0, 1.0);
                         self.camera.pitch += (target - self.camera.pitch) * 0.35 * engage;
                     }
                 }
@@ -1299,8 +1484,7 @@ impl ApplicationHandler for App {
                 let mut ui_frame = None;
                 let mut action = None;
                 if self.photo_map.open
-                    && let (Some(st), Some(gfx)) =
-                        (self.egui_state.as_mut(), self.gfx.as_ref())
+                    && let (Some(st), Some(gfx)) = (self.egui_state.as_mut(), self.gfx.as_ref())
                 {
                     let raw = st.take_egui_input(&gfx.window);
                     let pm = &mut self.photo_map;
@@ -1308,6 +1492,27 @@ impl ApplicationHandler for App {
                     // (seasonal temp/precip, clouds-now) and the "you are here"
                     // marker read the same state the renderer is drawing.
                     let renderer = &gfx.renderer;
+                    let solar = renderer.solar_state(self.camera.position(), self.planet.radius_km);
+                    let moon_radius = renderer.solar_tuning.radius_km(
+                        triangulum_viewer::orbits::BodyId::Moon,
+                        self.planet.radius_km,
+                    );
+                    let moon_relative = self.camera.position() - solar.moon_km;
+                    let moon_direction = moon_relative.normalize_or_zero();
+                    let cur_moon_lat = moon_direction.z.clamp(-1.0, 1.0).asin().to_degrees();
+                    let cur_moon_lon = moon_direction.y.atan2(moon_direction.x).to_degrees();
+                    let cur_body = match self.camera_rig.mode {
+                        CameraMode::Focused(triangulum_viewer::orbits::BodyId::Moon) => {
+                            triangulum_viewer::ui::MapBody::Moon
+                        }
+                        CameraMode::Freecam
+                            if (moon_relative.length() - moon_radius).abs()
+                                < self.camera.altitude_km.abs() =>
+                        {
+                            triangulum_viewer::ui::MapBody::Moon
+                        }
+                        _ => triangulum_viewer::ui::MapBody::Neisor,
+                    };
                     let env = triangulum_viewer::ui::MapEnv {
                         planet: &self.planet,
                         weather_field: renderer.weather_field.as_ref(),
@@ -1319,14 +1524,15 @@ impl ApplicationHandler for App {
                         weather_pin: renderer.weather_pin,
                         cur_lat: self.camera.lat.to_degrees(),
                         cur_lon: self.camera.lon.to_degrees(),
+                        cur_moon_lat,
+                        cur_moon_lon,
+                        cur_body,
                     };
                     let full = self.egui_ctx.run_ui(raw, |ctx| {
                         action = pm.ui(ctx, &env);
                     });
                     st.handle_platform_output(&gfx.window, full.platform_output);
-                    let prims = self
-                        .egui_ctx
-                        .tessellate(full.shapes, full.pixels_per_point);
+                    let prims = self.egui_ctx.tessellate(full.shapes, full.pixels_per_point);
                     ui_frame = Some((prims, full.textures_delta, full.pixels_per_point));
                 }
                 let gfx = self.gfx.as_mut().unwrap();
@@ -1341,7 +1547,8 @@ impl ApplicationHandler for App {
                 };
                 let view = frame.texture.create_view(&Default::default());
                 gfx.renderer.underwater = self.player.underwater;
-                gfx.renderer.draw(&view, &self.planet, &self.camera, &self.edits);
+                gfx.renderer
+                    .draw(&view, &self.planet, &self.camera, &self.edits);
                 if let (Some((prims, deltas, ppp)), Some(paint)) =
                     (ui_frame, self.egui_paint.as_mut())
                 {

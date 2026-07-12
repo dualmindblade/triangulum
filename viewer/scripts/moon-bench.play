@@ -1,0 +1,15 @@
+# P2 frame-budget evidence: unchanged Neisor ground + detailed moon flyby.
+mode fly
+weather pin 0.10 0.0
+
+teleport 15.024 17.662 0.154
+look -75 -21
+sun 15.02 2.66
+bench 5
+bench 30
+
+sun physical
+moonpose -27.1540 57.0904 70 35 -70
+focus free
+bench 5
+bench 30

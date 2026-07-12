@@ -2,15 +2,16 @@
 //! offscreen capture path (renders to a texture and saves a PNG — no window).
 
 use crate::camera::Camera;
+use crate::moon::{MoonGenerator, build_tile as build_moon_tile};
 use crate::orbits::{BodyId, SolarState, SolarTuning};
 use crate::planet::Planet;
-use crate::terrain::{build_tile, select_tiles, TileKey, TileMesh, Vertex};
-use crate::voxel::{build_chunk, select_chunks, ChunkKey, Edits, Torches};
+use crate::terrain::{TileKey, TileMesh, Vertex, build_tile, select_tiles};
+use crate::voxel::{ChunkKey, Edits, Torches, build_chunk, select_chunks};
 use anyhow::Result;
 use glam::{DQuat, DVec3, Mat4};
 use std::collections::{HashMap, HashSet};
-use std::sync::mpsc;
 use std::sync::Arc;
+use std::sync::mpsc;
 use wgpu::util::DeviceExt;
 
 pub const VOXEL_MAX_ALT_KM: f64 = 2.5;
@@ -137,9 +138,7 @@ struct BodyVertex {
 pub const MAX_LIGHTS: usize = 16;
 
 fn torch_phase(face: u8, ci: u64, cj: u64) -> f64 {
-    let mut x = ci
-        ^ cj.rotate_left(21)
-        ^ (face as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+    let mut x = ci ^ cj.rotate_left(21) ^ (face as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15);
     x ^= x >> 30;
     x = x.wrapping_mul(0xBF58_476D_1CE4_E5B9);
     x ^= x >> 27;
@@ -161,6 +160,10 @@ struct GpuTile {
 /// chunks are dropped regardless of age. Sized so --patch 2.0 fits with
 /// room for the rest of the frame on a 6 GB card.
 const CHUNK_VRAM_BUDGET: u64 = 1500 << 20;
+/// Moon tiles are much cheaper than voxel chunks but can accumulate during a
+/// long low flyby.  Keep enough history for smooth reversals without letting
+/// a circumnavigation grow without bound.
+const MOON_VRAM_BUDGET: u64 = 384 << 20;
 
 pub struct Renderer {
     pub device: wgpu::Device,
@@ -168,6 +171,7 @@ pub struct Renderer {
     pipeline: wgpu::RenderPipeline,
     sky_pipeline: wgpu::RenderPipeline,
     body_pipeline: wgpu::RenderPipeline,
+    moon_pipeline: wgpu::RenderPipeline,
     precip_pipeline: wgpu::RenderPipeline,
     body_vertex_buf: wgpu::Buffer,
     body_index_buf: wgpu::Buffer,
@@ -179,6 +183,9 @@ pub struct Renderer {
     pub size: (u32, u32),
     pub format: wgpu::TextureFormat,
     cache: HashMap<TileKey, GpuTile>,
+    moon_cache: HashMap<TileKey, GpuTile>,
+    moon_generator: Arc<MoonGenerator>,
+    moon_seed: i64,
     chunk_cache: HashMap<ChunkKey, GpuTile>,
     frame_counter: u64,
     /// Frame cadence instrumentation: wall-clock intervals between draw()
@@ -277,21 +284,22 @@ pub struct Renderer {
     pub last_lunar_shadow: f64,
 }
 
-/// Shared unit sphere for the physical Sun and moon. Surface identity stays
-/// in the unit normal so P2 can replace `moon_surface` in WGSL without
-/// changing the body/frame interface.
+/// Compact unit sphere for the physical Sun. The moon owns adaptive generated
+/// tiles in P2, so no second placeholder surface law remains in the shader.
 fn body_sphere_mesh() -> (Vec<BodyVertex>, Vec<u32>) {
     const LAT: u32 = 32;
     const LON: u32 = 64;
     let mut vertices = Vec::with_capacity(((LAT + 1) * (LON + 1)) as usize);
     for iy in 0..=LAT {
-        let lat = -std::f64::consts::FRAC_PI_2
-            + std::f64::consts::PI * iy as f64 / LAT as f64;
+        let lat = -std::f64::consts::FRAC_PI_2 + std::f64::consts::PI * iy as f64 / LAT as f64;
         for ix in 0..=LON {
             let lon = std::f64::consts::TAU * ix as f64 / LON as f64;
             let n = DVec3::new(lat.cos() * lon.cos(), lat.cos() * lon.sin(), lat.sin());
             let normal = [n.x as f32, n.y as f32, n.z as f32];
-            vertices.push(BodyVertex { position: normal, normal });
+            vertices.push(BodyVertex {
+                position: normal,
+                normal,
+            });
         }
     }
     let mut indices = Vec::with_capacity((LAT * LON * 6) as usize);
@@ -360,7 +368,10 @@ impl Renderer {
             label: None,
             layout: &bgl,
             entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: globals_buf.as_entire_binding() },
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: globals_buf.as_entire_binding(),
+                },
                 wgpu::BindGroupEntry {
                     binding: 1,
                     resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
@@ -441,7 +452,10 @@ impl Renderer {
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
             }),
-            primitive: wgpu::PrimitiveState { cull_mode: None, ..Default::default() },
+            primitive: wgpu::PrimitiveState {
+                cull_mode: None,
+                ..Default::default()
+            },
             depth_stencil: Some(wgpu::DepthStencilState {
                 format: wgpu::TextureFormat::Depth32Float,
                 depth_write_enabled: Some(false),
@@ -454,11 +468,9 @@ impl Renderer {
             cache: None,
         });
 
-        // Physical bodies share one sphere mesh and pipeline. Their centers
-        // and radii ride in the existing dynamic Tile uniform: offset.w is
-        // the body kind (1 Sun, 2 moon), morph.x is radius. Alpha blending
-        // preserves the established atmospheric fade, while depth writes let
-        // the nearer moon physically cover the Sun at contact.
+        // The emissive Sun retains P1's compact sphere.  P2 moves the moon to
+        // its own adaptive cube-sphere tiles below; both paths still use the
+        // camera-relative dynamic Tile uniform and reversed-Z depth.
         let body_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("solar bodies"),
             layout: Some(&layout),
@@ -475,6 +487,45 @@ impl Renderer {
             fragment: Some(wgpu::FragmentState {
                 module: &shader,
                 entry_point: Some("fs_body"),
+                compilation_options: Default::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format,
+                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            primitive: wgpu::PrimitiveState {
+                cull_mode: None,
+                ..Default::default()
+            },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: wgpu::TextureFormat::Depth32Float,
+                depth_write_enabled: Some(true),
+                depth_compare: Some(wgpu::CompareFunction::Greater),
+                stencil: Default::default(),
+                bias: Default::default(),
+            }),
+            multisample: Default::default(),
+            multiview_mask: None,
+            cache: None,
+        });
+
+        let moon_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("adaptive moon terrain"),
+            layout: Some(&layout),
+            vertex: wgpu::VertexState {
+                module: &shader,
+                entry_point: Some("vs_moon"),
+                compilation_options: Default::default(),
+                buffers: &[Some(wgpu::VertexBufferLayout {
+                    array_stride: std::mem::size_of::<Vertex>() as u64,
+                    step_mode: wgpu::VertexStepMode::Vertex,
+                    attributes: &wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3, 2 => Float32x3, 3 => Float32x4, 4 => Float32, 5 => Float32, 6 => Float32, 7 => Float32, 8 => Snorm8x4],
+                })],
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &shader,
+                entry_point: Some("fs_moon"),
                 compilation_options: Default::default(),
                 targets: &[Some(wgpu::ColorTargetState {
                     format,
@@ -533,7 +584,10 @@ impl Renderer {
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
             }),
-            primitive: wgpu::PrimitiveState { cull_mode: None, ..Default::default() },
+            primitive: wgpu::PrimitiveState {
+                cull_mode: None,
+                ..Default::default()
+            },
             depth_stencil: Some(wgpu::DepthStencilState {
                 format: wgpu::TextureFormat::Depth32Float,
                 depth_write_enabled: Some(false),
@@ -552,6 +606,7 @@ impl Renderer {
             pipeline,
             sky_pipeline,
             body_pipeline,
+            moon_pipeline,
             precip_pipeline,
             body_vertex_buf,
             body_index_buf,
@@ -563,6 +618,9 @@ impl Renderer {
             size,
             format,
             cache: HashMap::new(),
+            moon_cache: HashMap::new(),
+            moon_generator: Arc::new(MoonGenerator::new(0)),
+            moon_seed: 0,
             chunk_cache: HashMap::new(),
             chunk_stale: HashSet::new(),
             frame_counter: 0,
@@ -606,7 +664,11 @@ impl Renderer {
         device
             .create_texture(&wgpu::TextureDescriptor {
                 label: Some("depth"),
-                size: wgpu::Extent3d { width: size.0, height: size.1, depth_or_array_layers: 1 },
+                size: wgpu::Extent3d {
+                    width: size.0,
+                    height: size.1,
+                    depth_or_array_layers: 1,
+                },
                 mip_level_count: 1,
                 sample_count: 1,
                 dimension: wgpu::TextureDimension::D2,
@@ -726,8 +788,7 @@ impl Renderer {
     /// orbit time are preserved; only the daily body rotation gets an offset.
     pub fn set_day_time_s(&mut self, t_s: f64) {
         if self.day_len_s > 0.0 && self.sun_dir.is_none() {
-            self.day_time_offset_s =
-                t_s.rem_euclid(self.day_len_s) - self.weather_time_s();
+            self.day_time_offset_s = t_s.rem_euclid(self.day_len_s) - self.weather_time_s();
         }
     }
 
@@ -793,15 +854,12 @@ impl Renderer {
         }
         let cam_pos = camera.position();
         let voxel_radius_m =
-            (200.0 + (VOXEL_MAX_ALT_KM - camera.altitude_km).max(0.0) * 120.0)
-                * self.patch_scale;
+            (200.0 + (VOXEL_MAX_ALT_KM - camera.altitude_km).max(0.0) * 120.0) * self.patch_scale;
         let focus = (camera.altitude_km < VOXEL_MAX_ALT_KM)
             .then(|| (cam_pos.normalize(), voxel_radius_m / 1000.0 + 0.2));
         let keys = select_tiles(cam_pos, planet.radius_km, ERR_TARGET, focus);
 
         // upload globals (camera-relative view-projection, f64 -> f32 at the end)
-        let vp = camera.view_proj(self.size.0 as f64 / self.size.1 as f64);
-        let vp32 = Mat4::from_cols_array(&vp.to_cols_array().map(|x| x as f32));
         let t_s = self.render_time_s;
         let weather_t_s = self.weather_time_s();
         let solar = self.solar_state(cam_pos, planet.radius_km);
@@ -809,22 +867,72 @@ impl Renderer {
         let moon_rel = solar.moon_km - cam_pos;
         let sun = sun_rel.normalize_or_zero();
         let moon = moon_rel.normalize_or_zero();
-        let solar_occlusion = crate::orbits::solar_occlusion_at(
-            cam_pos,
+        let look = camera.look_dir();
+        let body_visible = |center: DVec3, radius: f64| {
+            let distance = center.length();
+            if distance <= radius {
+                return true;
+            }
+            let angular_radius = (radius / distance).clamp(0.0, 1.0).asin();
+            // 65 deg vertical FOV and widescreen horizontal FOV fit inside a
+            // conservative 70 deg cone. Include the body's own angular size.
+            look.dot(center / distance)
+                >= (70f64.to_radians() + angular_radius)
+                    .min(std::f64::consts::PI)
+                    .cos()
+        };
+        let moon_radius = self.solar_tuning.radius_km(BodyId::Moon, planet.radius_km);
+        if self.moon_seed != planet.seed {
+            self.moon_seed = planet.seed;
+            self.moon_generator = Arc::new(MoonGenerator::new(planet.seed));
+            self.moon_cache.clear();
+        }
+        let moon_keys = if body_visible(moon_rel, moon_radius) {
+            // Selection is body-local f64.  The generic cube-sphere quadtree
+            // does not know or care whether the center is Neisor or the moon.
+            select_tiles(
+                cam_pos - solar.moon_km,
+                moon_radius,
+                crate::moon::tuning::LOD_ERROR_TARGET,
+                None,
+            )
+        } else {
+            Vec::new()
+        };
+        let missing_moon: Vec<TileKey> = moon_keys
+            .iter()
+            .filter(|key| !self.moon_cache.contains_key(key))
+            .copied()
+            .collect();
+        if !missing_moon.is_empty() {
+            use rayon::prelude::*;
+            let generator = Arc::clone(&self.moon_generator);
+            let built: Vec<(TileKey, TileMesh)> = missing_moon
+                .par_iter()
+                .map(|key| (*key, build_moon_tile(&generator, *key, moon_radius)))
+                .collect();
+            for (key, mesh) in built {
+                let gpu = self.upload(mesh);
+                self.moon_cache.insert(key, gpu);
+            }
+        }
+        let surface_altitude = crate::camera::nearest_surface_altitude_km(
+            camera,
             solar,
             &self.solar_tuning,
             planet.radius_km,
         );
-        let lunar_shadow = crate::orbits::lunar_shadow_fraction(
-            solar,
-            &self.solar_tuning,
-            planet.radius_km,
+        let vp = camera.view_proj_for_surface_altitude(
+            self.size.0 as f64 / self.size.1 as f64,
+            surface_altitude,
         );
-        let solar_contact_possible = crate::orbits::solar_contact_possible(
-            solar,
-            &self.solar_tuning,
-            planet.radius_km,
-        );
+        let vp32 = Mat4::from_cols_array(&vp.to_cols_array().map(|x| x as f32));
+        let solar_occlusion =
+            crate::orbits::solar_occlusion_at(cam_pos, solar, &self.solar_tuning, planet.radius_km);
+        let lunar_shadow =
+            crate::orbits::lunar_shadow_fraction(solar, &self.solar_tuning, planet.radius_km);
+        let solar_contact_possible =
+            crate::orbits::solar_contact_possible(solar, &self.solar_tuning, planet.radius_km);
         self.last_solar_occlusion = solar_occlusion;
         self.last_lunar_shadow = lunar_shadow;
         let inv32 = Mat4::from_cols_array(&vp.inverse().to_cols_array().map(|x| x as f32));
@@ -846,17 +954,21 @@ impl Renderer {
                     let u = -1.0 + 2.0 * (ci as f64 + 0.5) / nn;
                     let v = -1.0 + 2.0 * (cj as f64 + 0.5) / nn;
                     let dir = crate::planet::face_dir(f as usize, u, v);
-                    ((dir * cam_pos.length() - cam_pos).length_squared(), (f, ci, cj), dir)
+                    (
+                        (dir * cam_pos.length() - cam_pos).length_squared(),
+                        (f, ci, cj),
+                        dir,
+                    )
                 })
                 .collect();
             ranked.sort_by(|a, b| a.0.total_cmp(&b.0));
             for &(_, (f, ci, cj), dir) in ranked.iter().take(MAX_LIGHTS) {
                 let top = crate::voxel::surface_height_km(planet, edits, dir, self.exaggeration);
-                let pos = dir * (planet.radius_km + top + 0.55 * crate::voxel::VOXEL_KM * self.exaggeration)
+                let pos = dir
+                    * (planet.radius_km + top + 0.55 * crate::voxel::VOXEL_KM * self.exaggeration)
                     - cam_pos;
                 // each flame breathes on its own phase
-                let flicker =
-                    (0.88 + 0.18 * (t_s * 9.0 + torch_phase(f, ci, cj)).sin()) as f32;
+                let flicker = (0.88 + 0.18 * (t_s * 9.0 + torch_phase(f, ci, cj)).sin()) as f32;
                 lights[n_lights] = [pos.x as f32, pos.y as f32, pos.z as f32, flicker];
                 n_lights += 1;
             }
@@ -905,9 +1017,7 @@ impl Renderer {
                     iy: k.iy * 2 + dy,
                     deep: false,
                 };
-                if (0..4).all(|i| {
-                    self_cache_has(cache, child(i % 2, i / 2))
-                }) {
+                if (0..4).all(|i| self_cache_has(cache, child(i % 2, i / 2))) {
                     return true;
                 }
             }
@@ -943,7 +1053,10 @@ impl Renderer {
         }
         let built: Vec<(TileKey, TileMesh)> = {
             use rayon::prelude::*;
-            urgent.par_iter().map(|k| (*k, build_tile(planet, *k, exagg))).collect()
+            urgent
+                .par_iter()
+                .map(|k| (*k, build_tile(planet, *k, exagg)))
+                .collect()
         };
         for (k, mesh) in built {
             let gpu = self.upload(mesh);
@@ -971,8 +1084,7 @@ impl Renderer {
                 iy: k.iy / 2,
                 deep: false,
             };
-            if !self.cache.contains_key(&parent) && !self.tile_pending.contains_key(&parent)
-            {
+            if !self.cache.contains_key(&parent) && !self.tile_pending.contains_key(&parent) {
                 let epoch = self.tile_epoch;
                 self.tile_epoch = self.tile_epoch.wrapping_add(1);
                 self.tile_pending.insert(parent, epoch);
@@ -1105,7 +1217,8 @@ impl Renderer {
                     let torches = Arc::clone(&self.torch_snapshot);
                     let key = *k;
                     rayon::spawn(move || {
-                        let mesh = build_chunk(&planet, edits.as_ref(), torches.as_ref(), key, exagg);
+                        let mesh =
+                            build_chunk(&planet, edits.as_ref(), torches.as_ref(), key, exagg);
                         let _ = tx.send((key, epoch, mesh));
                     });
                 }
@@ -1155,7 +1268,10 @@ impl Renderer {
         } else {
             // temp 999 = the shader sentinel for "weather off": no ground
             // dusting, no darkening (a real 999 C never happens)
-            crate::weather::Weather { temp_c: 999.0, ..Default::default() }
+            crate::weather::Weather {
+                temp_c: 999.0,
+                ..Default::default()
+            }
         };
         self.last_weather = wx;
         // the cloud deck scrolls with the same advection the field uses:
@@ -1165,12 +1281,15 @@ impl Renderer {
         let (drift, wind_kms) = {
             let dirn = cam_pos.normalize();
             let east0 = glam::DVec3::Z.cross(dirn);
-            let east =
-                if east0.length_squared() < 1e-9 { glam::DVec3::Y } else { east0.normalize() };
+            let east = if east0.length_squared() < 1e-9 {
+                glam::DVec3::Y
+            } else {
+                east0.normalize()
+            };
             let north = dirn.cross(east);
             let wind = east * wx.wind_e + north * wx.wind_n;
-            let scale = self.weather_tuning.synoptic_speed * weather_t_s
-                / (1000.0 * planet.radius_km);
+            let scale =
+                self.weather_tuning.synoptic_speed * weather_t_s / (1000.0 * planet.radius_km);
             // The camera-local basis above is right IN the weather (it is
             // how the deck scrolls with the local wind) and nonsense from
             // orbit: panning the camera rotates east/north, and a
@@ -1219,10 +1338,8 @@ impl Renderer {
             } else {
                 crate::terrain::rain_concavity_proxy(coarse, local) as f64
             };
-            let redistribute = 1.0
-                + self.weather_tuning.rain_crevice_bias
-                    * concavity
-                    * (1.0 - wx.snow_frac);
+            let redistribute =
+                1.0 + self.weather_tuning.rain_crevice_bias * concavity * (1.0 - wx.snow_frac);
             (wx.precip * redistribute).clamp(0.0, 1.0)
         } else {
             wx.precip
@@ -1342,8 +1459,7 @@ impl Renderer {
             ],
             karst: {
                 let kseed = |k: i64| {
-                    (planet.seed.wrapping_add(k).wrapping_mul(0x9E37_79B1) & 0xFFFF_FFFF)
-                        as u32
+                    (planet.seed.wrapping_add(k).wrapping_mul(0x9E37_79B1) & 0xFFFF_FFFF) as u32
                 };
                 [kseed(40961), kseed(31337), kseed(51413), kseed(70001)]
             },
@@ -1366,7 +1482,8 @@ impl Renderer {
             ],
             lights,
         };
-        self.queue.write_buffer(&self.globals_buf, 0, bytemuck::bytes_of(&globals));
+        self.queue
+            .write_buffer(&self.globals_buf, 0, bytemuck::bytes_of(&globals));
 
         let mut draws: Vec<(DrawKey, u32)> = Vec::new();
         // near-field voxel chunks FIRST: if the slot pool ever fills, the
@@ -1377,7 +1494,10 @@ impl Renderer {
             .iter()
             .map(|k| DrawKey::Chunk(*k))
             .chain(keys.iter().map(|k| DrawKey::Tile(*k)));
-        for (slot, key) in all_keys.enumerate().take(MAX_TILES - 2) {
+        // Reserve the adaptive moon set plus one compact Sun slot in the
+        // shared dynamic-uniform buffer.
+        let terrain_slots = MAX_TILES.saturating_sub(moon_keys.len().saturating_add(1));
+        for (slot, key) in all_keys.enumerate().take(terrain_slots) {
             let tile = match key {
                 DrawKey::Tile(k) => self.cache.get_mut(&k).unwrap(),
                 DrawKey::Chunk(k) => self.chunk_cache.get_mut(&k).unwrap(),
@@ -1396,9 +1516,7 @@ impl Renderer {
             // levels (pops back), TRI_FORCE_MORPH renders every tile as its
             // parent's geometry (a sign/scale bug shows as spikes at once).
             let morph = match key {
-                DrawKey::Tile(k)
-                    if k.level > 0 && std::env::var_os("TRI_NO_MORPH").is_none() =>
-                {
+                DrawKey::Tile(k) if k.level > 0 && std::env::var_os("TRI_NO_MORPH").is_none() => {
                     if std::env::var_os("TRI_FORCE_MORPH").is_some() {
                         [0.0001, 0.0002, 0.0, 0.0]
                     } else {
@@ -1427,36 +1545,60 @@ impl Renderer {
             );
             draws.push((key, slot as u32));
         }
-        let look = camera.look_dir();
-        let body_visible = |center: DVec3, radius: f64| {
-            let distance = center.length();
-            if distance <= radius {
-                return true;
-            }
-            let angular_radius = (radius / distance).clamp(0.0, 1.0).asin();
-            // 65 deg vertical FOV and widescreen horizontal FOV fit inside a
-            // conservative 70 deg cone. Include the body's own angular size.
-            look.dot(center / distance)
-                >= (70f64.to_radians() + angular_radius).min(std::f64::consts::PI).cos()
-        };
-        let body_specs = [
-            (
-                sun_rel,
-                1.0f32,
-                self.solar_tuning.radius_km(BodyId::Sun, planet.radius_km),
-            ),
-            (
-                moon_rel,
-                2.0f32,
-                self.solar_tuning.radius_km(BodyId::Moon, planet.radius_km),
-            ),
-        ];
-        let mut body_slots = Vec::with_capacity(2);
+        let mut moon_draws = Vec::with_capacity(moon_keys.len());
+        for key in moon_keys
+            .iter()
+            .take(MAX_TILES.saturating_sub(draws.len() + 1))
+        {
+            let slot = (draws.len() + moon_draws.len()) as u32;
+            let tile = self.moon_cache.get_mut(key).unwrap();
+            tile.last_used = self.frame_counter;
+            // Moon-local tile origin + body center - camera, all in f64.
+            let off = moon_rel + tile.origin_km;
+            let morph = if key.level > 0 && std::env::var_os("TRI_NO_MORPH").is_none() {
+                if std::env::var_os("TRI_FORCE_MORPH").is_some() {
+                    [0.0001, 0.0002, 0.0, 0.0]
+                } else {
+                    let s = key.size_km(moon_radius);
+                    let tau = crate::moon::tuning::LOD_ERROR_TARGET;
+                    [
+                        (s * (1.0 / tau + 0.75)) as f32,
+                        (s * (2.0 / tau - 1.45)) as f32,
+                        0.0,
+                        0.0,
+                    ]
+                }
+            } else {
+                [0.0; 4]
+            };
+            let data = [
+                off.x as f32,
+                off.y as f32,
+                off.z as f32,
+                3.0,
+                morph[0],
+                morph[1],
+                morph[2],
+                morph[3],
+            ];
+            self.queue.write_buffer(
+                &self.tiles_buf,
+                slot as u64 * TILE_UNIFORM_STRIDE,
+                bytemuck::bytes_of(&data),
+            );
+            moon_draws.push((*key, slot));
+        }
+        let body_specs = [(
+            sun_rel,
+            1.0f32,
+            self.solar_tuning.radius_km(BodyId::Sun, planet.radius_km),
+        )];
+        let mut body_slots = Vec::with_capacity(1);
         for (center, kind, radius) in body_specs
             .into_iter()
             .filter(|(center, _, radius)| body_visible(*center, *radius))
         {
-            let slot = (draws.len() + body_slots.len()) as u32;
+            let slot = (draws.len() + moon_draws.len() + body_slots.len()) as u32;
             // Body center is already camera-relative in f64. Only this small
             // boundary conversion reaches the GPU; no planet/solar magnitude
             // is subtracted in f32.
@@ -1526,14 +1668,22 @@ impl Renderer {
             pass.set_bind_group(0, &self.bind_group, &[0]);
             pass.draw(0..3, 0..1);
             // Bodies draw over the non-depth-writing sky but remain behind
-            // terrain. Sun first, moon second: the depth test makes a real
-            // foreground moon occlude the solar mesh at eclipse contact.
+            // Neisor terrain. Sun first, adaptive moon second: reversed-Z
+            // makes the foreground moon physically cover the Sun at contact.
             pass.set_pipeline(&self.body_pipeline);
             pass.set_vertex_buffer(0, self.body_vertex_buf.slice(..));
             pass.set_index_buffer(self.body_index_buf.slice(..), wgpu::IndexFormat::Uint32);
             for slot in &body_slots {
                 pass.set_bind_group(0, &self.bind_group, &[*slot * TILE_UNIFORM_STRIDE as u32]);
                 pass.draw_indexed(0..self.body_index_count, 0, 0..1);
+            }
+            pass.set_pipeline(&self.moon_pipeline);
+            for (key, slot) in &moon_draws {
+                let tile = &self.moon_cache[key];
+                pass.set_bind_group(0, &self.bind_group, &[*slot * TILE_UNIFORM_STRIDE as u32]);
+                pass.set_vertex_buffer(0, tile.vertex_buf.slice(..));
+                pass.set_index_buffer(tile.index_buf.slice(..), wgpu::IndexFormat::Uint32);
+                pass.draw_indexed(0..tile.index_count, 0, 0..1);
             }
             // precipitation: instanced rain streaks / snow flakes around the
             // camera, alpha-blended over everything, occluded by terrain
@@ -1549,7 +1699,7 @@ impl Renderer {
         if self.draw_cost_ms.len() > 240 {
             self.draw_cost_ms.pop_front();
         }
-        draws.len()
+        draws.len() + moon_draws.len()
     }
 
     /// (avg frame ms, p95 frame ms, avg draw-body CPU ms) over the last
@@ -1569,20 +1719,24 @@ impl Renderer {
     }
 
     fn upload(&self, mesh: TileMesh) -> GpuTile {
-        let bytes = (mesh.vertices.len() * std::mem::size_of::<Vertex>()
-            + mesh.indices.len() * 4) as u64;
+        let bytes =
+            (mesh.vertices.len() * std::mem::size_of::<Vertex>() + mesh.indices.len() * 4) as u64;
         GpuTile {
             origin_km: mesh.origin_km,
-            vertex_buf: self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("tile vb"),
-                contents: bytemuck::cast_slice(&mesh.vertices),
-                usage: wgpu::BufferUsages::VERTEX,
-            }),
-            index_buf: self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("tile ib"),
-                contents: bytemuck::cast_slice(&mesh.indices),
-                usage: wgpu::BufferUsages::INDEX,
-            }),
+            vertex_buf: self
+                .device
+                .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("tile vb"),
+                    contents: bytemuck::cast_slice(&mesh.vertices),
+                    usage: wgpu::BufferUsages::VERTEX,
+                }),
+            index_buf: self
+                .device
+                .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("tile ib"),
+                    contents: bytemuck::cast_slice(&mesh.indices),
+                    usage: wgpu::BufferUsages::INDEX,
+                }),
             index_count: mesh.indices.len() as u32,
             last_used: self.frame_counter,
             bytes,
@@ -1593,6 +1747,9 @@ impl Renderer {
         let cutoff = self.frame_counter.saturating_sub(120);
         if self.cache.len() > 1500 {
             self.cache.retain(|_, t| t.last_used >= cutoff);
+        }
+        if self.moon_cache.len() > 2400 {
+            self.moon_cache.retain(|_, t| t.last_used >= cutoff);
         }
         // sized for --patch 2.0 (a ~1 km disc is ~1600 chunks)
         if self.chunk_cache.len() > 4000 {
@@ -1622,6 +1779,24 @@ impl Renderer {
                 }
             }
             self.chunk_cache.retain(|k, _| keep.contains(k));
+        }
+        let moon_total: u64 = self.moon_cache.values().map(|t| t.bytes).sum();
+        if moon_total > MOON_VRAM_BUDGET {
+            let mut by_age: Vec<(u64, TileKey, u64)> = self
+                .moon_cache
+                .iter()
+                .map(|(k, t)| (t.last_used, *k, t.bytes))
+                .collect();
+            by_age.sort_unstable_by(|a, b| b.0.cmp(&a.0));
+            let mut bytes = 0u64;
+            let mut keep = HashSet::new();
+            for (used, key, tile_bytes) in by_age {
+                if used == self.frame_counter || bytes + tile_bytes <= MOON_VRAM_BUDGET {
+                    bytes += tile_bytes;
+                    keep.insert(key);
+                }
+            }
+            self.moon_cache.retain(|key, _| keep.contains(key));
         }
     }
 
@@ -1661,7 +1836,11 @@ impl Renderer {
         let (w, h) = self.size;
         let texture = self.device.create_texture(&wgpu::TextureDescriptor {
             label: Some("capture"),
-            size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+            size: wgpu::Extent3d {
+                width: w,
+                height: h,
+                depth_or_array_layers: 1,
+            },
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
@@ -1678,7 +1857,10 @@ impl Renderer {
             if self.chunk_pending.is_empty() {
                 break;
             }
-            match self.chunk_rx.recv_timeout(std::time::Duration::from_secs(30)) {
+            match self
+                .chunk_rx
+                .recv_timeout(std::time::Duration::from_secs(30))
+            {
                 Ok((k, epoch, mesh)) => {
                     if self.chunk_pending.get(&k) == Some(&epoch) {
                         self.chunk_pending.remove(&k);
@@ -1726,7 +1908,11 @@ impl Renderer {
                     rows_per_image: None,
                 },
             },
-            wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+            wgpu::Extent3d {
+                width: w,
+                height: h,
+                depth_or_array_layers: 1,
+            },
         );
         self.queue.submit([encoder.finish()]);
 
@@ -1740,7 +1926,10 @@ impl Renderer {
             .map_err(|e| anyhow::anyhow!("map readback: {e:?}"))?;
 
         // strip row padding; swizzle BGRA -> RGBA if needed
-        let bgra = matches!(self.format, wgpu::TextureFormat::Bgra8Unorm | wgpu::TextureFormat::Bgra8UnormSrgb);
+        let bgra = matches!(
+            self.format,
+            wgpu::TextureFormat::Bgra8Unorm | wgpu::TextureFormat::Bgra8UnormSrgb
+        );
         let mut pixels = Vec::with_capacity((w * h * 4) as usize);
         for row in 0..h {
             let start = (row * bytes_per_row) as usize;

@@ -1,0 +1,27 @@
+# P2 moon contact-sheet source frames. No baselines are accepted here.
+mode fly
+weather off
+weather time 0
+
+# Physical epoch full moon from Neisor distance (the 4.8-degree inclination
+# keeps it out of eclipse, unlike the deliberately aligned copper evidence).
+sun physical
+teleport -10.17 -144.95 0.05
+look 0 85
+shot from_neisor_full_face
+
+# Return to orbital geometry. At epoch the moon-to-Sun vector is near
+# lat +10/lon +40; local lon +130 is therefore a geometric quarter phase.
+moonpose 0 -50 2200 0 -86
+shot quarter_phase
+
+# Young 3.9-degree LARGE basin with a broad ray system, naturally sunlit at
+# epoch (the physical Sun is ~41 degrees from its local normal).
+moonpose -5.8583 -10.4143 600 20 -82
+focus free
+shot ray_crater_flyby
+
+# Low grazing view across the broad dark mare at -36.21, -18.25.
+moonpose -36.2094 -1.0000 15 -90 -20
+focus free
+shot maria_horizon
