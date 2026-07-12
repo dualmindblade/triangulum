@@ -1556,8 +1556,18 @@ pub fn build_tile(planet: &Planet, key: TileKey, exaggeration: f64) -> TileMesh 
                 if smp.has_water() || beach_frac(smp.e_raw, smp.h_km) > 0.5 {
                     continue;
                 }
-                let trunk = 4 + ((lot * 6151.7).fract() * 4.0) as i64;
-                (candidate_kind, trunk)
+                // same treeline the exact path enforces
+                if smp.temp_c < -6.0 {
+                    continue;
+                }
+                // tree_trunk is a pure function of (kind, column) - the
+                // cheap path grows EXACTLY the trunks the exact path would,
+                // so the level-12/13 ring boundary stops reading as a seam
+                // (Austin: 'discontinuity in the medium distance forest')
+                (
+                    candidate_kind,
+                    crate::voxel::tree_trunk(candidate_kind, face as u8, ci, cj),
+                )
             } else {
                 let c = crate::voxel::col_ctx(planet, &no_edits, face, ci, cj);
                 let Some((kind, trunk)) = crate::voxel::tree_at_scaled(
