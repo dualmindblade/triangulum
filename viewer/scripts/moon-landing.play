@@ -56,19 +56,20 @@ assert edit_total_blocks == 0
 wait 7
 assert grounded true
 
-# Large-crater central wall: step off the deterministic peak, land on its
-# floor, and prove a neighboring 42-block wall produces a finite head probe.
-moonland -5.8583 -10.4143 0 -8
-assert column_step_max > 50
-hold w 0.5
-wait 15
+# Mare-edge crater floor: the v2 asymmetric wall is deliberately physical,
+# not the old kilometre pillar. Its inherited floor stays walkable and has no
+# false neighboring ceiling from the voxel column handoff.
+moonland 37.0385 101.1598 90 2
 assert grounded true
-assert column_step_max > 20
-assert neighbor_ceiling_km != none
-state crater_wall_ceiling_probe
+assert column_step_max < 4
+assert neighbor_ceiling_km == none
+hold w 0.5
+wait 2
+assert grounded true
+state crater_floor_probe
 
 # A surviving ray column carries the ray-bright material family.
-moonland -2.5186 -10.4143 180 -15
+moonland -29.5553 33.9783 180 -15
 assert lunar_material ray
 assert column_albedo > 0.79
 shot ray_field_close

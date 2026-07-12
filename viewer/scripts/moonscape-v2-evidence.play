@@ -1,0 +1,28 @@
+# Andrew crater-realism acceptance poses. No baselines are accepted here.
+weather off
+weather time 0
+sun physical
+mode fly
+
+# Fully lit orbital face at the epoch subsolar direction.
+moonpose 10 40 1700 0 -86
+shot full_face_orbit
+
+# Tycho-size carrier near the epoch subsolar longitude.
+moonpose -29.4884 36.2485 520 0 -86
+shot tycho_ray_field
+moonpose -29.4884 36.2485 95 0 -82
+shot tycho_dark_halo
+
+# Densely cratered highlands in daylight.
+moonpose -36.2094 -1 170 0 -84
+shot saturated_highlands
+
+# A 2-degree crater whose center lies on a procedural mare boundary.
+moonpose 37.0385 101.1598 230 0 -84
+shot mare_edge_inheritance
+
+# Stand on that crater's inherited floor and look toward its wall.
+moonland 37.0385 101.1598 90 2
+assert grounded true
+shot landed_crater_floor

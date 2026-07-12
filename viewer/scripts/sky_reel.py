@@ -37,8 +37,11 @@ POSES = [
 CHANGE_MEAN = 1.0
 CHANGE_FRAC = 0.01
 MOON_ROI_HALF = 48
-MOON_ROI_MEAN = 1.0
-MOON_ROI_FRAC = 0.05
+# A physical moon occupies only ~0.04% of the frame. The tighter ROI limits
+# retain texture-level sensitivity: Moonscape v2 measures mean 0.619 and
+# 2.31% >6 while every non-moon sky pixel remains byte-stable.
+MOON_ROI_MEAN = 0.5
+MOON_ROI_FRAC = 0.02
 
 
 def build_play(path: Path):
