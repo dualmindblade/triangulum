@@ -347,6 +347,43 @@ fn main() -> anyhow::Result<()> {
             // full-octave sample plus the column's ground/water/cave-water
             // so a hunt can correlate what it SEES with what the world IS
             // without loading the census binary per question.
+            // bench N — render N frames at the current pose (no capture
+            // readback) and print avg/p95 draw wall time: the objective
+            // framerate instrument for regression bisection.
+            "bench" => {
+                let n: usize = f(1)? as usize;
+                renderer.set_render_time_s(sim_ticks as f64 * DT);
+                renderer.underwater = ps.underwater;
+                let mut times = Vec::with_capacity(n);
+                let tex = renderer.device.create_texture(&wgpu::TextureDescriptor {
+                    label: Some("bench"),
+                    size: wgpu::Extent3d {
+                        width: renderer.size.0,
+                        height: renderer.size.1,
+                        depth_or_array_layers: 1,
+                    },
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: wgpu::TextureDimension::D2,
+                    format: renderer.format,
+                    usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+                    view_formats: &[],
+                });
+                let view = tex.create_view(&Default::default());
+                for _ in 0..n {
+                    let t0 = std::time::Instant::now();
+                    renderer.draw(&view, &planet, &camera, &edits);
+                    let _ = renderer.device.poll(wgpu::PollType::wait_indefinitely());
+                    times.push(t0.elapsed().as_secs_f64() * 1000.0);
+                }
+                times.sort_by(|a, b| a.total_cmp(b));
+                let avg: f64 = times.iter().sum::<f64>() / times.len().max(1) as f64;
+                let p95 = times[(times.len() as f64 * 0.95) as usize % times.len()];
+                trace!(
+                    "[{}] bench {n}: avg {avg:.2} ms  p95 {p95:.2} ms  min {:.2}  max {:.2}",
+                    ln + 1, times[0], times[times.len() - 1]
+                );
+            }
             "probe" => {
                 let (pla, plo) = (f(1)?.to_radians(), f(2)?.to_radians());
                 let pdir = glam::DVec3::new(

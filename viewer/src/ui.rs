@@ -792,14 +792,16 @@ impl PhotoMap {
         let planet = env.planet;
         let mut action: Option<TeleportAction> = None;
         let screen = ctx.content_rect();
+        // Sized to the screen EVERY frame with a comfortable margin, and
+        // centered by default: manual horizontal resizing fought the map's
+        // fill-available-width layout and snapped back (Austin's report), so
+        // the window is not user-resizable - it auto-fits on every window
+        // resize instead. Dragging to reposition stays enabled.
+        let fit = egui::vec2(screen.width() * 0.92, screen.height() * 0.90);
         egui::Window::new("Photo map — teleport")
             .collapsible(false)
-            .resizable(true)
-            .default_size(egui::vec2(screen.width() * 0.86, screen.height() * 0.84))
-            // never larger than the screen, and scroll instead of clipping:
-            // the title/notes column made the content taller than fullscreen
-            // and parts rendered off-screen (Austin's notes-feature.png)
-            .max_size(egui::vec2(screen.width() * 0.95, screen.height() * 0.90))
+            .resizable(false)
+            .fixed_size(fit)
             .vscroll(true)
             .pivot(egui::Align2::CENTER_CENTER)
             .default_pos(screen.center())
