@@ -537,7 +537,12 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     // else the ground darkens into a dry pit mouth. Full strength out to
     // the patch rim (misc.z) so the handoff matches the real carved
     // blocks, then fades - a 10 m pit is sub-pixel long before that.
-    if (in.rel_flag.w > 0.5 && wet < 0.98) {
+    // gate by the CAMERA's air temperature (the hint fades by ~2.4 km, so
+    // camera temp ~= pit temp): in frozen country the voxels bury cave
+    // mouths under solid ice, but the mesh hint still painted pits/pools
+    // (Andrew's 'breaches on mesh' ice photos at 73.9 -76). weather-off
+    // sentinel is 999, which passes.
+    if (in.rel_flag.w > 0.5 && wet < 0.98 && globals.weather.w > -4.0) {
         let kfade = 1.0 - smoothstep(globals.misc.z + 0.4, globals.misc.z + 2.4, in.dist_km);
         if (kfade > 0.02) {
             let wp = in.rel_flag.xyz - globals.center.xyz;

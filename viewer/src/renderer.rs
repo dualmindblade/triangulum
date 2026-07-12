@@ -146,6 +146,10 @@ pub struct Renderer {
     /// calls and the CPU cost of each draw body (encode+submit), last ~4 s.
     /// The title-bar HUD and shot sidecars read frame_stats() from these —
     /// an objective framerate record instead of "feels smooth".
+    /// True when this frame deferred tile builds under the per-frame
+    /// budget - captures loop draw until it clears so screenshots stay
+    /// byte-deterministic.
+    pub tiles_deferred: bool,
     frame_mark: Option<std::time::Instant>,
     frame_intervals_ms: std::collections::VecDeque<f32>,
     draw_cost_ms: std::collections::VecDeque<f32>,
@@ -421,6 +425,7 @@ impl Renderer {
             chunk_cache: HashMap::new(),
             chunk_stale: HashSet::new(),
             frame_counter: 0,
+            tiles_deferred: false,
             frame_mark: None,
             frame_intervals_ms: std::collections::VecDeque::new(),
             draw_cost_ms: std::collections::VecDeque::new(),
@@ -666,11 +671,54 @@ impl Renderer {
         }
         let exagg = self.exaggeration;
         // build missing tiles in parallel (rayon), then upload sequentially
-        let missing: Vec<TileKey> = keys
+        let mut missing: Vec<TileKey> = keys
             .iter()
             .filter(|k| !self.cache.contains_key(k))
             .copied()
             .collect();
+        // BUDGETED, nearest-first: descending through an LOD swap re-splits
+        // a whole ring, and building every missing tile in one synchronous
+        // burst stalled the frame for tens of ms - the 'lag spike at the
+        // same elevation' family in Andrew's field sidecars (the 240-frame
+        // stats stayed 60 fps because a single spiked frame rolls out of
+        // the window). A capped batch per frame keeps worst-case build
+        // time bounded; unbuilt children stay covered by their cached
+        // parent tiles through the geomorph, so nothing pops or holes.
+        const TILE_BUILD_BUDGET_PER_FRAME: usize = 12;
+        self.tiles_deferred = false;
+        if missing.len() > TILE_BUILD_BUDGET_PER_FRAME {
+            // only tiles with a cached ancestor may wait (their parent
+            // stands in seamlessly); uncovered tiles - fresh teleports -
+            // must build NOW in the parallel batch or the frame holes.
+            let has_ancestor = |k: &TileKey| {
+                let mut cur = *k;
+                while cur.level > 0 {
+                    cur = TileKey {
+                        face: cur.face,
+                        level: cur.level - 1,
+                        ix: cur.ix / 2,
+                        iy: cur.iy / 2,
+                        deep: false,
+                    };
+                    if self.cache.contains_key(&cur) {
+                        return true;
+                    }
+                }
+                false
+            };
+            let (mut deferable, urgent): (Vec<TileKey>, Vec<TileKey>) =
+                missing.iter().partition(|k| has_ancestor(k));
+            deferable.sort_by(|a, b| {
+                let da = (a.center_dir() * planet.radius_km - cam_pos).length_squared();
+                let db = (b.center_dir() * planet.radius_km - cam_pos).length_squared();
+                da.total_cmp(&db)
+            });
+            let take = TILE_BUILD_BUDGET_PER_FRAME.saturating_sub(urgent.len().min(64));
+            self.tiles_deferred = deferable.len() > take;
+            deferable.truncate(take);
+            missing = urgent;
+            missing.extend(deferable);
+        }
         let built: Vec<(TileKey, TileMesh)> = {
             use rayon::prelude::*;
             missing.par_iter().map(|k| (*k, build_tile(planet, *k, exagg))).collect()
@@ -679,6 +727,41 @@ impl Renderer {
             let gpu = self.upload(mesh);
             self.cache.insert(k, gpu);
         }
+        // coverage resolution for the budget: any selected tile still
+        // unbuilt draws its nearest CACHED ancestor instead (dedup) - the
+        // geomorph makes a parent at swap distance near-identical, so a
+        // one-or-two-frame stand-in is invisible. If no ancestor is cached
+        // (fresh teleport), build the tile now: correctness over budget.
+        let keys: Vec<TileKey> = {
+            let mut resolved: Vec<TileKey> = Vec::with_capacity(keys.len());
+            let mut seen: HashSet<TileKey> = HashSet::with_capacity(keys.len());
+            for k in keys {
+                let mut cur = k;
+                let drawn = loop {
+                    if self.cache.contains_key(&cur) {
+                        break cur;
+                    }
+                    if cur.level == 0 {
+                        // unreachable in practice (uncovered tiles build
+                        // urgently above); belt-and-braces stand-in
+                        let gpu = self.upload(build_tile(planet, k, exagg));
+                        self.cache.insert(k, gpu);
+                        break k;
+                    }
+                    cur = TileKey {
+                        face: cur.face,
+                        level: cur.level - 1,
+                        ix: cur.ix / 2,
+                        iy: cur.iy / 2,
+                        deep: false,
+                    };
+                };
+                if seen.insert(drawn) {
+                    resolved.push(drawn);
+                }
+            }
+            resolved
+        };
 
         // near the ground, stream voxel chunks around the camera footprint:
         // finished background builds land this frame, missing chunks are
@@ -1131,6 +1214,15 @@ impl Renderer {
             }
         }
         if waited {
+            n_tiles = self.draw(&view, planet, camera, edits);
+        }
+        // a screenshot is a complete frame for TILES too: drain the
+        // build budget so captures are independent of how many frames
+        // preceded them (byte-determinism for every instrument)
+        for _ in 0..256 {
+            if !self.tiles_deferred {
+                break;
+            }
             n_tiles = self.draw(&view, planet, camera, edits);
         }
 
