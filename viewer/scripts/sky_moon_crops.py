@@ -25,8 +25,8 @@ def main() -> None:
     draw = ImageDraw.Draw(sheet)
     draw.rectangle((0, 384, 768, 414), fill=(16, 18, 25))
     font = ImageFont.load_default(size=16)
-    draw.text((12, 391), "BEFORE - P1 PLACEHOLDER", fill=(225, 228, 235), font=font)
-    draw.text((396, 391), "AFTER - P2 GENERATED FACE", fill=(225, 228, 235), font=font)
+    draw.text((12, 391), "BEFORE - 378-CRATER FOLD", fill=(225, 228, 235), font=font)
+    draw.text((396, 391), "AFTER - SCALE-BINNED V2", fill=(225, 228, 235), font=font)
     out = root / "moon_zenith_before_after.png"
     sheet.save(out)
     print(out)

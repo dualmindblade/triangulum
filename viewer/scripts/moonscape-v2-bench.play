@@ -1,0 +1,15 @@
+# Moonscape v2 fixed-pose frame-budget gate.
+weather off
+weather time 0
+sun physical
+
+# Full-face orbit: warm tile queues, then measure the steady renderer.
+moonpose 10 40 1700 0 -86
+bench 5
+bench 30
+
+# Landed gameplay path: voxel columns call the same lunar sample law.
+moonland -36.2094 -1 -90 -8
+wait 1
+bench 5
+bench 30

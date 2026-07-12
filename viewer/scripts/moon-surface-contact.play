@@ -3,7 +3,7 @@ weather off
 sun physical
 
 weather time 0
-moonland -5 -10 180 -5
+moonland 37.0385 101.1598 90 2
 assert grounded true
 shot crater_floor
 
@@ -15,7 +15,7 @@ assert lunar_material maria
 shot maria_neisor_horizon
 
 weather time 0
-moonland -2.5186 -10.4143 180 -15
+moonland -29.5553 33.9783 180 -15
 assert lunar_material ray
 assert column_albedo > 0.79
 shot ray_field_close

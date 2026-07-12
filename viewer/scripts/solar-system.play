@@ -20,9 +20,9 @@ assert lunar_shadow ~ 0 0.000000001
 # P2 one-truth moon sampler: two fixed body-local directions pin the crater
 # fold independently of camera/orbit state.
 moonprobe 0 0
-assert moon_surface_height_km ~ 0.134866 0.00001
+assert moon_surface_height_km ~ 0.652565 0.00001
 moonprobe 37 -122
-assert moon_surface_height_km ~ 0.032202 0.00001
+assert moon_surface_height_km ~ 0.054191 0.00001
 
 # Whole-disc evidence for Andrew's planet-shaded ambient: camera-side dusk,
 # pixel-side day/night, sky/stars still based only on this camera.

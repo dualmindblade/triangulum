@@ -643,6 +643,23 @@ fn synth_moon_map(seed: i64, b: Bounds, w: usize, h: usize) -> egui::ColorImage 
     }
 }
 
+/// Headless evidence/export entry point for the teleport map's moon tab.
+/// This deliberately calls the exact popup synthesizer above: contact sheets
+/// and tests therefore cannot drift into a third lunar map implementation.
+pub fn full_moon_map(seed: i64, w: usize, h: usize) -> egui::ColorImage {
+    synth_moon_map(
+        seed,
+        Bounds {
+            lat_top: 90.0,
+            lat_bot: -90.0,
+            lon_left: -180.0,
+            lon_right: 180.0,
+        },
+        w,
+        h,
+    )
+}
+
 // ------------------------------------------------------------- popup state
 
 /// What the popup asks the app to do when the player commits.

@@ -15,9 +15,9 @@ shot from_neisor_full_face
 moonpose 0 -50 2200 0 -86
 shot quarter_phase
 
-# Young 3.9-degree LARGE basin with a broad ray system, naturally sunlit at
-# epoch (the physical Sun is ~41 degrees from its local normal).
-moonpose -5.8583 -10.4143 600 20 -82
+# Sparse Tycho-size carrier: independent rough tapering rays, a dark proximal
+# halo, and younger saturation craters over the line field.
+moonpose -29.4884 36.2485 520 0 -86
 focus free
 shot ray_crater_flyby
 
