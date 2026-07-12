@@ -5,6 +5,7 @@
 pub mod camera;
 pub mod noise;
 pub mod noise_grad;
+pub mod orbits;
 pub mod planet;
 pub mod player;
 pub mod renderer;

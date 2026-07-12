@@ -49,6 +49,7 @@ fn main() -> anyhow::Result<()> {
         ground_km: 0.0,
         yaw: yaw.to_radians(),
         pitch: (-14f64).to_radians(),
+        roll: 0.0,
     };
     let edits = Default::default();
 

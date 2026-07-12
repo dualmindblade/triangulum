@@ -8,6 +8,16 @@ struct Globals {
     sun_dir: vec4<f32>,
     // xyz = unit direction to the moon; drives the night moon disc + moonlight
     moon_dir: vec4<f32>,
+    // Physical centers relative to the camera, w = radius (km). CPU f64
+    // subtraction happens before upload; these are never raw world positions.
+    sun_body: vec4<f32>,
+    moon_body: vec4<f32>,
+    // x solar occlusion at camera, y lunar shadow, z planet contact gate,
+    // w sun halo gain
+    eclipse: vec4<f32>,
+    sun_tint: vec4<f32>,
+    moon_tint: vec4<f32>,
+    moon_copper_tint: vec4<f32>,
     // disc cut out of the heightfield where voxel chunks own the ground:
     // xyz = center relative to camera (km), w = radius in km (0 = off)
     hole: vec4<f32>,
@@ -468,6 +478,42 @@ fn vs_main(in: VsIn) -> VsOut {
     return out;
 }
 
+// Exact two-circle intersection as a fraction of the SOURCE disc. The same
+// equation lives in orbits.rs for evidence/assertions; here it is evaluated
+// from each terrain pixel so the moon's penumbra crosses Neisor in orbit.
+fn circle_overlap_fraction(r: f32, q: f32, d: f32) -> f32 {
+    if (r <= 0.0 || q <= 0.0 || d >= r + q) {
+        return 0.0;
+    }
+    if (d <= abs(q - r)) {
+        if (q >= r) {
+            return 1.0;
+        }
+        return clamp(q * q / (r * r), 0.0, 1.0);
+    }
+    let ar = acos(clamp((d * d + r * r - q * q) / (2.0 * d * r), -1.0, 1.0));
+    let aq = acos(clamp((d * d + q * q - r * r) / (2.0 * d * q), -1.0, 1.0));
+    let lens = r * r * ar + q * q * aq - 0.5 * sqrt(max(
+        (-d + r + q) * (d + r - q) * (d - r + q) * (d + r + q),
+        0.0,
+    ));
+    return clamp(lens / (3.14159265 * r * r), 0.0, 1.0);
+}
+
+fn solar_occlusion_at(rel: vec3<f32>) -> f32 {
+    let sv = globals.sun_body.xyz - rel;
+    let mv = globals.moon_body.xyz - rel;
+    let sd = length(sv);
+    let md = length(mv);
+    if (md >= sd || sd <= globals.sun_body.w || md <= globals.moon_body.w) {
+        return 0.0;
+    }
+    let sr = asin(clamp(globals.sun_body.w / sd, 0.0, 1.0));
+    let mr = asin(clamp(globals.moon_body.w / md, 0.0, 1.0));
+    let separation = acos(clamp(dot(sv / sd, mv / md), -1.0, 1.0));
+    return circle_overlap_fraction(sr, mr, separation);
+}
+
 @fragment
 fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     // cut the heightfield away inside the voxel patch: every pixel belongs
@@ -530,8 +576,33 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         in.dist_km,
     );
     var ground = mix(in.color, in.far_color, biome_range);
-    let up = globals.sky.xyz;
-    let day = smoothstep(-0.08, 0.15, dot(globals.sun_dir.xyz, up));
+    // Planet lighting belongs to THIS pixel, not the camera. The vector is
+    // reconstructed from camera-relative inputs, so orbital f32 precision
+    // never enters through a raw world coordinate. At ground range pixel_up
+    // converges to camera up; in orbit it exposes the full terminator.
+    let camera_day_geom = smoothstep(-0.08, 0.15, dot(globals.sun_dir.xyz, globals.sky.xyz));
+    let planet_day_weight = smoothstep(2.5, 40.0, max(globals.sky.w, 0.0));
+    var pixel_up = globals.sky.xyz;
+    var pixel_sun = globals.sun_dir.xyz;
+    var pixel_day_geom = camera_day_geom;
+    // Keep the overwhelmingly common ground path byte-cheap as well as
+    // byte-equivalent. Orbital frames and actual eclipse windows pay for the
+    // camera-relative body/pixel geometry; normal ground frames do not.
+    if (planet_day_weight > 0.0 || globals.eclipse.z > 0.5) {
+        pixel_up = normalize(in.rel_flag.xyz - globals.center.xyz);
+        pixel_sun = normalize(globals.sun_body.xyz - in.rel_flag.xyz);
+        pixel_day_geom = smoothstep(-0.08, 0.15, dot(pixel_sun, pixel_up));
+    }
+    var eclipse = 0.0;
+    if (globals.eclipse.z > 0.5) {
+        eclipse = solar_occlusion_at(in.rel_flag.xyz);
+    }
+    // Below the voxel/weather layer every visible ground pixel is locally
+    // co-located for this broad ambient term: converge EXACTLY to the old
+    // camera result. Hand off continuously to true per-pixel planet day by
+    // 40 km, long before an orbital hemisphere/terminator is visible.
+    let day_geom = mix(camera_day_geom, pixel_day_geom, planet_day_weight);
+    let day = day_geom * (1.0 - eclipse);
     // ---- shared micro-texture (TRANSITIONS.md A, kills the V-1 disk) ----
     // The far mesh evaluates the same ±10% block-brightness fabric the
     // voxel columns bake, so the patch rim becomes a resolution change
@@ -705,8 +776,8 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
             * exp(-in.dist_km / 1.8) * (1.0 - clamp(wet, 0.0, 1.0));
         n = normalize(n + amp * jit);
     }
-    let light = max(dot(n, globals.sun_dir.xyz), 0.0);
-    let sky_hemi = clamp(0.5 + 0.5 * dot(n, up), 0.0, 1.0);
+    let light = max(dot(n, pixel_sun), 0.0);
+    let sky_hemi = clamp(0.5 + 0.5 * dot(n, globals.sky.xyz), 0.0, 1.0);
     // overcast: direct sun dims toward its tunable floor and the ambient
     // flattens a touch — a grey day, not a dark one (night is untouched:
     // the dimming scales with `day`)
@@ -755,6 +826,10 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     let moon = globals.moon_dir.xyz;
     let moon_up = smoothstep(0.0, 0.15, dot(moon, globals.sky.xyz));
     let moonlit = max(dot(n, moon), 0.0);
+    let moon_phase = 0.5 + 0.5 * dot(
+        normalize(globals.sun_body.xyz - globals.moon_body.xyz),
+        normalize(in.rel_flag.xyz - globals.moon_body.xyz),
+    );
     // sky-shaped night floor: with a flat floor and a LOW moon, vertical
     // step faces toward the moon glowed brighter than the tops around them
     // and terraces read as bright contour stripes (2026-07-08 night shots).
@@ -763,7 +838,11 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     // moon rake across scarps.
     let hemi_n = 0.5 + 0.5 * dot(n, globals.sky.xyz);
     c += base * vec3<f32>(0.40, 0.50, 0.72)
-        * (moonlit * 0.10 + 0.015 + 0.05 * hemi_n) * (1.0 - day) * moon_up;
+        * (moonlit * 0.10 + 0.015 + 0.05 * hemi_n)
+        // Physical default moon sits ~2 deg from the legacy art direction;
+        // this gain preserves the pinned ground-level moonlight reel while
+        // `moon_phase` supplies the new geometric waxing/waning behavior.
+        * (1.0 - day) * moon_up * moon_phase * 1.15;
     // Clouds v2 / W3: once the camera rises above the high shell, composite
     // the same three deterministic formations over terrain pixels. The
     // helper stacks far-to-near shell hits and hard-caps the combined alpha,
@@ -1064,7 +1143,10 @@ fn fs_sky(in: SkyOut) -> @location(0) vec4<f32> {
     let sun = globals.sun_dir.xyz;
     let h = dot(dir, up);
     let sunh = dot(sun, up);
-    let day = smoothstep(-0.08, 0.15, sunh);
+    // Sky/stars remain camera-based. Eclipse darkness uses the overlap at
+    // the camera; terrain computes its own overlap per pixel below.
+    let day_geom = smoothstep(-0.08, 0.15, sunh);
+    let day = day_geom * (1.0 - globals.eclipse.x);
     // day gradient: bright horizon band to deeper zenith blue
     let zen = vec3<f32>(0.10, 0.28, 0.62);
     let hor = vec3<f32>(0.55, 0.70, 0.88);
@@ -1078,10 +1160,10 @@ fn fs_sky(in: SkyOut) -> @location(0) vec4<f32> {
     let toward = pow(max(dot(dir, sun), 0.0), 6.0);
     let low = 1.0 - smoothstep(0.05, 0.35, sunh);
     c = mix(c, vec3<f32>(0.95, 0.55, 0.30), toward * low * 0.55 * day);
-    // sun disc + glow
+    // Physical Sun mesh supplies the disc; retain its established halo.
     let d = dot(dir, sun);
-    c += vec3<f32>(1.0, 0.96, 0.86)
-        * (smoothstep(0.99965, 0.99996, d) * 3.0 + pow(max(d, 0.0), 800.0) * 0.5) * day;
+    c += globals.sun_tint.rgb
+        * pow(max(d, 0.0), 800.0) * globals.eclipse.w * day;
     // below the horizon line, fade toward space-dark
     c *= smoothstep(-0.10, 0.03, h);
     // the atmosphere thins away with altitude: space is black
@@ -1105,17 +1187,13 @@ fn fs_sky(in: SkyOut) -> @location(0) vec4<f32> {
             c += vec3<f32>(0.30, 0.50, 0.90) * shell * lit * (1.0 - atm) * 0.8;
         }
     }
-    // the moon: a phase-lit sphere opposite the sun. A ray within the moon's
-    // angular radius reconstructs the sphere normal (center faces us, limb is
-    // tangential) and lights it by the sun for a real terminator; the dark
-    // side keeps a faint earthshine. It fades out in daylight and below the
-    // horizon, and a soft halo rings it.
+    // Physical moon mesh supplies the disc; its atmospheric halo remains.
     let moon = globals.moon_dir.xyz;
     let moon_vis = (1.0 - 0.9 * day) * smoothstep(-0.06, 0.06, dot(moon, up));
     if (moon_vis > 0.001) {
         let dm = dot(dir, moon);
         let ang = acos(clamp(dm, -1.0, 1.0));
-        let R = 0.021; // angular radius (rad, ~1.2 deg — reads as a moon)
+        let R = 0.0; // physical mesh owns the disc
         if (ang < R) {
             let off = normalize(dir - moon * dm);
             let t = ang / R; // 0 at center, 1 at the limb
@@ -1165,6 +1243,70 @@ fn fs_sky(in: SkyOut) -> @location(0) vec4<f32> {
         c = mix(c, vec3<f32>(0.02, 0.07, 0.16), 0.6);
     }
     return vec4<f32>(c, 1.0);
+}
+
+// ------------------------------------------------------ physical solar bodies
+
+struct BodyIn {
+    @location(0) position: vec3<f32>,
+    @location(1) normal: vec3<f32>,
+};
+
+struct BodyOut {
+    @builtin(position) clip: vec4<f32>,
+    @location(0) normal: vec3<f32>,
+    @location(1) local: vec3<f32>,
+    @location(2) rel: vec3<f32>,
+    @location(3) @interpolate(flat) kind: f32,
+};
+
+@vertex
+fn vs_body(in: BodyIn) -> BodyOut {
+    var out: BodyOut;
+    let rel = tile.offset.xyz + in.position * tile.morph.x;
+    out.clip = globals.view_proj * vec4<f32>(rel, 1.0);
+    out.normal = normalize(in.normal);
+    out.local = in.position;
+    out.rel = rel;
+    out.kind = tile.offset.w;
+    return out;
+}
+
+// P1 surface hook: deliberately only a few very-large-scale octaves. P2 can
+// replace this pure normal/seed field with generated maria/crater material
+// without changing the body mesh or orbital truth.
+fn moon_surface(n: vec3<f32>) -> f32 {
+    let a = hash31(floor((n + 1.0) * 3.0));
+    let b = hash31(floor((n.zxy + 1.0) * 7.0));
+    let c = hash31(floor((n.yzx + 1.0) * 13.0));
+    return 0.80 + 0.13 * a + 0.05 * b + 0.02 * c;
+}
+
+@fragment
+fn fs_body(in: BodyOut) -> @location(0) vec4<f32> {
+    let n = normalize(in.normal);
+    // The shared sphere is two-sided for robust winding at its pole seams;
+    // retain only the camera-facing physical surface.
+    if (dot(n, -normalize(in.rel)) <= 0.0) {
+        discard;
+    }
+    if (in.kind < 1.5) {
+        let above = smoothstep(-0.08, 0.03, dot(globals.sun_dir.xyz, globals.sky.xyz));
+        return vec4<f32>(globals.sun_tint.rgb * 3.2, above);
+    }
+
+    let to_sun = normalize(globals.sun_body.xyz - globals.moon_body.xyz);
+    let lit = max(dot(n, to_sun), 0.0);
+    let lunar = globals.eclipse.y;
+    let tint = mix(globals.moon_tint.rgb, globals.moon_copper_tint.rgb, lunar);
+    let brightness = mix(0.05 + 0.95 * lit, 0.22 + 0.18 * lit, lunar);
+    let sunh = dot(globals.sun_dir.xyz, globals.sky.xyz);
+    let day = smoothstep(-0.08, 0.15, sunh) * (1.0 - globals.eclipse.x);
+    let above = smoothstep(-0.06, 0.06, dot(globals.moon_dir.xyz, globals.sky.xyz));
+    // During a solar eclipse the foreground new moon must be opaque enough to
+    // cover the emissive mesh; otherwise retain the approved daylight fade.
+    let visibility = max(1.0 - 0.9 * day, globals.eclipse.x) * above;
+    return vec4<f32>(tint * moon_surface(in.local) * brightness, visibility);
 }
 
 // --------------------------------------------------------- precipitation

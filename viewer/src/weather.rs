@@ -19,10 +19,6 @@ use crate::planet::Planet;
 #[derive(Clone, Debug, serde::Deserialize)]
 #[serde(default)]
 pub struct WeatherTuning {
-    /// Game days per year: seasons at a pace a session can feel.
-    pub days_per_year: f64,
-    /// Where in the year the world starts (0 = January).
-    pub epoch_frac: f64,
     /// Synoptic anomaly amplitude added to the cloud climatology (0 =
     /// climate-mean skies forever, 1 = full storm/clear swings).
     pub storminess: f64,
@@ -88,8 +84,6 @@ pub const PARTICLES_MAX_CAP: u32 = 100_000;
 impl Default for WeatherTuning {
     fn default() -> Self {
         Self {
-            days_per_year: 20.0,
-            epoch_frac: 0.45,
             storminess: 0.55,
             synoptic_speed: 150.0,
             synoptic_freq: 40.0,
@@ -157,8 +151,6 @@ impl WeatherTuning {
     /// file is harder to diagnose than one loud, deterministic default.
     fn validate(&self) -> Result<(), String> {
         let finite = [
-            ("days_per_year", self.days_per_year),
-            ("epoch_frac", self.epoch_frac),
             ("storminess", self.storminess),
             ("synoptic_speed", self.synoptic_speed),
             ("synoptic_freq", self.synoptic_freq),
@@ -188,9 +180,6 @@ impl WeatherTuning {
         ];
         if let Some((name, _)) = finite.into_iter().find(|(_, v)| !v.is_finite()) {
             return Err(format!("{name} must be finite"));
-        }
-        if self.days_per_year <= 0.0 {
-            return Err("days_per_year must be > 0".into());
         }
         if self.storminess < 0.0 || self.synoptic_speed < 0.0 {
             return Err("storminess and synoptic_speed must be >= 0".into());
@@ -253,22 +242,6 @@ impl WeatherTuning {
         Ok(())
     }
 
-    /// Set the epoch so the weather clock is at `target` on the very next
-    /// sample. This is the semantic behind `weather season FRAC`: elapsed
-    /// simulation/weather time must not be added on top of the requested
-    /// phase.
-    pub fn set_season_frac(&mut self, weather_t_s: f64, planet_day_len_s: f64, target: f64) {
-        let day = effective_day_len(planet_day_len_s);
-        let days = if self.days_per_year.is_finite() && self.days_per_year > 0.0 {
-            self.days_per_year
-        } else {
-            Self::default().days_per_year
-        };
-        let weather_t_s = if weather_t_s.is_finite() { weather_t_s } else { 0.0 };
-        let target = if target.is_finite() { target } else { 0.0 };
-        let elapsed = weather_t_s / (day * days);
-        self.epoch_frac = (target.rem_euclid(1.0) - elapsed).rem_euclid(1.0);
-    }
 }
 
 /// One weather sample: what the air is doing at a place and moment.
@@ -444,30 +417,15 @@ impl WeatherField {
     }
 }
 
-fn effective_day_len(planet_day_len_s: f64) -> f64 {
-    if planet_day_len_s.is_finite() && planet_day_len_s > 0.0 {
-        planet_day_len_s
-    } else {
-        1200.0
-    }
-}
-
-/// Season fraction [0,1) at weather time `t_s` (0 = January).
-pub fn season_frac(t_s: f64, planet_day_len_s: f64, tuning: &WeatherTuning) -> f64 {
-    let defaults = WeatherTuning::default();
-    let day = effective_day_len(planet_day_len_s);
-    let days_per_year = if tuning.days_per_year.is_finite() && tuning.days_per_year > 0.0 {
-        tuning.days_per_year
-    } else {
-        defaults.days_per_year
-    };
-    let epoch = if tuning.epoch_frac.is_finite() {
-        tuning.epoch_frac
-    } else {
-        defaults.epoch_frac
-    };
-    let t_s = if t_s.is_finite() { t_s } else { 0.0 };
-    (epoch + t_s / (day * days_per_year)).rem_euclid(1.0)
+/// Weather's public season helper deliberately delegates to the orbital
+/// clock. There is no weather-owned year length or epoch to drift from the
+/// physical Sun-Neisor geometry.
+pub fn season_frac(
+    t_s: f64,
+    planet_day_len_s: f64,
+    solar_tuning: &crate::orbits::SolarTuning,
+) -> f64 {
+    solar_tuning.season_frac(t_s, planet_day_len_s)
 }
 
 /// Move a sampling direction upstream by a tangent arc vector. `arc.length()`
@@ -501,10 +459,11 @@ pub fn weather_at(
     dir: DVec3,
     t_s: f64,
     day_len_s: f64,
+    solar_tuning: &crate::orbits::SolarTuning,
     tuning: &WeatherTuning,
 ) -> Weather {
     let (face, u, v) = crate::planet::face_from_dir(dir);
-    let t_yr = season_frac(t_s, day_len_s, tuning);
+    let t_yr = season_frac(t_s, day_len_s, solar_tuning);
     let angle = std::f64::consts::TAU * t_yr;
     let (sn1, cs1) = angle.sin_cos();
     let (sn2, cs2) = (2.0 * angle).sin_cos();
@@ -607,24 +566,24 @@ mod tests {
     #[test]
     fn invalid_tuning_override_falls_back_as_a_whole() {
         let invalid = [
-            r#"{"days_per_year":0,"epoch_frac":0.12}"#,
-            r#"{"cover_lo":0.8,"cover_hi":0.2,"epoch_frac":0.12}"#,
-            r#"{"snow_lo_c":2,"snow_hi_c":-2,"epoch_frac":0.12}"#,
-            r#"{"precip_threshold":1,"epoch_frac":0.12}"#,
-            r#"{"particles_max":100001,"epoch_frac":0.12}"#,
-            r#"{"rain_crevice_bias":1.01,"epoch_frac":0.12}"#,
-            r#"{"cloud_layer_count":0,"epoch_frac":0.12}"#,
-            r#"{"cloud_layer_count":4,"epoch_frac":0.12}"#,
-            r#"{"cloud_mid_alt_km":1.0,"epoch_frac":0.12}"#,
-            r#"{"cloud_high_alt_km":16.0,"epoch_frac":0.12}"#,
-            r#"{"cloud_low_scale":0,"epoch_frac":0.12}"#,
-            r#"{"cloud_mid_density":1.01,"epoch_frac":0.12}"#,
-            r#"{"orbit_cloud_opacity_cap":1.01,"epoch_frac":0.12}"#,
-            r#"{"days_per_year":1e999,"epoch_frac":0.12}"#,
+            r#"{"storminess":-1}"#,
+            r#"{"cover_lo":0.8,"cover_hi":0.2}"#,
+            r#"{"snow_lo_c":2,"snow_hi_c":-2}"#,
+            r#"{"precip_threshold":1}"#,
+            r#"{"particles_max":100001}"#,
+            r#"{"rain_crevice_bias":1.01}"#,
+            r#"{"cloud_layer_count":0}"#,
+            r#"{"cloud_layer_count":4}"#,
+            r#"{"cloud_mid_alt_km":1.0}"#,
+            r#"{"cloud_high_alt_km":16.0}"#,
+            r#"{"cloud_low_scale":0}"#,
+            r#"{"cloud_mid_density":1.01}"#,
+            r#"{"orbit_cloud_opacity_cap":1.01}"#,
+            r#"{"storminess":1e999}"#,
         ];
         for raw in invalid {
             let got = WeatherTuning::from_json(raw, "test-weather-tuning.json");
-            assert_eq!(got.epoch_frac, WeatherTuning::default().epoch_frac, "{raw}");
+            assert_eq!(got.storminess, WeatherTuning::default().storminess, "{raw}");
             assert!(got.validate().is_ok());
         }
 
@@ -657,21 +616,13 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(
             dir.join("weather_tuning.json"),
-            r#"{"days_per_year":0,"epoch_frac":0.12}"#,
+            r#"{"cover_lo":0.9,"cover_hi":0.1}"#,
         )
         .unwrap();
         let got = WeatherTuning::load(dir.to_str().unwrap());
-        assert_eq!(got.days_per_year, WeatherTuning::default().days_per_year);
-        assert_eq!(got.epoch_frac, WeatherTuning::default().epoch_frac);
+        assert_eq!(got.cover_lo, WeatherTuning::default().cover_lo);
+        assert_eq!(got.cover_hi, WeatherTuning::default().cover_hi);
         std::fs::remove_dir_all(dir).unwrap();
-    }
-
-    #[test]
-    fn season_command_targets_next_shot_after_elapsed_time() {
-        let mut tuning = WeatherTuning::default();
-        tuning.set_season_frac(1200.0, 1200.0, 0.25);
-        assert!((tuning.epoch_frac - 0.20).abs() < 1e-12);
-        assert!((season_frac(1200.0, 1200.0, &tuning) - 0.25).abs() < 1e-12);
     }
 
     #[test]

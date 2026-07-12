@@ -1,0 +1,30 @@
+# Reproducible SOLAR P1 evidence. Clear weather isolates geometric light.
+mode fly
+weather off
+
+# First tuning-year solar event: move ~12.93 deg north of the shadow center for
+# half-disc coverage (the exact overlap, not an artistic dimmer).
+weather time 7621.82
+teleport 28.41978932 -28.56333590 0.05
+look 0 86
+assert solar_occlusion > 0.49
+assert solar_occlusion < 0.51
+shot partial_solar
+
+# Same absolute event at the sub-lunar ground point: the larger apparent moon
+# covers the Sun fully and the ground/sky use a night-like day factor.
+teleport 15.48978932 -28.56333590 0.05
+look 0 86
+assert solar_occlusion > 0.999
+shot near_total_solar
+look 0 -20
+shot near_total_ground
+
+# A separate full-moon contact in Neisor's umbra. The physical moon mesh is
+# copper-interpolated by solar-disc coverage as seen from the moon.
+weather time 13785.65
+teleport -17.59719511 9.92923257 0.05
+look 0 86
+assert lunar_shadow > 0.999
+assert solar_occlusion < 0.001
+shot lunar_copper

@@ -40,6 +40,7 @@ pub struct Photo {
     pub alt_km: f64,
     pub yaw_deg: f64,
     pub pitch_deg: f64,
+    pub roll_deg: f64,
     pub day_time_s: Option<f64>,
     /// Recorded weather restore coordinate. `weather_on == None` marks a
     /// legacy/pre-weather sidecar; `Some(true)` plus no pin means live.
@@ -161,6 +162,7 @@ pub fn scan_photos(interchange: &Path) -> Vec<Photo> {
                     alt_km: f("alt_km").unwrap_or(0.3),
                     yaw_deg: f("yaw_deg").unwrap_or(0.0),
                     pitch_deg: f("pitch_deg").unwrap_or(-20.0),
+                    roll_deg: f("roll_deg").unwrap_or(0.0),
                     day_time_s: f("day_cycle_time_s"),
                     weather_on: weather.map(|w| w.0),
                     weather_pin: weather.and_then(|w| w.1),
@@ -185,6 +187,7 @@ pub fn scan_photos(interchange: &Path) -> Vec<Photo> {
                 alt_km: alt,
                 yaw_deg: yaw,
                 pitch_deg: pitch,
+                roll_deg: 0.0,
                 day_time_s: None,
                 weather_on: None,
                 weather_pin: None,
@@ -242,6 +245,7 @@ pub struct MapEnv<'a> {
     pub planet: &'a Planet,
     pub weather_field: Option<&'a crate::weather::WeatherField>,
     pub weather_tuning: &'a crate::weather::WeatherTuning,
+    pub solar_tuning: &'a crate::orbits::SolarTuning,
     pub weather_time_s: f64,
     pub day_len_s: f64,
     pub weather_on: bool,
@@ -443,7 +447,7 @@ fn synth_map(
     let season = crate::weather::season_frac(
         env.weather_time_s,
         env.day_len_s,
-        env.weather_tuning,
+        env.solar_tuning,
     );
     let angle = std::f64::consts::TAU * season;
     let (sn1, cs1) = angle.sin_cos();
@@ -502,6 +506,7 @@ fn synth_map(
                             dir,
                             env.weather_time_s,
                             env.day_len_s,
+                            env.solar_tuning,
                             env.weather_tuning,
                         )
                         .cloud_cover as f32
@@ -537,6 +542,7 @@ pub struct TeleportAction {
     pub alt_km: Option<f64>,
     pub yaw_deg: Option<f64>,
     pub pitch_deg: Option<f64>,
+    pub roll_deg: Option<f64>,
     /// Some(seconds into the day cycle) when "restore time of day" is on
     /// and the photo recorded it.
     pub day_time_s: Option<f64>,
@@ -1377,6 +1383,7 @@ impl PhotoMap {
                 alt_km: Some(p.alt_km.max(0.0025)),
                 yaw_deg: Some(p.yaw_deg),
                 pitch_deg: Some(p.pitch_deg),
+                roll_deg: Some(p.roll_deg),
                 day_time_s: if self.restore_time { p.day_time_s } else { None },
                 day_len_s: if self.restore_time { p.day_len_s } else { None },
                 weather_on: if self.restore_time { p.weather_on } else { None },
@@ -1394,6 +1401,7 @@ impl PhotoMap {
                 alt_km: None,
                 yaw_deg: None,
                 pitch_deg: None,
+                roll_deg: None,
                 day_time_s: None,
                 day_len_s: None,
                 weather_on: None,
@@ -1421,6 +1429,7 @@ impl PhotoMap {
                     alt_km: parts.get(2).copied().filter(|a| *a > 0.0),
                     yaw_deg: None,
                     pitch_deg: None,
+                    roll_deg: None,
                     day_time_s: None,
                     day_len_s: None,
                     weather_on: None,
@@ -1870,6 +1879,7 @@ mod tests {
             alt_km: 0.1,
             yaw_deg: 3.0,
             pitch_deg: -4.0,
+            roll_deg: 5.0,
             day_time_s: Some(600.0),
             weather_on: Some(true),
             weather_pin: Some((0.97, 0.9)),
@@ -1888,6 +1898,7 @@ mod tests {
         assert_eq!(normal.weather_on, None);
         assert_eq!(normal.weather_pin, None);
         assert_eq!(normal.weather_time_s, None);
+        assert_eq!(normal.roll_deg, Some(5.0));
 
         map.restore_time = true;
         let restored = map.destination().unwrap();

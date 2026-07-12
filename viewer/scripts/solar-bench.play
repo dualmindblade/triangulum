@@ -1,0 +1,15 @@
+# Solar P1 frame-cost gate: the same clear ground and orbital poses before/after.
+mode fly
+weather pin 0.10 0.0
+
+teleport 15.024 17.662 0.154
+look -75 -21
+sun 15.02 2.66
+bench 5
+bench 30
+
+teleport 15.238 150.848 291.4
+look 146 -86
+sun 15.24 135.85
+bench 5
+bench 30

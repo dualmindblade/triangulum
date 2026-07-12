@@ -56,7 +56,7 @@ assert grounded == true
 assert underwater == false
 assert has_water == false          # solid cap intact — dry on top
 look 0 -90
-tap q                              # break the rock cap into the flooded cave
+tap lmb                            # break the rock cap into the flooded cave
 wait 2.5
 assert underwater == true          # dropped through into the flooded water
 assert has_water == true

@@ -24,13 +24,15 @@ cargo run --release -- --capture shot.png --lat 22 --lon 28 --alt 500 --pitch -3
 
 | input | action |
 |---|---|
-| **click** | capture the mouse for raw free-look (Esc releases; Esc again quits) |
+| **LMB** | first click captures the mouse for raw look; once captured, break the aimed block (Esc releases; Esc again quits) |
+| **RMB** | place a block against the aimed face (Neisor focus only; edits persist to `assets/edits_seed*.bin`) |
 | drag | free look when the mouse isn't captured |
 | W A S D | move along your heading (Shift = sprint). Fly speed scales with altitude near the planet and with distance from the planet **center** when far out, capped ~4 planet radii away so at great distance you drift at roughly the planet's rotation rate and can watch it turn. Cruising above the 2.5 km voxel range **locks to elevation** — a constant planet-center radius, so you no longer bob up and over mountains (a peak rising above the held radius still lifts you clear of it); below 2.5 km it terrain-follows so you can't fly into hills |
 | scroll | altitude (fly mode). Descends to ~2.5 m — hover over the grass, sink into cave pits (roofs are solid). Pitch is always yours; pass `--auto-tilt` to opt into the descent cinematic (above 100 km the view eases toward the planet as you zoom) |
 | **G** | walk mode — real gravity: pressed in flight you skydive from there. Walls stop you, one-block ledges step up, cave ceilings bump your head, pits drop you in. Water: you sink slowly; hold Space to swim up |
 | **Space** | jump (walk mode, when standing) / swim up (in water) |
-| **Q / E** | break a block / place a block against the face you're aiming at (edits persist to `assets/edits_seed*.bin`) |
+| **C** | cycle camera: focused Neisor (default) â†’ focused moon â†’ focused Sun â†’ freecam â†’ Neisor. Focused bodies track exact orbital motion through timeskips |
+| **Q / E** | roll left/right in freecam only. Freecam uses W/A/S/D forward/strafe and Space/Ctrl up/down in the rolled local frame |
 | **R** | place/remove a torch on the block you're aiming at — real light at night and in caves (persists to `assets/torches_seed*.bin`) |
 | **F** | back to fly mode |
 | **T** | the photo map: a pan/zoom minimap popup with a marker for every screenshot. **Scroll zooms** about the cursor, **drag pans**, **double-click** (or *Reset view*) returns to the whole planet; the visible region is re-synthesized from the rasters at each zoom, so small water features stay sharp. A layer bar composites features onto the map: a **Base** of *Biomes* (default), *Temperature* or *Precipitation* (both seasonal — they follow the current time of year), plus toggles for *Relief* shading, *Rivers* (courses from `rivers.bin`, thicker/brighter by flow — big rivers show planet-wide, creeks fade in as you zoom), *Lakes* (liquid blue, frozen pale), *Clouds now* (the renderer's off/live/pinned field, refreshed in 60-second weather-time buckets while live), and *Markers*. A green ring marks your current position. Click a marker or list row to pick a photo (preview + two-way highlight), click open water/land to set a free destination, or type `lat lon [alt km]` — then **Teleport** commits (a photo restores its exact view; tick *Restore photo's time of day* to also rewind the day/night cycle and restore the sidecar's weather off/pin/absolute-time coordinate). Checkboxes + **Delete** move photos to `interchange/trash/` after a confirm. Esc closes |
@@ -47,18 +49,23 @@ feathered rim), so bigger patches cost VRAM (~1.5 GB budget, LRU-evicted)
 and build throughput, not frame hitches.
 
 The window title shows mode + coordinates. A **day/night cycle** runs by
-default: the sun hangs in space while the planet turns (20-minute day,
-`--day-len N` seconds to change it), starting mid-morning where you spawn.
-Sunset brings out the stars; torches matter after dark. `--day-len 0`
+default from `assets/solar_tuning.json`: 30-minute days, a 7-day lunar orbit,
+and an 84-day Neisor year (all tunable). The physical Sun hangs in space while
+Neisor turns, starting mid-morning where you spawn. Sunset brings out the
+stars; torches matter after dark. `--day-len N` overrides day length for a
+session; `--day-len 0`
 restores the old always-noon-where-you-are mode, and `--sun-lat/--sun-lon`
-pins the sun exactly (screenshots stay reproducible). `--exagg N` scales
+rotates the complete solar frame to pin the Sun exactly (screenshots stay
+reproducible). `--exagg N` scales
 terrain height (default 10; walk mode is best at `--exagg 1`).
 
 Living weather defaults to `--weather live`; use `--weather off` for the clear
 legacy render or `--weather COVER,PRECIP` to pin both intensities. For replay,
-`--weather-time T_S` seeks the absolute weather clock without moving the
-day/night clock. The play harness exposes the same coordinate as `weather time
-T_S`, alongside `weather off|live|pin` and `weather season FRAC`.
+`--weather-time T_S` seeks the absolute game coordinate shared by weather,
+day/night, season, and orbital bodies. Photo restore retains an independent
+daily phase offset so legacy sidecars still reproduce their recorded Sun.
+The play harness exposes the same coordinate as `weather time T_S`, alongside
+`weather off|live|pin` and `weather season FRAC`.
 
 **`--auto-tilt`** opts into the descent cinematic: above 100 km, scrolling
 altitude eases the view pitch toward the planet. Default **off** — scroll
@@ -71,6 +78,7 @@ never touches pitch, so the camera is entirely yours (drag/mouse-look own it).
 | `src/planet.rs` | face rasters + gnomonic cube-sphere math (the game's coordinate system) |
 | `src/terrain.rs` | the LOD quadtree: screen-space-error tile selection, tile meshing with skirts |
 | `src/camera.rs` | orbital camera in f64 (planet-scale precision) |
+| `src/orbits.rs` | validated f64 Kepler hierarchy, shared season clock, eclipse geometry |
 | `src/renderer.rs` | wgpu pipeline, per-tile buffers + cache, offscreen capture |
 | `src/shader.wgsl` | camera-relative vertex transform, sun lighting, haze |
 
@@ -101,7 +109,7 @@ Key invariants proven end-to-end:
   voxel.rs`) — the diamond prisms from the game spec, chunked 32x32, built in
   parallel, cached. The heightfield is *cut away* under the voxel patch
   (fragment discard), so every pixel belongs to exactly one system.
-* Chunk rings cross cube-face edges seamlessly; Q/E break/place blocks.
+* Chunk rings cross cube-face edges seamlessly; LMB/RMB break/place blocks.
 
 ## Phase 3 (landscape generation — done)
 
@@ -246,7 +254,8 @@ Scenic destinations (all `--exagg 1`):
 * **Day/night cycle**: the sun stands still and the planet turns — local
   time depends on longitude, the terminator crosses the planet from
   orbit, sunsets happen to you instead of being launch options. Default
-  20-minute day (`--day-len`, 0 = legacy always-noon).
+  30-minute day from `solar_tuning.json` (`--day-len` overrides it,
+  0 = legacy always-noon).
 * **Torch flames flicker** (a time uniform breathes both the emissive
   quads and the point-light intensities, each on its own phase).
 
@@ -278,8 +287,9 @@ editing physics in `src/`, rebuild the harness explicitly —
 binary and misread working fixes as broken (this cost real time once).
 
 Commands: `teleport LAT LON [ALT]`, `look YAW PITCH`, `turn DY DP`,
-`mode walk|fly`, `hold w+shift 3.5`, `tap space|q|e|r`, `wait S`,
-`shot NAME`, `state NAME`, `sun LAT LON`, `log ...`, and `assert FIELD
+`mode walk|fly`, `focus neisor|moon|sun|free`, `roll DEG`,
+`hold w+shift 3.5`, `tap space|lmb|rmb|r`, `wait S`, `shot NAME`,
+`state NAME`, `sun LAT LON`, `log ...`, and `assert FIELD
 [OP] VALUE`. Each run leaves `interchange/runs/<name>/` with frames,
 per-shot JSON state sidecars (pose, physics, terrain under your feet),
 and a transcript. Scripts start in a clean world (no saved edits) and are
@@ -294,7 +304,9 @@ physics, not to find places.
 Any failure exits the run non-zero, so a survey *fails loudly* with no
 human reading frames. Fields: `grounded`, `underwater`, `mode`,
 `has_water`, `alt_km`, `ground_km`, `vert_vel_mps`, `support_below_km`,
-`water_surface_km`, `ceiling_above_km`. Every fixed bug should leave an
+`water_surface_km`, `ceiling_above_km`, plus numeric solar/camera fields such
+as `focus_id`, `roll_deg`, `camera_*_km`, `sun_*_km`, `moon_*_km`,
+`season_frac`, `solar_occlusion`, and `lunar_shadow`. Every fixed bug should leave an
 asserting script behind.
 
 ### Survey suites (automated discovery)
@@ -339,12 +351,14 @@ geometry at coarse LOD (the endgame for distant rivers).
 
 ## Phase 7f (the moon & moonlit nights, 2026-07-07)
 
-* **A moon** rides opposite the sun (rises at sunset, near-full), a
+* **Historical shader moon (superseded by SOLAR P1)** rode opposite the Sun; a
   phase-lit sphere — a ray within its disc reconstructs the sphere normal
   and lights it by the sun for a real terminator, with faint earthshine on
   the dark side, surface mottling, and a tight halo. It fades out in
   daylight and below the horizon, and is tied to the sun so a pinned sun
   keeps captures reproducible.
+  SOLAR P1 keeps that presentation but replaces the ray disc with a physical
+  mesh on a 7-day Kepler orbit; phase and eclipses are now geometric.
 * **Night ambient lift**: a cool directional moonlight plus a faint floor
   so night terrain reads as moonlit — silhouetted trees, water catching
   the light — instead of near-black. Present only at night and only while

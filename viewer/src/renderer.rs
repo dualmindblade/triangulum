@@ -2,11 +2,12 @@
 //! offscreen capture path (renders to a texture and saves a PNG — no window).
 
 use crate::camera::Camera;
+use crate::orbits::{BodyId, SolarState, SolarTuning};
 use crate::planet::Planet;
 use crate::terrain::{build_tile, select_tiles, TileKey, TileMesh, Vertex};
 use crate::voxel::{build_chunk, select_chunks, ChunkKey, Edits, Torches};
 use anyhow::Result;
-use glam::{DVec3, Mat4};
+use glam::{DQuat, DVec3, Mat4};
 use std::collections::{HashMap, HashSet};
 use std::sync::mpsc;
 use std::sync::Arc;
@@ -58,10 +59,20 @@ struct Globals {
     // world-space view rays (camera-relative space, so the eye is origin)
     inv_view_proj: [[f32; 4]; 4],
     sun_dir: [f32; 4],
-    // xyz = unit direction to the moon (deterministic anti-solar + tilt, so
-    // screenshots stay reproducible); w spare. Drives the night moon disc and
-    // the cool moonlight lift on night terrain.
+    // xyz = camera-to-physical-moon direction; w spare. Drives the halo and
+    // cool moonlight lift while the mesh itself carries the visible disc.
     moon_dir: [f32; 4],
+    // Physical body centers relative to the f64 camera, converted only here;
+    // w = physical radius in km. Never send solar-system world coordinates
+    // directly to f32 (SOLAR.md precision contract).
+    sun_body: [f32; 4],
+    moon_body: [f32; 4],
+    // x = solar disc occlusion at the camera, y = lunar shadow fraction,
+    // z = conservative whole-planet solar-contact gate, w = halo strength.
+    eclipse: [f32; 4],
+    sun_tint: [f32; 4],
+    moon_tint: [f32; 4],
+    moon_copper_tint: [f32; 4],
     // disc cut out of the heightfield where voxel chunks own the ground:
     // xyz = disc center relative to the camera (km), w = radius (0 = off)
     hole: [f32; 4],
@@ -115,6 +126,13 @@ struct Globals {
     lights: [[f32; 4]; MAX_LIGHTS],
 }
 
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct BodyVertex {
+    position: [f32; 3],
+    normal: [f32; 3],
+}
+
 /// How many placed torches can light a frame at once (nearest win).
 pub const MAX_LIGHTS: usize = 16;
 
@@ -149,7 +167,11 @@ pub struct Renderer {
     pub queue: wgpu::Queue,
     pipeline: wgpu::RenderPipeline,
     sky_pipeline: wgpu::RenderPipeline,
+    body_pipeline: wgpu::RenderPipeline,
     precip_pipeline: wgpu::RenderPipeline,
+    body_vertex_buf: wgpu::Buffer,
+    body_index_buf: wgpu::Buffer,
+    body_index_count: u32,
     bind_group: wgpu::BindGroup,
     globals_buf: wgpu::Buffer,
     tiles_buf: wgpu::Buffer,
@@ -191,8 +213,10 @@ pub struct Renderer {
     /// animation read this directly.
     render_time_s: f64,
     /// Weather is the same deterministic clock plus a seek offset. Replaying
-    /// an absolute storm time therefore does not move the sun/day phase.
+    /// an absolute storm time also seeks the orbital clock; a separate daily
+    /// rotation offset preserves exact photo-sidecar time-of-day restores.
     weather_time_offset_s: f64,
+    day_time_offset_s: f64,
     /// Voxel patch radius multiplier (--patch): 1.0 = the classic
     /// 200–500 m disc, 2.0 = twice the radius (4x the chunks — streaming
     /// makes that affordable).
@@ -238,6 +262,7 @@ pub struct Renderer {
     /// Living weather (WEATHER.md). None = no weather.bin, sky stays clear.
     pub weather_field: Option<crate::weather::WeatherField>,
     pub weather_tuning: crate::weather::WeatherTuning,
+    pub solar_tuning: SolarTuning,
     /// Master switch (--weather off, `weather off` in scripts).
     pub weather_on: bool,
     /// Some((cover, precip)) pins the sky for art shots and regression
@@ -246,6 +271,38 @@ pub struct Renderer {
     /// Last frame's camera weather sample — photo sidecars record it so a
     /// storm shot is a coordinate you can teleport back into.
     pub last_weather: crate::weather::Weather,
+    /// Last frame's geometric eclipse factors, exposed to numeric play
+    /// assertions and evidence sidecars.
+    pub last_solar_occlusion: f64,
+    pub last_lunar_shadow: f64,
+}
+
+/// Shared unit sphere for the physical Sun and moon. Surface identity stays
+/// in the unit normal so P2 can replace `moon_surface` in WGSL without
+/// changing the body/frame interface.
+fn body_sphere_mesh() -> (Vec<BodyVertex>, Vec<u32>) {
+    const LAT: u32 = 32;
+    const LON: u32 = 64;
+    let mut vertices = Vec::with_capacity(((LAT + 1) * (LON + 1)) as usize);
+    for iy in 0..=LAT {
+        let lat = -std::f64::consts::FRAC_PI_2
+            + std::f64::consts::PI * iy as f64 / LAT as f64;
+        for ix in 0..=LON {
+            let lon = std::f64::consts::TAU * ix as f64 / LON as f64;
+            let n = DVec3::new(lat.cos() * lon.cos(), lat.cos() * lon.sin(), lat.sin());
+            let normal = [n.x as f32, n.y as f32, n.z as f32];
+            vertices.push(BodyVertex { position: normal, normal });
+        }
+    }
+    let mut indices = Vec::with_capacity((LAT * LON * 6) as usize);
+    for iy in 0..LAT {
+        for ix in 0..LON {
+            let a = iy * (LON + 1) + ix;
+            let b = a + LON + 1;
+            indices.extend_from_slice(&[a, b, a + 1, a + 1, b, b + 1]);
+        }
+    }
+    (vertices, indices)
 }
 
 impl Renderer {
@@ -397,6 +454,60 @@ impl Renderer {
             cache: None,
         });
 
+        // Physical bodies share one sphere mesh and pipeline. Their centers
+        // and radii ride in the existing dynamic Tile uniform: offset.w is
+        // the body kind (1 Sun, 2 moon), morph.x is radius. Alpha blending
+        // preserves the established atmospheric fade, while depth writes let
+        // the nearer moon physically cover the Sun at contact.
+        let body_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("solar bodies"),
+            layout: Some(&layout),
+            vertex: wgpu::VertexState {
+                module: &shader,
+                entry_point: Some("vs_body"),
+                compilation_options: Default::default(),
+                buffers: &[Some(wgpu::VertexBufferLayout {
+                    array_stride: std::mem::size_of::<BodyVertex>() as u64,
+                    step_mode: wgpu::VertexStepMode::Vertex,
+                    attributes: &wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3],
+                })],
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &shader,
+                entry_point: Some("fs_body"),
+                compilation_options: Default::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format,
+                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            primitive: wgpu::PrimitiveState { cull_mode: None, ..Default::default() },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: wgpu::TextureFormat::Depth32Float,
+                depth_write_enabled: Some(true),
+                depth_compare: Some(wgpu::CompareFunction::Greater),
+                stencil: Default::default(),
+                bias: Default::default(),
+            }),
+            multisample: Default::default(),
+            multiview_mask: None,
+            cache: None,
+        });
+
+        let (body_vertices, body_indices) = body_sphere_mesh();
+        let body_vertex_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("solar body sphere vertices"),
+            contents: bytemuck::cast_slice(&body_vertices),
+            usage: wgpu::BufferUsages::VERTEX,
+        });
+        let body_index_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("solar body sphere indices"),
+            contents: bytemuck::cast_slice(&body_indices),
+            usage: wgpu::BufferUsages::INDEX,
+        });
+        let body_index_count = body_indices.len() as u32;
+
         let depth = Self::make_depth(&device, size);
         let (tx, rx) = mpsc::channel();
         let (ttx, trx) = mpsc::channel();
@@ -440,7 +551,11 @@ impl Renderer {
             queue,
             pipeline,
             sky_pipeline,
+            body_pipeline,
             precip_pipeline,
+            body_vertex_buf,
+            body_index_buf,
+            body_index_count,
             bind_group,
             globals_buf,
             tiles_buf,
@@ -459,10 +574,11 @@ impl Renderer {
             sun_dir: None,
             underwater: false,
             torches: Torches::default(),
-            day_len_s: 0.0,
+            day_len_s: SolarTuning::default().day_length_s,
             sun_ref_lon: 0.0,
             render_time_s: 0.0,
             weather_time_offset_s: 0.0,
+            day_time_offset_s: 0.0,
             patch_scale: 1.0,
             voxels_on: true,
             chunk_pending: HashMap::new(),
@@ -477,9 +593,12 @@ impl Renderer {
             torch_snapshot: Arc::new(Torches::default()),
             weather_field: None,
             weather_tuning: crate::weather::WeatherTuning::default(),
+            solar_tuning: SolarTuning::default(),
             weather_on: true,
             weather_pin: None,
             last_weather: crate::weather::Weather::default(),
+            last_solar_occlusion: 0.0,
+            last_lunar_shadow: 0.0,
         }
     }
 
@@ -523,8 +642,16 @@ impl Renderer {
         self.render_time_s + self.weather_time_offset_s
     }
 
-    /// Seek weather without changing the sun/day-cycle clock. The offset is
-    /// retained as simulation time advances, so a restored front keeps moving.
+    pub fn effective_day_len_s(&self) -> f64 {
+        if self.day_len_s.is_finite() && self.day_len_s > 0.0 {
+            self.day_len_s
+        } else {
+            self.solar_tuning.day_length_s
+        }
+    }
+
+    /// Seek the absolute weather/orbit coordinate. The offset is retained as
+    /// simulation time advances, so restored fronts and bodies keep moving.
     pub fn set_weather_time_s(&mut self, t_s: f64) {
         if t_s.is_finite() {
             self.weather_time_offset_s = t_s.max(0.0) - self.render_time_s;
@@ -551,25 +678,42 @@ impl Renderer {
         self.torches = torches;
     }
 
-    pub fn sun_state(&self, cam_pos: DVec3) -> SunState {
-        let t_s = self.render_time_s;
-        let dir = self.sun_dir.unwrap_or_else(|| {
-            if self.day_len_s > 0.0 {
-                // the sun hangs in space and the planet turns under it:
-                // start ~mid-morning at the reference longitude, sweep
-                // westward, gentle 10 deg declination for softer noons
-                let lon = self.sun_ref_lon + 0.7
-                    - t_s / self.day_len_s * std::f64::consts::TAU;
-                let lat = 10f64.to_radians();
-                DVec3::new(lat.cos() * lon.cos(), lat.cos() * lon.sin(), lat.sin())
-            } else {
-                cam_pos.normalize()
-            }
+    /// Physical hierarchy in the rotating Neisor terrain frame. A pinned sun
+    /// is an explicit art/repro override: rotate the complete frame (including
+    /// the moon), rather than divorcing the visible disc from its body.
+    pub fn solar_state(&self, cam_pos: DVec3, neisor_radius_km: f64) -> SolarState {
+        let absolute_t_s = self.weather_time_s();
+        let rotation_t_s = absolute_t_s + self.day_time_offset_s;
+        let mut state = crate::orbits::state_at_with_day_length(
+            &self.solar_tuning,
+            absolute_t_s,
+            rotation_t_s,
+            self.effective_day_len_s(),
+            neisor_radius_km,
+        );
+        state = state.rotated_about_neisor(DQuat::from_rotation_z(self.sun_ref_lon));
+        let target = self.sun_dir.or_else(|| {
+            // Legacy --day-len 0 remains an explicit local-noon mode. The
+            // bodies stay physical relative to one another; the whole frame
+            // follows the observer just as a pinned art frame does.
+            (self.day_len_s <= 0.0).then(|| cam_pos.normalize())
         });
+        if let Some(target) = target.filter(|v| v.length_squared() > 0.5) {
+            let from = (state.sun_km - cam_pos).normalize();
+            state = state.rotated_about_observer(
+                cam_pos,
+                DQuat::from_rotation_arc(from, target.normalize()),
+            );
+        }
+        state
+    }
+
+    pub fn sun_state(&self, cam_pos: DVec3, neisor_radius_km: f64) -> SunState {
+        let state = self.solar_state(cam_pos, neisor_radius_km);
         SunState {
-            dir,
+            dir: state.sun_km.normalize(),
             day_time_s: if self.day_len_s > 0.0 {
-                t_s.rem_euclid(self.day_len_s)
+                (self.weather_time_s() + self.day_time_offset_s).rem_euclid(self.day_len_s)
             } else {
                 0.0
             },
@@ -578,14 +722,20 @@ impl Renderer {
 
     /// Jump the day/night cycle so the CURRENT moment sits `t_s` seconds
     /// into the day — the photo map's optional "restore time of day".
-    /// No-op when the sun is pinned or the cycle is off. The weather clock is
-    /// preserved; recorded weather has its own absolute restore coordinate.
+    /// No-op when the sun is pinned or the cycle is off. Absolute weather and
+    /// orbit time are preserved; only the daily body rotation gets an offset.
     pub fn set_day_time_s(&mut self, t_s: f64) {
         if self.day_len_s > 0.0 && self.sun_dir.is_none() {
-            let weather_t_s = self.weather_time_s();
-            self.render_time_s = t_s.rem_euclid(self.day_len_s);
-            self.weather_time_offset_s = weather_t_s - self.render_time_s;
+            self.day_time_offset_s =
+                t_s.rem_euclid(self.day_len_s) - self.weather_time_s();
         }
+    }
+
+    pub fn set_season_frac(&mut self, target: f64) {
+        let absolute_t_s = self.weather_time_s();
+        let day_len_s = self.effective_day_len_s();
+        self.solar_tuning
+            .set_season_frac(absolute_t_s, day_len_s, target);
     }
 
     /// Drop cached chunk meshes (after edits) so they rebuild next frame.
@@ -654,17 +804,29 @@ impl Renderer {
         let vp32 = Mat4::from_cols_array(&vp.to_cols_array().map(|x| x as f32));
         let t_s = self.render_time_s;
         let weather_t_s = self.weather_time_s();
-        let sun = self.sun_state(cam_pos).dir;
-        // the moon rides opposite the sun (rises at sunset, near-full), tilted
-        // ~18 deg off the solar path about the world X axis so it isn't a
-        // mirror image of the sun and clears the horizon on its own arc. Tied
-        // to the sun, so a pinned sun pins the moon (reproducible captures).
-        let moon = {
-            let a: f64 = 18f64.to_radians();
-            let (s, c) = (a.sin(), a.cos());
-            let m = -sun;
-            DVec3::new(m.x, m.y * c - m.z * s, m.y * s + m.z * c).normalize()
-        };
+        let solar = self.solar_state(cam_pos, planet.radius_km);
+        let sun_rel = solar.sun_km - cam_pos;
+        let moon_rel = solar.moon_km - cam_pos;
+        let sun = sun_rel.normalize_or_zero();
+        let moon = moon_rel.normalize_or_zero();
+        let solar_occlusion = crate::orbits::solar_occlusion_at(
+            cam_pos,
+            solar,
+            &self.solar_tuning,
+            planet.radius_km,
+        );
+        let lunar_shadow = crate::orbits::lunar_shadow_fraction(
+            solar,
+            &self.solar_tuning,
+            planet.radius_km,
+        );
+        let solar_contact_possible = crate::orbits::solar_contact_possible(
+            solar,
+            &self.solar_tuning,
+            planet.radius_km,
+        );
+        self.last_solar_occlusion = solar_occlusion;
+        self.last_lunar_shadow = lunar_shadow;
         let inv32 = Mat4::from_cols_array(&vp.inverse().to_cols_array().map(|x| x as f32));
         let up = cam_pos.normalize();
         let cam_h_km = (cam_pos.length() - planet.radius_km).max(0.0);
@@ -981,7 +1143,8 @@ impl Renderer {
                 planet,
                 cam_pos.normalize(),
                 weather_t_s,
-                self.day_len_s,
+                self.effective_day_len_s(),
+                &self.solar_tuning,
                 &self.weather_tuning,
             );
             if let Some((c, p)) = self.weather_pin {
@@ -1056,6 +1219,42 @@ impl Renderer {
             inv_view_proj: inv32.to_cols_array_2d(),
             sun_dir: [sun.x as f32, sun.y as f32, sun.z as f32, 0.0],
             moon_dir: [moon.x as f32, moon.y as f32, moon.z as f32, 0.0],
+            sun_body: [
+                sun_rel.x as f32,
+                sun_rel.y as f32,
+                sun_rel.z as f32,
+                self.solar_tuning.radius_km(BodyId::Sun, planet.radius_km) as f32,
+            ],
+            moon_body: [
+                moon_rel.x as f32,
+                moon_rel.y as f32,
+                moon_rel.z as f32,
+                self.solar_tuning.radius_km(BodyId::Moon, planet.radius_km) as f32,
+            ],
+            eclipse: [
+                solar_occlusion as f32,
+                lunar_shadow as f32,
+                solar_contact_possible as u8 as f32,
+                self.solar_tuning.sun_halo_strength as f32,
+            ],
+            sun_tint: [
+                self.solar_tuning.sun_tint[0] as f32,
+                self.solar_tuning.sun_tint[1] as f32,
+                self.solar_tuning.sun_tint[2] as f32,
+                0.0,
+            ],
+            moon_tint: [
+                self.solar_tuning.moon_tint[0] as f32,
+                self.solar_tuning.moon_tint[1] as f32,
+                self.solar_tuning.moon_tint[2] as f32,
+                0.0,
+            ],
+            moon_copper_tint: [
+                self.solar_tuning.moon_copper_tint[0] as f32,
+                self.solar_tuning.moon_copper_tint[1] as f32,
+                self.solar_tuning.moon_copper_tint[2] as f32,
+                0.0,
+            ],
             hole,
             hole_up,
             sky: [up.x as f32, up.y as f32, up.z as f32, cam_h_km as f32],
@@ -1159,7 +1358,7 @@ impl Renderer {
             .iter()
             .map(|k| DrawKey::Chunk(*k))
             .chain(keys.iter().map(|k| DrawKey::Tile(*k)));
-        for (slot, key) in all_keys.enumerate().take(MAX_TILES) {
+        for (slot, key) in all_keys.enumerate().take(MAX_TILES - 2) {
             let tile = match key {
                 DrawKey::Tile(k) => self.cache.get_mut(&k).unwrap(),
                 DrawKey::Chunk(k) => self.chunk_cache.get_mut(&k).unwrap(),
@@ -1209,6 +1408,56 @@ impl Renderer {
             );
             draws.push((key, slot as u32));
         }
+        let look = camera.look_dir();
+        let body_visible = |center: DVec3, radius: f64| {
+            let distance = center.length();
+            if distance <= radius {
+                return true;
+            }
+            let angular_radius = (radius / distance).clamp(0.0, 1.0).asin();
+            // 65 deg vertical FOV and widescreen horizontal FOV fit inside a
+            // conservative 70 deg cone. Include the body's own angular size.
+            look.dot(center / distance)
+                >= (70f64.to_radians() + angular_radius).min(std::f64::consts::PI).cos()
+        };
+        let body_specs = [
+            (
+                sun_rel,
+                1.0f32,
+                self.solar_tuning.radius_km(BodyId::Sun, planet.radius_km),
+            ),
+            (
+                moon_rel,
+                2.0f32,
+                self.solar_tuning.radius_km(BodyId::Moon, planet.radius_km),
+            ),
+        ];
+        let mut body_slots = Vec::with_capacity(2);
+        for (center, kind, radius) in body_specs
+            .into_iter()
+            .filter(|(center, _, radius)| body_visible(*center, *radius))
+        {
+            let slot = (draws.len() + body_slots.len()) as u32;
+            // Body center is already camera-relative in f64. Only this small
+            // boundary conversion reaches the GPU; no planet/solar magnitude
+            // is subtracted in f32.
+            let data = [
+                center.x as f32,
+                center.y as f32,
+                center.z as f32,
+                kind,
+                radius as f32,
+                0.0,
+                0.0,
+                0.0,
+            ];
+            self.queue.write_buffer(
+                &self.tiles_buf,
+                slot as u64 * TILE_UNIFORM_STRIDE,
+                bytemuck::bytes_of(&data),
+            );
+            body_slots.push(slot);
+        }
         self.evict();
 
         let mut encoder = self.device.create_command_encoder(&Default::default());
@@ -1257,6 +1506,16 @@ impl Renderer {
             pass.set_pipeline(&self.sky_pipeline);
             pass.set_bind_group(0, &self.bind_group, &[0]);
             pass.draw(0..3, 0..1);
+            // Bodies draw over the non-depth-writing sky but remain behind
+            // terrain. Sun first, moon second: the depth test makes a real
+            // foreground moon occlude the solar mesh at eclipse contact.
+            pass.set_pipeline(&self.body_pipeline);
+            pass.set_vertex_buffer(0, self.body_vertex_buf.slice(..));
+            pass.set_index_buffer(self.body_index_buf.slice(..), wgpu::IndexFormat::Uint32);
+            for slot in &body_slots {
+                pass.set_bind_group(0, &self.bind_group, &[*slot * TILE_UNIFORM_STRIDE as u32]);
+                pass.draw_indexed(0..self.body_index_count, 0, 0..1);
+            }
             // precipitation: instanced rain streaks / snow flakes around the
             // camera, alpha-blended over everything, occluded by terrain
             if n_precip > 0 {

@@ -1,0 +1,38 @@
+# SOLAR.md P1: numeric ephemeris assertions at the epoch and one absolute
+# timeskip. Body coordinates are Neisor-centered rotating-frame f64 km.
+mode fly
+weather off
+teleport 10 30 100
+
+weather time 0
+state epoch
+assert solar_time_s ~ 0 0.000001
+assert season_frac ~ 0.45 0.000000001
+assert sun_x_km ~ 82227016.1106 0.01
+assert sun_y_km ~ 69198012.7515 0.01
+assert sun_z_km ~ 18759571.4261 0.01
+assert moon_x_km ~ -97371.8941 0.01
+assert moon_y_km ~ -68321.4785 0.01
+assert moon_z_km ~ -21037.5787 0.01
+assert solar_occlusion ~ 0 0.000000001
+assert lunar_shadow ~ 0 0.000000001
+
+# Whole-disc evidence for Andrew's planet-shaded ambient: camera-side dusk,
+# pixel-side day/night, sky/stars still based only on this camera.
+weather time 0
+teleport 10 130 20000
+look 0 -86
+shot orbital_terminator
+
+weather time 1234567
+state timeskip
+assert solar_time_s ~ 1234567 0.000001
+assert season_frac ~ 0.6151256614 0.000000001
+assert sun_x_km ~ -80350698.1788 0.01
+assert sun_y_km ~ 59460338.5738 0.01
+assert sun_z_km ~ 41918932.1286 0.01
+assert moon_x_km ~ -30115.7762 0.01
+assert moon_y_km ~ -114625.1290 0.01
+assert moon_z_km ~ -16678.8855 0.01
+assert solar_occlusion ~ 0 0.000000001
+assert lunar_shadow ~ 0 0.000000001
