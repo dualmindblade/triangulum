@@ -1,4 +1,5 @@
 # Camera-controls suite: locks in the three creative-director camera changes
+weather season 0.45
 # on branch feat/camera-controls. Deterministic (fixed seed 42, 60 Hz), so it
 # doubles as a regression gate. Run:
 #   ./viewer/target/release/examples/play.exe viewer/scripts/camera-controls.play

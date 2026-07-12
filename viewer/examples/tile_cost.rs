@@ -9,7 +9,10 @@ use glam::DVec3;
 use rayon::prelude::*;
 use std::time::{Duration, Instant};
 use triangulum_viewer::planet::{Planet, face_from_dir};
-use triangulum_viewer::terrain::{TileKey, VOXEL_OCTAVES, build_tile, sample, select_tiles};
+use triangulum_viewer::terrain::{
+    build_tile_at_season, sample_at_season, select_tiles, TileKey, VOXEL_OCTAVES,
+};
+use triangulum_viewer::weather::{StructuralSeason, WeatherTuning};
 
 const ERR_TARGET: f64 = 0.35;
 const VOXEL_MAX_ALT_KM: f64 = 2.5;
@@ -29,10 +32,10 @@ fn add_bits(sum: u64, values: impl IntoIterator<Item = f32>) -> u64 {
         .fold(sum, |sum, value| sum.wrapping_add(value.to_bits() as u64))
 }
 
-fn build_set(planet: &Planet, keys: &[TileKey]) -> (usize, u64, u64, u64) {
+fn build_set(planet: &Planet, keys: &[TileKey], season: StructuralSeason) -> (usize, u64, u64, u64) {
     keys.par_iter()
         .map(|&key| {
-            let mesh = build_tile(planet, key, 1.0);
+            let mesh = build_tile_at_season(planet, key, 1.0, season);
             let (geometry_bits, other_bits, shore_bits) = mesh.vertices.iter().fold(
                 (0u64, 0u64, 0u64),
                 |(geometry, other, shore), vertex| {
@@ -83,9 +86,16 @@ fn main() -> anyhow::Result<()> {
         "viewer/assets"
     };
     let planet = Planet::load(assets)?;
+    let season_arg = std::env::args()
+        .skip_while(|arg| arg != "--season")
+        .nth(1)
+        .and_then(|arg| arg.parse::<f64>().ok());
+    let season = season_arg.map_or_else(StructuralSeason::annual, |frac| {
+        StructuralSeason::quantized(frac, &WeatherTuning::load(assets))
+    });
     let dir = camera_dir();
     let (face, u, v) = face_from_dir(dir);
-    let ground_km = sample(&planet, face, u, v, VOXEL_OCTAVES).render_h_km();
+    let ground_km = sample_at_season(&planet, face, u, v, VOXEL_OCTAVES, season).render_h_km();
     let cam_pos = dir * (planet.radius_km + ground_km + ALT_KM);
     let voxel_radius_km = (200.0 + (VOXEL_MAX_ALT_KM - ALT_KM).max(0.0) * 120.0) / 1000.0;
     let keys = select_tiles(
@@ -102,12 +112,12 @@ fn main() -> anyhow::Result<()> {
         keys.len() - deep
     );
 
-    let warm = build_set(&planet, &keys);
+    let warm = build_set(&planet, &keys, season);
     let mut elapsed = Vec::new();
     let mut check = warm;
     for run in 1..=5 {
         let start = Instant::now();
-        check = build_set(&planet, &keys);
+        check = build_set(&planet, &keys, season);
         let dt = start.elapsed();
         println!("run {run}: {:.3} s", dt.as_secs_f64());
         elapsed.push(dt);

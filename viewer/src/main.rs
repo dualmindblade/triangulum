@@ -161,11 +161,8 @@ fn assets_dir() -> String {
 
 /// Wire the living weather into a renderer per the --weather arg
 /// (WEATHER.md). Missing weather.bin degrades to a clear sky, loudly.
-fn apply_weather(renderer: &mut Renderer, spec: &str) {
-    match triangulum_viewer::weather::WeatherField::load(&assets_dir()) {
-        Ok(f) => renderer.weather_field = Some(f),
-        Err(e) => eprintln!("weather off ({e}) - run scripts/bake_weather.py"),
-    }
+fn apply_weather(renderer: &mut Renderer, planet: &Planet, spec: &str) {
+    renderer.weather_field = planet.weather.clone();
     renderer.weather_tuning = triangulum_viewer::weather::WeatherTuning::load(&assets_dir());
     renderer.solar_tuning = triangulum_viewer::orbits::SolarTuning::load(&assets_dir());
     renderer.day_len_s = renderer.solar_tuning.day_length_s;
@@ -285,7 +282,7 @@ fn capture(planet: Arc<Planet>, camera: Camera, args: Args, path: &str) -> Resul
     let edits = load_edits(planet.seed);
     renderer.set_torches(load_torches(planet.seed));
     renderer.refresh_world_snapshot(&edits);
-    apply_weather(&mut renderer, &args.weather);
+    apply_weather(&mut renderer, &planet, &args.weather);
     if let Some(day_len_s) = args.day_len {
         renderer.day_len_s = day_len_s;
     }
@@ -293,8 +290,12 @@ fn capture(planet: Arc<Planet>, camera: Camera, args: Args, path: &str) -> Resul
         renderer.set_weather_time_s(t_s);
     }
     let eye_km = camera.ground_km + camera.altitude_km;
+    let seasonal_planet = triangulum_viewer::voxel::SeasonalPlanet::new(
+        Arc::clone(&planet),
+        renderer.structural_season(&planet),
+    );
     renderer.underwater = triangulum_viewer::voxel::water_surface_km(
-        &*planet,
+        &seasonal_planet,
         &edits,
         camera.position().normalize(),
         eye_km,
@@ -694,8 +695,15 @@ impl App {
     /// placed block always lands on its column's top.
     fn edit_block(&mut self, dh: i64) {
         let body_id = self.camera.body;
+        let seasonal_planet = triangulum_viewer::voxel::SeasonalPlanet::new(
+            Arc::clone(&self.planet),
+            self.gfx.as_ref().map_or_else(
+                triangulum_viewer::weather::StructuralSeason::annual,
+                |gfx| gfx.renderer.structural_season(&self.planet),
+            ),
+        );
         let body: &dyn triangulum_viewer::voxel::VoxelBody = match body_id {
-            triangulum_viewer::orbits::BodyId::Neisor => &*self.planet,
+            triangulum_viewer::orbits::BodyId::Neisor => &seasonal_planet,
             triangulum_viewer::orbits::BodyId::Moon => {
                 let Some(body) = self.moon_body.as_ref() else { return };
                 body
@@ -731,8 +739,15 @@ impl App {
             return;
         }
         let edits = self.edits.for_body(triangulum_viewer::orbits::BodyId::Neisor);
+        let seasonal_planet = triangulum_viewer::voxel::SeasonalPlanet::new(
+            Arc::clone(&self.planet),
+            self.gfx.as_ref().map_or_else(
+                triangulum_viewer::weather::StructuralSeason::annual,
+                |gfx| gfx.renderer.structural_season(&self.planet),
+            ),
+        );
         if let Some(dirty) = triangulum_viewer::player::toggle_torch(
-            &*self.planet,
+            &seasonal_planet,
             edits,
             &mut self.torches,
             &self.camera,
@@ -1249,8 +1264,15 @@ impl App {
                     } else {
                         9.81
                     });
+                let seasonal_planet = triangulum_viewer::voxel::SeasonalPlanet::new(
+                    Arc::clone(&self.planet),
+                    self.gfx.as_ref().map_or_else(
+                        triangulum_viewer::weather::StructuralSeason::annual,
+                        |gfx| gfx.renderer.structural_season(&self.planet),
+                    ),
+                );
                 let body: &dyn triangulum_viewer::voxel::VoxelBody = match body_id {
-                    triangulum_viewer::orbits::BodyId::Neisor => &*self.planet,
+                    triangulum_viewer::orbits::BodyId::Neisor => &seasonal_planet,
                     triangulum_viewer::orbits::BodyId::Moon => {
                         let Some(body) = self.moon_body.as_ref() else { return };
                         body
@@ -1400,7 +1422,7 @@ impl ApplicationHandler for App {
         renderer.refresh_world_snapshot(
             self.edits.for_body(triangulum_viewer::orbits::BodyId::Neisor),
         );
-        apply_weather(&mut renderer, &self.args.weather);
+        apply_weather(&mut renderer, &self.planet, &self.args.weather);
         if let Some(day_len_s) = self.args.day_len {
             renderer.day_len_s = day_len_s;
         }

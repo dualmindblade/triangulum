@@ -1,6 +1,6 @@
 # WEATHER.md — living weather for Neisor
 
-Status: W1 + clouds v2/W3 presentation landed (2026-07-11). A long-running thread; this doc is
+Status: W1 + clouds v2/W3 presentation + W4 structural seasons landed (2026-07-12). A long-running thread; this doc is
 the contract. Owner: Austin + Andrew (taste), Fable (architecture).
 
 ## What we're building
@@ -252,14 +252,15 @@ remain tuning/future-phase context.
 ## Data format: weather.bin
 
 ```
-magic  b"WEA2"
+magic  b"WEA3"
 u32    res (texels per face edge, 256)
-u32    n_layers (14)
+u32    n_layers (26)
 6 faces x n_layers x res^2 f32, v-major rows, layer order:
   temp_a_c, temp_b_c        # temp mean lives in face_*.bin already
   prc_mean, prc_a1, prc_b1, prc_a2, prc_b2  # mm/month
   cld_mean, cld_a1, cld_b1, cld_a2, cld_b2  # cloud fraction 0..1
   wind_e, wind_n            # m/s annual mean
+  seaice_month_0..11        # monthly sea-ice truth, spatially filtered
 value(t_yr) = mean
             + a1*cos(2*pi*t_yr) + b1*sin(2*pi*t_yr)
             + a2*cos(4*pi*t_yr) + b2*sin(4*pi*t_yr), t_yr in [0,1)
@@ -269,6 +270,13 @@ Temperature uses only the annual pair (its mean is in face_*.bin); the k=2
 line applies to precipitation and clouds. Its shipped k=1 residual is 0.63 C
 against a 9.35 C mean seasonal swing, so two more always-sampled rasters were
 not justified for this targeted bimodal-weather fix.
+
+W4 samples the temperature pair through `seasonal_temp_c` and linearly
+interpolates the twelve sea-ice layers between month centers. Sea ownership
+always uses the monthly raster, even where it disagrees with the Fourier air
+temperature; inland water uses the temperature hysteresis law. A visible
+coastal class seam is therefore possible at a disagreement, by design: the
+baked ocean state is authoritative on the sea side.
 
 The fit uses month centers at `(m+0.5)/12`. CARTESIAN coefficients are on purpose:
 amp/phase cannot be blended across texels (phase wraps — a texel between

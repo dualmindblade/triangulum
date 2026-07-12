@@ -10,11 +10,12 @@
 
 use crate::noise::{fbm_band, gradient_noise, ridged_band};
 use crate::planet::{
-    climate_surface_pair, face_dir, sea_from_fields, vegetation_surface, ClimateSurface,
-    MainBlock, Planet, BIOME_RANGE_FAMILIES, BIOME_RANGE_UNRESOLVED_MEAN, COLUMNS_PER_FACE,
-    ECOTONE_BASE_PATCH_COLUMNS, ECOTONE_FIELD_OCTAVES, ECOTONE_LACUNARITY,
-    ECOTONE_PERSISTENCE,
+    climate_surface_pair, climate_surface_pair_at_season, face_dir, sea_from_fields,
+    vegetation_surface, ClimateSurface, MainBlock, Planet, BIOME_RANGE_FAMILIES,
+    BIOME_RANGE_UNRESOLVED_MEAN, COLUMNS_PER_FACE, ECOTONE_BASE_PATCH_COLUMNS,
+    ECOTONE_FIELD_OCTAVES, ECOTONE_LACUNARITY, ECOTONE_PERSISTENCE,
 };
+use crate::weather::StructuralSeason;
 use glam::DVec3;
 
 pub const TILE_QUADS: usize = 32; // 32x32 quads, 33x33 vertices per tile
@@ -220,9 +221,18 @@ fn octave_count(level: u8, radius_km: f64) -> u32 {
 /// Exaggerated ground height (km) under a direction — used to keep the
 /// camera above the local surface rather than above sea level.
 pub fn ground_height_km(planet: &Planet, dir: DVec3, exaggeration: f64) -> f64 {
+    ground_height_km_at_season(planet, dir, exaggeration, StructuralSeason::annual())
+}
+
+pub fn ground_height_km_at_season(
+    planet: &Planet,
+    dir: DVec3,
+    exaggeration: f64,
+    season: StructuralSeason,
+) -> f64 {
     let (face, u, v) = crate::planet::face_from_dir(dir);
-    let (h, _) = sample_height(planet, face, u, v, MAX_DETAIL_OCTAVES);
-    h * exaggeration
+    sample_at_season(planet, face, u, v, MAX_DETAIL_OCTAVES, season).render_h_km()
+        * exaggeration
 }
 
 /// The full octave depth used for voxel block heights (~3 m floor).
@@ -245,8 +255,8 @@ fn lake_shore_delta_km(level_km: f64, h_km: f64) -> f64 {
 /// same block, so no water block can stand above the column. Such columns
 /// become dry, walkable shoals at lake level rather than holes in the sheet.
 /// Frozen lakes deliberately keep their existing class and geometry.
-fn liquid_lake_shoal(level_km: f64, h_km: f64, temp_c: f64) -> bool {
-    temp_c >= -4.0
+fn liquid_lake_shoal(level_km: f64, h_km: f64, frozen: bool) -> bool {
+    !frozen
         && h_km < level_km
         && (level_km * 1000.0).floor() == ((h_km + 1e-6) * 1000.0).floor()
 }
@@ -334,6 +344,7 @@ fn live_pond_nearby(
     v: f64,
     octaves: u32,
     seed: i64,
+    season: StructuralSeason,
 ) -> bool {
     let live_at = |pu: f64, pv: f64| {
         if !(-1.0..=1.0).contains(&pu)
@@ -342,7 +353,7 @@ fn live_pond_nearby(
         {
             return false;
         }
-        let donor = sample_inner(planet, face, pu, pv, octaves, false);
+        let donor = sample_inner_at_season(planet, face, pu, pv, octaves, false, season);
         donor.pond_level_km.is_finite() && donor.has_water()
     };
     if pond_interior_probe_uv(face, u, v, seed).is_some_and(|p| live_at(p.0, p.1)) {
@@ -367,13 +378,18 @@ fn live_pond_nearby(
 
 /// One generated point of the world: terrain, water, and the map-scale
 /// climate context everything downstream (colors, materials, flora) keys on.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Sample {
     pub h_km: f64,     // terrain surface height (post river/pond carving)
     pub water_km: f64, // water surface height; f64::NEG_INFINITY = no water
     pub e_raw: f64,    // raw map elevation (negative = ocean)
     pub rough: f64,    // map-scale roughness (km between ~30 km cells)
     pub temp_c: f64,   // annual mean temperature
+    pub seasonal_temp_c: f64,
+    pub seasonal_temp_trend: f64,
+    /// Shared water class used by geometry, materials, and physics.
+    pub frozen: bool,
+    pub structural_season: StructuralSeason,
     pub precip: f64,   // annual precipitation (mm)
     /// Continuous 0..1 "wetness" for far-tile water tinting: feathered by
     /// channel proximity so coarse meshes show soft river threads instead
@@ -451,11 +467,31 @@ impl Sample {
 /// carved rivers/ponds with explicit water surfaces. Shared by the mesh
 /// tiles and the voxel columns so the two can never disagree.
 pub fn sample(planet: &Planet, face: usize, u: f64, v: f64, octaves: u32) -> Sample {
-    sample_inner(planet, face, u, v, octaves, true)
+    sample_inner_at_season(
+        planet,
+        face,
+        u,
+        v,
+        octaves,
+        true,
+        StructuralSeason::annual(),
+    )
+}
+
+pub fn sample_at_season(
+    planet: &Planet,
+    face: usize,
+    u: f64,
+    v: f64,
+    octaves: u32,
+    season: StructuralSeason,
+) -> Sample {
+    sample_inner_at_season(planet, face, u, v, octaves, true, season)
 }
 
 /// Donor queries run the full pond-water transaction but cannot recursively
 /// launch another apron query.
+#[cfg(test)]
 fn sample_inner(
     planet: &Planet,
     face: usize,
@@ -463,6 +499,26 @@ fn sample_inner(
     v: f64,
     octaves: u32,
     probe_pond_apron: bool,
+) -> Sample {
+    sample_inner_at_season(
+        planet,
+        face,
+        u,
+        v,
+        octaves,
+        probe_pond_apron,
+        StructuralSeason::annual(),
+    )
+}
+
+fn sample_inner_at_season(
+    planet: &Planet,
+    face: usize,
+    u: f64,
+    v: f64,
+    octaves: u32,
+    probe_pond_apron: bool,
+    season: StructuralSeason,
 ) -> Sample {
     let e_raw = planet.elevation(face, u, v) as f64;
     let rough = planet.rough(face, u, v) as f64;
@@ -479,12 +535,32 @@ fn sample_inner(
     // fjords) — but only near the coast, so the map's deep DRY interior
     // basins stay dry.
     let wmask = planet.water_frac(face, u, v) as f64;
+    let sea = sea_from_fields(e_raw, wmask, ofrac);
+    let (seasonal_temp_c, seasonal_temp_trend) =
+        planet.seasonal_temp_state_face(face, u, v, temp_c, season);
+    let mut frozen = temp_c < -4.0;
+    if sea {
+        frozen = planet.water_frozen_from_state(
+            face,
+            u,
+            v,
+            temp_c,
+            seasonal_temp_c,
+            seasonal_temp_trend,
+            true,
+            season,
+        );
+    }
     let mut out = Sample {
         h_km: 0.0,
         water_km: f64::NEG_INFINITY,
         e_raw,
         rough,
         temp_c,
+        seasonal_temp_c,
+        seasonal_temp_trend,
+        frozen,
+        structural_season: season,
         precip,
         wet_soft: 0.0,
         carve_km: 0.0,
@@ -499,7 +575,7 @@ fn sample_inner(
         river_wet: 0.0,
         river_level_km: f64::NEG_INFINITY,
         salt: false,
-        sea: sea_from_fields(e_raw, wmask, ofrac),
+        sea,
     };
 
     if out.sea {
@@ -554,6 +630,19 @@ fn sample_inner(
     // dry islands through the surface and digs pockets the flat fill drowns
     // into walls.
     let lake = planet.rivers.lake_at(face, u, v, dir);
+    if lake.is_some() {
+        frozen = planet.water_frozen_from_state(
+            face,
+            u,
+            v,
+            temp_c,
+            seasonal_temp_c,
+            seasonal_temp_trend,
+            false,
+            season,
+        );
+        out.frozen = frozen;
+    }
     // Flood eligibility. The sim's rim ring is the dam (every rim cell's
     // elevation >= the spill level by construction), so the flood covers the
     // lake's own Voronoi territory plus a bounded shore band into rim
@@ -661,7 +750,7 @@ fn sample_inner(
     // function of the lake hit + level), so every LOD agrees on the shore.
     let mut on_apron_band = false;
     if lake_flood.is_none()
-        && temp_c >= -4.0
+        && !frozen
         && let Some(hit) = &lake
     {
         // distance past the flood's outer edge: rivers.rs measures it
@@ -794,7 +883,7 @@ fn sample_inner(
                 out.wet_soft = out
                     .wet_soft
                     .max(smoothstep(0.0, 0.003, lake_shore_delta_km(lvl, h)));
-            } else if liquid_lake_shoal(lvl, h, temp_c) {
+            } else if liquid_lake_shoal(lvl, h, frozen) {
                 // Equal-block tie: analog water covers this point, but a
                 // water cell at `floor(lvl)` would collide with its ground
                 // cell. Structural sediment yields upward, as at an apron,
@@ -930,7 +1019,7 @@ fn sample_inner(
             } else if probe_pond_apron
                 && out.carve_km <= 0.0
                 && riv_d > hw * 1.5
-                && live_pond_nearby(planet, face, u, v, octaves, seed)
+                && live_pond_nearby(planet, face, u, v, octaves, seed, season)
             {
                 // A rejected raw-mask point is untouched terrain unless it
                 // is the dry bank of retained water next door.
@@ -969,13 +1058,29 @@ fn sample_inner(
                 }
             } else if probe_pond_apron
                 && h < floor
-                && live_pond_nearby(planet, face, u, v, octaves, seed)
+                && live_pond_nearby(planet, face, u, v, octaves, seed, season)
             {
                 h = bounded_pond_fill(h, floor);
             }
         }
     }
 
+    if lake.is_none()
+        && (out.water_km > h
+            || out.river_level_km.is_finite()
+            || out.pond_level_km.is_finite())
+    {
+        out.frozen = planet.water_frozen_from_state(
+            face,
+            u,
+            v,
+            temp_c,
+            seasonal_temp_c,
+            seasonal_temp_trend,
+            false,
+            season,
+        );
+    }
     out.h_km = h;
     out
 }
@@ -1033,7 +1138,7 @@ const SHORE_CLAMP_KM: f64 = 0.005;
 /// samples return before detail noise, while the dry side of a coast is
 /// classified by the octave-independent raster coastline and elevation.
 fn needs_voxel_shore_reference(s: &Sample, octaves: u32) -> bool {
-    if s.temp_c < -4.0 {
+    if s.frozen {
         return false;
     }
     let river = s.river_level_km.is_finite()
@@ -1096,7 +1201,14 @@ fn voxel_shore_reference(
     // invent a different surface, so resample the authoritative full-depth
     // truth. This is the same lost-base case as the coastal height floor.
     if s.lake_shoal {
-        return sample(planet, face, u, v, VOXEL_OCTAVES);
+        return sample_at_season(
+            planet,
+            face,
+            u,
+            v,
+            VOXEL_OCTAVES,
+            s.structural_season,
+        );
     }
     if s.lake_level_km.is_finite() && !s.river_dist_km.is_finite() {
         let ofrac = planet.ocean(face, u, v) as f64;
@@ -1132,12 +1244,18 @@ fn voxel_shore_reference(
             let detailed_h = (s.h_km + envelope * detail).max(h_floor);
             let lake = (s.lake_level_km * 1000.0).floor()
                 > ((detailed_h + 1e-6) * 1000.0).floor();
-            let shoal = !lake
-                && liquid_lake_shoal(s.lake_level_km, detailed_h, s.temp_c);
+            let shoal = !lake && liquid_lake_shoal(s.lake_level_km, detailed_h, s.frozen);
             // A dry->wet transition needs the lake hit's salt bit, which a
             // dry Sample intentionally does not retain.
             if (lake && !s.lake) || (shoal && !s.lake_shoal) {
-                return sample(planet, face, u, v, VOXEL_OCTAVES);
+                return sample_at_season(
+                    planet,
+                    face,
+                    u,
+                    v,
+                    VOXEL_OCTAVES,
+                    s.structural_season,
+                );
             }
             out.h_km = if shoal { s.lake_level_km } else { detailed_h };
             out.lake = lake;
@@ -1148,7 +1266,14 @@ fn voxel_shore_reference(
             return out;
         }
     }
-    sample(planet, face, u, v, VOXEL_OCTAVES)
+    sample_at_season(
+        planet,
+        face,
+        u,
+        v,
+        VOXEL_OCTAVES,
+        s.structural_season,
+    )
 }
 
 /// The color/class shoreline field. `s` is the voxel-octave reference for
@@ -1178,7 +1303,7 @@ fn shore_field(planet: &Planet, face: usize, u: f64, v: f64, s: &Sample) -> f32 
         // it; the next true dry bank owns the zero crossing. This also keeps
         // the mesh karst hint from reopening a cave mouth through the cap.
         s.lake_shoal_depth_km.clamp(1e-6, SHORE_CLAMP_KM)
-    } else if s.lake_level_km.is_finite() && s.temp_c >= -4.0 {
+    } else if s.lake_level_km.is_finite() && !s.frozen {
         // Floor the per-lake constant level, never the position-varying
         // ground. This stays smooth across triangles while its zero crossing
         // lands exactly where `sample`'s block predicate flips wet/dry.
@@ -1192,7 +1317,7 @@ fn shore_field(planet: &Planet, face: usize, u: f64, v: f64, s: &Sample) -> f32 
     // unrelated terrain dips out of the field.
     let shore_river = if s.river_level_km.is_finite()
         && s.river_wet > 0.5
-        && s.temp_c >= -4.0
+        && !s.frozen
         && s.river_dist_km < s.river_hw_km * 3.0
     {
         s.river_level_km - s.h_km
@@ -1204,7 +1329,7 @@ fn shore_field(planet: &Planet, face: usize, u: f64, v: f64, s: &Sample) -> f32 
     // so pond edges render per-pixel and the karst breach hint sees pond
     // water tables instead of misreading pond breaches as dry pits
     // (Difficulty Lake survey: "this one isn't exactly a cave").
-    let shore_pond = if s.pond_level_km.is_finite() && s.temp_c >= -4.0 {
+    let shore_pond = if s.pond_level_km.is_finite() && !s.frozen {
         s.pond_level_km - s.h_km
     } else {
         f64::NEG_INFINITY
@@ -1223,6 +1348,20 @@ fn shore_field(planet: &Planet, face: usize, u: f64, v: f64, s: &Sample) -> f32 
 /// ghost ring so normals use central differences everywhere — one-sided
 /// normals at tile borders leave visible lighting seams between tiles.
 pub fn build_tile(planet: &Planet, key: TileKey, exaggeration: f64) -> TileMesh {
+    build_tile_at_season(
+        planet,
+        key,
+        exaggeration,
+        StructuralSeason::annual(),
+    )
+}
+
+pub fn build_tile_at_season(
+    planet: &Planet,
+    key: TileKey,
+    exaggeration: f64,
+    season: StructuralSeason,
+) -> TileMesh {
     let n = TILE_QUADS + 1;
     let np2 = n + 2;
     let (u0, v0, size) = key.uv_range();
@@ -1238,7 +1377,7 @@ pub fn build_tile(planet: &Planet, key: TileKey, exaggeration: f64) -> TileMesh 
             let u = u0 + size * (gi as f64 - 1.0) / TILE_QUADS as f64;
             let v = v0 + size * (gj as f64 - 1.0) / TILE_QUADS as f64;
             let dir = face_dir(face, u, v);
-            let s = sample(planet, face, u, v, octaves);
+            let s = sample_at_season(planet, face, u, v, octaves, season);
             world[gj * np2 + gi] = dir * (radius + s.render_h_km() * exaggeration);
             samples.push(s);
         }
@@ -1270,7 +1409,7 @@ pub fn build_tile(planet: &Planet, key: TileKey, exaggeration: f64) -> TileMesh 
                 } else {
                     let u = u0 + size * (2 * pi) as f64 / TILE_QUADS as f64;
                     let v = v0 + size * (2 * pj) as f64 / TILE_QUADS as f64;
-                    let s = sample(planet, face, u, v, parent_oct);
+                    let s = sample_at_season(planet, face, u, v, parent_oct, season);
                     hp[k] = s.render_h_km();
                     wp[k] = tile_wet(&s, spacing * 2.0);
                 }
@@ -1342,7 +1481,7 @@ pub fn build_tile(planet: &Planet, key: TileKey, exaggeration: f64) -> TileMesh 
             let (ground, biome) = if class_s.sea || class_s.lake || class_s.lake_shoal {
                 // a frozen sheet is solid walkable ice — give it a snow-dusted,
                 // LOD-stable surface so it reads as ground, not a flat plane
-                let color = if class_s.temp_c < -4.0 {
+                let color = if class_s.frozen {
                     frost_color(world[gj * np2 + gi])
                 } else {
                     wc
@@ -1547,7 +1686,7 @@ pub fn build_tile(planet: &Planet, key: TileKey, exaggeration: f64) -> TileMesh 
             // authoritative voxel ColCtx then runs the exact same biome,
             // beach, water, edit, carve, and cave-mouth decision as blocks.
             // This also closes the dominant cheap half of BUGS.md E-2.
-            let smp = sample(planet, face, u, v, octaves);
+            let smp = sample_at_season(planet, face, u, v, octaves, season);
             // Far LODs (trees at 1-3 px) skip the exact per-column voxel
             // context - THE dominant forest build cost (jungle deep sets
             // went 3.3 s -> 0.4 s without it). Water/beach eligibility
@@ -1620,6 +1759,16 @@ pub fn build_tile(planet: &Planet, key: TileKey, exaggeration: f64) -> TileMesh 
             // The darkened base fakes the under-canopy shadow instead.
             let shade = 0.82 + 0.36 * (lot * 97.31).fract() as f32;
             let lc = leaf.color([0.0; 3]);
+            let lc = if kind == TreeKind::Broadleaf {
+                crate::weather::deciduous_tint(
+                    lc,
+                    smp.seasonal_temp_c,
+                    smp.seasonal_temp_trend,
+                    season,
+                )
+            } else {
+                lc
+            };
             let canopy = [lc[0] * shade * 1.08, lc[1] * shade * 1.08, lc[2] * shade * 1.08];
             let under = [lc[0] * shade * 0.45, lc[1] * shade * 0.45, lc[2] * shade * 0.45];
             let nrm = [dir.x as f32, dir.y as f32, dir.z as f32];
@@ -1866,7 +2015,21 @@ pub fn lake_shore_frac(
     lake_level_km: f64,
     lake_boundary_dist_km: f64,
 ) -> f64 {
-    if temp_c < -4.0
+    lake_shore_frac_for_class(
+        temp_c < -4.0,
+        h_km,
+        lake_level_km,
+        lake_boundary_dist_km,
+    )
+}
+
+pub fn lake_shore_frac_for_class(
+    frozen: bool,
+    h_km: f64,
+    lake_level_km: f64,
+    lake_boundary_dist_km: f64,
+) -> f64 {
+    if frozen
         || !lake_level_km.is_finite()
         || !lake_boundary_dist_km.is_finite()
         || h_km < lake_level_km
@@ -1903,7 +2066,7 @@ pub fn water_surface_color(depth_km: f64, sea: bool, salt: bool) -> [f32; 3] {
 }
 
 fn water_color(s: &Sample) -> [f32; 3] {
-    if s.temp_c < -4.0 {
+    if s.frozen {
         return [0.60, 0.72, 0.85]; // frozen — matches Mat::Ice on the blocks
     }
     let depth = if s.sea { -s.e_raw } else { s.water_km - s.h_km };
@@ -1923,8 +2086,21 @@ fn shade_ground_pair(
     s: &Sample,
     slope: f64,
 ) -> ([f32; 3], BiomePayload) {
-    let (local, range) =
-        climate_surface_pair(planet, face, u, v, s.temp_c, s.precip, s.sea);
+    let (local, range) = if s.structural_season.enabled {
+        climate_surface_pair_at_season(
+            planet,
+            face,
+            u,
+            v,
+            s.temp_c,
+            s.seasonal_temp_c,
+            s.precip,
+            s.sea,
+            s.structural_season,
+        )
+    } else {
+        climate_surface_pair(planet, face, u, v, s.temp_c, s.precip, s.sea)
+    };
     let ground = shade_ground_climate(local, s, slope, false, true);
     let categorical = range.candidates.map(|candidate| {
         // Range endpoints must not bake the spacing-capped mesh normal back
@@ -2075,8 +2251,8 @@ fn shade_ground_weights(
     }
     // Lake-shore sand uses the SAME fraction the blocks dither on. Apply
     // after rock/snow so barely-emergent liquid-lake shoals read as sandbars.
-    let lake_shore = lake_shore_frac(
-        s.temp_c,
+    let lake_shore = lake_shore_frac_for_class(
+        s.frozen,
         s.h_km,
         s.lake_level_km,
         s.lake_boundary_dist_km,
@@ -2088,6 +2264,64 @@ fn shade_ground_weights(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn weather_off_sample_is_bit_identical_to_legacy_sample() {
+        let assets = if std::path::Path::new("assets/meta.json").exists() {
+            "assets"
+        } else {
+            "viewer/assets"
+        };
+        let planet = Planet::load(assets).expect("sample equivalence requires baked assets");
+        for (face, u, v) in [(0, 0.13, -0.27), (2, -0.61, 0.44), (4, 0.0, 0.92)] {
+            let legacy = sample(&planet, face, u, v, VOXEL_OCTAVES);
+            let off = sample_at_season(
+                &planet,
+                face,
+                u,
+                v,
+                VOXEL_OCTAVES,
+                StructuralSeason::annual(),
+            );
+            assert_eq!(legacy, off);
+            let legacy_bits = [
+                legacy.h_km.to_bits(), legacy.water_km.to_bits(), legacy.e_raw.to_bits(),
+                legacy.rough.to_bits(), legacy.temp_c.to_bits(), legacy.precip.to_bits(),
+                legacy.wet_soft.to_bits(), legacy.carve_km.to_bits(),
+                legacy.lake_level_km.to_bits(), legacy.pond_level_km.to_bits(),
+                legacy.river_level_km.to_bits(),
+            ];
+            let off_bits = [
+                off.h_km.to_bits(), off.water_km.to_bits(), off.e_raw.to_bits(),
+                off.rough.to_bits(), off.temp_c.to_bits(), off.precip.to_bits(),
+                off.wet_soft.to_bits(), off.carve_km.to_bits(), off.lake_level_km.to_bits(),
+                off.pond_level_km.to_bits(), off.river_level_km.to_bits(),
+            ];
+            assert_eq!(legacy_bits, off_bits);
+            let canonical = sample_at_season(
+                &planet,
+                face,
+                u,
+                v,
+                VOXEL_OCTAVES,
+                StructuralSeason::quantized(
+                    crate::weather::CANONICAL_SEASON_FRAC,
+                    &crate::weather::WeatherTuning::default(),
+                ),
+            );
+            let canonical_bits = [
+                canonical.h_km.to_bits(), canonical.water_km.to_bits(),
+                canonical.e_raw.to_bits(), canonical.rough.to_bits(),
+                canonical.temp_c.to_bits(), canonical.precip.to_bits(),
+                canonical.wet_soft.to_bits(), canonical.carve_km.to_bits(),
+                canonical.lake_level_km.to_bits(), canonical.pond_level_km.to_bits(),
+                canonical.river_level_km.to_bits(),
+            ];
+            assert_eq!(legacy_bits, canonical_bits);
+            assert_eq!(canonical.seasonal_temp_c.to_bits(), legacy.temp_c.to_bits());
+            assert_eq!(canonical.frozen, legacy.frozen);
+        }
+    }
 
     #[test]
     fn packed_biome_payload_is_compact_and_precise() {
@@ -2263,14 +2497,14 @@ mod tests {
         };
         let lake = if s.lake_shoal {
             s.lake_shoal_depth_km.clamp(1e-6, SHORE_CLAMP_KM)
-        } else if s.lake_level_km.is_finite() && s.temp_c >= -4.0 {
+        } else if s.lake_level_km.is_finite() && !s.frozen {
             (s.lake_level_km * 1000.0).floor() / 1000.0 - (s.h_km + 1e-6)
         } else {
             f64::NEG_INFINITY
         };
         let river = if s.river_level_km.is_finite()
             && s.river_wet > 0.5
-            && s.temp_c >= -4.0
+            && !s.frozen
             && s.river_dist_km < s.river_hw_km * 3.0
         {
             s.river_level_km - s.h_km
@@ -2429,10 +2663,10 @@ mod tests {
     #[test]
     fn equal_block_liquid_lake_ties_fill_to_walkable_shoals() {
         let level = 0.1224;
-        assert!(liquid_lake_shoal(level, 0.1220, -4.0));
-        assert!(!liquid_lake_shoal(level, 0.121_998, -4.0));
-        assert!(!liquid_lake_shoal(level, 0.1220, -4.000_001));
-        assert!(!liquid_lake_shoal(level, level, 8.0));
+        assert!(liquid_lake_shoal(level, 0.1220, false));
+        assert!(!liquid_lake_shoal(level, 0.121_998, false));
+        assert!(!liquid_lake_shoal(level, 0.1220, true));
+        assert!(!liquid_lake_shoal(level, level, false));
 
         let planet = test_planet();
         let edits = crate::voxel::Edits::default();

@@ -1,5 +1,6 @@
 # Living weather demo reel (WEATHER.md W1) — pins and live field, all
 # deterministic: weather rides the fixed sim clock, so this script produces
+weather season 0.45
 # byte-identical frames every run (the double-run gate proves it).
 
 # savanna site, live field (whatever the climate + synoptic sim says today)

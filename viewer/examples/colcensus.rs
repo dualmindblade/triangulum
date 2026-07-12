@@ -17,7 +17,8 @@ use glam::DVec3;
 use rayon::prelude::*;
 use triangulum_viewer::planet::{face_from_dir, Planet};
 use triangulum_viewer::voxel::{
-    col_ctx_ext_body, ColCtx, Edits, LunarBody, VoxelBody, COLUMNS_PER_FACE,
+    col_ctx_ext_body, ColCtx, Edits, LunarBody, SeasonalPlanet, VoxelBody,
+    COLUMNS_PER_FACE,
 };
 
 struct Hit {
@@ -40,19 +41,29 @@ fn main() -> anyhow::Result<()> {
         .get(first + 2)
         .map(|s| s.parse().unwrap_or(0.25))
         .unwrap_or(0.25);
+    let season_frac = args
+        .windows(2)
+        .find(|pair| pair[0] == "--season")
+        .and_then(|pair| pair[1].parse::<f64>().ok())
+        .unwrap_or(0.45);
     let assets = if std::path::Path::new("viewer/assets/meta.json").exists() {
         "viewer/assets"
     } else {
         "assets"
     };
-    let planet = Planet::load(assets)?;
+    let planet = Arc::new(Planet::load(assets)?);
     let solar = triangulum_viewer::orbits::SolarTuning::load(assets);
     let moon = LunarBody::new(
         solar.radius_km(triangulum_viewer::orbits::BodyId::Moon, planet.radius_km),
         Arc::new(triangulum_viewer::moon::MoonGenerator::new(planet.seed)),
     );
+    let season = triangulum_viewer::weather::StructuralSeason::quantized(
+        season_frac,
+        &triangulum_viewer::weather::WeatherTuning::load(assets),
+    );
+    let seasonal = SeasonalPlanet::new(Arc::clone(&planet), season);
     let body: &dyn VoxelBody = match body_name.to_ascii_lowercase().as_str() {
-        "neisor" => &planet,
+        "neisor" => &seasonal,
         "moon" => &moon,
         _ => anyhow::bail!("--body must be neisor or moon"),
     };

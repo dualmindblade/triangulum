@@ -15,18 +15,19 @@ cannot be IDW-blended across texels (phase wraps at +-pi; a texel between
 a January-peak and a December-peak cell would average to July).
 
 Output viewer/assets/weather.bin (little-endian):
-  magic  b"WEA2"
+  magic  b"WEA3"
   u32    res      (texels per face edge; edge-inclusive like face_*.bin)
-  u32    n_layers (14)
-  6 faces x 14 layers x res^2 f32, v-major rows, layer order:
+  u32    n_layers (26)
+  6 faces x 26 layers x res^2 f32, v-major rows, layer order:
     temp_a_c, temp_b_c            (temp mean lives in face_*.bin)
     prc_mean, prc_a1, prc_b1, prc_a2, prc_b2  (mm/month)
     cld_mean, cld_a1, cld_b1, cld_a2, cld_b2  (cloud fraction 0..1)
     wind_e, wind_n                (m/s annual mean)
+    seaice_month_0..11            (monthly 0/1 truth, spatially filtered)
 
 Face convention and k=3 IDW^2 rasterization match scripts/bake_faces.py.
 Weather varies at synoptic scales, so the default 256/face (~40 km/texel,
-~16 MB total) is deliberately coarse.
+~39 MB total) is deliberately coarse.
 
 Usage: python scripts/bake_weather.py [run_dir] [resolution]
 """
@@ -84,9 +85,10 @@ prc_mean, prc_a1, prc_b1, prc_a2, prc_b2 = harmonics(prc)
 cld_mean, cld_a1, cld_b1, cld_a2, cld_b2 = harmonics(cld)
 wind_e = d["wind_e_monthly"].mean(0).astype(np.float32)
 wind_n = d["wind_n_monthly"].mean(0).astype(np.float32)
+seaice = d["seaice_monthly"].astype(np.float32)
 
 # Reconstruction sanity: report the residuals of the coefficients that are
-# about to be rasterized. These lines are also the WEA2 fidelity gate: a bad
+# about to be rasterized. These lines are also the WEA3 fidelity gate: a bad
 # source field or accidentally dropped k=2 term is loud during every rebake.
 temp_recon = reconstruction(temp.mean(0), temp_a, temp_b)
 swing = float((temp.max(0) - temp.min(0)).mean())
@@ -129,6 +131,7 @@ LAYERS = [
     prc_mean, prc_a1, prc_b1, prc_a2, prc_b2,
     cld_mean, cld_a1, cld_b1, cld_a2, cld_b2,
     wind_e, wind_n,
+    *seaice,
 ]
 
 FACES = [
@@ -142,7 +145,7 @@ FACES = [
 
 grid = np.linspace(-1.0, 1.0, res)  # edge-inclusive, like face_*.bin
 out = bytearray()
-out += b"WEA2"
+out += b"WEA3"
 out += struct.pack("<II", res, len(LAYERS))
 for fi, (axis, right, up) in enumerate(FACES):
     U, V = np.meshgrid(grid, grid)  # row-major, v-major

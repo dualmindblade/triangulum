@@ -1204,10 +1204,19 @@ impl PhotoMap {
                                     continue;
                                 }
                                 let (f, u, v) = face_from_dir(l.center);
-                                // -4 C, matching every WORLD consumer (walkable-ice class in
-                                // terrain + voxel + physics): 0 C painted 1,700+ liquid
-                                // lakes pale on the map (review #2 finding 11)
-                                let frozen = planet.temp(f, u, v) < -4.0;
+                                let structural = if env.weather_on {
+                                    crate::weather::StructuralSeason::quantized(
+                                        crate::weather::season_frac(
+                                            env.weather_time_s,
+                                            env.day_len_s,
+                                            env.solar_tuning,
+                                        ),
+                                        env.weather_tuning,
+                                    )
+                                } else {
+                                    crate::weather::StructuralSeason::annual()
+                                };
+                                let frozen = planet.water_frozen(f, u, v, false, structural);
                                 let fill = if frozen {
                                     Color32::from_rgb(206, 224, 236)
                                 } else {

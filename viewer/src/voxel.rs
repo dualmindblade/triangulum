@@ -16,13 +16,15 @@
 //! node, any depth" property as the tiles: a chunk needs nothing but its key.
 
 use crate::planet::{
-    climate_surface_with_biome, face_dir, hash01, hash_u64, ClimateSurface, MainBlock, Planet,
+    climate_surface_with_biome, climate_surface_with_biome_at_season, face_dir, hash01, hash_u64,
+    vegetation_surface, ClimateSurface, MainBlock, Planet,
 };
 use crate::moon::{MoonGenerator, MoonMaterial};
 use crate::orbits::BodyId;
 use crate::terrain::{
-    sample, Sample, TileMesh, Vertex, NO_BIOME_PAYLOAD, VOXEL_OCTAVES,
+    sample_at_season, Sample, TileMesh, Vertex, NO_BIOME_PAYLOAD, VOXEL_OCTAVES,
 };
+use crate::weather::StructuralSeason;
 use glam::DVec3;
 use std::collections::{HashMap, HashSet};
 
@@ -196,8 +198,16 @@ pub struct ColCtx {
     /// tree silhouette without putting a nearest-class line back into density.
     pub biome_temp: f32,
     pub biome_precip: f32,
+    /// Annual-only vegetation ownership. Seasonal snow/tints must not move
+    /// tree anchors or change species/density.
+    pub tree_main_block: MainBlock,
+    pub tree_forest: f32,
     pub e_raw: f32,
     pub temp: f32,
+    pub seasonal_temp: f32,
+    pub seasonal_temp_trend: f32,
+    pub frozen: bool,
+    pub structural_season: StructuralSeason,
     pub precip: f32,
     pub rough: f32,
     pub carved: bool, // river/pond carving touched this column
@@ -265,6 +275,21 @@ impl LunarBody {
     }
 }
 
+/// Immutable Neisor body snapshot for one structural season bucket. Renderer
+/// workers and player physics receive the same value, so an ice top cannot be
+/// visible to one system and liquid to the other.
+#[derive(Clone)]
+pub struct SeasonalPlanet {
+    pub planet: std::sync::Arc<Planet>,
+    pub season: StructuralSeason,
+}
+
+impl SeasonalPlanet {
+    pub fn new(planet: std::sync::Arc<Planet>, season: StructuralSeason) -> Self {
+        Self { planet, season }
+    }
+}
+
 impl ColCtx {
     /// Is block z solid? (Below the cave band everything is solid.)
     pub fn filled(&self, z: i64) -> bool {
@@ -309,11 +334,15 @@ impl ColCtx {
     /// walkable ground, not liquid: without this the player sinks through a
     /// visible ice sheet and swims. Returns the ice-surface block, or None.
     fn frozen_ice(&self) -> Option<i64> {
-        if self.has_water() && self.temp < -4.0 {
+        if self.has_water() && self.frozen {
             Some(self.water)
         } else {
             None
         }
+    }
+
+    fn frozen_cave_ice(&self) -> Option<i64> {
+        (self.frozen && self.cave_water != i64::MIN).then_some(self.cave_water)
     }
 }
 
@@ -324,7 +353,7 @@ impl ColCtx {
 /// never clamp. `nbs8` is the 8-neighbourhood in any order.
 pub fn water_render_top(cc: &ColCtx, nbs8: &[ColCtx; 8]) -> i64 {
     let mut we = cc.water;
-    if cc.temp < -4.0 {
+    if cc.frozen {
         return we;
     }
     for nb in nbs8 {
@@ -417,20 +446,46 @@ pub fn col_ctx_body(
 
 /// Generate one column from scratch: terrain sample, water, caves.
 pub fn col_ctx(planet: &Planet, edits: &Edits, face: usize, ci: u64, cj: u64) -> ColCtx {
+    col_ctx_at_season(
+        planet,
+        edits,
+        face,
+        ci,
+        cj,
+        StructuralSeason::annual(),
+    )
+}
+
+pub fn col_ctx_at_season(
+    planet: &Planet,
+    edits: &Edits,
+    face: usize,
+    ci: u64,
+    cj: u64,
+    season: StructuralSeason,
+) -> ColCtx {
     let nn = COLUMNS_PER_FACE as f64;
     let u = -1.0 + 2.0 * (ci as f64 + 0.5) / nn;
     let v = -1.0 + 2.0 * (cj as f64 + 0.5) / nn;
-    let s = sample(planet, face, u, v, VOXEL_OCTAVES);
+    let s = sample_at_season(planet, face, u, v, VOXEL_OCTAVES, season);
     let ground0 = (s.h_km * 1000.0).floor() as i64;
-    let ground = ground0 + edits.get(&(face as u8, ci, cj)).copied().unwrap_or(0);
     let mut water = if s.water_km > s.h_km {
         (s.water_km * 1000.0).floor() as i64
     } else {
         i64::MIN
     };
+    let edit = edits.get(&(face as u8, ci, cj)).copied().unwrap_or(0);
+    // A placed block targets the visible top. On seasonal water that top is
+    // the liquid/ice surface, not the buried bed; anchor positive edits above
+    // it so the edit wins across every later freeze/thaw bucket.
+    let ground = if edit > 0 && water > ground0 {
+        water + edit
+    } else {
+        ground0 + edit
+    };
     let creek_film_sample = |ss: &Sample| {
         ss.water_km > ss.h_km
-            && ss.temp_c >= -4.0
+            && !ss.frozen
             && ss.river_hw_km > 0.0
             && ss.river_hw_km < 0.0015
             && ss.river_dist_km < ss.river_hw_km
@@ -439,7 +494,7 @@ pub fn col_ctx(planet: &Planet, edits: &Edits, face: usize, ci: u64, cj: u64) ->
     };
     let mut creek_film = creek_film_sample(&s);
     if !creek_film
-        && s.temp_c >= -4.0
+        && !s.frozen
         && s.river_hw_km > 0.0
         && s.river_hw_km < 0.0015
         && s.river_dist_km < s.river_hw_km + 0.0010
@@ -450,7 +505,14 @@ pub fn col_ctx(planet: &Planet, edits: &Edits, face: usize, ci: u64, cj: u64) ->
                 if ou == 0.0 && ov == 0.0 {
                     continue;
                 }
-                let ss = sample(planet, face, u + ou * step, v + ov * step, VOXEL_OCTAVES);
+                let ss = sample_at_season(
+                    planet,
+                    face,
+                    u + ou * step,
+                    v + ov * step,
+                    VOXEL_OCTAVES,
+                    season,
+                );
                 if creek_film_sample(&ss) {
                     creek_film = true;
                     break 'subcell;
@@ -533,20 +595,21 @@ pub fn col_ctx(planet: &Planet, edits: &Edits, face: usize, ci: u64, cj: u64) ->
         }
     }
 
-    let (climate, biome) = climate_surface_with_biome(
-        planet,
-        face,
-        u,
-        v,
-        s.temp_c,
-        s.precip,
-        s.sea,
-    );
+    let (climate, biome) = if season.enabled {
+        climate_surface_with_biome_at_season(
+            planet, face, u, v, s.temp_c, s.seasonal_temp_c, s.precip, s.sea, season,
+        )
+    } else {
+        climate_surface_with_biome(planet, face, u, v, s.temp_c, s.precip, s.sea)
+    };
+    // Tree ownership and species deliberately stay on annual climate. Snow
+    // and seasonal tints may repaint a canopy; they never reroll its anchor.
+    let vegetation = vegetation_surface(planet, face, u, v, s.temp_c, s.precip);
 
     // A-5: the graph river is several metres above a local lake here. Keep
     // block occupancy intact, but rendering and swimming share the stable
     // nearby lake plane instead of exposing the river's lattice wall.
-    let rim_flush_water = s.temp_c >= -4.0
+    let rim_flush_water = !s.frozen
         && s.has_water()
         && s.lake_level_km.is_finite()
         && s.river_level_km.is_finite()
@@ -573,14 +636,18 @@ pub fn col_ctx(planet: &Planet, edits: &Edits, face: usize, ci: u64, cj: u64) ->
         biome_precip: biome.precip_mm_yr,
         e_raw: s.e_raw as f32,
         temp: s.temp_c as f32,
+        seasonal_temp: s.seasonal_temp_c as f32,
+        seasonal_temp_trend: s.seasonal_temp_trend as f32,
+        frozen: s.frozen,
+        structural_season: season,
         precip: s.precip as f32,
         rough: s.rough as f32,
         carved: s.carve_km > 0.001,
         salt: s.salt,
         sea: s.sea,
         lake_shoal: s.lake_shoal,
-        lake_shore_frac: crate::terrain::lake_shore_frac(
-            s.temp_c,
+        lake_shore_frac: crate::terrain::lake_shore_frac_for_class(
+            s.frozen,
             s.h_km,
             s.lake_level_km,
             s.lake_boundary_dist_km,
@@ -589,6 +656,8 @@ pub fn col_ctx(planet: &Planet, edits: &Edits, face: usize, ci: u64, cj: u64) ->
         lake_level_band: s.lake_level_km.is_finite()
             && s.h_km >= s.lake_level_km
             && s.h_km - s.lake_level_km <= 0.0015,
+        tree_main_block: vegetation.main_block,
+        tree_forest: vegetation.forest,
     }
 }
 
@@ -626,8 +695,14 @@ fn lunar_col_ctx(
         koppen: 255,
         biome_temp: 0.0,
         biome_precip: 0.0,
+        tree_main_block: MainBlock::Snow,
+        tree_forest: 0.0,
         e_raw: h_km as f32,
         temp: 999.0,
+        seasonal_temp: 999.0,
+        seasonal_temp_trend: 0.0,
+        frozen: false,
+        structural_season: StructuralSeason::annual(),
         precip: 0.0,
         rough: (1.0 - sample.smoothness) as f32,
         carved: false,
@@ -658,6 +733,29 @@ impl VoxelBody for Planet {
         cj: u64,
     ) -> Option<(TreeKind, i64)> {
         tree_here(self, edits, face, ci, cj)
+    }
+    fn has_trees(&self) -> bool { true }
+}
+
+impl VoxelBody for SeasonalPlanet {
+    fn body_id(&self) -> BodyId { BodyId::Neisor }
+    fn radius_km(&self) -> f64 { self.planet.radius_km }
+    fn seed(&self) -> i64 { self.planet.seed }
+    fn column_ctx(&self, edits: &Edits, face: usize, ci: u64, cj: u64) -> ColCtx {
+        col_ctx_at_season(&self.planet, edits, face, ci, cj, self.season)
+    }
+    fn ground_height_km(&self, dir: DVec3, exaggeration: f64) -> f64 {
+        crate::terrain::ground_height_km_at_season(&self.planet, dir, exaggeration, self.season)
+    }
+    fn tree_at_column(
+        &self,
+        edits: &Edits,
+        face: usize,
+        ci: u64,
+        cj: u64,
+    ) -> Option<(TreeKind, i64)> {
+        // Positions are intentionally annual and season-independent.
+        tree_here(&self.planet, edits, face, ci, cj)
     }
     fn has_trees(&self) -> bool { true }
 }
@@ -918,11 +1016,11 @@ pub fn tree_biome_profile(
 
 #[inline]
 fn tree_profile(c: &ColCtx) -> Option<(TreeKind, f64)> {
-    let climate = c.climate?;
+    c.climate?;
     tree_biome_profile(
         c.koppen,
-        climate.main_block,
-        climate.forest,
+        c.tree_main_block,
+        c.tree_forest,
         c.biome_temp,
         c.biome_precip,
     )
@@ -1142,7 +1240,7 @@ pub fn support_below_km(
         .filter(|(k, _)| *k != TreeKind::Shrub)
         .map(|(_, t)| c.ground + t);
     // frozen water is a solid ice sheet you stand ON (at the water surface)
-    let ice = c.frozen_ice();
+    let ice = c.frozen_ice().or_else(|| c.frozen_cave_ice());
     let solid = |z: i64| {
         c.filled(z)
             || trunk_top.is_some_and(|t| z > c.ground && z <= t)
@@ -1184,7 +1282,7 @@ pub fn ceiling_above_km(
         .map(|(_, t)| c.ground + t);
     // frozen ice is a ceiling too: swimming up under a frozen sheet must
     // collide with it, not pass through into the "solid" ice
-    let ice = c.frozen_ice();
+    let ice = c.frozen_ice().or_else(|| c.frozen_cave_ice());
     let solid = |z: i64| {
         c.filled(z) || trunk_top.is_some_and(|t| z > c.ground && z <= t) || ice == Some(z)
     };
@@ -1233,7 +1331,7 @@ pub fn water_surface_km(
         }
         return Some(c.water as f64 * scale + lift);
     }
-    if c.cave_water != i64::MIN {
+    if c.cave_water != i64::MIN && c.frozen_cave_ice().is_none() {
         let surf = c.cave_water as f64 * scale + lift;
         if at_km < surf {
             return Some(surf);
@@ -1747,7 +1845,7 @@ pub fn build_chunk(
                     water_render_top(at(i, j), &nbs8)
                 };
                 let w = w_eff(i, j);
-                let frozen = c.temp < -4.0;
+                let frozen = c.frozen;
                 let wmat = if frozen { Mat::Ice } else { Mat::Water };
                 let mut wcol = wmat.color(tint);
                 if frozen {
@@ -1792,7 +1890,7 @@ pub fn build_chunk(
                 };
                 let lower_liquid_step = |nbi: usize| -> Option<f32> {
                     let nb = nbs[nbi];
-                    if frozen || nb.temp < -4.0 || !nb.has_water() {
+                    if frozen || nb.frozen || !nb.has_water() {
                         return None;
                     }
                     if same_rim_water_plane(c, nb) {
@@ -1887,7 +1985,8 @@ pub fn build_chunk(
             // its own rock walls and read from above through the top surface.
             if c.cave_water != i64::MIN {
                 let cw = c.cave_water;
-                let base = Mat::Water.color(tint);
+                let cave_frozen = c.frozen;
+                let base = if cave_frozen { Mat::Ice } else { Mat::Water }.color(tint);
                 let wz_lo = c.ground0 - CAVE_DEPTH;
                 for z in wz_lo..=cw {
                     if !c.cave_flooded(z) {
@@ -1900,15 +1999,25 @@ pub fn build_chunk(
                     // tint toward deep water with depth below the surface
                     let t = ((cw - z) as f32 / 2000.0).clamp(0.0, 1.0);
                     let deep = [0.004, 0.013, 0.055];
-                    let wcol = [
-                        base[0] + (deep[0] - base[0]) * t,
-                        base[1] + (deep[1] - base[1]) * t,
-                        base[2] + (deep[2] - base[2]) * t,
-                    ];
+                    let wcol = if cave_frozen {
+                        base
+                    } else {
+                        [
+                            base[0] + (deep[0] - base[0]) * t,
+                            base[1] + (deep[1] - base[1]) * t,
+                            base[2] + (deep[2] - base[2]) * t,
+                        ]
+                    };
                     // free surface: cell above is dry air (not water, not rock)
                     if !c.filled(z + 1) && !c.cave_flooded(z + 1) {
                         let r = shell(z);
-                        quad([d00 * r, d10 * r, d11 * r, d01 * r], up, [wcol; 4], dim, 1.0);
+                        quad(
+                            [d00 * r, d10 * r, d11 * r, d01 * r],
+                            up,
+                            [wcol; 4],
+                            dim,
+                            if cave_frozen { 0.0 } else { 1.0 },
+                        );
                     }
                     // sides: only into a DRY cave passage (carved air within the
                     // neighbour's own band), never open sky above lower ground
@@ -1920,7 +2029,13 @@ pub fn build_chunk(
                         if nb_dry_cave {
                             let n_side = (out_dirs[nbi] * 0.18 + up).normalize();
                             let (r0, r1) = (shell(z - 1), shell(z));
-                            quad([da * r1, db * r1, db * r0, da * r0], n_side, [wside; 4], dim, 1.0);
+                            quad(
+                                [da * r1, db * r1, db * r0, da * r0],
+                                n_side,
+                                [wside; 4],
+                                dim,
+                                if cave_frozen { 0.0 } else { 1.0 },
+                            );
                         }
                     }
                 }
@@ -1979,7 +2094,18 @@ pub fn build_chunk(
         let tint = [0.0; 3];
         let h = hash_u64(face as u8, ci, cj, tz as u64);
         let bright = 0.88 + 0.24 * ((h >> 13 & 0xFF) as f32 / 255.0);
-        let col = vary(mat.color(tint), bright);
+        let base = mat.color(tint);
+        let base = if mat == Mat::LeavesBroad {
+            crate::weather::deciduous_tint(
+                base,
+                rain_c.seasonal_temp as f64,
+                rain_c.seasonal_temp_trend as f64,
+                rain_c.structural_season,
+            )
+        } else {
+            base
+        };
+        let col = vary(base, bright);
         let (u0, u1) = (u_of(base_i + ti), u_of(base_i + ti + 1));
         let (v0, v1) = (v_of(base_j + tj), v_of(base_j + tj + 1));
         let d00 = face_dir(face, u0, v0);
@@ -2135,6 +2261,55 @@ mod tests {
         let (face, u, v) = crate::planet::face_from_dir(dir);
         let (ci, cj) = column_of(u, v);
         col_ctx(planet, edits, face, ci, cj)
+    }
+
+    #[test]
+    fn placed_block_overrides_seasonal_water_class() {
+        let planet = test_planet();
+        let (lat, lon) = (73.486f64.to_radians(), -76.450f64.to_radians());
+        let dir = DVec3::new(lat.cos() * lon.cos(), lat.cos() * lon.sin(), lat.sin());
+        let (face, u, v) = crate::planet::face_from_dir(dir);
+        let (ci, cj) = column_of(u, v);
+        let tuning = crate::weather::WeatherTuning::default();
+        let winter = crate::weather::StructuralSeason::quantized(0.95, &tuning);
+        let natural = col_ctx_at_season(&planet, &Edits::default(), face, ci, cj, winter);
+        assert!(natural.has_water() && natural.frozen, "probe stopped exercising winter ice");
+        let mut edits = Edits::default();
+        edits.insert((face as u8, ci, cj), 1);
+        let edited = col_ctx_at_season(&planet, &edits, face, ci, cj, winter);
+        assert_eq!(edited.ground, natural.water + 1);
+        assert!(!edited.has_water());
+        assert_eq!(edited.frozen_ice(), None);
+    }
+
+    #[test]
+    fn broadleaf_positions_are_season_independent() {
+        let planet = std::sync::Arc::new(test_planet());
+        let tuning = crate::weather::WeatherTuning::default();
+        let winter = SeasonalPlanet::new(
+            std::sync::Arc::clone(&planet),
+            crate::weather::StructuralSeason::quantized(0.95, &tuning),
+        );
+        let summer = SeasonalPlanet::new(
+            std::sync::Arc::clone(&planet),
+            crate::weather::StructuralSeason::quantized(0.50, &tuning),
+        );
+        let (lat, lon) = (-0.906f64.to_radians(), -67.804f64.to_radians());
+        let dir = DVec3::new(lat.cos() * lon.cos(), lat.cos() * lon.sin(), lat.sin());
+        let (face, u, v) = crate::planet::face_from_dir(dir);
+        let (ci, cj) = column_of(u, v);
+        let edits = Edits::default();
+        let mut trees = 0;
+        for dj in -24i64..=24 {
+            for di in -24i64..=24 {
+                let (f, i, j) = canonical_column(face, ci as i64 + di, cj as i64 + dj);
+                let a = winter.tree_at_column(&edits, f as usize, i, j);
+                let b = summer.tree_at_column(&edits, f as usize, i, j);
+                assert_eq!(a, b);
+                trees += usize::from(a.is_some());
+            }
+        }
+        assert!(trees > 0, "probe stopped exercising tree positions");
     }
 
     #[test]

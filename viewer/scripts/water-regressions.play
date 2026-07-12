@@ -1,4 +1,5 @@
 # Water-surface invariants. Locks fixes so they can't silently regress.
+weather season 0.45
 #
 # FLAT WATER TABLE (fix 2026-07-07; re-locked 2026-07-08 after the W-5
 # renderability cap): every submerged column of one still-water body shares

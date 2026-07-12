@@ -1,0 +1,50 @@
+# W4 structural seasonality: one coordinate changes from walkable winter ice
+# to summer liquid; broadleaf tint follows local phase; placed edits win.
+weather pin 0.10 0.0
+
+log winter: lake ice is visible class and walkable physics
+weather season 0.95
+teleport 58.79455 87.221664 0.004
+mode walk
+wait 8
+assert frozen true
+assert seasonal_temp_c < -5.0
+assert grounded true
+assert underwater false
+assert has_water false
+shot winter_walk
+
+log summer: the same coordinate melts and becomes swimmable
+mode fly
+weather season 0.50
+teleport 58.79455 87.221664 0.004
+assert frozen false
+assert seasonal_temp_c > -2.0
+assert has_water true
+mode walk
+wait 10
+assert underwater true
+shot summer_swim
+
+log autumn: broadleaf canopy tint departs subtly from the canonical green
+mode fly
+weather season 0.75
+teleport 51.851 4.809 0.120
+assert broadleaf_r > 0.065
+assert broadleaf_g < 0.200
+shot deciduous_tint
+
+log edit override: a block placed on winter ice remains dry after thaw
+weather season 0.95
+teleport 58.79455 87.221664 0.004
+look 0 -80
+mode fly
+teleport 58.79455 87.221664 0.010
+tap rmb
+assert edit_count == 1
+assert edited_water_count == 0
+weather season 0.50
+assert frozen false
+assert edit_count == 1
+assert edited_water_count == 0
+shot edit_override_summer

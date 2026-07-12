@@ -1,4 +1,5 @@
 # Flooded caves (BUGS.md W-6). A cave that passes below a nearby water table
+weather season 0.45
 # fills with water: swimmable, physically water, visually water. The earlier
 # fix only SUPPRESSED caves near rivers/lakes to avoid a dry pit whose floor
 # sat below the water line (photographed at 3.726 63.065); flooding turns that
