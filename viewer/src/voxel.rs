@@ -540,7 +540,7 @@ pub fn coastal_beach_at(c: &ColCtx, face: u8, ci: u64, cj: u64, seed: i64) -> bo
         c.e_raw as f64,
         c.h_km as f64,
         c.lake_material_region,
-        crate::terrain::beach_blend_comparator(face, ci, cj, seed),
+        crate::terrain::beach_blend_comparator(face, ci, cj, seed, c.rough as f64),
     )
 }
 
@@ -1291,6 +1291,7 @@ pub fn build_chunk(
                     ci,
                     cj,
                     planet.seed,
+                    c.rough as f64,
                 ),
             );
             let tint = climate.tint(mat_main_block(surf, climate.main_block));
