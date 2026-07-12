@@ -25,7 +25,13 @@ worst frame 190 ms on 200 m ground hops. Verify in-game near any voxel
 patch while flying laterally.
 
 ### F-25 Dusting dither banding (both of Andrew's banding reports) —
-FIXED c833071
+FIXED c833071, completed c334289
+Act two/three (2026-07-12 overnight): the hash3i cell-constant cure
+re-read as a 25 m checkerboard whose borders crawled with the camera
+- raw planet-centered f32 positions quantize at ~0.24 m. Final form:
+camera-anchored exact integer lattice (danchor globals) + two smooth
+vnoise octaves. Residual static checkerboard under heavy dust at
+ground level = designed D-2 block mottling (bisect: checksect.play).
 Regular stripes at 50.759 -86.619 (07-11) and irregular N-S stripes +
 ground white-out at 60.704 89.662 (07-12, 'not aligned with voxel
 grid' - correct, it wasn't the lattice). The snow-dusting breakup
