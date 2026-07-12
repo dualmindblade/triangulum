@@ -1006,11 +1006,30 @@ impl Renderer {
                 if east0.length_squared() < 1e-9 { glam::DVec3::Y } else { east0.normalize() };
             let north = dirn.cross(east);
             let wind = east * wx.wind_e + north * wx.wind_n;
-            (
-                wind * (self.weather_tuning.synoptic_speed * weather_t_s
-                    / (1000.0 * planet.radius_km)),
-                wind * 0.001,
-            )
+            let scale = self.weather_tuning.synoptic_speed * weather_t_s
+                / (1000.0 * planet.radius_km);
+            // The camera-local basis above is right IN the weather (it is
+            // how the deck scrolls with the local wind) and nonsense from
+            // orbit: panning the camera rotates east/north, and a
+            // t-proportional offset swinging its direction spun the cloud
+            // shells in layer-dependent ways (Austin, 2026-07-12, "moving
+            // speeds up the weather sim"). Above the shell handoff the
+            // drift blends to a FIXED planetary-east vector (constant in
+            // world space, camera-independent): from orbit the whole deck
+            // slides steadily east instead; at ground level m = 0 exactly
+            // and today's look is untouched. Same fade the orbital cloud
+            // composite itself uses.
+            let m = {
+                let a = self.weather_tuning.shell_alt_km;
+                let b = self.weather_tuning.shell_fade_km;
+                let t = ((cam_h_km - a) / (b - a).max(1e-6)).clamp(0.0, 1.0);
+                t * t * (3.0 - 2.0 * t)
+            };
+            // fixed 6 m/s reference speed: the orbital drift must not read
+            // ANYTHING at the camera or the swing just comes back smaller
+            let zonal = glam::DVec3::Y * 6.0;
+            let advect = wind * (1.0 - m) + zonal * m;
+            (advect * scale, wind * 0.001)
         };
         // precipitation particles live in a volume around the camera; none
         // underwater, and they thin away as the camera climbs through the
