@@ -1595,6 +1595,27 @@ const BEACH_RASTER_END_KM: f64 = 0.013;
 const BEACH_SURFACE_FULL_KM: f64 = 0.010;
 const BEACH_SURFACE_END_KM: f64 = 0.016;
 const BEACH_FIELD_SEED_OFFSET: i64 = 0x0BEA_C4EC;
+/// Per-sample roughness below this is a calm lowland coast. `rough_km` is
+/// already the baked mean absolute elevation delta to neighboring map cells,
+/// bilinearly sampled here, so it is the requested local average rather than a
+/// point slope.
+pub const COAST_NOISE_CALM_ROUGHNESS_KM: f64 = 0.025;
+/// Coasts at or above this mean relief retain the full approved octave stack.
+pub const COAST_NOISE_RUGGED_ROUGHNESS_KM: f64 = 0.500;
+/// Calm coasts keep a trace of local character without the current speckled
+/// edge. The broad 7 km carrier stays full strength; this scales octaves two
+/// through four (~440 m, 27 m, 1.7 m).
+pub const COAST_NOISE_CALM_FINE_GAIN: f64 = 0.08;
+
+#[inline]
+pub fn coast_noise_fine_gain(rough_km: f64) -> f64 {
+    let rugged = smoothstep(
+        COAST_NOISE_CALM_ROUGHNESS_KM,
+        COAST_NOISE_RUGGED_ROUGHNESS_KM,
+        rough_km,
+    );
+    COAST_NOISE_CALM_FINE_GAIN + (1.0 - COAST_NOISE_CALM_FINE_GAIN) * rugged
+}
 
 /// Fast standard-normal CDF used to turn the normalized beach octave stack
 /// into a stable 0..1 comparator. This matches the categorical ecotone field's
@@ -1613,11 +1634,18 @@ fn blend_normal_cdf(x: f64) -> f64 {
     if x < 0.0 { tail } else { 1.0 - tail }
 }
 
-/// Fractal per-column comparator for coastal beach material. The frequency,
-/// octave, lacunarity, and persistence knobs are the public biome-ecotone
-/// knobs, so beach transitions have the same islands-to-speckle visual
-/// grammar. Input is already a canonical column identity in both renderers.
-pub fn beach_blend_comparator(face: u8, ci: u64, cj: u64, seed: i64) -> f64 {
+/// Fractal per-column comparator for coastal beach material. The broad carrier
+/// is stable everywhere; the three local octave amplitudes follow the baked
+/// average terrain roughness. Normalizing the adapted variance preserves the
+/// threshold's area fractions, so the mesh's continuous coverage remains the
+/// average of voxel sand ownership. Input is one canonical column identity.
+pub fn beach_blend_comparator(
+    face: u8,
+    ci: u64,
+    cj: u64,
+    seed: i64,
+    rough_km: f64,
+) -> f64 {
     let n = COLUMNS_PER_FACE as f64;
     let u = -1.0 + 2.0 * (ci as f64 + 0.5) / n;
     let v = -1.0 + 2.0 * (cj as f64 + 0.5) / n;
@@ -1627,10 +1655,12 @@ pub fn beach_blend_comparator(face: u8, ci: u64, cj: u64, seed: i64) -> f64 {
     let mut amplitude = 1.0;
     let mut sum = 0.0;
     let mut variance = 0.0;
+    let fine_gain = coast_noise_fine_gain(rough_km);
     for octave in 0..ECOTONE_FIELD_OCTAVES as i64 {
         let octave_seed = field_seed.wrapping_mul(7_919).wrapping_add(octave * 131);
-        sum += amplitude * normal_value_noise(dir * frequency, octave_seed);
-        variance += amplitude * amplitude;
+        let adapted_amplitude = amplitude * if octave == 0 { 1.0 } else { fine_gain };
+        sum += adapted_amplitude * normal_value_noise(dir * frequency, octave_seed);
+        variance += adapted_amplitude * adapted_amplitude;
         frequency *= ECOTONE_LACUNARITY;
         amplitude *= ECOTONE_PERSISTENCE;
     }
@@ -1874,27 +1904,57 @@ mod tests {
     }
 
     #[test]
-    fn coastal_beach_comparator_is_local_and_deterministic() {
+    fn coastal_beach_noise_tracks_roughness_and_preserves_coverage() {
         let face = 0u8;
         let (ci, cj) = (5_100_000u64, 4_900_000u64);
         let seed = 42;
+        let calm = COAST_NOISE_CALM_ROUGHNESS_KM;
+        let rugged = COAST_NOISE_RUGGED_ROUGHNESS_KM;
+        assert_eq!(coast_noise_fine_gain(calm), COAST_NOISE_CALM_FINE_GAIN);
+        assert_eq!(coast_noise_fine_gain(rugged), 1.0);
         assert_eq!(
-            beach_blend_comparator(face, ci, cj, seed),
-            beach_blend_comparator(face, ci, cj, seed)
+            beach_blend_comparator(face, ci, cj, seed, calm),
+            beach_blend_comparator(face, ci, cj, seed, calm)
         );
-        let mut local_delta = 0.0;
-        let mut distant_delta = 0.0;
-        for k in 0..256u64 {
-            let a = beach_blend_comparator(face, ci + k, cj + k * 3, seed);
-            let near = beach_blend_comparator(face, ci + k + 1, cj + k * 3, seed);
-            let far = beach_blend_comparator(face, ci + k + 16_384, cj + k * 3, seed);
-            local_delta += (a - near).abs();
-            distant_delta += (a - far).abs();
+        let mut calm_local_delta = 0.0;
+        let mut rugged_local_delta = 0.0;
+        for k in 0..2_048u64 {
+            let (x, y) = (ci + k * 97, cj + k * 193);
+            let calm_a = beach_blend_comparator(face, x, y, seed, calm);
+            let calm_near = beach_blend_comparator(face, x + 16, y + 7, seed, calm);
+            let rugged_a = beach_blend_comparator(face, x, y, seed, rugged);
+            let rugged_near = beach_blend_comparator(face, x + 16, y + 7, seed, rugged);
+            calm_local_delta += (calm_a - calm_near).abs();
+            rugged_local_delta += (rugged_a - rugged_near).abs();
         }
         assert!(
-            local_delta < distant_delta * 0.5,
-            "local={local_delta} distant={distant_delta}"
+            calm_local_delta < rugged_local_delta * 0.35,
+            "calm={calm_local_delta} rugged={rugged_local_delta}"
         );
+
+        // Adapted amplitude must not bias the mesh/voxel sand coverage. Both
+        // ends of the roughness curve remain approximately uniform after the
+        // variance normalization used by the CDF.
+        for rough in [calm, rugged] {
+            let mut below = [0usize; 3];
+            for k in 0..32_768u64 {
+                let x = crate::planet::hash_u64(face, k, k.wrapping_mul(17), 0xC045_7001)
+                    % COLUMNS_PER_FACE;
+                let y = crate::planet::hash_u64(face, k, k.wrapping_mul(31), 0xC045_7002)
+                    % COLUMNS_PER_FACE;
+                let value = beach_blend_comparator(face, x, y, seed, rough);
+                for (count, fraction) in below.iter_mut().zip([0.25, 0.50, 0.75]) {
+                    *count += usize::from(value < fraction);
+                }
+            }
+            for (count, expected) in below.into_iter().zip([0.25, 0.50, 0.75]) {
+                let measured = count as f64 / 32_768.0;
+                assert!(
+                    (measured - expected).abs() < 0.015,
+                    "rough={rough} expected={expected} measured={measured}"
+                );
+            }
+        }
     }
 
     /// Independent V-5 oracle: keep the block boundary literal here so
