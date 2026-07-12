@@ -205,6 +205,14 @@ pub struct Renderer {
     chunk_epoch: u64,
     chunk_tx: mpsc::Sender<(ChunkKey, u64, TileMesh)>,
     chunk_rx: mpsc::Receiver<(ChunkKey, u64, TileMesh)>,
+    /// Async TILE builds, mirroring the chunk pipeline: LOD ring re-splits
+    /// no longer build synchronously inside draw (the single-frame stall
+    /// Andrew isolated with his zoom-only experiment). Selected-but-pending
+    /// tiles draw a cached ancestor or their four cached children instead.
+    tile_pending: HashMap<TileKey, u64>,
+    tile_epoch: u64,
+    tile_tx: mpsc::Sender<(TileKey, u64, TileMesh)>,
+    tile_rx: mpsc::Receiver<(TileKey, u64, TileMesh)>,
     /// Immutable world-state snapshots shared by in-flight chunk builders.
     /// Refreshed only when edits/torches change, so queuing many chunks does
     /// not clone the whole edited world per request.
@@ -374,6 +382,7 @@ impl Renderer {
 
         let depth = Self::make_depth(&device, size);
         let (tx, rx) = mpsc::channel();
+        let (ttx, trx) = mpsc::channel();
         // precipitation: instanced quads with no vertex buffers (positions
         // are hashed from the instance index in vs_precip), alpha-blended,
         // depth-TESTED against the terrain but never written
@@ -443,6 +452,10 @@ impl Renderer {
             chunk_epoch: 0,
             chunk_tx: tx,
             chunk_rx: rx,
+            tile_pending: HashMap::new(),
+            tile_epoch: 0,
+            tile_tx: ttx,
+            tile_rx: trx,
             edit_snapshot: Arc::new(Edits::default()),
             torch_snapshot: Arc::new(Torches::default()),
             weather_field: None,
@@ -671,62 +684,87 @@ impl Renderer {
         }
         let exagg = self.exaggeration;
         // build missing tiles in parallel (rayon), then upload sequentially
-        let mut missing: Vec<TileKey> = keys
+        // accept tile builds that finished on background threads
+        while let Ok((k, epoch, mesh)) = self.tile_rx.try_recv() {
+            if self.tile_pending.get(&k) == Some(&epoch) {
+                self.tile_pending.remove(&k);
+                if !self.cache.contains_key(&k) {
+                    let gpu = self.upload(mesh);
+                    self.cache.insert(k, gpu);
+                }
+            }
+        }
+        let missing: Vec<TileKey> = keys
             .iter()
             .filter(|k| !self.cache.contains_key(k))
             .copied()
             .collect();
-        // BUDGETED, nearest-first: descending through an LOD swap re-splits
-        // a whole ring, and building every missing tile in one synchronous
-        // burst stalled the frame for tens of ms - the 'lag spike at the
-        // same elevation' family in Andrew's field sidecars (the 240-frame
-        // stats stayed 60 fps because a single spiked frame rolls out of
-        // the window). A capped batch per frame keeps worst-case build
-        // time bounded; unbuilt children stay covered by their cached
-        // parent tiles through the geomorph, so nothing pops or holes.
-        const TILE_BUILD_BUDGET_PER_FRAME: usize = 12;
-        self.tiles_deferred = false;
-        if missing.len() > TILE_BUILD_BUDGET_PER_FRAME {
-            // only tiles with a cached ancestor may wait (their parent
-            // stands in seamlessly); uncovered tiles - fresh teleports -
-            // must build NOW in the parallel batch or the frame holes.
-            let has_ancestor = |k: &TileKey| {
-                let mut cur = *k;
-                while cur.level > 0 {
-                    cur = TileKey {
-                        face: cur.face,
-                        level: cur.level - 1,
-                        ix: cur.ix / 2,
-                        iy: cur.iy / 2,
-                        deep: false,
-                    };
-                    if self.cache.contains_key(&cur) {
-                        return true;
-                    }
+        // a missing tile is COVERED if a cached ancestor or all four cached
+        // children can stand in (geomorph makes either near-identical at
+        // the swap distance). Covered tiles build asynchronously; uncovered
+        // ones (fresh teleports, horizon reveals) must build this frame.
+        let covered = |cache: &HashMap<TileKey, GpuTile>, k: &TileKey| -> bool {
+            let mut cur = *k;
+            while cur.level > 0 {
+                cur = TileKey {
+                    face: cur.face,
+                    level: cur.level - 1,
+                    ix: cur.ix / 2,
+                    iy: cur.iy / 2,
+                    deep: false,
+                };
+                if cache.contains_key(&cur) {
+                    return true;
                 }
-                false
-            };
-            let (mut deferable, urgent): (Vec<TileKey>, Vec<TileKey>) =
-                missing.iter().partition(|k| has_ancestor(k));
-            deferable.sort_by(|a, b| {
-                let da = (a.center_dir() * planet.radius_km - cam_pos).length_squared();
-                let db = (b.center_dir() * planet.radius_km - cam_pos).length_squared();
-                da.total_cmp(&db)
-            });
-            let take = TILE_BUILD_BUDGET_PER_FRAME.saturating_sub(urgent.len().min(64));
-            self.tiles_deferred = deferable.len() > take;
-            deferable.truncate(take);
-            missing = urgent;
-            missing.extend(deferable);
+            }
+            let (cx, cy) = (k.ix as u32 * 2, k.iy as u32 * 2);
+            if cx < u16::MAX as u32 && cy < u16::MAX as u32 {
+                let child = |dx: u16, dy: u16| TileKey {
+                    face: k.face,
+                    level: k.level + 1,
+                    ix: k.ix * 2 + dx,
+                    iy: k.iy * 2 + dy,
+                    deep: false,
+                };
+                if (0..4).all(|i| {
+                    self_cache_has(cache, child(i % 2, i / 2))
+                }) {
+                    return true;
+                }
+            }
+            false
+        };
+        fn self_cache_has(cache: &HashMap<TileKey, GpuTile>, k: TileKey) -> bool {
+            cache.contains_key(&k)
+        }
+        let mut urgent: Vec<TileKey> = Vec::new();
+        for k in &missing {
+            if covered(&self.cache, k) {
+                if !self.tile_pending.contains_key(k) {
+                    let epoch = self.tile_epoch;
+                    self.tile_epoch = self.tile_epoch.wrapping_add(1);
+                    self.tile_pending.insert(*k, epoch);
+                    let tx = self.tile_tx.clone();
+                    let planet = Arc::clone(planet);
+                    let key = *k;
+                    rayon::spawn(move || {
+                        let mesh = build_tile(&planet, key, exagg);
+                        let _ = tx.send((key, epoch, mesh));
+                    });
+                }
+            } else {
+                urgent.push(*k);
+            }
         }
         let built: Vec<(TileKey, TileMesh)> = {
             use rayon::prelude::*;
-            missing.par_iter().map(|k| (*k, build_tile(planet, *k, exagg))).collect()
+            urgent.par_iter().map(|k| (*k, build_tile(planet, *k, exagg))).collect()
         };
         for (k, mesh) in built {
             let gpu = self.upload(mesh);
             self.cache.insert(k, gpu);
         }
+        self.tiles_deferred = keys.iter().any(|k| !self.cache.contains_key(k));
         // coverage resolution for the budget: any selected tile still
         // unbuilt draws its nearest CACHED ancestor instead (dedup) - the
         // geomorph makes a parent at swap distance near-identical, so a
@@ -736,18 +774,16 @@ impl Renderer {
             let mut resolved: Vec<TileKey> = Vec::with_capacity(keys.len());
             let mut seen: HashSet<TileKey> = HashSet::with_capacity(keys.len());
             for k in keys {
+                if self.cache.contains_key(&k) {
+                    if seen.insert(k) {
+                        resolved.push(k);
+                    }
+                    continue;
+                }
+                // ancestor stand-in (descent case)
                 let mut cur = k;
-                let drawn = loop {
-                    if self.cache.contains_key(&cur) {
-                        break cur;
-                    }
-                    if cur.level == 0 {
-                        // unreachable in practice (uncovered tiles build
-                        // urgently above); belt-and-braces stand-in
-                        let gpu = self.upload(build_tile(planet, k, exagg));
-                        self.cache.insert(k, gpu);
-                        break k;
-                    }
+                let mut found = None;
+                while cur.level > 0 {
                     cur = TileKey {
                         face: cur.face,
                         level: cur.level - 1,
@@ -755,9 +791,41 @@ impl Renderer {
                         iy: cur.iy / 2,
                         deep: false,
                     };
+                    if self.cache.contains_key(&cur) {
+                        found = Some(cur);
+                        break;
+                    }
+                }
+                if let Some(a) = found {
+                    if seen.insert(a) {
+                        resolved.push(a);
+                    }
+                    continue;
+                }
+                // four-children stand-in (ascent case: finer rings are
+                // cached, the coarser ancestor never was)
+                let child = |dx: u16, dy: u16| TileKey {
+                    face: k.face,
+                    level: k.level + 1,
+                    ix: k.ix * 2 + dx,
+                    iy: k.iy * 2 + dy,
+                    deep: false,
                 };
-                if seen.insert(drawn) {
-                    resolved.push(drawn);
+                let kids = [child(0, 0), child(1, 0), child(0, 1), child(1, 1)];
+                if kids.iter().all(|c| self.cache.contains_key(c)) {
+                    for c in kids {
+                        if seen.insert(c) {
+                            resolved.push(c);
+                        }
+                    }
+                    continue;
+                }
+                // belt-and-braces: nothing can stand in (should have been
+                // built urgently above) - build now, correctness first
+                let gpu = self.upload(build_tile(planet, k, exagg));
+                self.cache.insert(k, gpu);
+                if seen.insert(k) {
+                    resolved.push(k);
                 }
             }
             resolved
