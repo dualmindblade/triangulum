@@ -1,0 +1,12 @@
+mode fly
+teleport 69.881 30.0 6106.524
+look 0 -85
+sun 10 62
+shot orbit_a
+teleport 71.623 30.0 6106.524
+look 0 -85
+shot orbit_b
+teleport 47.861 14.399 0.592
+look -49 -62
+weather pin 1.0 0.5
+shot ground_wx

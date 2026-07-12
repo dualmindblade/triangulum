@@ -1,0 +1,10 @@
+mode fly
+weather pin 0.1 0
+teleport 83.997 40.220 0.2
+look 0 -35
+shot warm_ice
+bench 60
+teleport -0.906 -67.804 0.094
+look -210 -17
+shot warm_forest
+bench 60

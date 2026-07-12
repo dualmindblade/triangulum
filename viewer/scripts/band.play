@@ -1,0 +1,10 @@
+teleport 13.013 -4.546 0.012
+look 163 -12
+mode fly
+weather pin 0.3 0.2
+shot band_vox
+voxels off
+shot band_mesh
+voxels on
+probe 13.008 -4.545
+probe 13.005 -4.544

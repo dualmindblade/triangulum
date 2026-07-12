@@ -1,4 +1,6 @@
-﻿//! Scripted play harness: drive the game's own player physics and renderer
+#![recursion_limit = "256"]
+
+//! Scripted play harness: drive the game's own player physics and renderer
 //! from a plain-text script, headless. The bridge between "an AI can only
 //! look at stills" and "a human plays around": scripts are reproducible
 //! play sessions that leave behind frames + machine-readable state.
@@ -11,6 +13,9 @@
 //!
 //! Script commands (one per line, `#` comments):
 //!   teleport LAT LON [ALT_KM]     absolute jump (fly mode), like the T key
+//!   moonpose LAT LON ALT YAW PITCH body-local focused-moon flyby/orbit pose
+//!   moonprobe LAT LON              select a body-local direction for moon
+//!                                 surface-height/albedo assertions
 //!   look YAW PITCH                absolute view angles, degrees
 //!   turn DYAW DPITCH              relative view change, degrees
 //!   mode walk|fly                 like G / F
@@ -55,11 +60,11 @@ use std::io::Write as IoWrite;
 use std::sync::Arc;
 
 use triangulum_viewer::camera::{Camera, CameraMode, CameraRig};
-use triangulum_viewer::planet::{face_from_dir, Planet};
+use triangulum_viewer::planet::{Planet, face_from_dir};
 use triangulum_viewer::player::{self, Input, Mode, PlayerState};
 use triangulum_viewer::renderer::Renderer;
 use triangulum_viewer::voxel::{
-    ceiling_above_km, support_below_km, surface_height_km, water_surface_km, Edits, Torches,
+    Edits, Torches, ceiling_above_km, support_below_km, surface_height_km, water_surface_km,
 };
 
 const DT: f64 = 1.0 / 60.0; // fixed timestep: scripts are deterministic
@@ -134,8 +139,7 @@ fn main() -> anyhow::Result<()> {
         "assets"
     };
     let planet = Arc::new(Planet::load(assets)?);
-    let instance =
-        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
     let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
         power_preference: wgpu::PowerPreference::HighPerformance,
         compatible_surface: None,
@@ -144,7 +148,13 @@ fn main() -> anyhow::Result<()> {
     }))?;
     let (device, queue) =
         pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default()))?;
-    let mut renderer = Renderer::new(device, queue, wgpu::TextureFormat::Rgba8UnormSrgb, size, exagg);
+    let mut renderer = Renderer::new(
+        device,
+        queue,
+        wgpu::TextureFormat::Rgba8UnormSrgb,
+        size,
+        exagg,
+    );
     renderer.patch_scale = patch;
     // living weather: deterministic here BY CONSTRUCTION — render time is
     // the fixed sim clock (F-20), so even `weather live` scripts reproduce
@@ -201,18 +211,81 @@ fn main() -> anyhow::Result<()> {
         let water = water_surface_km(&planet, edits, d, eye, exagg);
         let solar = renderer.solar_state(camera.position(), planet.radius_km);
         let solar_occlusion = triangulum_viewer::orbits::solar_occlusion_at(
-            camera.position(), solar, &renderer.solar_tuning, planet.radius_km,
+            camera.position(),
+            solar,
+            &renderer.solar_tuning,
+            planet.radius_km,
         );
         let lunar_shadow = triangulum_viewer::orbits::lunar_shadow_fraction(
-            solar, &renderer.solar_tuning, planet.radius_km,
+            solar,
+            &renderer.solar_tuning,
+            planet.radius_km,
         );
         let focus_distance = camera_rig.focus_distance_km(solar, camera);
         let focus_alignment = camera_rig.focus_alignment(solar, camera);
         let camera_pos = camera.position();
+        let moon_radius = renderer
+            .solar_tuning
+            .radius_km(triangulum_viewer::orbits::BodyId::Moon, planet.radius_km);
+        let moon_relative = camera_pos - solar.moon_km;
+        let on_moon = (moon_relative.length() - moon_radius).abs() < camera.altitude_km.abs();
+        let body_direction = if on_moon {
+            moon_relative.normalize_or_zero()
+        } else {
+            camera_pos.normalize_or_zero()
+        };
+        let body_lat = body_direction.z.clamp(-1.0, 1.0).asin().to_degrees();
+        let body_lon = body_direction.y.atan2(body_direction.x).to_degrees();
+        let body_alt = if on_moon {
+            moon_relative.length()
+                - moon_radius
+                - triangulum_viewer::moon::MoonGenerator::new(planet.seed)
+                    .height_km(body_direction, moon_radius)
+        } else {
+            camera.altitude_km
+        };
+        let (body_yaw, body_pitch, body_roll) = if on_moon {
+            let east0 = glam::DVec3::Z.cross(body_direction);
+            let east = if east0.length_squared() > 0.5 {
+                east0.normalize()
+            } else {
+                glam::DVec3::X
+            };
+            let north = body_direction.cross(east).normalize();
+            let (look, view_up, _) = camera.view_basis();
+            let pitch = look.dot(body_direction).clamp(-1.0, 1.0).asin();
+            let horizontal = (look - body_direction * look.dot(body_direction)).normalize_or_zero();
+            let yaw = horizontal.dot(east).atan2(horizontal.dot(north));
+            let mut base_right = look.cross(body_direction).normalize_or_zero();
+            if base_right.length_squared() < 0.5 {
+                base_right = east;
+            }
+            let base_up = base_right.cross(look).normalize();
+            let target_up = (view_up - look * view_up.dot(look)).normalize_or_zero();
+            let roll = if target_up.length_squared() > 0.5 {
+                target_up.dot(base_right).atan2(target_up.dot(base_up))
+            } else {
+                0.0
+            };
+            (yaw.to_degrees(), pitch.to_degrees(), roll.to_degrees())
+        } else {
+            (
+                camera.yaw.to_degrees(),
+                camera.pitch.to_degrees(),
+                camera.roll.to_degrees(),
+            )
+        };
         let js = serde_json::json!({
             "lat_deg": camera.lat.to_degrees(),
             "lon_deg": camera.lon.to_degrees(),
             "alt_km": camera.altitude_km,
+            "body": if on_moon { "moon" } else { "neisor" },
+            "body_lat_deg": body_lat,
+            "body_lon_deg": body_lon,
+            "body_alt_km": body_alt,
+            "body_yaw_deg": body_yaw,
+            "body_pitch_deg": body_pitch,
+            "body_roll_deg": body_roll,
             "radius_km": camera.radius_km + camera.ground_km + camera.altitude_km,
             "yaw_deg": camera.yaw.to_degrees(),
             "pitch_deg": camera.pitch.to_degrees(),
@@ -263,6 +336,7 @@ fn main() -> anyhow::Result<()> {
     // .play script doubles as a self-checking regression/discovery test.
     let mut assert_fails: u32 = 0;
     let mut sim_ticks: u64 = 0;
+    let mut moon_probe_dir = glam::DVec3::X;
     for (ln, raw) in script.lines().enumerate() {
         let line = raw.split('#').next().unwrap_or("").trim();
         if line.is_empty() {
@@ -287,8 +361,82 @@ fn main() -> anyhow::Result<()> {
                     &mut camera,
                 );
                 ps.teleport(&planet, &edits, &mut camera, f(1)?, f(2)?, f(3).ok(), exagg);
-                trace!("[{}] teleport -> lat {:.6} lon {:.6} alt {:.5} km",
-                    ln + 1, f(1)?, f(2)?, camera.altitude_km);
+                trace!(
+                    "[{}] teleport -> lat {:.6} lon {:.6} alt {:.5} km",
+                    ln + 1,
+                    f(1)?,
+                    f(2)?,
+                    camera.altitude_km
+                );
+            }
+            "moonpose" => {
+                let (lat_deg, lon_deg, altitude) = (f(1)?, f(2)?, f(3)?);
+                anyhow::ensure!(
+                    lat_deg.is_finite()
+                        && lon_deg.is_finite()
+                        && altitude.is_finite()
+                        && lat_deg.abs() <= 90.0
+                        && altitude > 0.0,
+                    "line {}: moonpose needs finite LAT LON ALT_KM (alt > 0)",
+                    ln + 1
+                );
+                renderer.set_render_time_s(sim_ticks as f64 * DT);
+                let solar = renderer.solar_state(camera.position(), planet.radius_km);
+                let radius = renderer
+                    .solar_tuning
+                    .radius_km(triangulum_viewer::orbits::BodyId::Moon, planet.radius_km);
+                let (lat, lon) = (lat_deg.to_radians(), lon_deg.to_radians());
+                let direction =
+                    glam::DVec3::new(lat.cos() * lon.cos(), lat.cos() * lon.sin(), lat.sin());
+                let height = triangulum_viewer::moon::MoonGenerator::new(planet.seed)
+                    .height_km(direction, radius);
+                let position = solar.moon_km + direction * (radius + height + altitude);
+                let east0 = glam::DVec3::Z.cross(direction);
+                let east = if east0.length_squared() > 0.5 {
+                    east0.normalize()
+                } else {
+                    glam::DVec3::X
+                };
+                let north = direction.cross(east).normalize();
+                let (yaw, pitch) = (f(4)?.to_radians(), f(5)?.to_radians().clamp(-1.50, 1.50));
+                let horizontal = north * yaw.cos() + east * yaw.sin();
+                let look = (horizontal * pitch.cos() + direction * pitch.sin()).normalize();
+                let mut right = look.cross(direction).normalize_or_zero();
+                if right.length_squared() < 0.5 {
+                    right = east;
+                }
+                let view_up = right.cross(look).normalize();
+                camera_rig.place_near_body(
+                    triangulum_viewer::orbits::BodyId::Moon,
+                    solar,
+                    position,
+                    look,
+                    view_up,
+                    true,
+                    &mut camera,
+                );
+                ps.set_fly(&mut camera);
+                trace!(
+                    "[{}] moonpose -> lat {:.6} lon {:.6} alt {:.5} km yaw {:.0} pitch {:.0}",
+                    ln + 1,
+                    lat_deg,
+                    lon_deg,
+                    altitude,
+                    f(4)?,
+                    f(5)?
+                );
+            }
+            "moonprobe" => {
+                let (lat_deg, lon_deg) = (f(1)?, f(2)?);
+                anyhow::ensure!(
+                    lat_deg.is_finite() && lon_deg.is_finite() && lat_deg.abs() <= 90.0,
+                    "line {}: moonprobe needs finite LAT LON",
+                    ln + 1
+                );
+                let (lat, lon) = (lat_deg.to_radians(), lon_deg.to_radians());
+                moon_probe_dir =
+                    glam::DVec3::new(lat.cos() * lon.cos(), lat.cos() * lon.sin(), lat.sin());
+                trace!("[{}] moonprobe {:.6} {:.6}", ln + 1, lat_deg, lon_deg);
             }
             "look" => {
                 camera.yaw = f(1)?.to_radians();
@@ -298,8 +446,12 @@ fn main() -> anyhow::Result<()> {
             "turn" => {
                 camera.yaw += f(1)?.to_radians();
                 camera.pitch = (camera.pitch + f(2)?.to_radians()).clamp(-1.50, 1.50);
-                trace!("[{}] turn -> yaw {:.0} pitch {:.0}",
-                    ln + 1, camera.yaw.to_degrees(), camera.pitch.to_degrees());
+                trace!(
+                    "[{}] turn -> yaw {:.0} pitch {:.0}",
+                    ln + 1,
+                    camera.yaw.to_degrees(),
+                    camera.pitch.to_degrees()
+                );
             }
             "focus" => {
                 renderer.set_render_time_s(sim_ticks as f64 * DT);
@@ -339,7 +491,12 @@ fn main() -> anyhow::Result<()> {
                     }
                     _ => anyhow::bail!("line {}: focus neisor|moon|sun|free", ln + 1),
                 }
-                trace!("[{}] focus {} (id {:.0})", ln + 1, toks[1], camera_rig.numeric_focus_id());
+                trace!(
+                    "[{}] focus {} (id {:.0})",
+                    ln + 1,
+                    toks[1],
+                    camera_rig.numeric_focus_id()
+                );
             }
             "roll" => {
                 anyhow::ensure!(
@@ -405,15 +562,17 @@ fn main() -> anyhow::Result<()> {
                             camera.roll = (camera.roll + roll_axis * DT * 1.2)
                                 .rem_euclid(std::f64::consts::TAU);
                             let vertical = input.swim_up as i32 as f64 - free_down as i32 as f64;
-                            let speed = (camera.altitude_km.abs() * 0.5)
-                                .clamp(0.02, 1500.0)
+                            let solar = renderer.solar_state(camera.position(), planet.radius_km);
+                            let nav_altitude =
+                                triangulum_viewer::camera::nearest_surface_altitude_km(
+                                    &camera,
+                                    solar,
+                                    &renderer.solar_tuning,
+                                    planet.radius_km,
+                                );
+                            let speed = (nav_altitude * 0.5).clamp(0.02, 1500.0)
                                 * if input.sprint { 4.0 } else { 1.0 };
-                            camera.translate_free(
-                                input.strafe,
-                                vertical,
-                                input.fwd,
-                                speed * DT,
-                            );
+                            camera.translate_free(input.strafe, vertical, input.fwd, speed * DT);
                             ps.underwater = false;
                             ps.grounded = false;
                         }
@@ -423,9 +582,14 @@ fn main() -> anyhow::Result<()> {
                     let solar = renderer.solar_state(camera.position(), planet.radius_km);
                     camera_rig.realign(solar, &mut camera);
                 }
-                trace!("[{}] hold {keys} {secs}s -> lat {:.6} lon {:.6} alt {:.5} grounded {}",
-                    ln + 1, camera.lat.to_degrees(), camera.lon.to_degrees(),
-                    camera.altitude_km, ps.grounded);
+                trace!(
+                    "[{}] hold {keys} {secs}s -> lat {:.6} lon {:.6} alt {:.5} grounded {}",
+                    ln + 1,
+                    camera.lat.to_degrees(),
+                    camera.lon.to_degrees(),
+                    camera.altitude_km,
+                    ps.grounded
+                );
             }
             "wait" => {
                 let steps = (f(1)? / DT).round().max(1.0) as usize;
@@ -441,8 +605,13 @@ fn main() -> anyhow::Result<()> {
                     let solar = renderer.solar_state(camera.position(), planet.radius_km);
                     camera_rig.realign(solar, &mut camera);
                 }
-                trace!("[{}] wait {}s -> alt {:.4} grounded {}",
-                    ln + 1, f(1)?, camera.altitude_km, ps.grounded);
+                trace!(
+                    "[{}] wait {}s -> alt {:.4} grounded {}",
+                    ln + 1,
+                    f(1)?,
+                    camera.altitude_km,
+                    ps.grounded
+                );
             }
             "tap" => {
                 match toks.get(1).copied() {
@@ -462,7 +631,12 @@ fn main() -> anyhow::Result<()> {
                     }
                     Some("r") => {
                         if let Some(dirty) = player::toggle_torch(
-                            &planet, &edits, &mut torches, &camera, ps.mode, exagg,
+                            &planet,
+                            &edits,
+                            &mut torches,
+                            &camera,
+                            ps.mode,
+                            exagg,
                         ) {
                             renderer.set_torches(torches.clone());
                             renderer.invalidate_chunks(&dirty);
@@ -475,6 +649,13 @@ fn main() -> anyhow::Result<()> {
                 trace!("[{}] tap {}", ln + 1, toks[1]);
             }
             "sun" => {
+                if toks.get(1).is_some_and(|s| {
+                    s.eq_ignore_ascii_case("physical") || s.eq_ignore_ascii_case("live")
+                }) {
+                    renderer.sun_dir = None;
+                    trace!("[{}] sun physical", ln + 1);
+                    continue;
+                }
                 let (la, lo) = (f(1)?.to_radians(), f(2)?.to_radians());
                 renderer.sun_dir = Some(glam::DVec3::new(
                     la.cos() * lo.cos(),
@@ -523,16 +704,15 @@ fn main() -> anyhow::Result<()> {
                 let p95 = times[(times.len() as f64 * 0.95) as usize % times.len()];
                 trace!(
                     "[{}] bench {n}: avg {avg:.2} ms  p95 {p95:.2} ms  min {:.2}  max {:.2}",
-                    ln + 1, times[0], times[times.len() - 1]
+                    ln + 1,
+                    times[0],
+                    times[times.len() - 1]
                 );
             }
             "probe" => {
                 let (pla, plo) = (f(1)?.to_radians(), f(2)?.to_radians());
-                let pdir = glam::DVec3::new(
-                    pla.cos() * plo.cos(),
-                    pla.cos() * plo.sin(),
-                    pla.sin(),
-                );
+                let pdir =
+                    glam::DVec3::new(pla.cos() * plo.cos(), pla.cos() * plo.sin(), pla.sin());
                 let (pf, pu, pv) = triangulum_viewer::planet::face_from_dir(pdir);
                 let s = triangulum_viewer::terrain::sample(
                     &planet,
@@ -546,7 +726,11 @@ fn main() -> anyhow::Result<()> {
                 let cj = (((pv + 1.0) * 0.5) * nn).floor() as i64;
                 let c = triangulum_viewer::voxel::col_ctx_ext(&planet, &edits, pf, ci, cj);
                 let fmt_lvl = |x: f64| {
-                    if x.is_finite() { format!("{:.1}m", x * 1000.0) } else { "-".into() }
+                    if x.is_finite() {
+                        format!("{:.1}m", x * 1000.0)
+                    } else {
+                        "-".into()
+                    }
                 };
                 trace!(
                     "[{}] probe {:.5} {:.5}: h={:.1}m water={} lake={} lake_lvl={} pond_lvl={} riv hw={:.1}m wet={:.2} | col ground={} water={} cave_water={}",
@@ -561,8 +745,16 @@ fn main() -> anyhow::Result<()> {
                     s.river_hw_km * 1000.0,
                     s.river_wet,
                     c.ground,
-                    if c.water == i64::MIN { "-".into() } else { c.water.to_string() },
-                    if c.cave_water == i64::MIN { "-".into() } else { c.cave_water.to_string() },
+                    if c.water == i64::MIN {
+                        "-".into()
+                    } else {
+                        c.water.to_string()
+                    },
+                    if c.cave_water == i64::MIN {
+                        "-".into()
+                    } else {
+                        c.cave_water.to_string()
+                    },
                 );
             }
             // voxels on | off — master switch for the voxel near-field.
@@ -653,9 +845,15 @@ fn main() -> anyhow::Result<()> {
                 renderer.underwater = ps.underwater;
                 let n = renderer.capture(&planet, &camera, &edits, &format!("{dir}/{name}.png"))?;
                 write_state(name, &camera, &camera_rig, &renderer, &ps, &edits, &dir)?;
-                trace!("[{}] shot {name} ({n} draws) at lat {:.6} lon {:.6} alt {:.5} yaw {:.0} pitch {:.0}",
-                    ln + 1, camera.lat.to_degrees(), camera.lon.to_degrees(),
-                    camera.altitude_km, camera.yaw.to_degrees(), camera.pitch.to_degrees());
+                trace!(
+                    "[{}] shot {name} ({n} draws) at lat {:.6} lon {:.6} alt {:.5} yaw {:.0} pitch {:.0}",
+                    ln + 1,
+                    camera.lat.to_degrees(),
+                    camera.lon.to_degrees(),
+                    camera.altitude_km,
+                    camera.yaw.to_degrees(),
+                    camera.pitch.to_degrees()
+                );
             }
             "state" => {
                 let name = toks.get(1).copied().unwrap_or("state");
@@ -680,13 +878,19 @@ fn main() -> anyhow::Result<()> {
                     S(&'static str),
                     None,
                 }
-                let field = toks.get(1).map(|s| s.to_ascii_lowercase()).unwrap_or_default();
+                let field = toks
+                    .get(1)
+                    .map(|s| s.to_ascii_lowercase())
+                    .unwrap_or_default();
                 // two forms: `assert FIELD VALUE` (implicit ==) and
                 // `assert FIELD OP VALUE` (+ optional tolerance token for `~`)
                 let (op, want) = if toks.len() == 3 {
                     ("==", toks[2])
                 } else {
-                    (toks.get(2).copied().unwrap_or("=="), toks.get(3).copied().unwrap_or(""))
+                    (
+                        toks.get(2).copied().unwrap_or("=="),
+                        toks.get(3).copied().unwrap_or(""),
+                    )
                 };
                 if toks.len() > 5 {
                     anyhow::bail!("line {}: assert: too many tokens", ln + 1);
@@ -740,11 +944,19 @@ fn main() -> anyhow::Result<()> {
                     )),
                     "focus_distance_km" => {
                         let value = camera_rig.focus_distance_km(solar, &camera);
-                        if value.is_finite() { V::N(value) } else { V::None }
+                        if value.is_finite() {
+                            V::N(value)
+                        } else {
+                            V::None
+                        }
                     }
                     "focus_alignment" => {
                         let value = camera_rig.focus_alignment(solar, &camera);
-                        if value.is_finite() { V::N(value) } else { V::None }
+                        if value.is_finite() {
+                            V::N(value)
+                        } else {
+                            V::None
+                        }
                     }
                     "support_below_km" => {
                         V::N(support_below_km(&planet, &edits, dir, feet + 1e-7, exagg))
@@ -753,17 +965,30 @@ fn main() -> anyhow::Result<()> {
                     // on a frozen sheet it must AGREE with the walkable
                     // support — regressing to the seabed re-opens the
                     // edit-through-ice family (Sol review, 2026-07-09)
-                    "surface_height_km" => {
-                        V::N(surface_height_km(&planet, &edits, dir, exagg))
+                    "surface_height_km" => V::N(surface_height_km(&planet, &edits, dir, exagg)),
+                    "moon_surface_height_km" => {
+                        let radius = renderer
+                            .solar_tuning
+                            .radius_km(triangulum_viewer::orbits::BodyId::Moon, planet.radius_km);
+                        V::N(
+                            triangulum_viewer::moon::MoonGenerator::new(planet.seed)
+                                .height_km(moon_probe_dir, radius),
+                        )
                     }
-                    "water_surface_km" => match water_surface_km(&planet, &edits, dir, eye, exagg) {
-                        Some(w) => V::N(w),
-                        None => V::None,
-                    },
+                    "moon_surface_albedo" => V::N(
+                        triangulum_viewer::moon::MoonGenerator::new(planet.seed)
+                            .sample(moon_probe_dir)
+                            .albedo,
+                    ),
+                    "water_surface_km" => {
+                        match water_surface_km(&planet, &edits, dir, eye, exagg) {
+                            Some(w) => V::N(w),
+                            None => V::None,
+                        }
+                    }
                     "ceiling_above_km" => {
-                        let c = ceiling_above_km(
-                            &planet, &edits, dir, feet + player::EYE_KM, exagg,
-                        );
+                        let c =
+                            ceiling_above_km(&planet, &edits, dir, feet + player::EYE_KM, exagg);
                         if c.is_finite() { V::N(c) } else { V::None }
                     }
                     _ => anyhow::bail!("line {}: assert: unknown field `{field}`", ln + 1),
@@ -850,7 +1075,10 @@ fn main() -> anyhow::Result<()> {
                     }
                 };
                 if pass {
-                    trace!("[{}] assert OK: {field} {op} {want} (actual {shown})", ln + 1);
+                    trace!(
+                        "[{}] assert OK: {field} {op} {want} (actual {shown})",
+                        ln + 1
+                    );
                 } else {
                     assert_fails += 1;
                     trace!(

@@ -1,0 +1,5 @@
+teleport 4.377 39.078 0.4
+look 0 -55
+mode fly
+weather pin 0.1 0
+shot d14_apron_steps

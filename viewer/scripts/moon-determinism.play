@@ -1,0 +1,12 @@
+# P2 fresh-process byte determinism pair: a complete face and a ray field.
+mode fly
+weather off
+weather time 0
+sun physical
+
+moonpose 10 40 1700 0 -86
+shot moon_face
+
+moonpose 35.4023 20.0000 8 -90 -20
+focus free
+shot crater_field

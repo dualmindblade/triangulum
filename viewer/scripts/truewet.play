@@ -1,0 +1,9 @@
+mode walk
+teleport 13.3457 -4.8064 0.001
+state truewet
+teleport 13.3457 -4.8064 0.04
+look 0 -88
+mode fly
+sun 13 -20
+weather pin 0.10 0.0
+shot truewet40

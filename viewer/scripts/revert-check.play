@@ -1,0 +1,14 @@
+mode fly
+weather pin 0.1 0.0
+teleport 13.348 -4.807 0.011
+look 178 -19
+shot z1_shore
+teleport 13.346 -4.807 0.064
+look 113 -64
+shot z2_dlake
+teleport 12.199 -44.827 0.100
+look -90 -45
+shot z3_ponds
+teleport 13.013 -4.546 0.012
+look 163 -12
+shot z4_band

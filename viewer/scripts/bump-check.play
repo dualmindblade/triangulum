@@ -1,0 +1,14 @@
+teleport 15.024204 17.661741 0.154062
+look -75.371514 -21.279653
+mode fly
+sun 4 40
+weather pin 0.10 0.0
+shot bump_river_grazing
+teleport 47.861 14.399 0.592
+look -49 -62
+sun 30 -5
+shot bump_taiga
+teleport 5.560 31.741 0.196
+look 150 -40
+sun 5 46
+shot bump_savanna_grazing

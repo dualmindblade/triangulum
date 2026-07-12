@@ -1,0 +1,9 @@
+teleport 13.34478 -4.80746 0.04
+look 0 -88
+mode fly
+sun 13 -20
+weather pin 0.10 0.0
+shot low40
+teleport 13.34478 -4.80746 0.012
+look 0 -88
+shot low12

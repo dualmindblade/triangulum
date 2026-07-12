@@ -1,0 +1,6 @@
+teleport 15.238 150.848 291.416
+look 146 -86
+mode fly
+sun 15 148
+weather pin 0.1 0.0
+shot fringe_after

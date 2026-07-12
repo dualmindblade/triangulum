@@ -1,0 +1,9 @@
+mode fly
+weather pin 0.9 0.5
+weather time 3500
+teleport 30.0 40.0 250.0
+look 0 -80
+shot p_a
+teleport 30.0 40.2 250.0
+look 0 -80
+shot p_b

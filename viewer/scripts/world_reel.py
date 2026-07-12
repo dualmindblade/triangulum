@@ -66,6 +66,16 @@ POSES = [
     ("orbital_biomes",  42.765,  38.439, 288.2, -64, -85),
 ]
 
+# name, moon-local lat/lon, altitude km, local yaw/pitch. Moon poses use the
+# physical epoch Sun; pinned art directions are observer-relative and are not
+# valid while the camera itself moves between bodies.
+# These are P2 additions and deliberately have no accepted baseline yet.
+MOON_POSES = [
+    ("moon_orbit_face", 10.0, 40.0, 1700.0, 0, -86),
+    ("moon_low_flyby", 35.4023, 20.0000, 8.0, -90, -20),
+]
+ALL_POSES = [*POSES, *MOON_POSES]
+
 CHANGE_MEAN = 1.0   # mean |delta| over the frame that counts as "changed"
 CHANGE_FRAC = 0.01  # or >1% of pixels differing by >6
 
@@ -78,6 +88,13 @@ def build_play(path: Path):
             f"teleport {lat} {lon} {alt}",
             f"look {yaw} {pitch}",
             f"sun {sun_lat:.2f} {lon - 15.0:.2f}",
+            f"shot {name}",
+        ]
+    lines.append("sun physical")
+    for index, (name, lat, lon, alt, yaw, pitch) in enumerate(MOON_POSES):
+        lines += [
+            f"moonpose {lat} {lon} {alt} {yaw} {pitch}",
+            *( ["focus free"] if index == 1 else [] ),
             f"shot {name}",
         ]
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
@@ -191,23 +208,41 @@ def main():
             sys.stderr.write(r.stdout[-1500:] + r.stderr[-1500:])
             raise SystemExit(f"reel render failed ({r.returncode})")
         current.mkdir(parents=True, exist_ok=True)
-        for name, *_ in POSES:
+        for name, *_ in ALL_POSES:
             shutil.copyfile(run_dir / f"{name}.png", current / f"{name}.png")
 
     findings = []
     report = {}
-    for name, *_ in POSES:
+    for name, *_ in ALL_POSES:
         cur_p = current / f"{name}.png"
         if not cur_p.exists():
             findings.append(f"{name}: MISSING current frame")
             continue
         im = np.asarray(Image.open(cur_p).convert("RGB"), dtype=np.float64)
-        blob, dark_frac = lint_void(np.asarray(Image.open(cur_p).convert("RGB")))
-        grid = lint_grid(im)
-        row = {"void_blob_px": blob, "dark_frac": round(dark_frac, 5),
-               "grid_score": round(grid, 3)}
-        if blob > 400:
-            findings.append(f"{name}: VOID lint - {blob}px near-black blob")
+        if name.startswith("moon_"):
+            # Space is legitimately black around a moon pose, so Neisor's
+            # below-horizon void detector is the wrong invariant. Require a
+            # substantial, non-flat generated surface instead.
+            lum = im.max(axis=2)
+            surface = lum > 45
+            surface_frac = float(surface.mean())
+            surface_std = float(im[surface].std()) if surface.any() else 0.0
+            row = {
+                "moon_surface_frac": round(surface_frac, 4),
+                "moon_surface_std": round(surface_std, 3),
+                "mean_delta": "no-baseline",
+            }
+            if surface_frac < 0.08:
+                findings.append(f"{name}: MOON lint - generated surface missing")
+            if surface_std < 5.0:
+                findings.append(f"{name}: MOON lint - surface is visually flat")
+        else:
+            blob, dark_frac = lint_void(np.asarray(Image.open(cur_p).convert("RGB")))
+            grid = lint_grid(im)
+            row = {"void_blob_px": blob, "dark_frac": round(dark_frac, 5),
+                   "grid_score": round(grid, 3)}
+            if blob > 400:
+                findings.append(f"{name}: VOID lint - {blob}px near-black blob")
         # grid score is INFORMATIONAL for now: healthy scenes carry designed
         # periodicity (block lattice edges, the frozen-ice checker) and the
         # cheap autocorr floor sits too close to the artifact band. The
@@ -236,11 +271,11 @@ def main():
 
     if args.accept:
         accepted.mkdir(parents=True, exist_ok=True)
-        for name, *_ in POSES:
+        for name, *_ in ALL_POSES:
             src = current / f"{name}.png"
             if src.exists():
                 shutil.copyfile(src, accepted / f"{name}.png")
-        print(f"accepted: {len(POSES)} poses blessed as the reference reel")
+        print(f"accepted: {len(ALL_POSES)} poses blessed as the reference reel")
         return
 
     if findings:
@@ -248,7 +283,7 @@ def main():
         for f in findings:
             print(" ", f)
         sys.exit(3)
-    print(f"REEL: all {len(POSES)} poses clean (lint ok, no unexplained change)")
+    print(f"REEL: all {len(ALL_POSES)} poses clean (lint ok, no unexplained change)")
 
 
 if __name__ == "__main__":

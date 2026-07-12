@@ -1,0 +1,8 @@
+teleport 13.013 -4.546 0.012
+look 163 -12
+mode fly
+weather pin 0.3 0.2
+shot bandcheck
+teleport 12.194 -44.858 0.085
+look 82 -25
+shot rampartcheck

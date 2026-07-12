@@ -1,0 +1,10 @@
+teleport 13.345937 -4.80681 0.012187
+look 3.788838 -74.851206
+mode fly
+sun 10 -84.817759
+weather live
+weather time 516.416016
+shot lake_a
+voxels off
+shot lake_b
+voxels on

@@ -3,6 +3,7 @@
 //! (notably the Python-parity noise goldens) link against the library.
 
 pub mod camera;
+pub mod moon;
 pub mod noise;
 pub mod noise_grad;
 pub mod orbits;

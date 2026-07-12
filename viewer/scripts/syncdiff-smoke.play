@@ -1,0 +1,10 @@
+teleport 15.024204 17.661741 0.154062
+look -75.371514 -21.279653
+mode fly
+sun 30 17.66
+weather pin 0.10 0.0
+shot smoke_vox
+voxels off
+shot smoke_mesh
+voxels on
+shot smoke_vox2

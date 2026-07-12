@@ -1,0 +1,11 @@
+mode fly
+weather time 349
+teleport 30.0 40.0 250.0
+look 0 -80
+shot pan_a
+teleport 30.0 41.0 250.0
+look 0 -80
+shot pan_b
+teleport 30.0 44.0 250.0
+look 0 -80
+shot pan_c

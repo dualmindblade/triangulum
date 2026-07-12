@@ -572,6 +572,74 @@ fn vs_main(in: VsIn) -> VsOut {
     return out;
 }
 
+// Moon terrain uses the same compact vertex payload as Neisor tiles, but its
+// radial morph center is the physical moon rather than globals.center
+// (Neisor).  Tile origins and the body center were combined in f64 CPU space;
+// this shader only ever sees their camera-relative remainder.
+@vertex
+fn vs_moon(in: VsIn) -> VsOut {
+    var out: VsOut;
+    var rel = in.pos + tile.offset.xyz;
+    let d = length(rel);
+    if (tile.morph.y > 0.0) {
+        let m = clamp((d - tile.morph.x) / (tile.morph.y - tile.morph.x), 0.0, 1.0);
+        let radial = normalize(rel - globals.moon_body.xyz);
+        rel += radial * (in.morph.x * m);
+    }
+    out.clip = globals.view_proj * vec4<f32>(rel, 1.0);
+    out.normal = in.normal;
+    out.color = in.color;
+    out.dist_km = d;
+    out.rel_flag = vec4<f32>(rel, 3.0);
+    // MoonGenerator stores mare smoothness in water.a and ray survival in
+    // wflag; neither channel invokes Neisor water/weather behavior here.
+    out.water = in.water;
+    out.wflag = in.morph.z;
+    out.shore = 0.0;
+    // moon vertices carry the payload-off biome marker; pass it through so
+    // fs_main-family interpolants stay defined (fs_moon ignores them)
+    out.biome0 = in.biome0;
+    out.biome1 = in.biome1;
+    out.biome2 = in.biome2;
+    out.biome3 = in.biome3;
+    out.biome4 = in.biome4;
+    out.biome5 = in.biome5;
+    out.biome6 = in.biome6;
+    out.biome7 = in.biome7;
+    out.beach = in.beach;
+    return out;
+}
+
+@fragment
+fn fs_moon(in: VsOut) -> @location(0) vec4<f32> {
+    let n = normalize(in.normal);
+    // Cube-sphere selection is conservative at the horizon and skirts are
+    // two-sided; retain only the camera-facing physical surface.
+    if (dot(n, -normalize(in.rel_flag.xyz)) <= 0.0) {
+        discard;
+    }
+    let to_sun = normalize(globals.sun_body.xyz - globals.moon_body.xyz);
+    let lambert = max(dot(n, to_sun), 0.0);
+    // Smooth maria carry a slightly softer terminator than disturbed
+    // highlands.  The distinction is intentionally subtle; their identity is
+    // albedo and broad relief first.
+    let lit = mix(lambert, sqrt(lambert), clamp(in.water.a, 0.0, 1.0) * 0.12);
+    let lunar = globals.eclipse.y;
+    let tint = mix(globals.moon_tint.rgb, globals.moon_copper_tint.rgb, lunar);
+    let brightness = mix(0.05 + 0.95 * lit, 0.22 + 0.18 * lit, lunar);
+    let surface = clamp(in.color, vec3<f32>(0.0), vec3<f32>(1.0));
+
+    // Preserve P1's approved atmospheric fade from Neisor.  Once the camera
+    // is actually near the moon there is no Neisor horizon/atmosphere gate.
+    let sunh = dot(globals.sun_dir.xyz, globals.sky.xyz);
+    let day = smoothstep(-0.08, 0.15, sunh) * (1.0 - globals.eclipse.x);
+    let above = smoothstep(-0.06, 0.06, dot(globals.moon_dir.xyz, globals.sky.xyz));
+    let atmospheric_visibility = max(1.0 - 0.9 * day, globals.eclipse.x) * above;
+    let near_moon = length(globals.moon_body.xyz) < globals.moon_body.w * 12.0;
+    let visibility = select(atmospheric_visibility, 1.0, near_moon);
+    return vec4<f32>(tint * surface * brightness, visibility);
+}
+
 // Exact two-circle intersection as a fraction of the SOURCE disc. The same
 // equation lives in orbits.rs for evidence/assertions; here it is evaluated
 // from each terrain pixel so the moon's penumbra crosses Neisor in orbit.
@@ -1462,16 +1530,6 @@ fn vs_body(in: BodyIn) -> BodyOut {
     return out;
 }
 
-// P1 surface hook: deliberately only a few very-large-scale octaves. P2 can
-// replace this pure normal/seed field with generated maria/crater material
-// without changing the body mesh or orbital truth.
-fn moon_surface(n: vec3<f32>) -> f32 {
-    let a = hash31(floor((n + 1.0) * 3.0));
-    let b = hash31(floor((n.zxy + 1.0) * 7.0));
-    let c = hash31(floor((n.yzx + 1.0) * 13.0));
-    return 0.80 + 0.13 * a + 0.05 * b + 0.02 * c;
-}
-
 @fragment
 fn fs_body(in: BodyOut) -> @location(0) vec4<f32> {
     let n = normalize(in.normal);
@@ -1480,23 +1538,8 @@ fn fs_body(in: BodyOut) -> @location(0) vec4<f32> {
     if (dot(n, -normalize(in.rel)) <= 0.0) {
         discard;
     }
-    if (in.kind < 1.5) {
-        let above = smoothstep(-0.08, 0.03, dot(globals.sun_dir.xyz, globals.sky.xyz));
-        return vec4<f32>(globals.sun_tint.rgb * 3.2, above);
-    }
-
-    let to_sun = normalize(globals.sun_body.xyz - globals.moon_body.xyz);
-    let lit = max(dot(n, to_sun), 0.0);
-    let lunar = globals.eclipse.y;
-    let tint = mix(globals.moon_tint.rgb, globals.moon_copper_tint.rgb, lunar);
-    let brightness = mix(0.05 + 0.95 * lit, 0.22 + 0.18 * lit, lunar);
-    let sunh = dot(globals.sun_dir.xyz, globals.sky.xyz);
-    let day = smoothstep(-0.08, 0.15, sunh) * (1.0 - globals.eclipse.x);
-    let above = smoothstep(-0.06, 0.06, dot(globals.moon_dir.xyz, globals.sky.xyz));
-    // During a solar eclipse the foreground new moon must be opaque enough to
-    // cover the emissive mesh; otherwise retain the approved daylight fade.
-    let visibility = max(1.0 - 0.9 * day, globals.eclipse.x) * above;
-    return vec4<f32>(tint * moon_surface(in.local) * brightness, visibility);
+    let above = smoothstep(-0.08, 0.03, dot(globals.sun_dir.xyz, globals.sky.xyz));
+    return vec4<f32>(globals.sun_tint.rgb * 3.2, above);
 }
 
 // --------------------------------------------------------- precipitation

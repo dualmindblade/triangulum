@@ -1,0 +1,9 @@
+teleport 13.3448 -4.8076 0.15
+look 0 -85
+mode fly
+sun 13 -20
+weather pin 0.10 0.0
+shot ab_vox
+voxels off
+shot ab_mesh
+voxels on

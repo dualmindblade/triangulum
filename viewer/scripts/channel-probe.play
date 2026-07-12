@@ -1,0 +1,8 @@
+teleport 13.3448 -4.8076 0.002
+mode walk
+state
+shot channel_ground
+teleport 13.3448 -4.8076 0.15
+look 0 -85
+mode fly
+shot channel_above

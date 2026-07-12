@@ -1,0 +1,41 @@
+mode walk
+teleport 13.3447 -4.8072 0.001
+state s1
+teleport 13.3447 -4.8073 0.001
+state s2
+teleport 13.3447 -4.8074 0.001
+state s3
+teleport 13.3447 -4.8075 0.001
+state s4
+teleport 13.3447 -4.8076 0.001
+state s5
+teleport 13.3448 -4.8072 0.001
+state s6
+teleport 13.3448 -4.8073 0.001
+state s7
+teleport 13.3448 -4.8074 0.001
+state s8
+teleport 13.3448 -4.8075 0.001
+state s9
+teleport 13.3448 -4.8076 0.001
+state s10
+teleport 13.3449 -4.8072 0.001
+state s11
+teleport 13.3449 -4.8073 0.001
+state s12
+teleport 13.3449 -4.8074 0.001
+state s13
+teleport 13.3449 -4.8075 0.001
+state s14
+teleport 13.3449 -4.8076 0.001
+state s15
+teleport 13.3450 -4.8072 0.001
+state s16
+teleport 13.3450 -4.8073 0.001
+state s17
+teleport 13.3450 -4.8074 0.001
+state s18
+teleport 13.3450 -4.8075 0.001
+state s19
+teleport 13.3450 -4.8076 0.001
+state s20

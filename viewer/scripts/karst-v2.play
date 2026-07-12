@@ -1,0 +1,21 @@
+mode fly
+sun 13 -20
+weather pin 0.10 0.0
+teleport 13.349 -4.798 0.155
+look -100 -86
+shot falsepool_vox
+voxels off
+shot falsepool_mesh
+voxels on
+teleport 13.336 -4.798 0.861
+look 145 -86
+shot olive_vox
+voxels off
+shot olive_mesh
+voxels on
+teleport 13.3448 -4.8076 0.15
+look 0 -85
+shot k150_vox
+voxels off
+shot k150_mesh
+voxels on

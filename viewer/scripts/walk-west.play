@@ -1,0 +1,20 @@
+mode walk
+teleport 13.34478 -4.80740 0.001
+look -90 -25
+hold w 1.5
+state x1
+hold w 1.5
+state x2
+hold w 1.5
+state x3
+hold w 1.5
+state x4
+hold w 1.5
+state x5
+hold w 1.5
+state x6
+hold w 1.5
+state x7
+hold w 1.5
+state x8
+shot walk_west_end

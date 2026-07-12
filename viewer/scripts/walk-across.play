@@ -1,0 +1,24 @@
+mode walk
+teleport 13.34478 -4.80770 0.001
+look 90 -20
+hold d 1.5
+state w1
+hold d 1.5
+state w2
+hold d 1.5
+state w3
+hold d 1.5
+state w4
+hold d 1.5
+state w5
+hold d 1.5
+state w6
+hold d 1.5
+state w7
+hold d 1.5
+state w8
+hold d 1.5
+state w9
+hold d 1.5
+state w10
+shot walk_end

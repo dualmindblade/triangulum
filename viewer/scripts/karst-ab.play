@@ -1,0 +1,15 @@
+teleport 13.346 -4.807 0.45
+look 0 -90
+mode fly
+sun 13 -20
+weather pin 0.10 0.0
+shot karst_vox
+voxels off
+shot karst_mesh
+voxels on
+teleport 13.3448 -4.8076 0.15
+look 0 -85
+shot karst150_vox
+voxels off
+shot karst150_mesh
+voxels on

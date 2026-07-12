@@ -18,7 +18,7 @@ use egui::epaint::{ImageDelta, Primitive};
 use egui::{ClippedPrimitive, Color32, TextureId, TexturesDelta};
 use glam::DVec3;
 
-use crate::planet::{face_from_dir, ground_tint, Planet};
+use crate::planet::{Planet, face_from_dir, ground_tint};
 
 /// Deepest zoom the pan/zoom view allows (1 = whole planet). At 180x the map
 /// frames ~2 deg of longitude (~300 km on Neisor) across the widget — fine
@@ -26,6 +26,14 @@ use crate::planet::{face_from_dir, ground_tint, Planet};
 /// center, so terrain reads smooth-but-soft there while the vector rivers and
 /// lakes (exact geometry) stay razor sharp.
 const MAX_ZOOM: f64 = 180.0;
+
+/// The photo map intentionally offers only landable/mappable bodies.  The Sun
+/// remains a physical focus target, not a teleport-map surface.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum MapBody {
+    Neisor,
+    Moon,
+}
 
 // ------------------------------------------------------------- photo index
 
@@ -35,6 +43,7 @@ const MAX_ZOOM: f64 = 180.0;
 pub struct Photo {
     pub path: PathBuf,
     pub name: String,
+    pub body: MapBody,
     pub lat: f64,
     pub lon: f64,
     pub alt_km: f64,
@@ -74,7 +83,9 @@ fn sidecar_weather(js: &serde_json::Value) -> Option<(bool, Option<(f32, f32)>, 
                 return None;
             }
             let (c, r) = (p[0].as_f64()?, p[1].as_f64()?);
-            if !c.is_finite() || !r.is_finite() || !(0.0..=1.0).contains(&c)
+            if !c.is_finite()
+                || !r.is_finite()
+                || !(0.0..=1.0).contains(&c)
                 || !(0.0..=1.0).contains(&r)
             {
                 return None;
@@ -98,7 +109,10 @@ fn sidecar_weather(js: &serde_json::Value) -> Option<(bool, Option<(f32, f32)>, 
 /// A free-text sidecar field (title / note): missing or non-string reads as
 /// empty so pre-notes sidecars and filename-only shots keep working.
 fn sidecar_str(js: &serde_json::Value, key: &str) -> String {
-    js.get(key).and_then(|v| v.as_str()).unwrap_or("").to_string()
+    js.get(key)
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string()
 }
 
 /// Set `title`/`note` on a sidecar value, preserving every other field
@@ -109,8 +123,14 @@ fn apply_notes(js: &mut serde_json::Value, title: &str, note: &str) {
         *js = serde_json::Value::Object(serde_json::Map::new());
     }
     if let Some(obj) = js.as_object_mut() {
-        obj.insert("title".to_string(), serde_json::Value::String(title.to_string()));
-        obj.insert("note".to_string(), serde_json::Value::String(note.to_string()));
+        obj.insert(
+            "title".to_string(),
+            serde_json::Value::String(title.to_string()),
+        );
+        obj.insert(
+            "note".to_string(),
+            serde_json::Value::String(note.to_string()),
+        );
     }
 }
 
@@ -152,17 +172,39 @@ pub fn scan_photos(interchange: &Path) -> Vec<Photo> {
         let mut photo: Option<Photo> = None;
         if let Some(js) = &js {
             let f = |k: &str| js.get(k).and_then(|v| v.as_f64());
-            if let (Some(lat), Some(lon)) = (f("lat_deg"), f("lon_deg")) {
+            let body = match js.get("body").and_then(|v| v.as_str()) {
+                Some(s) if s.eq_ignore_ascii_case("moon") => MapBody::Moon,
+                _ if f("focus_id") == Some(1.0) && f("body_lat_deg").is_some() => MapBody::Moon,
+                _ => MapBody::Neisor,
+            };
+            let (lat, lon, alt) = match body {
+                MapBody::Neisor => (f("lat_deg"), f("lon_deg"), f("alt_km")),
+                MapBody::Moon => (
+                    f("body_lat_deg").or_else(|| f("lat_deg")),
+                    f("body_lon_deg").or_else(|| f("lon_deg")),
+                    f("body_alt_km").or_else(|| f("alt_km")),
+                ),
+            };
+            if let (Some(lat), Some(lon)) = (lat, lon) {
                 let weather = sidecar_weather(js);
+                let (yaw_deg, pitch_deg, roll_deg) = match body {
+                    MapBody::Neisor => (f("yaw_deg"), f("pitch_deg"), f("roll_deg")),
+                    MapBody::Moon => (
+                        f("body_yaw_deg").or_else(|| f("yaw_deg")),
+                        f("body_pitch_deg").or_else(|| f("pitch_deg")),
+                        f("body_roll_deg").or_else(|| f("roll_deg")),
+                    ),
+                };
                 photo = Some(Photo {
                     path: path.clone(),
                     name: name.clone(),
+                    body,
                     lat,
                     lon,
-                    alt_km: f("alt_km").unwrap_or(0.3),
-                    yaw_deg: f("yaw_deg").unwrap_or(0.0),
-                    pitch_deg: f("pitch_deg").unwrap_or(-20.0),
-                    roll_deg: f("roll_deg").unwrap_or(0.0),
+                    alt_km: alt.unwrap_or(if body == MapBody::Moon { 25.0 } else { 0.3 }),
+                    yaw_deg: yaw_deg.unwrap_or(0.0),
+                    pitch_deg: pitch_deg.unwrap_or(-20.0),
+                    roll_deg: roll_deg.unwrap_or(0.0),
                     day_time_s: f("day_cycle_time_s"),
                     weather_on: weather.map(|w| w.0),
                     weather_pin: weather.and_then(|w| w.1),
@@ -182,6 +224,7 @@ pub fn scan_photos(interchange: &Path) -> Vec<Photo> {
             photo = Some(Photo {
                 path: path.clone(),
                 name: name.clone(),
+                body: MapBody::Neisor,
                 lat,
                 lon,
                 alt_km: alt,
@@ -252,6 +295,9 @@ pub struct MapEnv<'a> {
     pub weather_pin: Option<(f32, f32)>,
     pub cur_lat: f64,
     pub cur_lon: f64,
+    pub cur_moon_lat: f64,
+    pub cur_moon_lon: f64,
+    pub cur_body: MapBody,
 }
 
 /// A lat/lon rectangle (degrees) the view frames. `lat_top` is the larger
@@ -302,6 +348,7 @@ impl Bounds {
 struct MapSig {
     w: usize,
     h: usize,
+    body: MapBody,
     base: BaseLayer,
     relief: bool,
     clouds: bool,
@@ -322,10 +369,14 @@ fn map_weather_time_bucket(
     weather_pin: Option<(f32, f32)>,
     weather_time_s: f64,
 ) -> Option<i64> {
-    let time_sensitive = (clouds && weather_on && weather_pin.is_none())
-        || base != BaseLayer::Biomes;
+    let time_sensitive =
+        (clouds && weather_on && weather_pin.is_none()) || base != BaseLayer::Biomes;
     time_sensitive.then(|| {
-        let t_s = if weather_time_s.is_finite() { weather_time_s } else { 0.0 };
+        let t_s = if weather_time_s.is_finite() {
+            weather_time_s
+        } else {
+            0.0
+        };
         (t_s / MAP_WEATHER_BUCKET_S).floor() as i64
     })
 }
@@ -444,19 +495,14 @@ fn synth_map(
     h: usize,
 ) -> egui::ColorImage {
     let planet = env.planet;
-    let season = crate::weather::season_frac(
-        env.weather_time_s,
-        env.day_len_s,
-        env.solar_tuning,
-    );
+    let season = crate::weather::season_frac(env.weather_time_s, env.day_len_s, env.solar_tuning);
     let angle = std::f64::consts::TAU * season;
     let (sn1, cs1) = angle.sin_cos();
     let (sn2, cs2) = (2.0 * angle).sin_cos();
     let (tstops, pstops) = (temp_stops(), precip_stops());
     let mut px = vec![Color32::BLACK; w * h];
     for y in 0..h {
-        let lat =
-            (b.lat_top + (b.lat_bot - b.lat_top) * (y as f64 + 0.5) / h as f64).to_radians();
+        let lat = (b.lat_top + (b.lat_bot - b.lat_top) * (y as f64 + 0.5) / h as f64).to_radians();
         let (slat, clat) = (lat.sin(), lat.cos());
         for x in 0..w {
             let lon = (b.lon_left + (b.lon_right - b.lon_left) * (x as f64 + 0.5) / w as f64)
@@ -467,18 +513,14 @@ fn synth_map(
                 BaseLayer::Biomes => biome_color(planet, f, u, v, relief),
                 BaseLayer::Temperature => {
                     let t = match env.weather_field {
-                        Some(wf) => wf.climate_sample(
-                            planet, f, u, v, cs1, sn1, cs2, sn2,
-                        ).0,
+                        Some(wf) => wf.climate_sample(planet, f, u, v, cs1, sn1, cs2, sn2).0,
                         None => planet.temp(f, u, v) as f64,
                     };
                     temp_color(t, &tstops)
                 }
                 BaseLayer::Precipitation => {
                     let p = match env.weather_field {
-                        Some(wf) => wf.climate_sample(
-                            planet, f, u, v, cs1, sn1, cs2, sn2,
-                        ).1,
+                        Some(wf) => wf.climate_sample(planet, f, u, v, cs1, sn1, cs2, sn2).1,
                         None => planet.precip(f, u, v) as f64 / 12.0,
                     };
                     precip_color(p, &pstops)
@@ -515,7 +557,11 @@ fn synth_map(
                 );
                 if cover > 0.01 {
                     let a = cover.powf(1.1) * 0.9;
-                    let cl = disp(0.95 - 0.42 * cover, 0.95 - 0.40 * cover, 0.97 - 0.36 * cover);
+                    let cl = disp(
+                        0.95 - 0.42 * cover,
+                        0.95 - 0.40 * cover,
+                        0.97 - 0.36 * cover,
+                    );
                     c = [
                         c[0] * (1.0 - a) + cl[0] * a,
                         c[1] * (1.0 - a) + cl[1] * a,
@@ -530,13 +576,78 @@ fn synth_map(
             );
         }
     }
-    egui::ColorImage { size: [w, h], source_size: egui::Vec2::new(w as f32, h as f32), pixels: px }
+    egui::ColorImage {
+        size: [w, h],
+        source_size: egui::Vec2::new(w as f32, h as f32),
+        pixels: px,
+    }
+}
+
+/// Equirectangular moon chart synthesized from the exact mesh law.  Albedo is
+/// sampled once per pixel; relief uses finite differences over that same
+/// height buffer, so map generation does not invent a second crater field.
+fn synth_moon_map(seed: i64, b: Bounds, w: usize, h: usize) -> egui::ColorImage {
+    let moon = crate::moon::MoonGenerator::new(seed);
+    let mut height = vec![0.0f64; w * h];
+    let mut albedo = vec![0.0f64; w * h];
+    for y in 0..h {
+        let lat_deg = b.lat_top + (b.lat_bot - b.lat_top) * (y as f64 + 0.5) / h as f64;
+        let lat = lat_deg.to_radians();
+        let (slat, clat) = lat.sin_cos();
+        for x in 0..w {
+            let lon = (b.lon_left + (b.lon_right - b.lon_left) * (x as f64 + 0.5) / w as f64)
+                .to_radians();
+            let s = moon.sample(DVec3::new(clat * lon.cos(), clat * lon.sin(), slat));
+            height[y * w + x] = s.height_ratio;
+            albedo[y * w + x] = s.albedo;
+        }
+    }
+
+    let dlon = ((b.lon_right - b.lon_left).to_radians() / w as f64)
+        .abs()
+        .max(1e-9);
+    let dlat = ((b.lat_top - b.lat_bot).to_radians() / h as f64)
+        .abs()
+        .max(1e-9);
+    // Fixed northwest map light: readable relief, independent of orbital time.
+    let light = DVec3::new(-0.34, 0.43, 0.835).normalize(); // east, north, up
+    let mut px = vec![Color32::BLACK; w * h];
+    for y in 0..h {
+        let ym = y.saturating_sub(1);
+        let yp = (y + 1).min(h - 1);
+        let lat = (b.lat_top + (b.lat_bot - b.lat_top) * (y as f64 + 0.5) / h as f64).to_radians();
+        let east_scale =
+            (dlon * lat.cos().abs().max(0.04) * (if w > 1 { 2.0 } else { 1.0 })).max(1e-9);
+        let north_scale = (dlat * (if h > 1 { 2.0 } else { 1.0 })).max(1e-9);
+        for x in 0..w {
+            let xm = x.saturating_sub(1);
+            let xp = (x + 1).min(w - 1);
+            let east = (height[y * w + xp] - height[y * w + xm]) / east_scale;
+            let north = (height[ym * w + x] - height[yp * w + x]) / north_scale;
+            let normal = DVec3::new(-east, -north, 1.0).normalize();
+            let hill = normal.dot(light).clamp(-0.2, 1.0);
+            let shade = (0.68 + 0.39 * hill).clamp(0.52, 1.07);
+            let v = (albedo[y * w + x] * shade).clamp(0.0, 1.0);
+            let srgb = v.powf(1.0 / 2.2);
+            px[y * w + x] = Color32::from_rgb(
+                (srgb * 250.0) as u8,
+                (srgb * 252.0) as u8,
+                (srgb * 255.0) as u8,
+            );
+        }
+    }
+    egui::ColorImage {
+        size: [w, h],
+        source_size: egui::Vec2::new(w as f32, h as f32),
+        pixels: px,
+    }
 }
 
 // ------------------------------------------------------------- popup state
 
 /// What the popup asks the app to do when the player commits.
 pub struct TeleportAction {
+    pub body: MapBody,
     pub lat: f64,
     pub lon: f64,
     pub alt_km: Option<f64>,
@@ -584,6 +695,7 @@ pub struct PhotoMap {
     coord_input: String,
     scroll_to_selected: bool,
     status: String,
+    body: MapBody,
     // ---- layer toggles (persist across opens) ----
     base_layer: BaseLayer,
     show_relief: bool,
@@ -619,6 +731,7 @@ impl PhotoMap {
             coord_input: String::new(),
             scroll_to_selected: false,
             status: String::new(),
+            body: MapBody::Neisor,
             base_layer: BaseLayer::Biomes,
             show_relief: true,
             show_rivers: true,
@@ -646,7 +759,15 @@ impl PhotoMap {
             // current synoptic field.
             self.reset_view();
             self.map_built = None;
-            self.status = format!("{} photos", self.photos.len());
+            let count = self.photos.iter().filter(|p| p.body == self.body).count();
+            self.status = format!(
+                "{count} {} photos",
+                if self.body == MapBody::Moon {
+                    "moon"
+                } else {
+                    "Neisor"
+                }
+            );
         }
     }
 
@@ -681,9 +802,15 @@ impl PhotoMap {
         if self.preview.as_ref().is_some_and(|(i, _)| *i == idx) {
             return;
         }
-        let Some(photo) = self.photos.get(idx) else { return };
-        let Ok(raw) = std::fs::read(&photo.path) else { return };
-        let Ok(mut dec) = png_dims_and_rgba(&raw) else { return };
+        let Some(photo) = self.photos.get(idx) else {
+            return;
+        };
+        let Ok(raw) = std::fs::read(&photo.path) else {
+            return;
+        };
+        let Ok(mut dec) = png_dims_and_rgba(&raw) else {
+            return;
+        };
         // downscale to <=560 px wide for the preview texture
         let max_w = 560usize;
         if dec.0[0] > max_w {
@@ -831,8 +958,13 @@ impl PhotoMap {
                         ui.label("Esc closes · scroll = zoom · drag = pan · double-click = reset · click = destination");
                     });
                 });
-                // ---- layer controls ----
+                // ---- body + layer controls ----
+                let body_before = self.body;
                 ui.horizontal_wrapped(|ui| {
+                    ui.label("Body:");
+                    ui.radio_value(&mut self.body, MapBody::Neisor, "Neisor");
+                    ui.radio_value(&mut self.body, MapBody::Moon, "moon");
+                    ui.separator();
                     ui.label("Base:");
                     ui.radio_value(&mut self.base_layer, BaseLayer::Biomes, "Biomes");
                     ui.radio_value(&mut self.base_layer, BaseLayer::Temperature, "Temp");
@@ -861,6 +993,19 @@ impl PhotoMap {
                     }
                     ui.label(format!("{:.0}×", self.view_zoom));
                 });
+                if self.body != body_before {
+                    self.reset_view();
+                    self.map_built = None;
+                    self.selected = None;
+                    self.preview = None;
+                    self.custom_dest = None;
+                    self.checked.clear();
+                    let count = self.photos.iter().filter(|p| p.body == self.body).count();
+                    self.status = format!(
+                        "{count} {} photos",
+                        if self.body == MapBody::Moon { "moon" } else { "Neisor" }
+                    );
+                }
                 ui.separator();
                 let list_w = 340.0;
                 ui.horizontal_top(|ui| {
@@ -939,7 +1084,9 @@ impl PhotoMap {
                         // biomes are cheapest — so the crisp cap tracks the base.
                         // Below the cap the map is native; above it LINEAR-
                         // upscales (soft, but clouds/temp are soft fields).
-                        let (cap_w, cap_h) = if self.show_clouds {
+                        let (cap_w, cap_h) = if self.body == MapBody::Moon {
+                            (640, 320)
+                        } else if self.show_clouds {
                             (512, 256)
                         } else if self.base_layer == BaseLayer::Biomes {
                             (1280, 640)
@@ -948,16 +1095,21 @@ impl PhotoMap {
                         };
                         let tw = ((map_w * ppp).round() as usize).clamp(64, cap_w);
                         let th = ((map_h * ppp).round() as usize).clamp(32, cap_h);
-                        let weather_time_bucket = map_weather_time_bucket(
-                            self.base_layer,
-                            self.show_clouds,
-                            env.weather_on,
-                            env.weather_pin,
-                            env.weather_time_s,
-                        );
+                        let weather_time_bucket = (self.body == MapBody::Neisor)
+                            .then(|| {
+                                map_weather_time_bucket(
+                                    self.base_layer,
+                                    self.show_clouds,
+                                    env.weather_on,
+                                    env.weather_pin,
+                                    env.weather_time_s,
+                                )
+                            })
+                            .flatten();
                         let sig = MapSig {
                             w: tw,
                             h: th,
+                            body: self.body,
                             base: self.base_layer,
                             relief: self.show_relief,
                             clouds: self.show_clouds,
@@ -970,15 +1122,20 @@ impl PhotoMap {
                             || (self.map_built.as_ref() != Some(&sig) && !view_animating)
                         {
                             let t0 = std::time::Instant::now();
-                            let img = synth_map(
-                                env,
-                                self.base_layer,
-                                self.show_relief,
-                                self.show_clouds,
-                                bounds,
-                                tw,
-                                th,
-                            );
+                            let img = match self.body {
+                                MapBody::Neisor => synth_map(
+                                    env,
+                                    self.base_layer,
+                                    self.show_relief,
+                                    self.show_clouds,
+                                    bounds,
+                                    tw,
+                                    th,
+                                ),
+                                MapBody::Moon => {
+                                    synth_moon_map(env.planet.seed, bounds, tw, th)
+                                }
+                            };
                             self.map_tex = Some(ui.ctx().load_texture(
                                 "planet-minimap",
                                 img,
@@ -1013,7 +1170,7 @@ impl PhotoMap {
                             rect.width() as f64 / (bounds.lon_right - bounds.lon_left);
 
                         // lakes: liquid blue, frozen pale (skip dry rim rows)
-                        if self.show_lakes {
+                        if self.body == MapBody::Neisor && self.show_lakes {
                             for l in &planet.rivers.lakes {
                                 if l.rim {
                                     continue;
@@ -1045,7 +1202,7 @@ impl PhotoMap {
 
                         // rivers: polylines from rivers.bin. Big rivers pop;
                         // the flow gate drops as you zoom so creeks fade in.
-                        if self.show_rivers {
+                        if self.body == MapBody::Neisor && self.show_rivers {
                             // rivers.bin's flow_log floor is ~2.1 and its ceil
                             // ~4.8; at the whole planet show only the major
                             // network (~gate 3.8), dropping the gate ~0.85 per
@@ -1091,6 +1248,9 @@ impl PhotoMap {
                         let in_rect = |p: egui::Pos2| rect.expand(2.0).contains(p);
                         if self.show_markers {
                             for (i, p) in self.photos.iter().enumerate() {
+                                if p.body != self.body {
+                                    continue;
+                                }
                                 let pos = bounds.project(rect, p.lat, p.lon);
                                 if !in_rect(pos) {
                                     continue;
@@ -1113,8 +1273,12 @@ impl PhotoMap {
                             }
                         }
                         // current player position
-                        {
-                            let pos = bounds.project(rect, env.cur_lat, env.cur_lon);
+                        if env.cur_body == self.body {
+                            let (cur_lat, cur_lon) = match self.body {
+                                MapBody::Neisor => (env.cur_lat, env.cur_lon),
+                                MapBody::Moon => (env.cur_moon_lat, env.cur_moon_lon),
+                            };
+                            let pos = bounds.project(rect, cur_lat, cur_lon);
                             if in_rect(pos) {
                                 paint.circle_filled(pos, 4.0, Color32::from_rgb(120, 255, 140));
                                 paint.circle_stroke(
@@ -1149,6 +1313,9 @@ impl PhotoMap {
                             let mut best: Option<(usize, f32)> = None;
                             if self.show_markers {
                                 for (i, p) in self.photos.iter().enumerate() {
+                                    if p.body != self.body {
+                                        continue;
+                                    }
                                     let d = bounds.project(rect, p.lat, p.lon).distance(click);
                                     if d < 10.0 && best.is_none_or(|(_, bd)| d < bd) {
                                         best = Some((i, d));
@@ -1174,6 +1341,9 @@ impl PhotoMap {
                             && let Some(hp) = resp.hover_pos()
                         {
                             for p in &self.photos {
+                                if p.body != self.body {
+                                    continue;
+                                }
                                 if bounds.project(rect, p.lat, p.lon).distance(hp) < 10.0 {
                                     let font = egui::FontId::proportional(12.0);
                                     let text = if p.title.trim().is_empty() {
@@ -1240,9 +1410,15 @@ impl PhotoMap {
                     // ---------------- right: the photo list ----------------
                     ui.vertical(|ui| {
                         ui.set_width(list_w);
+                        let body_photo_indices: Vec<usize> = self
+                            .photos
+                            .iter()
+                            .enumerate()
+                            .filter_map(|(i, p)| (p.body == self.body).then_some(i))
+                            .collect();
                         ui.horizontal(|ui| {
                             if ui.button("Select all").clicked() {
-                                self.checked = (0..self.photos.len()).collect();
+                                self.checked = body_photo_indices.iter().copied().collect();
                             }
                             if ui.button("Clear").clicked() {
                                 self.checked.clear();
@@ -1265,9 +1441,10 @@ impl PhotoMap {
                         ).show_rows(
                             ui,
                             row_h,
-                            self.photos.len(),
+                            body_photo_indices.len(),
                             |ui, range| {
-                                for i in range {
+                                for row in range {
+                                    let i = body_photo_indices[row];
                                     let p = &self.photos[i];
                                     let sel = self.selected == Some(i);
                                     ui.horizontal(|ui| {
@@ -1378,17 +1555,34 @@ impl PhotoMap {
         if let Some(i) = self.selected {
             let p = self.photos.get(i)?;
             return Some(TeleportAction {
+                body: p.body,
                 lat: p.lat,
                 lon: p.lon,
                 alt_km: Some(p.alt_km.max(0.0025)),
                 yaw_deg: Some(p.yaw_deg),
                 pitch_deg: Some(p.pitch_deg),
                 roll_deg: Some(p.roll_deg),
-                day_time_s: if self.restore_time { p.day_time_s } else { None },
+                day_time_s: if self.restore_time {
+                    p.day_time_s
+                } else {
+                    None
+                },
                 day_len_s: if self.restore_time { p.day_len_s } else { None },
-                weather_on: if self.restore_time { p.weather_on } else { None },
-                weather_pin: if self.restore_time { p.weather_pin } else { None },
-                weather_time_s: if self.restore_time { p.weather_time_s } else { None },
+                weather_on: if self.restore_time {
+                    p.weather_on
+                } else {
+                    None
+                },
+                weather_pin: if self.restore_time {
+                    p.weather_pin
+                } else {
+                    None
+                },
+                weather_time_s: if self.restore_time {
+                    p.weather_time_s
+                } else {
+                    None
+                },
                 ground_km: p.ground_km,
                 walk: p.mode.as_deref() == Some("walk"),
                 seed: p.seed,
@@ -1396,6 +1590,7 @@ impl PhotoMap {
         }
         if let Some((lat, lon)) = self.custom_dest {
             return Some(TeleportAction {
+                body: self.body,
                 lat,
                 lon,
                 alt_km: None,
@@ -1424,6 +1619,7 @@ impl PhotoMap {
                 .collect();
             if parts.len() == toks.len() && parts[0].abs() <= 90.0 {
                 return Some(TeleportAction {
+                    body: self.body,
                     lat: parts[0],
                     lon: parts[1],
                     alt_km: parts.get(2).copied().filter(|a| *a > 0.0),
@@ -1687,9 +1883,7 @@ impl EguiPaint {
     ) {
         let size = delta.image.size();
         let pixels: Vec<u8> = match &delta.image {
-            egui::ImageData::Color(img) => {
-                img.pixels.iter().flat_map(|c| c.to_array()).collect()
-            }
+            egui::ImageData::Color(img) => img.pixels.iter().flat_map(|c| c.to_array()).collect(),
         };
         let whole = delta.pos.is_none();
         if whole {
@@ -1768,7 +1962,9 @@ impl EguiPaint {
         let mut draws = Vec::new(); // (clip, tex, index range, base vertex)
         let mut vcount = 0u32;
         for cp in primitives {
-            let Primitive::Mesh(mesh) = &cp.primitive else { continue };
+            let Primitive::Mesh(mesh) = &cp.primitive else {
+                continue;
+            };
             let istart = idxs.len() as u32;
             idxs.extend(mesh.indices.iter().map(|&i| i + vcount));
             for v in &mesh.vertices {
@@ -1814,8 +2010,9 @@ impl EguiPaint {
             0.0,
         ];
         queue.write_buffer(&self.uniform, 0, bytemuck::cast_slice(&logical));
-        let mut enc =
-            device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("egui") });
+        let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("egui"),
+        });
         {
             let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("egui"),
@@ -1838,7 +2035,9 @@ impl EguiPaint {
             pass.set_vertex_buffer(0, vbuf.slice(..));
             pass.set_index_buffer(ibuf.slice(..), wgpu::IndexFormat::Uint32);
             for (clip, tex_id, range) in draws {
-                let Some((_, bind)) = self.textures.get(&tex_id) else { continue };
+                let Some((_, bind)) = self.textures.get(&tex_id) else {
+                    continue;
+                };
                 // clip rect: logical points -> physical pixels, clamped
                 let cx = (clip.min.x * pixels_per_point).max(0.0) as u32;
                 let cy = (clip.min.y * pixels_per_point).max(0.0) as u32;
@@ -1874,6 +2073,7 @@ mod tests {
         map.photos.push(Photo {
             path: PathBuf::from("shot.png"),
             name: "shot.png".into(),
+            body: MapBody::Neisor,
             lat: 1.0,
             lon: 2.0,
             alt_km: 0.1,
@@ -1894,6 +2094,7 @@ mod tests {
         map.selected = Some(0);
 
         let normal = map.destination().unwrap();
+        assert_eq!(normal.body, MapBody::Neisor);
         assert_eq!(normal.day_time_s, None);
         assert_eq!(normal.weather_on, None);
         assert_eq!(normal.weather_pin, None);
@@ -1906,6 +2107,33 @@ mod tests {
         assert_eq!(restored.weather_on, Some(true));
         assert_eq!(restored.weather_pin, Some((0.97, 0.9)));
         assert_eq!(restored.weather_time_s, Some(24_000.0));
+    }
+
+    #[test]
+    fn moon_map_is_deterministic_and_uses_generated_range() {
+        let bounds = Bounds {
+            lat_top: 90.0,
+            lat_bot: -90.0,
+            lon_left: -180.0,
+            lon_right: 180.0,
+        };
+        let a = synth_moon_map(42, bounds, 128, 64);
+        let b = synth_moon_map(42, bounds, 128, 64);
+        assert_eq!(a.pixels, b.pixels);
+        let (mut lo, mut hi) = (255u8, 0u8);
+        for pixel in &a.pixels {
+            let [r, g, b, _] = pixel.to_array();
+            let value = r.max(g).max(b);
+            lo = lo.min(value);
+            hi = hi.max(value);
+        }
+        assert!(lo < 170, "moon map lost dark maria: {lo}..{hi}");
+        assert!(hi > 220, "moon map lost bright relief/rays: {lo}..{hi}");
+
+        let mut map = PhotoMap::new(PathBuf::from("unused"));
+        map.body = MapBody::Moon;
+        map.custom_dest = Some((12.0, -34.0));
+        assert_eq!(map.destination().unwrap().body, MapBody::Moon);
     }
 
     #[test]
