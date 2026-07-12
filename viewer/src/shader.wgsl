@@ -46,6 +46,11 @@ struct Globals {
     weather6: vec4<f32>,
     // xyz = low/mid/high cloud density multipliers, w spare
     weather7: vec4<f32>,
+    // cloud DECK shape inputs (x cover, y precip, z temp C): camera weather
+    // at ground, planet-mean above the shell handoff - deck formations must
+    // not morph when an orbital camera pans (the ground responses below
+    // keep reading `weather`, which stays the camera sample)
+    weather8: vec4<f32>,
     // premultiplied cave-noise seeds (low 32 bits of
     // (seed+K).wrapping_mul(0x9E37_79B1)) for the karst breach hint:
     // x = region gate (+40961), y = tube n1 (+31337), z = tube n2 (+51413),
@@ -743,6 +748,12 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     // its coverage no longer gets smoothly mixed into every climate endpoint.
     // Invalid early threshold ordering remains the payload-off marker for
     // voxel/water/impostor vertices.
+    // GATED on the range blend actually applying: below the 4 km blend start
+    // biome_range is exactly 0 and this whole reconstruction (five kgnoise
+    // octaves + the 8-family loop per fragment) multiplied away to nothing -
+    // ground frames paid ~6x for zero pixels (2026-07-12 fps collapse).
+    var ground = in.color;
+    if (biome_range > 0.0) {
     let surface_dir = normalize(in.rel_flag.xyz - globals.center.xyz);
     let biome_q = biome_range_comparator(surface_dir);
     let biome_endpoints = array<vec4<f32>, 8>(
@@ -833,7 +844,8 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         );
         range_ground = mix(range_mean, range_ground, categorical_contrast);
     }
-    var ground = mix(in.color, range_ground, biome_range);
+    ground = mix(in.color, range_ground, biome_range);
+    }
     // Planet lighting belongs to THIS pixel, not the camera. The vector is
     // reconstructed from camera-relative inputs, so orbital f32 precision
     // never enters through a raw world coordinate. At ground range pixel_up
@@ -1230,8 +1242,8 @@ fn cloud_color(
     kind: u32,
     fabric: f32,
 ) -> vec3<f32> {
-    let cover = globals.weather.x;
-    let precip = globals.weather.y;
+    let cover = globals.weather8.x;
+    let precip = globals.weather8.y;
     let sun_h = dot(sdir, globals.sun_dir.xyz);
     let local_day = smoothstep(-0.08, 0.15, sun_h);
     var col = vec3<f32>(0.96, 0.97, 1.00);
@@ -1266,10 +1278,10 @@ fn cloud_color(
 // and color read cover/precip/temp; shell position reads only seed plus the
 // advected weather clock, preserving the determinism contract.
 fn cloud_layer_sample(sdir: vec3<f32>, view_dir: vec3<f32>, kind: u32) -> vec4<f32> {
-    let cover = globals.weather.x;
-    let precip = globals.weather.y;
-    let cold = 1.0 - smoothstep(-8.0, 12.0, globals.weather.w);
-    let warm = smoothstep(-2.0, 22.0, globals.weather.w);
+    let cover = globals.weather8.x;
+    let precip = globals.weather8.y;
+    let cold = 1.0 - smoothstep(-8.0, 12.0, globals.weather8.z);
+    let warm = smoothstep(-2.0, 22.0, globals.weather8.z);
     if (kind == 2u) {
         let p0 = (sdir - globals.weather2.xyz * 0.72) * globals.weather6.z
             + cloud_seed_offset(2u);

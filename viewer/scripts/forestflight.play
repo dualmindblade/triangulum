@@ -1,0 +1,17 @@
+mode fly
+weather time 349
+teleport -0.906 -67.804 0.400
+look -210 -30
+bench 10
+teleport -0.926 -67.804 0.400
+bench 10
+teleport -0.946 -67.804 0.400
+bench 10
+teleport -0.966 -67.804 0.400
+bench 10
+teleport -0.986 -67.804 0.400
+bench 10
+teleport -1.006 -67.804 0.400
+bench 10
+teleport -0.906 -67.804 0.400
+bench 10

@@ -108,6 +108,10 @@ struct Globals {
     weather6: [f32; 4],
     // xyz = low/mid/high shell density multipliers; w spare
     weather7: [f32; 4],
+    // cloud DECK shape inputs: x cover, y precip, z temp (C), w spare.
+    // Equal to `weather` at ground level, blended to a fixed planet-mean
+    // above the shell handoff so orbital panning cannot morph formations.
+    weather8: [f32; 4],
     // premultiplied procedural seeds. xyz are the karst breach hint (V-10):
     // low 32 bits of (seed+K).wrapping_mul(0x9E37_79B1) for K = 40961
     // (region gate), 31337 (tube n1), 51413 (tube n2); w is the independent
@@ -1305,6 +1309,67 @@ impl Renderer {
             }
         };
         self.last_weather = wx;
+        // The cloud DECK's shape inputs must not follow the camera from
+        // orbit: one camera-anchored sample means panning in space sweeps
+        // the sample point and the formations morph as you move (Austin,
+        // 2026-07-12 - "one layer changing around"). Blend the deck's
+        // cover/precip/temp toward a fixed planet-mean (14 fixed
+        // directions, same field, same t - camera-free and deterministic)
+        // over the SAME shell handoff the drift uses; at ground level the
+        // deck stays exactly the local weather you are in. A pin overrides
+        // both ends, so pinned captures are unchanged.
+        let deck = if self.weather_on
+            && let Some(field) = &self.weather_field
+        {
+            let a = self.weather_tuning.shell_alt_km;
+            let b = self.weather_tuning.shell_fade_km;
+            let m = {
+                let x = ((cam_h_km - a) / (b - a).max(1e-6)).clamp(0.0, 1.0);
+                x * x * (3.0 - 2.0 * x)
+            };
+            let mut cover = wx.cloud_cover;
+            let mut precip = wx.precip;
+            let mut temp = wx.temp_c;
+            if m > 0.0 {
+                let mut mc = 0.0f64;
+                let mut mp = 0.0f64;
+                let mut mt = 0.0f64;
+                let dirs: [(f64, f64, f64); 14] = [
+                    (1.0, 0.0, 0.0), (-1.0, 0.0, 0.0),
+                    (0.0, 1.0, 0.0), (0.0, -1.0, 0.0),
+                    (0.0, 0.0, 1.0), (0.0, 0.0, -1.0),
+                    (1.0, 1.0, 1.0), (1.0, 1.0, -1.0),
+                    (1.0, -1.0, 1.0), (1.0, -1.0, -1.0),
+                    (-1.0, 1.0, 1.0), (-1.0, 1.0, -1.0),
+                    (-1.0, -1.0, 1.0), (-1.0, -1.0, -1.0),
+                ];
+                for (x, y, z) in dirs {
+                    let w = crate::weather::weather_at(
+                        field,
+                        planet,
+                        DVec3::new(x, y, z).normalize(),
+                        weather_t_s,
+                        self.effective_day_len_s(),
+                        &self.solar_tuning,
+                        &self.weather_tuning,
+                    );
+                    mc += w.cloud_cover;
+                    mp += w.precip;
+                    mt += w.temp_c;
+                }
+                let n = dirs.len() as f64;
+                cover = cover * (1.0 - m) + (mc / n) * m;
+                precip = precip * (1.0 - m) + (mp / n) * m;
+                temp = temp * (1.0 - m) + (mt / n) * m;
+            }
+            if let Some((c, p)) = self.weather_pin {
+                cover = c as f64;
+                precip = p as f64;
+            }
+            (cover as f32, precip as f32, temp as f32)
+        } else {
+            (0.0, 0.0, 999.0)
+        };
         // the cloud deck scrolls with the same advection the field uses:
         // precompute the domain drift here so shader noise and CPU weather
         // agree on where the storm is. The instantaneous wind vector drives
@@ -1488,6 +1553,7 @@ impl Renderer {
                 self.weather_tuning.cloud_high_density as f32,
                 0.0,
             ],
+            weather8: [deck.0, deck.1, deck.2, 0.0],
             karst: {
                 let kseed = |k: i64| {
                     (planet.seed.wrapping_add(k).wrapping_mul(0x9E37_79B1) & 0xFFFF_FFFF) as u32
@@ -1797,11 +1863,20 @@ impl Renderer {
 
     /// Tile twin of the chunk budget: age-based eviction alone lets a
     /// teleport sequence (the reel) accumulate rings faster than they expire.
+    /// RECENCY IS SACRED here: dense-forest rings (impostor-fat tiles,
+    /// ~2.2 MB each) can exceed the whole budget as a WORKING SET, and a
+    /// current-frame-only exemption then evicts live tiles every frame -
+    /// each re-entry pays the expensive jungle candidate loop and renders a
+    /// coarse stand-in meanwhile (Andrew's giant flickering impostor trees,
+    /// 2026-07-12). Tiles used within the last EVICT_PROTECT_FRAMES are
+    /// untouchable; the budget may overshoot briefly instead of thrashing.
     fn enforce_tile_budget(&mut self) {
         let total: u64 = self.cache.values().map(|t| t.bytes).sum();
         if total <= TILE_VRAM_BUDGET {
             return;
         }
+        const EVICT_PROTECT_FRAMES: u64 = 180;
+        let protected = self.frame_counter.saturating_sub(EVICT_PROTECT_FRAMES);
         let mut by_age: Vec<(u64, TileKey, u64)> = self
             .cache
             .iter()
@@ -1811,8 +1886,7 @@ impl Renderer {
         let mut acc = 0u64;
         let mut keep = HashSet::new();
         for (used, k, b) in by_age {
-            // tiles drawn this frame are indexed unconditionally: never evict
-            if used == self.frame_counter || acc + b <= TILE_VRAM_RETAIN {
+            if used >= protected || acc + b <= TILE_VRAM_RETAIN {
                 acc += b;
                 keep.insert(k);
             }

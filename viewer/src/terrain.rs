@@ -1439,7 +1439,7 @@ pub fn build_tile(planet: &Planet, key: TileKey, exaggeration: f64) -> TileMesh 
         11 => 8,
         _ => 0,
     };
-    if impostor_stride > 0 {
+    if impostor_stride > 0 && std::env::var_os("TRI_NO_IMPOSTORS").is_none() {
         // trees per tile: the vertex/fill budget knob. Austin measured the
         // frame rate sagging at mid distance on the RTX 2060 at 4000/4000;
         // level 11 (whose trees are 1-3 px) carries a lighter load

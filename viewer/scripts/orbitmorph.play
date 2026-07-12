@@ -1,0 +1,8 @@
+mode fly
+weather time 3500
+teleport 30.0 40.0 250.0
+look 0 -90
+shot m_a
+teleport 30.0 40.25 250.0
+look 0 -90
+shot m_b
