@@ -25,17 +25,17 @@ cargo run --release -- --capture shot.png --lat 22 --lon 28 --alt 500 --pitch -3
 | input | action |
 |---|---|
 | **LMB** | first click captures the mouse for raw look; once captured, break the aimed block (Esc releases; Esc again quits) |
-| **RMB** | place a block against the aimed face (Neisor focus only; edits persist to `assets/edits_seed*.bin`) |
+| **RMB** | place a block against the aimed face on the focused landable body; Neisor and moon edits use independent seed/body save files |
 | drag | free look when the mouse isn't captured |
 | W A S D | move along your heading (Shift = sprint). Fly speed scales with altitude near the planet and with distance from the planet **center** when far out, capped ~4 planet radii away so at great distance you drift at roughly the planet's rotation rate and can watch it turn. Cruising above the 2.5 km voxel range **locks to elevation** — a constant planet-center radius, so you no longer bob up and over mountains (a peak rising above the held radius still lifts you clear of it); below 2.5 km it terrain-follows so you can't fly into hills |
 | scroll | altitude (fly mode). Descends to ~2.5 m — hover over the grass, sink into cave pits (roofs are solid). Pitch is always yours; pass `--auto-tilt` to opt into the descent cinematic (above 100 km the view eases toward the planet as you zoom) |
-| **G** | walk mode — real gravity: pressed in flight you skydive from there. Walls stop you, one-block ledges step up, cave ceilings bump your head, pits drop you in. Water: you sink slowly; hold Space to swim up |
+| **G** | return to Neisor walk mode. Lunar walk begins from the moon tab of the teleport map; walls, steps, ceilings, jumping, and block edits use the same player code with lunar gravity |
 | **Space** | jump (walk mode, when standing) / swim up (in water) |
 | **C** | cycle camera: focused Neisor (default) â†’ focused moon â†’ focused Sun â†’ freecam â†’ Neisor. Focused bodies track exact orbital motion through timeskips |
 | **Q / E** | roll left/right in freecam only. Freecam uses W/A/S/D forward/strafe and Space/Ctrl up/down in the rolled local frame |
 | **R** | place/remove a torch on the block you're aiming at — real light at night and in caves (persists to `assets/torches_seed*.bin`) |
 | **F** | back to fly mode |
-| **T** | the photo map: a pan/zoom minimap popup with a marker for every screenshot. **Scroll zooms** about the cursor, **drag pans**, **double-click** (or *Reset view*) returns to the whole planet; the visible region is re-synthesized from the rasters at each zoom, so small water features stay sharp. A layer bar composites features onto the map: a **Base** of *Biomes* (default), *Temperature* or *Precipitation* (both seasonal — they follow the current time of year), plus toggles for *Relief* shading, *Rivers* (courses from `rivers.bin`, thicker/brighter by flow — big rivers show planet-wide, creeks fade in as you zoom), *Lakes* (liquid blue, frozen pale), *Clouds now* (the renderer's off/live/pinned field, refreshed in 60-second weather-time buckets while live), and *Markers*. A green ring marks your current position. Click a marker or list row to pick a photo (preview + two-way highlight), click open water/land to set a free destination, or type `lat lon [alt km]` — then **Teleport** commits (a photo restores its exact view; tick *Restore photo's time of day* to also rewind the day/night cycle and restore the sidecar's weather off/pin/absolute-time coordinate). Checkboxes + **Delete** move photos to `interchange/trash/` after a confirm. Esc closes |
+| **T** | the photo map. Neisor keeps the pan/zoom/layers/photo workflow. On the **moon** tab, a bare map or coordinate teleport resolves the exact lunar column and arrives focused in walk mode at eye height; lunar photos may still restore their recorded flyby pose |
 | **P** | screenshot to `interchange/shot_lat…_lon…_alt…km_….png` (pose in the filename, full state incl. sun in a `.json` sidecar) |
 | Esc | quit (or close the photo map / release the mouse first) |
 
@@ -47,6 +47,17 @@ blocky world reaches ~1 km around you. Chunks stream in on background
 threads (mesh terrain shows until they land, then blocks rise through the
 feathered rim), so bigger patches cost VRAM (~1.5 GB budget, LRU-evicted)
 and build throughput, not frame hitches.
+
+### Landing on the moon
+
+The transit flow is explicit: freecam remains inertial and does not silently
+capture focus while crossing an orbital boundary. Press **C** to focus the
+moon for a tracked approach, or open **T**, select the moon tab, and teleport
+to a surface coordinate; the latter enters lunar walk mode directly. The play
+harness equivalent is `moonland LAT LON [YAW PITCH]` (also
+`teleport-to-moon-surface`). Lunar columns use the same streaming, collision,
+walk, jump, and LMB/RMB edit machinery as Neisor, with gravity from
+`solar_tuning.json`; the moon supplies no water, trees, weather, or biomes.
 
 The window title shows mode + coordinates. A **day/night cycle** runs by
 default from `assets/solar_tuning.json`: 30-minute days, a 7-day lunar orbit,

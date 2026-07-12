@@ -5,11 +5,13 @@
   "sun": {
     "parent": null,
     "radius_neisor": 109.0,
+    "surface_gravity_mps2": 274.0,
     "orbit": null
   },
   "neisor": {
     "parent": "sun",
     "radius_neisor": 1.0,
+    "surface_gravity_mps2": 9.81,
     "orbit": {
       "semi_major_axis_neisor_radii": 12190.0,
       "eccentricity": 0.035,
@@ -23,6 +25,7 @@
   "moon": {
     "parent": "neisor",
     "radius_neisor": 0.27,
+    "surface_gravity_mps2": 1.635,
     "orbit": {
       "semi_major_axis_neisor_radii": 13.86,
       "eccentricity": 0.08,

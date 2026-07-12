@@ -18,6 +18,8 @@
 use crate::planet::{
     climate_surface_with_biome, face_dir, hash01, hash_u64, ClimateSurface, MainBlock, Planet,
 };
+use crate::moon::{MoonGenerator, MoonMaterial};
+use crate::orbits::BodyId;
 use crate::terrain::{
     sample, Sample, TileMesh, Vertex, NO_BIOME_PAYLOAD, VOXEL_OCTAVES,
 };
@@ -38,12 +40,49 @@ const TREE_MARGIN: i64 = 4;
 /// place on top = +1 each). Sparse — only touched columns are stored.
 pub type Edits = HashMap<(u8, u64, u64), i64>;
 
+/// Sparse edits are stored in independent column maps per physical body.
+/// Keeping the familiar `Edits` map inside each slot preserves every Neisor
+/// lookup and save record while making a body part of the authoritative key.
+#[derive(Clone, Default)]
+pub struct BodyEdits {
+    sun: Edits,
+    neisor: Edits,
+    moon: Edits,
+}
+
+impl BodyEdits {
+    pub fn for_body(&self, body: BodyId) -> &Edits {
+        match body {
+            BodyId::Sun => &self.sun,
+            BodyId::Neisor => &self.neisor,
+            BodyId::Moon => &self.moon,
+        }
+    }
+
+    pub fn for_body_mut(&mut self, body: BodyId) -> &mut Edits {
+        match body {
+            BodyId::Sun => &mut self.sun,
+            BodyId::Neisor => &mut self.neisor,
+            BodyId::Moon => &mut self.moon,
+        }
+    }
+
+    pub fn from_neisor(neisor: Edits) -> Self {
+        Self {
+            sun: Edits::default(),
+            neisor,
+            moon: Edits::default(),
+        }
+    }
+}
+
 /// Player-placed torches: a torch stands on the walkable top of its column
 /// (it rides along if the column is edited). Persisted like edits.
 pub type Torches = std::collections::HashSet<(u8, u64, u64)>;
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct ChunkKey {
+    pub body: BodyId,
     pub face: u8,
     pub cx: u64,
     pub cy: u64,
@@ -68,6 +107,11 @@ pub enum Mat {
     LeavesJungle,
     LeavesAcacia,
     Shrub,
+    RegolithHighland,
+    RegolithMaria,
+    RegolithRay,
+    RegolithSubsurface,
+    LunarRock,
 }
 
 impl Mat {
@@ -94,6 +138,9 @@ impl Mat {
             Mat::LeavesJungle => [0.04, 0.19, 0.03],
             Mat::LeavesAcacia => [0.14, 0.20, 0.045],
             Mat::Shrub => [0.22, 0.25, 0.10],
+            Mat::RegolithHighland | Mat::RegolithMaria | Mat::RegolithRay => tint,
+            Mat::RegolithSubsurface => [tint[0] * 0.72, tint[1] * 0.70, tint[2] * 0.68],
+            Mat::LunarRock => [tint[0] * 0.48, tint[1] * 0.47, tint[2] * 0.46],
         }
     }
 }
@@ -140,7 +187,10 @@ pub struct ColCtx {
     /// The exact warped + locally-dithered surface field used by ground color.
     /// Tree density/category gates consume this same value rather than making
     /// an independent nearest-Koppen decision.
-    pub climate: ClimateSurface,
+    /// Present only on climate-bearing bodies. Lunar columns carry the exact
+    /// MoonSample-derived family/albedo below and never enter biome machinery.
+    pub climate: Option<ClimateSurface>,
+    pub lunar: Option<LunarColumn>,
     pub koppen: u8,
     /// Continuous climate at the same warped biome position. These select a
     /// tree silhouette without putting a nearest-class line back into density.
@@ -170,6 +220,49 @@ pub struct ColCtx {
     /// Preserve the pre-V-7 vegetation exclusion exactly. This is not a
     /// material decision: narrowing sand must not change tree placement.
     pub lake_level_band: bool,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct LunarColumn {
+    pub material: MoonMaterial,
+    pub albedo: f32,
+    pub smoothness: f32,
+    pub ray: f32,
+}
+
+/// The shared contract used by streaming, meshing, collision, edits, and
+/// player gravity.  `Planet` remains the byte-identical Neisor implementation;
+/// `LunarBody` supplies a dry/no-tree column law from `moon.rs`.
+pub trait VoxelBody: Send + Sync {
+    fn body_id(&self) -> BodyId;
+    fn radius_km(&self) -> f64;
+    fn seed(&self) -> i64;
+    fn column_ctx(&self, edits: &Edits, face: usize, ci: u64, cj: u64) -> ColCtx;
+    fn ground_height_km(&self, dir: DVec3, exaggeration: f64) -> f64;
+    fn tree_at_column(
+        &self,
+        _edits: &Edits,
+        _face: usize,
+        _ci: u64,
+        _cj: u64,
+    ) -> Option<(TreeKind, i64)> {
+        None
+    }
+    fn has_trees(&self) -> bool {
+        false
+    }
+}
+
+#[derive(Clone)]
+pub struct LunarBody {
+    pub radius_km: f64,
+    pub generator: std::sync::Arc<MoonGenerator>,
+}
+
+impl LunarBody {
+    pub fn new(radius_km: f64, generator: std::sync::Arc<MoonGenerator>) -> Self {
+        Self { radius_km, generator }
+    }
 }
 
 impl ColCtx {
@@ -299,6 +392,27 @@ pub fn col_ctx_ext(
 ) -> ColCtx {
     let (canon_face, ci, cj) = canonical_column(face, i_ext, j_ext);
     col_ctx(planet, edits, canon_face as usize, ci, cj)
+}
+
+pub fn col_ctx_ext_body(
+    body: &dyn VoxelBody,
+    edits: &Edits,
+    face: usize,
+    i_ext: i64,
+    j_ext: i64,
+) -> ColCtx {
+    let (canon_face, ci, cj) = canonical_column(face, i_ext, j_ext);
+    body.column_ctx(edits, canon_face as usize, ci, cj)
+}
+
+pub fn col_ctx_body(
+    body: &dyn VoxelBody,
+    edits: &Edits,
+    face: usize,
+    ci: u64,
+    cj: u64,
+) -> ColCtx {
+    body.column_ctx(edits, face, ci, cj)
 }
 
 /// Generate one column from scratch: terrain sample, water, caves.
@@ -452,7 +566,8 @@ pub fn col_ctx(planet: &Planet, edits: &Edits, face: usize, ci: u64, cj: u64) ->
         rim_flush_water,
         cave_bits,
         cave_water,
-        climate,
+        climate: Some(climate),
+        lunar: None,
         koppen: biome.koppen,
         biome_temp: biome.temp_c,
         biome_precip: biome.precip_mm_yr,
@@ -474,6 +589,88 @@ pub fn col_ctx(planet: &Planet, edits: &Edits, face: usize, ci: u64, cj: u64) ->
         lake_level_band: s.lake_level_km.is_finite()
             && s.h_km >= s.lake_level_km
             && s.h_km - s.lake_level_km <= 0.0015,
+    }
+}
+
+fn lunar_col_ctx(
+    moon: &LunarBody,
+    edits: &Edits,
+    face: usize,
+    ci: u64,
+    cj: u64,
+) -> ColCtx {
+    let nn = COLUMNS_PER_FACE as f64;
+    let u = -1.0 + 2.0 * (ci as f64 + 0.5) / nn;
+    let v = -1.0 + 2.0 * (cj as f64 + 0.5) / nn;
+    let direction = face_dir(face, u, v);
+    let sample = moon.generator.sample(direction);
+    let h_km = sample.height_ratio * moon.radius_km;
+    let ground0 = (h_km * 1000.0).floor() as i64;
+    let ground = ground0 + edits.get(&(face as u8, ci, cj)).copied().unwrap_or(0);
+    ColCtx {
+        ground,
+        ground0,
+        h_km: h_km as f32,
+        water: i64::MIN,
+        analog_water_km: f64::NEG_INFINITY,
+        rim_flush_water: false,
+        cave_bits: 0,
+        cave_water: i64::MIN,
+        climate: None,
+        lunar: Some(LunarColumn {
+            material: sample.material(),
+            albedo: sample.albedo as f32,
+            smoothness: sample.smoothness as f32,
+            ray: sample.ray as f32,
+        }),
+        koppen: 255,
+        biome_temp: 0.0,
+        biome_precip: 0.0,
+        e_raw: h_km as f32,
+        temp: 999.0,
+        precip: 0.0,
+        rough: (1.0 - sample.smoothness) as f32,
+        carved: false,
+        salt: false,
+        sea: false,
+        lake_shoal: false,
+        lake_shore_frac: 0.0,
+        lake_material_region: false,
+        lake_level_band: false,
+    }
+}
+
+impl VoxelBody for Planet {
+    fn body_id(&self) -> BodyId { BodyId::Neisor }
+    fn radius_km(&self) -> f64 { self.radius_km }
+    fn seed(&self) -> i64 { self.seed }
+    fn column_ctx(&self, edits: &Edits, face: usize, ci: u64, cj: u64) -> ColCtx {
+        col_ctx(self, edits, face, ci, cj)
+    }
+    fn ground_height_km(&self, dir: DVec3, exaggeration: f64) -> f64 {
+        crate::terrain::ground_height_km(self, dir, exaggeration)
+    }
+    fn tree_at_column(
+        &self,
+        edits: &Edits,
+        face: usize,
+        ci: u64,
+        cj: u64,
+    ) -> Option<(TreeKind, i64)> {
+        tree_here(self, edits, face, ci, cj)
+    }
+    fn has_trees(&self) -> bool { true }
+}
+
+impl VoxelBody for LunarBody {
+    fn body_id(&self) -> BodyId { BodyId::Moon }
+    fn radius_km(&self) -> f64 { self.radius_km }
+    fn seed(&self) -> i64 { self.generator.seed() }
+    fn column_ctx(&self, edits: &Edits, face: usize, ci: u64, cj: u64) -> ColCtx {
+        lunar_col_ctx(self, edits, face, ci, cj)
+    }
+    fn ground_height_km(&self, dir: DVec3, _exaggeration: f64) -> f64 {
+        self.generator.height_km(dir, self.radius_km)
     }
 }
 
@@ -562,6 +759,9 @@ fn sub_mat(surface: Mat) -> Mat {
         Mat::Gravel => Mat::Gravel,
         Mat::Rock => Mat::Rock,
         Mat::Stone => Mat::Stone,
+        Mat::RegolithHighland | Mat::RegolithMaria | Mat::RegolithRay => Mat::RegolithSubsurface,
+        Mat::RegolithSubsurface => Mat::RegolithSubsurface,
+        Mat::LunarRock => Mat::LunarRock,
         _ => Mat::Dirt,
     }
 }
@@ -580,12 +780,28 @@ fn mat_at(c: &ColCtx, z: i64, surface: Mat) -> Mat {
     // floor (z == c.ground) compute depth 0 and render as living grass several
     // meters underground; from ground0 it correctly reads dirt then stone.
     let d = c.ground0 - z;
-    if d <= 0 {
+    if c.lunar.is_some() {
+        if d <= 0 {
+            surface
+        } else if d <= 4 {
+            Mat::RegolithSubsurface
+        } else {
+            Mat::LunarRock
+        }
+    } else if d <= 0 {
         surface
     } else if d <= 3 {
         sub_mat(surface)
     } else {
         Mat::Stone
+    }
+}
+
+fn lunar_surface_mat(column: LunarColumn) -> Mat {
+    match column.material {
+        MoonMaterial::Highland => Mat::RegolithHighland,
+        MoonMaterial::Maria => Mat::RegolithMaria,
+        MoonMaterial::Ray => Mat::RegolithRay,
     }
 }
 
@@ -702,10 +918,11 @@ pub fn tree_biome_profile(
 
 #[inline]
 fn tree_profile(c: &ColCtx) -> Option<(TreeKind, f64)> {
+    let climate = c.climate?;
     tree_biome_profile(
         c.koppen,
-        c.climate.main_block,
-        c.climate.forest,
+        climate.main_block,
+        climate.forest,
         c.biome_temp,
         c.biome_precip,
     )
@@ -894,10 +1111,10 @@ pub fn column_id(dir: DVec3) -> (u8, u64, u64) {
 /// lift) under a direction. Water is NOT walkable: you wade into ponds and
 /// sink through rivers to their floor. Mirrors build_chunk's shell()/lift
 /// so feet match the visible voxel tops.
-pub fn surface_height_km(planet: &Planet, edits: &Edits, dir: DVec3, exaggeration: f64) -> f64 {
+pub fn surface_height_km(body: &dyn VoxelBody, edits: &Edits, dir: DVec3, exaggeration: f64) -> f64 {
     let (face, u, v) = crate::planet::face_from_dir(dir);
     let (ci, cj) = column_of(u, v);
-    let c = col_ctx(planet, edits, face, ci, cj);
+    let c = col_ctx_body(body, edits, face, ci, cj);
     // a frozen sheet is solid to EVERY world query, same rule as
     // support_below_km: aiming, placing, and torch height must see the ice
     // a player stands on, not the seabed beneath it
@@ -910,7 +1127,7 @@ pub fn surface_height_km(planet: &Planet, edits: &Edits, dir: DVec3, exaggeratio
 /// standing over a pit this is the pit floor, inside a tunnel the tunnel
 /// floor — the physics query for gravity, landing, and step-up.
 pub fn support_below_km(
-    planet: &Planet,
+    body: &dyn VoxelBody,
     edits: &Edits,
     dir: DVec3,
     at_km: f64,
@@ -918,10 +1135,10 @@ pub fn support_below_km(
 ) -> f64 {
     let (face, u, v) = crate::planet::face_from_dir(dir);
     let (ci, cj) = column_of(u, v);
-    let c = col_ctx(planet, edits, face, ci, cj);
+    let c = col_ctx_body(body, edits, face, ci, cj);
     // tree trunks are solid (shrubs are not) — you bump into and can stand
     // on trunks; canopy leaves stay passable
-    let trunk_top = tree_here(planet, edits, face, ci, cj)
+    let trunk_top = body.tree_at_column(edits, face, ci, cj)
         .filter(|(k, _)| *k != TreeKind::Shrub)
         .map(|(_, t)| c.ground + t);
     // frozen water is a solid ice sheet you stand ON (at the water surface)
@@ -953,7 +1170,7 @@ pub fn support_below_km(
 /// Lowest solid block *bottom* strictly above `at_km` in the column under
 /// `dir`, or +inf under open sky — head collision for jumps, cave roofs.
 pub fn ceiling_above_km(
-    planet: &Planet,
+    body: &dyn VoxelBody,
     edits: &Edits,
     dir: DVec3,
     at_km: f64,
@@ -961,8 +1178,8 @@ pub fn ceiling_above_km(
 ) -> f64 {
     let (face, u, v) = crate::planet::face_from_dir(dir);
     let (ci, cj) = column_of(u, v);
-    let c = col_ctx(planet, edits, face, ci, cj);
-    let trunk_top = tree_here(planet, edits, face, ci, cj)
+    let c = col_ctx_body(body, edits, face, ci, cj);
+    let trunk_top = body.tree_at_column(edits, face, ci, cj)
         .filter(|(k, _)| *k != TreeKind::Shrub)
         .map(|(_, t)| c.ground + t);
     // frozen ice is a ceiling too: swimming up under a frozen sheet must
@@ -997,7 +1214,7 @@ pub fn ceiling_above_km(
 /// over a flooded tunnel would read as swimming, and a dry bank near a lake
 /// would spuriously gain a water surface.
 pub fn water_surface_km(
-    planet: &Planet,
+    body: &dyn VoxelBody,
     edits: &Edits,
     dir: DVec3,
     at_km: f64,
@@ -1005,7 +1222,7 @@ pub fn water_surface_km(
 ) -> Option<f64> {
     let (face, u, v) = crate::planet::face_from_dir(dir);
     let (ci, cj) = column_of(u, v);
-    let c = col_ctx(planet, edits, face, ci, cj);
+    let c = col_ctx_body(body, edits, face, ci, cj);
     let scale = VOXEL_KM * exaggeration;
     let lift = lift_km(exaggeration);
     // frozen columns are solid ice (walkable, handled by support_below_km),
@@ -1030,7 +1247,7 @@ pub fn water_surface_km(
 /// block. The air column is where a placed block belongs: aiming at the
 /// side of a tower builds next to it instead of pushing the tower up.
 pub fn raycast_column(
-    planet: &Planet,
+    body: &dyn VoxelBody,
     edits: &Edits,
     eye_km: DVec3,
     look: DVec3,
@@ -1047,7 +1264,7 @@ pub fn raycast_column(
     while t_m < max_m {
         let p = eye_km + look * (t_m / 1000.0);
         let dir = p.normalize();
-        let surf_r = planet.radius_km + surface_height_km(planet, edits, dir, exaggeration);
+        let surf_r = body.radius_km() + surface_height_km(body, edits, dir, exaggeration);
         let col = col_under(dir);
         if p.length() <= surf_r {
             return Some((col, prev));
@@ -1060,11 +1277,16 @@ pub fn raycast_column(
 
 /// Chunks whose ghost/tree context can observe a column need remeshing on edit.
 pub fn chunks_touching_column(face: u8, ci: u64, cj: u64) -> Vec<ChunkKey> {
+    chunks_touching_column_body(BodyId::Neisor, face, ci, cj)
+}
+
+pub fn chunks_touching_column_body(body: BodyId, face: u8, ci: u64, cj: u64) -> Vec<ChunkKey> {
     let mut seen = HashSet::new();
     let mut out = Vec::new();
     let (i, j) = (ci as i64, cj as i64);
     let mut push_key = |face, ci, cj| {
         let key = ChunkKey {
+            body,
             face,
             cx: ci / CHUNK,
             cy: cj / CHUNK,
@@ -1095,7 +1317,7 @@ pub fn safe_hole_radius_km(radius_m: f64) -> f64 {
 /// directions on a tangent-plane disc and asks face_from_dir which chunk owns
 /// each sample — so the ring spills across cube-face edges for free instead
 /// of clamping to the camera's face.
-pub fn select_chunks(cam_pos: DVec3, planet: &Planet, radius_m: f64) -> Vec<ChunkKey> {
+pub fn select_chunks(cam_pos: DVec3, body: &dyn VoxelBody, radius_m: f64) -> Vec<ChunkKey> {
     let dir = cam_pos.normalize();
     let ref_axis = if dir.z.abs() < 0.9 { DVec3::Z } else { DVec3::X };
     let t1 = (ref_axis - dir * ref_axis.dot(dir)).normalize();
@@ -1109,7 +1331,7 @@ pub fn select_chunks(cam_pos: DVec3, planet: &Planet, radius_m: f64) -> Vec<Chun
     // the patch.
     let (_, u0, v0) = crate::planet::face_from_dir(dir);
     let chunk_min_km =
-        CHUNK as f64 * (2.0 / n) * planet.radius_km / (1.0 + u0 * u0 + v0 * v0);
+        CHUNK as f64 * (2.0 / n) * body.radius_km() / (1.0 + u0 * u0 + v0 * v0);
     let step_km = 0.45 * chunk_min_km;
     let r_km = radius_m / 1000.0;
     let steps = (r_km / step_km).ceil() as i64;
@@ -1122,11 +1344,16 @@ pub fn select_chunks(cam_pos: DVec3, planet: &Planet, radius_m: f64) -> Vec<Chun
             if d2 > (r_km + step_km) * (r_km + step_km) {
                 continue;
             }
-            let p = (dir * planet.radius_km + t1 * dx + t2 * dy).normalize();
+            let p = (dir * body.radius_km() + t1 * dx + t2 * dy).normalize();
             let (face, u, v) = crate::planet::face_from_dir(p);
             let ci = (((u + 1.0) * 0.5 * n).clamp(0.0, n - 1.0)) as u64;
             let cj = (((v + 1.0) * 0.5 * n).clamp(0.0, n - 1.0)) as u64;
-            let key = ChunkKey { face: face as u8, cx: ci / CHUNK, cy: cj / CHUNK };
+            let key = ChunkKey {
+                body: body.body_id(),
+                face: face as u8,
+                cx: ci / CHUNK,
+                cy: cj / CHUNK,
+            };
             if seen.insert(key) {
                 out.push((key, (d2 * 1e9) as i64));
             }
@@ -1141,7 +1368,7 @@ pub fn select_chunks(cam_pos: DVec3, planet: &Planet, radius_m: f64) -> Vec<Chun
 /// Mesh one chunk: solid columns (tops, cave ceilings/floors, strata sides),
 /// water surfaces, trees, and player-placed torches.
 pub fn build_chunk(
-    planet: &Planet,
+    body: &dyn VoxelBody,
     edits: &Edits,
     torches: &Torches,
     key: ChunkKey,
@@ -1163,12 +1390,12 @@ pub fn build_chunk(
     let mut cols: Vec<ColCtx> = Vec::with_capacity(np * np);
     for gj in 0..np as i64 {
         for gi in 0..np as i64 {
-            cols.push(col_ctx_ext(planet, edits, face, base_i + gi - m, base_j + gj - m));
+            cols.push(col_ctx_ext_body(body, edits, face, base_i + gi - m, base_j + gj - m));
         }
     }
     let at = |gi: i64, gj: i64| -> &ColCtx { &cols[(gj + m) as usize * np + (gi + m) as usize] };
 
-    let radius = planet.radius_km;
+    let radius = body.radius_km();
     let lift = lift_km(exaggeration);
     let origin_dir = face_dir(face, u_of(base_i + n / 2), v_of(base_j + n / 2));
     let origin = origin_dir * radius;
@@ -1185,6 +1412,7 @@ pub fn build_chunk(
     // heightfield consume the same rain-interpolation channel without growing
     // the established 72-byte vertex or GPU tile cache.
     let quad_rain_concavity = std::cell::Cell::new(0.0f32);
+    let quad_lunar_surface = std::cell::Cell::new(None::<LunarColumn>);
     // per-corner colors: ambient occlusion darkens individual corners.
     // `dim` is the cave-darkness factor (1 = open sky): blocks carry it in
     // the water attribute's alpha so the shader — not the bake — applies
@@ -1197,14 +1425,19 @@ pub fn build_chunk(
                 pos: [p.x as f32, p.y as f32, p.z as f32],
                 normal: [normal.x as f32, normal.y as f32, normal.z as f32],
                 color: cols[k],
-                water: [0.0, 0.0, 0.0, dim],
+                water: [
+                    0.0,
+                    0.0,
+                    0.0,
+                    quad_lunar_surface.get().map_or(dim, |l| l.smoothness),
+                ],
                 morph_dh: quad_rim_delta.get()[k],
                 morph_wet: quad_rim_weight.get().map_or(dim, |weights| weights[k]),
                 // 1.0 marks OPEN WATER surfaces: the shader's cold-dusting and
                 // rain-darkening skip them (snow does not settle on liquid) -
                 // block water dusted while the mesh's wet-mix masked it, a
                 // +4 lum whole-sea divergence (review #2 aftermath)
-                wflag,
+                wflag: quad_lunar_surface.get().map_or(wflag, |l| l.ray),
                 shore: -1.0, // blocks ARE the exact shoreline already
                 biome: NO_BIOME_PAYLOAD,
                 // payload-off, but beach.w still carries the D-8 rain
@@ -1226,10 +1459,12 @@ pub fn build_chunk(
     for j in 0..n {
         for i in 0..n {
             let c = at(i, j);
-            quad_rain_concavity.set(crate::terrain::rain_concavity_proxy(
-                c.e_raw as f64,
-                c.h_km as f64,
-            ));
+            quad_lunar_surface.set(c.lunar);
+            quad_rain_concavity.set(if c.lunar.is_some() {
+                0.0
+            } else {
+                crate::terrain::rain_concavity_proxy(c.e_raw as f64, c.h_km as f64)
+            });
             let ci = (base_i + i) as u64;
             let cj = (base_j + j) as u64;
             let (u0, u1) = (u_of(base_i + i), u_of(base_i + i + 1));
@@ -1302,20 +1537,25 @@ pub fn build_chunk(
                 .map(|nb| (c.ground0 - nb.ground0).abs())
                 .max()
                 .unwrap_or(0);
-            let surf = surface_mat(
-                c,
-                steep,
-                climate.main_block,
-                hash01(face as u8, ci, cj, 0xBEAC),
-                crate::terrain::beach_blend_comparator(
-                    face as u8,
-                    ci,
-                    cj,
-                    planet.seed,
-                    c.rough as f64,
-                ),
-            );
-            let tint = climate.tint(mat_main_block(surf, climate.main_block));
+            let (surf, tint) = if let Some(lunar) = c.lunar {
+                (lunar_surface_mat(lunar), [lunar.albedo; 3])
+            } else {
+                let climate = climate.expect("Neisor column must carry climate");
+                let surf = surface_mat(
+                    c,
+                    steep,
+                    climate.main_block,
+                    hash01(face as u8, ci, cj, 0xBEAC),
+                    crate::terrain::beach_blend_comparator(
+                        face as u8,
+                        ci,
+                        cj,
+                        body.seed(),
+                        c.rough as f64,
+                    ),
+                );
+                (surf, climate.tint(mat_main_block(surf, climate.main_block)))
+            };
 
             // per-block brightness hash: the subtle checkerboard that reads
             // "voxel" (keyed per column+height so sides vary too)
@@ -1515,7 +1755,9 @@ pub fn build_chunk(
                     // read as a featureless plane — indistinguishable from sky
                     // or liquid. Dust it with patchy snow per column so the
                     // solid surface reads as ground (brightness varied below).
-                    let snow = Mat::Snow.color(climate.tint(MainBlock::Snow));
+                    let snow = Mat::Snow.color(
+                        climate.expect("water exists only on a climate body").tint(MainBlock::Snow),
+                    );
                     let f = hash01(face as u8, ci, cj, 0x1CE) as f32;
                     let s = f * f * 0.6;
                     wcol = [
@@ -1713,7 +1955,7 @@ pub fn build_chunk(
             if relief > 2 || carved_near || c.top_solid() != c.ground {
                 continue; // no trees on slopes, gullies, or cave mouths
             }
-            if let Some((kind, trunk)) = tree_at(c, aface, aci, acj, planet.seed) {
+            if let Some((kind, trunk)) = tree_at(c, aface, aci, acj, body.seed()) {
                 let rnd = hash_u64(aface, aci, acj, 0xF0F0);
                 for (dx, dy, dz, mat) in tree_cells(kind, trunk, rnd) {
                     occ.insert((ai + dx, aj + dy, c.ground + dz), mat);
@@ -1834,6 +2076,51 @@ pub fn build_chunk(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn moon_columns_are_exact_deterministic_samples() {
+        let radius = 8660.254037844386 * 0.27;
+        let generator = std::sync::Arc::new(MoonGenerator::new(42));
+        let moon = LunarBody::new(radius, std::sync::Arc::clone(&generator));
+        let edits = Edits::default();
+        for (face, ci, cj) in [
+            (0usize, 5_000_000u64, 5_000_000u64),
+            (2, 3_765_432, 7_123_456),
+            (5, 8_888_888, 1_111_111),
+        ] {
+            let a = moon.column_ctx(&edits, face, ci, cj);
+            let b = moon.column_ctx(&edits, face, ci, cj);
+            assert_eq!(a.ground0, b.ground0);
+            assert_eq!(a.h_km.to_bits(), b.h_km.to_bits());
+            let n = COLUMNS_PER_FACE as f64;
+            let u = -1.0 + 2.0 * (ci as f64 + 0.5) / n;
+            let v = -1.0 + 2.0 * (cj as f64 + 0.5) / n;
+            let sample = generator.sample(face_dir(face, u, v));
+            assert_eq!(a.ground0, (sample.height_ratio * radius * 1000.0).floor() as i64);
+            let lunar = a.lunar.expect("moon column material");
+            assert_eq!(lunar.material, sample.material());
+            assert_eq!(lunar.albedo.to_bits(), (sample.albedo as f32).to_bits());
+            assert!(a.climate.is_none());
+            assert_eq!(a.water, i64::MIN);
+            assert_eq!(a.cave_bits, 0);
+        }
+    }
+
+    #[test]
+    fn edit_keys_are_separated_per_body() {
+        let key = (0u8, 12u64, 34u64);
+        let mut edits = BodyEdits::default();
+        edits.for_body_mut(BodyId::Sun).insert(key, 7);
+        edits.for_body_mut(BodyId::Neisor).insert(key, -1);
+        edits.for_body_mut(BodyId::Moon).insert(key, 3);
+        assert_eq!(edits.for_body(BodyId::Sun).get(&key), Some(&7));
+        assert_eq!(edits.for_body(BodyId::Neisor).get(&key), Some(&-1));
+        assert_eq!(edits.for_body(BodyId::Moon).get(&key), Some(&3));
+        assert_ne!(
+            chunks_touching_column_body(BodyId::Neisor, key.0, key.1, key.2)[0],
+            chunks_touching_column_body(BodyId::Moon, key.0, key.1, key.2)[0]
+        );
+    }
 
     fn test_planet() -> Planet {
         let assets = if std::path::Path::new("assets/meta.json").exists() {

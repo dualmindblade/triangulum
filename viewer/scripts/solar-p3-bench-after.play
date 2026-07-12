@@ -1,0 +1,12 @@
+weather off
+weather time 0
+sun physical
+teleport 1.510 40.490 0.004
+mode walk
+wait 1
+bench 5
+bench 30
+moonland -36.2094 -1 -90 -8
+wait 1
+bench 5
+bench 30

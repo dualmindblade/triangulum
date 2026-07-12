@@ -6,7 +6,9 @@ use crate::moon::{MoonGenerator, build_tile as build_moon_tile};
 use crate::orbits::{BodyId, SolarState, SolarTuning};
 use crate::planet::{boundary_shader_seedmul, Planet};
 use crate::terrain::{build_tile, select_tiles, TileKey, TileMesh, Vertex};
-use crate::voxel::{build_chunk, select_chunks, ChunkKey, Edits, Torches};
+use crate::voxel::{
+    build_chunk, select_chunks, ChunkKey, Edits, LunarBody, Torches, VoxelBody,
+};
 use anyhow::Result;
 use glam::{DQuat, DVec3, Mat4};
 use std::collections::{HashMap, HashSet};
@@ -86,6 +88,8 @@ struct Globals {
     // direction is radial, and camera-relative space has no planet center
     // otherwise. w = the voxel patch lift (km) for the block rim-sink.
     center: [f32; 4],
+    // xyz = focused body center relative to camera; w = BodyId numeric id.
+    body_frame: [f32; 4],
     // x = number of active torch lights; rest spare
     misc: [f32; 4],
     // weather at the camera (WEATHER.md Layer 3): x cloud cover 0..1,
@@ -906,10 +910,24 @@ impl Renderer {
             }
         }
         let cam_pos = camera.position();
-        let voxel_radius_m =
-            (200.0 + (VOXEL_MAX_ALT_KM - camera.altitude_km).max(0.0) * 120.0) * self.patch_scale;
-        let focus = (camera.altitude_km < VOXEL_MAX_ALT_KM)
-            .then(|| (cam_pos.normalize(), voxel_radius_m / 1000.0 + 0.2));
+        let cam_local = camera.local_position();
+        // The shared face lattice has the same column count on every body,
+        // so columns/chunks are physically denser in direct proportion to
+        // body radius. Scale the metric patch by that ratio to preserve the
+        // established chunk working-set (and visual angular footprint)
+        // instead of asking a 0.27 R moon to stream ~1/0.27^2 more chunks.
+        // Neisor's multiplier is exactly 1.0.
+        let body_patch_ratio = if camera.body == BodyId::Moon {
+            (camera.radius_km / planet.radius_km).clamp(0.05, 1.0)
+        } else {
+            1.0
+        };
+        let voxel_radius_m = (200.0
+            + (VOXEL_MAX_ALT_KM - camera.altitude_km).max(0.0) * 120.0)
+            * self.patch_scale
+            * body_patch_ratio;
+        let focus = (camera.body == BodyId::Neisor && camera.altitude_km < VOXEL_MAX_ALT_KM)
+            .then(|| (camera.local_direction(), voxel_radius_m / 1000.0 + 0.2));
         let keys = select_tiles(cam_pos, planet.radius_km, ERR_TARGET, focus);
 
         // upload globals (camera-relative view-projection, f64 -> f32 at the end)
@@ -940,6 +958,9 @@ impl Renderer {
             self.moon_generator = Arc::new(MoonGenerator::new(planet.seed));
             self.moon_cache.clear();
         }
+        let moon_focus = (camera.body == BodyId::Moon
+            && camera.altitude_km < VOXEL_MAX_ALT_KM)
+            .then(|| (camera.local_direction(), voxel_radius_m / 1000.0 + 0.2));
         let moon_keys = if body_visible(moon_rel, moon_radius) {
             // Selection is body-local f64.  The generic cube-sphere quadtree
             // does not know or care whether the center is Neisor or the moon.
@@ -947,7 +968,7 @@ impl Renderer {
                 cam_pos - solar.moon_km,
                 moon_radius,
                 crate::moon::tuning::LOD_ERROR_TARGET,
-                None,
+                moon_focus,
             )
         } else {
             Vec::new()
@@ -969,6 +990,17 @@ impl Renderer {
                 self.moon_cache.insert(key, gpu);
             }
         }
+        let voxel_body: Option<Arc<dyn VoxelBody>> = match camera.body {
+            BodyId::Neisor => {
+                let body: Arc<dyn VoxelBody> = Arc::clone(planet) as Arc<dyn VoxelBody>;
+                Some(body)
+            }
+            BodyId::Moon => Some(Arc::new(LunarBody::new(
+                moon_radius,
+                Arc::clone(&self.moon_generator),
+            ))),
+            BodyId::Sun => None,
+        };
         let surface_altitude = crate::camera::nearest_surface_altitude_km(
             camera,
             solar,
@@ -989,8 +1021,13 @@ impl Renderer {
         self.last_solar_occlusion = solar_occlusion;
         self.last_lunar_shadow = lunar_shadow;
         let inv32 = Mat4::from_cols_array(&vp.inverse().to_cols_array().map(|x| x as f32));
-        let up = cam_pos.normalize();
-        let cam_h_km = (cam_pos.length() - planet.radius_km).max(0.0);
+        let up = camera.local_direction();
+        let cam_h_km = (cam_local.length() - camera.radius_km).max(0.0);
+        let neisor_cam_h_km = if camera.body == BodyId::Neisor {
+            cam_h_km
+        } else {
+            (cam_pos.length() - planet.radius_km).max(0.0)
+        };
         let lift = crate::voxel::lift_km(self.exaggeration);
 
         // placed torches: the nearest MAX_LIGHTS become point lights. Their
@@ -998,7 +1035,10 @@ impl Renderer {
         // first and only sample the winners.
         let mut lights = [[0.0f32; 4]; MAX_LIGHTS];
         let mut n_lights = 0usize;
-        if camera.altitude_km < VOXEL_MAX_ALT_KM && !self.torches.is_empty() {
+        if camera.body == BodyId::Neisor
+            && camera.altitude_km < VOXEL_MAX_ALT_KM
+            && !self.torches.is_empty()
+        {
             let nn = crate::voxel::COLUMNS_PER_FACE as f64;
             let mut ranked: Vec<(f64, (u8, u64, u64), DVec3)> = self
                 .torches
@@ -1016,7 +1056,7 @@ impl Renderer {
                 .collect();
             ranked.sort_by(|a, b| a.0.total_cmp(&b.0));
             for &(_, (f, ci, cj), dir) in ranked.iter().take(MAX_LIGHTS) {
-                let top = crate::voxel::surface_height_km(planet, edits, dir, self.exaggeration);
+                let top = crate::voxel::surface_height_km(&**planet, edits, dir, self.exaggeration);
                 let pos = dir
                     * (planet.radius_km + top + 0.55 * crate::voxel::VOXEL_KM * self.exaggeration)
                     - cam_pos;
@@ -1263,10 +1303,13 @@ impl Renderer {
         // shows mesh terrain, never a hole to the sky.
         let mut chunk_keys: Vec<ChunkKey> = Vec::new();
         let mut unbuilt_min_km = f64::INFINITY;
-        if self.voxels_on && camera.altitude_km < VOXEL_MAX_ALT_KM {
+        if self.voxels_on
+            && camera.altitude_km < VOXEL_MAX_ALT_KM
+            && let Some(body) = voxel_body.as_ref()
+        {
             self.drain_chunks();
-            chunk_keys = select_chunks(cam_pos, planet, voxel_radius_m);
-            let center = cam_pos.normalize() * planet.radius_km;
+            chunk_keys = select_chunks(cam_local, body.as_ref(), voxel_radius_m);
+            let center = camera.local_direction() * body.radius_km();
             let nn = crate::voxel::COLUMNS_PER_FACE as f64;
             for k in &chunk_keys {
                 let cached = self.chunk_cache.contains_key(k);
@@ -1283,7 +1326,7 @@ impl Renderer {
                     let v = -1.0 + 2.0 * ((k.cy * crate::voxel::CHUNK + 16) as f64 + 0.5) / nn;
                     let cdir = crate::planet::face_dir(k.face as usize, u, v);
                     unbuilt_min_km =
-                        unbuilt_min_km.min((cdir * planet.radius_km - center).length());
+                        unbuilt_min_km.min((cdir * body.radius_km() - center).length());
                 }
                 if !self.chunk_pending.contains_key(k) {
                     let epoch = self.chunk_epoch;
@@ -1291,13 +1334,17 @@ impl Renderer {
                     self.chunk_pending.insert(*k, epoch);
                     self.chunk_stale.remove(k); // rebuilt with the current edits
                     let tx = self.chunk_tx.clone();
-                    let planet = Arc::clone(planet);
+                    let body = Arc::clone(body);
                     let edits = Arc::clone(&self.edit_snapshot);
-                    let torches = Arc::clone(&self.torch_snapshot);
                     let key = *k;
+                    let torches = if key.body == BodyId::Neisor {
+                        Arc::clone(&self.torch_snapshot)
+                    } else {
+                        Arc::new(Torches::default())
+                    };
                     rayon::spawn(move || {
                         let mesh =
-                            build_chunk(&planet, edits.as_ref(), torches.as_ref(), key, exagg);
+                            build_chunk(body.as_ref(), edits.as_ref(), torches.as_ref(), key, exagg);
                         let _ = tx.send((key, epoch, mesh));
                     });
                 }
@@ -1311,12 +1358,15 @@ impl Renderer {
         // freshly teleported -> no hole, mesh shows while blocks stream in.
         let mut hole = [0.0f32; 4];
         let mut hole_up = [0.0f32; 4];
-        if focus.is_some() && self.voxels_on {
+        if voxel_body.is_some()
+            && camera.altitude_km < VOXEL_MAX_ALT_KM
+            && self.voxels_on
+        {
             let r_km = crate::voxel::safe_hole_radius_km(voxel_radius_m)
                 .min((unbuilt_min_km - 0.096).max(0.0));
             // center + up are set whenever the patch exists (the rim-sink
             // needs them even while the hole itself is still closed)
-            let hup = cam_pos.normalize();
+            let hup = camera.local_direction();
             let hc = -hup * camera.altitude_km; // camera ground point, camera-relative
             hole = [hc.x as f32, hc.y as f32, hc.z as f32, r_km.max(0.0) as f32];
             hole_up = [hup.x as f32, hup.y as f32, hup.z as f32, 0.0];
@@ -1327,7 +1377,8 @@ impl Renderer {
         // shaders add per-pixel detail from the same uniforms, so weather
         // stays a pure function of (seed, position, weather time) — the
         // determinism contract in WEATHER.md.
-        let wx = if self.weather_on
+        let wx = if camera.body == BodyId::Neisor
+            && self.weather_on
             && let Some(field) = &self.weather_field
         {
             let mut w = crate::weather::weather_at(
@@ -1362,7 +1413,8 @@ impl Renderer {
         // over the SAME shell handoff the drift uses; at ground level the
         // deck stays exactly the local weather you are in. A pin overrides
         // both ends, so pinned captures are unchanged.
-        let deck = if self.weather_on
+        let deck = if camera.body == BodyId::Neisor
+            && self.weather_on
             && let Some(field) = &self.weather_field
         {
             let a = self.weather_tuning.shell_alt_km;
@@ -1484,7 +1536,7 @@ impl Renderer {
         } else {
             wx.precip
         };
-        let n_precip = if self.underwater {
+        let n_precip = if self.underwater || camera.body != BodyId::Neisor {
             0u32
         } else {
             (particle_precip * precip_fade * self.weather_tuning.particles_max as f64) as u32
@@ -1540,6 +1592,15 @@ impl Renderer {
                 (-cam_pos.z) as f32,
                 lift as f32,
             ],
+            body_frame: {
+                let center = solar.position_km(camera.body) - cam_pos;
+                [
+                    center.x as f32,
+                    center.y as f32,
+                    center.z as f32,
+                    camera.body.numeric_id() as f32,
+                ]
+            },
             misc: [
                 n_lights as f32,
                 (t_s % 3600.0) as f32,
@@ -1597,7 +1658,10 @@ impl Renderer {
                 self.weather_tuning.cloud_high_density as f32,
                 0.0,
             ],
-            weather8: [deck.0, deck.1, deck.2, 0.0],
+            // w is Neisor camera altitude even while the active sky frame is
+            // lunar; distant Neisor terrain still needs its own terminator,
+            // fog, and orbital-weather handoff coordinate.
+            weather8: [deck.0, deck.1, deck.2, neisor_cam_h_km as f32],
             karst: {
                 let kseed = |k: i64| {
                     (planet.seed.wrapping_add(k).wrapping_mul(0x9E37_79B1) & 0xFFFF_FFFF) as u32
@@ -1629,17 +1693,28 @@ impl Renderer {
             .write_buffer(&self.globals_buf, 0, bytemuck::bytes_of(&globals));
 
         let mut draws: Vec<(DrawKey, u32)> = Vec::new();
+        let lunar_chunk_keys: Vec<ChunkKey> = chunk_keys
+            .iter()
+            .copied()
+            .filter(|key| key.body == BodyId::Moon)
+            .collect();
         // near-field voxel chunks FIRST: if the slot pool ever fills, the
         // truncation victim must be a distant mesh tile, never a near chunk
         // (a dropped chunk leaves a see-through hole where the heightfield
         // was already cut away underneath it).
         let all_keys = chunk_keys
             .iter()
+            .filter(|key| key.body == BodyId::Neisor)
             .map(|k| DrawKey::Chunk(*k))
             .chain(keys.iter().map(|k| DrawKey::Tile(*k)));
         // Reserve the adaptive moon set plus one compact Sun slot in the
         // shared dynamic-uniform buffer.
-        let terrain_slots = MAX_TILES.saturating_sub(moon_keys.len().saturating_add(1));
+        let terrain_slots = MAX_TILES.saturating_sub(
+            moon_keys
+                .len()
+                .saturating_add(lunar_chunk_keys.len())
+                .saturating_add(1),
+        );
         for (slot, key) in all_keys.enumerate().take(terrain_slots) {
             let tile = match key {
                 DrawKey::Tile(k) => self.cache.get_mut(&k).unwrap(),
@@ -1760,6 +1835,40 @@ impl Renderer {
             );
             moon_draws.push((*key, slot));
         }
+        let mut moon_chunk_draws = Vec::with_capacity(lunar_chunk_keys.len());
+        for key in lunar_chunk_keys.iter().take(
+            MAX_TILES.saturating_sub(draws.len() + moon_draws.len() + 1),
+        ) {
+            let slot = (draws.len() + moon_draws.len() + moon_chunk_draws.len()) as u32;
+            let tile = self.chunk_cache.get_mut(key).unwrap();
+            if tile.last_used + 1 < self.frame_counter {
+                tile.shown_at = self.frame_counter;
+            }
+            tile.last_used = self.frame_counter;
+            let off = moon_rel + tile.origin_km;
+            let ease = if self.settle_visuals {
+                0.0
+            } else {
+                let age = self.frame_counter.saturating_sub(tile.shown_at);
+                (1.0 - age as f32 / 18.0).clamp(0.0, 1.0)
+            };
+            let data = [
+                off.x as f32,
+                off.y as f32,
+                off.z as f32,
+                4.0,
+                0.0,
+                0.0,
+                ease,
+                0.0,
+            ];
+            self.queue.write_buffer(
+                &self.tiles_buf,
+                slot as u64 * TILE_UNIFORM_STRIDE,
+                bytemuck::bytes_of(&data),
+            );
+            moon_chunk_draws.push((*key, slot));
+        }
         let body_specs = [(
             sun_rel,
             1.0f32,
@@ -1770,7 +1879,8 @@ impl Renderer {
             .into_iter()
             .filter(|(center, _, radius)| body_visible(*center, *radius))
         {
-            let slot = (draws.len() + moon_draws.len() + body_slots.len()) as u32;
+            let slot =
+                (draws.len() + moon_draws.len() + moon_chunk_draws.len() + body_slots.len()) as u32;
             // Body center is already camera-relative in f64. Only this small
             // boundary conversion reaches the GPU; no planet/solar magnitude
             // is subtracted in f32.
@@ -1857,6 +1967,13 @@ impl Renderer {
                 pass.set_index_buffer(tile.index_buf.slice(..), wgpu::IndexFormat::Uint32);
                 pass.draw_indexed(0..tile.index_count, 0, 0..1);
             }
+            for (key, slot) in &moon_chunk_draws {
+                let tile = &self.chunk_cache[key];
+                pass.set_bind_group(0, &self.bind_group, &[*slot * TILE_UNIFORM_STRIDE as u32]);
+                pass.set_vertex_buffer(0, tile.vertex_buf.slice(..));
+                pass.set_index_buffer(tile.index_buf.slice(..), wgpu::IndexFormat::Uint32);
+                pass.draw_indexed(0..tile.index_count, 0, 0..1);
+            }
             // precipitation: instanced rain streaks / snow flakes around the
             // camera, alpha-blended over everything, occluded by terrain
             if n_precip > 0 {
@@ -1871,7 +1988,7 @@ impl Renderer {
         if self.draw_cost_ms.len() > 240 {
             self.draw_cost_ms.pop_front();
         }
-        draws.len() + moon_draws.len()
+        draws.len() + moon_draws.len() + moon_chunk_draws.len()
     }
 
     /// (avg frame ms, p95 frame ms, avg draw-body CPU ms) over the last
@@ -1933,6 +2050,11 @@ impl Renderer {
         // faster than the age-based eviction can retire them (OOM)
         self.enforce_chunk_budget();
         self.enforce_tile_budget();
+        // Moon eviction runs only after this frame's selected tiles have
+        // been marked used. Chunk streaming can finish earlier in draw; doing
+        // lunar eviction there could drop a selected moon tile between
+        // selection and uniform upload during a landing capture.
+        self.enforce_moon_budget();
     }
 
     /// Tile twin of the chunk budget: age-based eviction alone lets a
@@ -2008,6 +2130,9 @@ impl Renderer {
             }
         }
         self.chunk_cache.retain(|k, _| keep.contains(k));
+    }
+
+    fn enforce_moon_budget(&mut self) {
         let moon_total: u64 = self.moon_cache.values().map(|t| t.bytes).sum();
         if moon_total > MOON_VRAM_BUDGET {
             let mut by_age: Vec<(u64, TileKey, u64)> = self

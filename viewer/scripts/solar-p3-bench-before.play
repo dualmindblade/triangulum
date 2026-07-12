@@ -1,0 +1,14 @@
+# Run with the main/57fa701 P2 binary. Moon pose is the closest mesh-only
+# camera equivalent; P2 cannot enter walk or stream lunar columns.
+weather off
+weather time 0
+sun physical
+teleport 1.510 40.490 0.004
+mode walk
+wait 1
+bench 5
+bench 30
+moonpose -36.2094 -1 0.0018 -90 -8
+focus free
+bench 5
+bench 30
