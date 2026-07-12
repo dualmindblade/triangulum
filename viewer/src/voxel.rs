@@ -16,7 +16,7 @@
 //! node, any depth" property as the tiles: a chunk needs nothing but its key.
 
 use crate::planet::{
-    climate_surface, face_dir, hash01, hash_u64, ClimateSurface, MainBlock, Planet,
+    climate_surface_with_biome, face_dir, hash01, hash_u64, ClimateSurface, MainBlock, Planet,
 };
 use crate::terrain::{sample, Sample, TileMesh, Vertex, VOXEL_OCTAVES};
 use glam::DVec3;
@@ -417,8 +417,7 @@ pub fn col_ctx(planet: &Planet, edits: &Edits, face: usize, ci: u64, cj: u64) ->
         }
     }
 
-    let biome = planet.biome_climate(face, u, v);
-    let climate = climate_surface(
+    let (climate, biome) = climate_surface_with_biome(
         planet,
         face,
         u,

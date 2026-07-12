@@ -143,6 +143,18 @@ pub struct BiomeClimate {
     pub sea: bool,
 }
 
+/// The subset of the shared biome surface needed by tree candidate
+/// enumeration. Keeping this separate from `ClimateSurface` avoids building
+/// three display tints for columns that only need vegetation ownership.
+#[derive(Clone, Copy, Debug)]
+pub struct VegetationSurface {
+    pub main_block: MainBlock,
+    pub forest: f32,
+    pub koppen: u8,
+    pub temp_c: f32,
+    pub precip_mm_yr: f32,
+}
+
 impl ClimateSurface {
     pub fn tint(self, block: MainBlock) -> [f32; 3] {
         match block {
@@ -653,6 +665,22 @@ impl Planet {
         }
     }
 
+    /// Constant vegetation signature for a categorical interior. A clear
+    /// climate-edge bit proves that the warp and every local dither/signature
+    /// read stay on this class. Callers may use this only for monotone
+    /// rejection (snow can suppress vegetation but cannot create a tree).
+    #[inline]
+    pub(crate) fn vegetation_interior(
+        &self,
+        face: usize,
+        u: f64,
+        v: f64,
+    ) -> Option<(u8, f32)> {
+        let (face, u, v) = canonical_face_uv(face, u, v);
+        let source = self.raster_position(face, u, v);
+        (!source.climate_edge).then(|| (source.here, koppen_forest(source.here)))
+    }
+
     /// The ONE position transform for every biome-class and biome-tint read.
     ///
     /// Physical sea ownership is checked first at the unwarped world position;
@@ -786,6 +814,20 @@ impl Planet {
             mix3(top, bottom, fy),
             (fa + (fb - fa) * fx) * (1.0 - fy) + (fc + (fd - fc) * fx) * fy,
         )
+    }
+
+    /// Forest half of `koppen_signature`, preserving its exact interpolation
+    /// order without calculating display colors. Candidate-only biome lookups
+    /// use this on proven same-class interiors.
+    #[inline]
+    fn koppen_forest_signature(&self, p: RasterPosition) -> f32 {
+        let r = &self.faces[p.face];
+        let (x0, y0) = (p.x.floor() as usize, p.y.floor() as usize);
+        let (x1, y1) = ((x0 + 1).min(r.res - 1), (y0 + 1).min(r.res - 1));
+        let (fx, fy) = ((p.x - x0 as f64) as f32, (p.y - y0 as f64) as f32);
+        let at = |x: usize, y: usize| koppen_forest(r.koppen[y * r.res + x]);
+        let (fa, fb, fc, fd) = (at(x0, y0), at(x1, y0), at(x0, y1), at(x1, y1));
+        (fa + (fb - fa) * fx) * (1.0 - fy) + (fc + (fd - fc) * fx) * fy
     }
 
     /// Continuous main-block weights for a cross-material band.
@@ -1365,6 +1407,114 @@ fn finish_climate_surface(
     }
 }
 
+#[inline]
+fn biome_climate_from_basis(basis: ClimateSurfaceBasis, sea: bool) -> BiomeClimate {
+    BiomeClimate {
+        koppen: basis.p.here,
+        temp_c: basis.temp_c as f32,
+        precip_mm_yr: basis.precip_mm as f32,
+        sea,
+    }
+}
+
+/// Tree-candidate view of the exact local climate surface. This performs the
+/// same warp, categorical dither, snow override, signature, and physical-sea
+/// classification as `biome_climate` + `climate_surface`, but shares their
+/// climate position and does not calculate display-only colors.
+pub fn vegetation_surface(
+    planet: &Planet,
+    face: usize,
+    u: f64,
+    v: f64,
+    unwarped_temp_c: f64,
+    unwarped_precip_mm: f64,
+) -> VegetationSurface {
+    let (world_face, world_u, world_v) = canonical_face_uv(face, u, v);
+    let source = planet.raster_position(world_face, world_u, world_v);
+
+    // The load-time interior bit proves that the warp, the local four-texel
+    // dither, and the signature's bilinear footprint all see one class. Build
+    // their exact result directly: candidate enumeration does not consume
+    // physical-sea ownership or display tints. Boundary columns fall through
+    // to the complete shared field below.
+    if !source.climate_edge {
+        let basis = ClimateSurfaceBasis {
+            p: source,
+            world_face,
+            world_u,
+            world_v,
+            temp_c: unwarped_temp_c,
+            precip_mm: unwarped_precip_mm,
+            koppen_anchor: [0.0; 3],
+            forest: planet.koppen_forest_signature(source),
+        };
+        let mut blocks = [koppen_main_block(source.here)];
+        apply_snow_override(planet, basis, &mut blocks);
+        return VegetationSurface {
+            main_block: blocks[0],
+            forest: basis.forest,
+            koppen: source.here,
+            temp_c: unwarped_temp_c as f32,
+            precip_mm_yr: unwarped_precip_mm as f32,
+        };
+    }
+
+    let sea = planet.true_sea_at(world_face, world_u, world_v);
+    let basis = climate_surface_basis(
+        planet,
+        world_face,
+        world_u,
+        world_v,
+        unwarped_temp_c,
+        unwarped_precip_mm,
+        sea,
+    );
+    let mut blocks = [climate_cross_block(planet, basis)];
+    apply_snow_override(planet, basis, &mut blocks);
+    let biome = biome_climate_from_basis(basis, sea);
+    VegetationSurface {
+        main_block: blocks[0],
+        forest: basis.forest,
+        koppen: biome.koppen,
+        temp_c: biome.temp_c,
+        precip_mm_yr: biome.precip_mm_yr,
+    }
+}
+
+/// Full local surface plus its biome coordinates from one climate-position
+/// lookup. Voxel columns consume both, so evaluating them independently would
+/// repeat the five-octave domain warp on every climate edge.
+pub(crate) fn climate_surface_with_biome(
+    planet: &Planet,
+    face: usize,
+    u: f64,
+    v: f64,
+    unwarped_temp_c: f64,
+    unwarped_precip_mm: f64,
+    unwarped_sea: bool,
+) -> (ClimateSurface, BiomeClimate) {
+    let basis = climate_surface_basis(
+        planet,
+        face,
+        u,
+        v,
+        unwarped_temp_c,
+        unwarped_precip_mm,
+        unwarped_sea,
+    );
+    let mut blocks = [climate_cross_block(planet, basis)];
+    apply_snow_override(planet, basis, &mut blocks);
+    let one_hot = match blocks[0] {
+        MainBlock::Grass => [1.0, 0.0, 0.0],
+        MainBlock::Sand => [0.0, 1.0, 0.0],
+        MainBlock::Snow => [0.0, 0.0, 1.0],
+    };
+    (
+        finish_climate_surface(basis, blocks[0], one_hot),
+        biome_climate_from_basis(basis, unwarped_sea),
+    )
+}
+
 /// One local truth for both ground renderers: domain-warped climate supplies
 /// provisional tints, smoothly sampled Koppen nudges grass hue, and the
 /// approved 300 m/four-octave field chooses cross-block and snow categories.
@@ -1523,6 +1673,67 @@ mod tests {
                     &planet, face, u, v, temp_c, precip_mm, sea,
                 );
                 assert_surface_bits_eq(public, paired_local);
+            }
+        }
+    }
+
+    #[test]
+    fn optimized_vegetation_and_voxel_views_match_full_field_bit_for_bit() {
+        for right_class in [4, 13, 28, 29] {
+            let planet = climate_test_planet_res(right_class, 32);
+            for (face, u, v) in [
+                (0, -0.80, 0.20),
+                (0, -0.20, -0.37),
+                (3, -0.01, 0.17),
+                (3, 0.01, -0.17),
+                (5, 0.40, 0.50),
+                (5, 0.92, -0.73),
+            ] {
+                let (temp, precip) = planet.temp_precip(face, u, v);
+                let biome = planet.biome_climate(face, u, v);
+                let full = climate_surface(
+                    &planet,
+                    face,
+                    u,
+                    v,
+                    temp as f64,
+                    precip as f64,
+                    biome.sea,
+                );
+                let vegetation = vegetation_surface(
+                    &planet,
+                    face,
+                    u,
+                    v,
+                    temp as f64,
+                    precip as f64,
+                );
+                assert_eq!(vegetation.main_block, full.main_block);
+                assert_eq!(vegetation.forest.to_bits(), full.forest.to_bits());
+                assert_eq!(vegetation.koppen, biome.koppen);
+                assert_eq!(vegetation.temp_c.to_bits(), biome.temp_c.to_bits());
+                assert_eq!(
+                    vegetation.precip_mm_yr.to_bits(),
+                    biome.precip_mm_yr.to_bits()
+                );
+
+                let (combined_surface, combined_biome) = climate_surface_with_biome(
+                    &planet,
+                    face,
+                    u,
+                    v,
+                    temp as f64,
+                    precip as f64,
+                    biome.sea,
+                );
+                assert_surface_bits_eq(combined_surface, full);
+                assert_eq!(combined_biome.koppen, biome.koppen);
+                assert_eq!(combined_biome.temp_c.to_bits(), biome.temp_c.to_bits());
+                assert_eq!(
+                    combined_biome.precip_mm_yr.to_bits(),
+                    biome.precip_mm_yr.to_bits()
+                );
+                assert_eq!(combined_biome.sea, biome.sea);
             }
         }
     }

@@ -10,7 +10,7 @@
 
 use crate::noise::{fbm_band, normal_value_noise, ridged_band};
 use crate::planet::{
-    climate_surface, climate_surface_pair, face_dir, sea_from_fields, ClimateSurface,
+    climate_surface_pair, face_dir, sea_from_fields, vegetation_surface, ClimateSurface,
     MainBlock, Planet, COLUMNS_PER_FACE, ECOTONE_BASE_PATCH_COLUMNS,
     ECOTONE_FIELD_OCTAVES, ECOTONE_LACUNARITY, ECOTONE_PERSISTENCE,
 };
@@ -1422,26 +1422,40 @@ pub fn build_tile(planet: &Planet, key: TileKey, exaggeration: f64) -> TileMesh 
                 }
                 let u = -1.0 + 2.0 * (ci as f64 + 0.5) / nnf;
                 let v = -1.0 + 2.0 * (cj as f64 + 0.5) / nnf;
+                // A same-class interior with zero forest signal cannot grow a
+                // billboard when its established profile is barren or shrub.
+                // Snow can only suppress that result. Prove this before the
+                // temperature read and procedural biome field; boundaries and
+                // all tree-bearing interiors still take the exact path below.
+                if planet.vegetation_interior(face, u, v).is_some_and(
+                    |(koppen, forest)| {
+                        forest <= 1e-4
+                            && !matches!(
+                                crate::voxel::tree_kind_density(koppen),
+                                Some((kind, _)) if kind != crate::voxel::TreeKind::Shrub
+                            )
+                    },
+                ) {
+                    continue;
+                }
                 // Candidate enumeration uses the same warped climate and
                 // locally-dithered main block as voxel trees. The authoritative
                 // ColCtx pass below still owns water/beach/cave eligibility.
                 let (temp, precip) = planet.temp_precip(face, u, v);
-                let biome = planet.biome_climate(face, u, v);
-                let climate = climate_surface(
+                let vegetation = vegetation_surface(
                     planet,
                     face,
                     u,
                     v,
                     temp as f64,
                     precip as f64,
-                    biome.sea,
                 );
                 let Some((kind, density)) = crate::voxel::tree_biome_profile(
-                    biome.koppen,
-                    climate.main_block,
-                    climate.forest,
-                    biome.temp_c,
-                    biome.precip_mm_yr,
+                    vegetation.koppen,
+                    vegetation.main_block,
+                    vegetation.forest,
+                    vegetation.temp_c,
+                    vegetation.precip_mm_yr,
                 )
                 else {
                     continue;
