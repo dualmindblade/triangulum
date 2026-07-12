@@ -1155,6 +1155,16 @@ impl App {
 }
 
 impl App {
+    /// The body a bare mode switch (F/G) applies to: stay wherever the
+    /// camera is focused; only unfocused freecam (or sun focus - no
+    /// walkable ground) falls back to Neisor.
+    fn mode_switch_body(&self) -> triangulum_viewer::orbits::BodyId {
+        match self.camera_rig.focused_body() {
+            Some(body) if body != triangulum_viewer::orbits::BodyId::Sun => body,
+            _ => triangulum_viewer::orbits::BodyId::Neisor,
+        }
+    }
+
     fn focus_camera(&mut self, body: triangulum_viewer::orbits::BodyId) {
         let Some(gfx) = self.gfx.as_mut() else { return };
         let solar = gfx
@@ -1477,15 +1487,18 @@ impl ApplicationHandler for App {
                             if !event.repeat {
                                 match code {
                                     K::KeyG => {
-                                        self.focus_camera(
-                                            triangulum_viewer::orbits::BodyId::Neisor,
-                                        );
+                                        // walk/fly on the CURRENT body: F/G
+                                        // yanked moonwalkers back to Neisor
+                                        // (Austin, 2026-07-12). Unfocused
+                                        // freecam falls back to Neisor as
+                                        // before; the sun has no ground.
+                                        let body = self.mode_switch_body();
+                                        self.focus_camera(body);
                                         self.player.set_walk(&mut self.camera);
                                     }
                                     K::KeyF => {
-                                        self.focus_camera(
-                                            triangulum_viewer::orbits::BodyId::Neisor,
-                                        );
+                                        let body = self.mode_switch_body();
+                                        self.focus_camera(body);
                                         self.player.set_fly(&mut self.camera);
                                     }
                                     K::KeyC => self.cycle_camera_focus(),

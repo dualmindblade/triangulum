@@ -164,13 +164,48 @@ constant, and weather-off intentionally draws an empty cloud overlay.
 - **Clouds v2 / W3 (2026-07-11):** three weather-typed 2-D shells at distinct
   altitudes fake depth through parallax; the same seeded formations composite
   over the planet from space with a hard post-stack opacity cap.
-- **W4 (gated on Andrew + suite strategy):** structural seasonality —
+- **W4 (design settled 2026-07-12, below):** structural seasonality —
   frozen lakes melt in summer, sea ice advances/retreats (seaice_monthly
   is already baked per month!), snow line moves in sample(), deciduous
-  tree color cycles. This changes physics (walkable ice comes and goes)
-  and therefore the regression-suite time model: suites pin a canonical
-  date; seasonal asserts get their own scripts. Design doc addendum
-  before any code.
+  tree color cycles. Andrew's D-9 verdict: "Water should generate
+  variably as either frozen or not based on the season according to
+  temperature and weather statistics, and should update when revisited.
+  Manually placed ice or water should only break this rule if
+  temperature warming or cooling systems exist."
+
+  THE W4 DESIGN CONTRACT:
+  - ONE INPUT: season_frac (Neisor mean anomaly at absolute T_S - the
+    orbital clock P1 unified). Every seasonal decision reads the baked
+    k=2 Fourier temperature AT THE SEASON, through one shared function
+    (seasonal_temp_c(pos, season_frac)); nothing invents a second
+    seasonal model. Weather-off keeps today's annual-mean behavior.
+  - CLASS RULE: the frozen/liquid decision (today: temp_c < -4)
+    becomes seasonal_temp_c < FREEZE_C with a HYSTERESIS BAND (freeze
+    below -5, thaw above -2, say) so shores do not flicker classes at
+    the contour; band edges dithered by the ecotone comparator like
+    every other boundary in this codebase.
+  - REVISIT SEMANTICS COME FREE: columns/chunks/tiles are pure
+    functions of (position, seed, T_S) - a chunk rebuilt on revisit
+    simply evaluates the current season. No stored melt state, no
+    migration. Loaded-but-stale chunks re-stream when their season
+    class flips (cheap check: chunk carries the season bucket it was
+    built at; the streamer refreshes on bucket change - buckets
+    quantize season_frac so mid-season play never rebuilds).
+  - EDITS WIN: player-placed blocks override seasonal class (existing
+    per-body edit machinery already does this).
+  - PHYSICS FOLLOWS CLASS: walkable ice in winter, swimmable water in
+    summer, at the same coordinates. The census/colcensus/sync_diff
+    instruments and every W1-W8 invariant hold AT EVERY SEASON.
+  - SUITE TIME MODEL: all existing suites pin the CANONICAL SEASON
+    (weather season 0.45 - today's epoch, byte-compatible with every
+    blessed baseline). NEW seasonal suites sweep season_frac at fixed
+    poses: a winter-walk assert (grounded on ice where summer swims),
+    a melt assert (swimming where winter walked), reel poses at
+    winter/summer solstice for frozen_lake and sea_ice, census cohort
+    parity at 4 season points (totals may move; W1/W2/W5 must not).
+  - SNOW LINE + DECIDUOUS: the snow override and grass/canopy tints
+    read the same seasonal_temp_c; the vegetation field itself (tree
+    positions) stays season-independent (trees do not teleport).
 - **W5+ (dream list):** lightning + thunder delay, rainbows (sun-opposite
   arc when sunny+rain), aurora at high latitude night, dust storms in
   deserts (precip=0 + high wind), wind-swayed trees/shrubs, puddle

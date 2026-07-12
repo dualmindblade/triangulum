@@ -9,6 +9,16 @@ are `teleport LAT LON [ALT_KM]` viewer args at `--exagg 1` unless noted.
 
 ## OPEN
 
+### B-2 Moon crater singularity ("black hole") at -35.057 51.770
+Andrew's photo (titled "Black hole"): terrain spirals into an
+unbounded pit - a crater depth/dimple formula diverging at its exact
+center (divide-by-near-zero shape). In moon.rs's P2 crater fold,
+which the moonscape v2 mission is REPLACING wholesale - so the gate
+moves to the v2 merge review: probe this exact coordinate, and the
+new lattice system must clamp every depth/radius ratio (add a unit
+test: no |height| beyond physical crater depth bounds at 1e6 sampled
+directions).
+
 ### B-1 Distant impostor treeline reads as a faint grid (banked)
 At the outermost impostor ring (level 11 -> 10, where impostor_stride
 ends) forests stop at tile boundaries - a subtle grid-aligned treeline
