@@ -1,0 +1,13 @@
+mode fly
+weather time 181.349
+sun 10.0 15.702
+teleport 52.991 100.016 9.070
+look -84 -83
+shot blend_9km
+weather off
+shot blend_9km_nowx
+weather time 93.277
+sun 10.0 42.124
+teleport 48.067 81.498 95.017
+look -163 -61
+shot blend_95km

@@ -1,0 +1,11 @@
+mode fly
+weather time 73.038
+teleport 60.741 89.677 0.004
+look -92 -69
+shot check_a
+teleport 60.704 89.662 3.355
+look 2 -35
+shot check_b
+teleport 60.704 89.662 0.300
+look 2 -45
+shot check_c

@@ -94,6 +94,16 @@ struct Globals {
     // (region gate), 31337 (tube n1), 51413 (tube n2). The shader's u32
     // hash twin consumes these to evaluate the EXACT cave field.
     karst: [u32; 4],
+    // dusting-dither anchor: planet-centered f32 positions quantize at
+    // ~0.24 m, so noise fed raw wp renders 25 cm plateaus that crawl with
+    // the camera (Andrew's checkerboard, 60.74 89.68). The CPU snaps the
+    // camera's f64 planet position to the dither lattice (40 cells/km):
+    // danchor_cell = the exact lattice cell (integers), danchor.xyz = that
+    // corner relative to the camera (<= 25 m, so f32-precise). The shader
+    // evaluates dither noise as danchor_cell + (rel - danchor)*40 - full
+    // precision near the eye, world-stable everywhere.
+    danchor: [f32; 4],
+    danchor_cell: [i32; 4],
     // placed-torch point lights: xyz camera-relative (km), w intensity
     lights: [[f32; 4]; MAX_LIGHTS],
 }
@@ -1069,6 +1079,23 @@ impl Renderer {
                 };
                 [kseed(40961), kseed(31337), kseed(51413), 0]
             },
+            danchor: {
+                let ax = (cam_pos.x * 40.0).floor();
+                let ay = (cam_pos.y * 40.0).floor();
+                let az = (cam_pos.z * 40.0).floor();
+                [
+                    (ax / 40.0 - cam_pos.x) as f32,
+                    (ay / 40.0 - cam_pos.y) as f32,
+                    (az / 40.0 - cam_pos.z) as f32,
+                    0.0,
+                ]
+            },
+            danchor_cell: [
+                (cam_pos.x * 40.0).floor() as i32,
+                (cam_pos.y * 40.0).floor() as i32,
+                (cam_pos.z * 40.0).floor() as i32,
+                0,
+            ],
             lights,
         };
         self.queue.write_buffer(&self.globals_buf, 0, bytemuck::bytes_of(&globals));

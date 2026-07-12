@@ -1,0 +1,9 @@
+mode fly
+weather time 73.038
+teleport 60.741 89.677 0.004
+look -92 -69
+voxels off
+shot q_meshonly
+voxels on
+weather off
+shot q_noweather

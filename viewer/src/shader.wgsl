@@ -33,6 +33,13 @@ struct Globals {
     // (seed+K).wrapping_mul(0x9E37_79B1)) for the karst breach hint:
     // x = region gate (+40961), y = tube n1 (+31337), z = tube n2 (+51413)
     karst: vec4<u32>,
+    // dusting-dither anchor (see renderer.rs Globals): xyz = the camera's
+    // dither-lattice corner relative to the camera (km, <= 25 m), and the
+    // matching exact lattice cell - together they give the dither noise a
+    // camera-precise, world-stable domain (raw planet-centered f32
+    // positions quantize at ~0.24 m and rendered as crawling plateaus)
+    danchor: vec4<f32>,
+    danchor_cell: vec4<i32>,
     // placed-torch point lights: xyz camera-relative (km), w intensity
     lights: array<vec4<f32>, 16>,
 };
@@ -628,11 +635,17 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         // from eye height warmed the ground 6.5 C per km of climb (review
         // #2 finding 1 - the snow line receded as the camera rose)
         let t_pix = globals.weather.w - 6.5 * (elev_km - globals.misc.w);
-        // hash3i, not hash31: this domain reaches ~82k cells at planet
-        // magnitude, where the fract() hash sheds its low bits and the
-        // dither collapses into world-axis stripes (Andrew's irregular
-        // banding, 60.70 89.66 - same degeneration the cloud deck hit)
-        let dith = hash3i(vec3<i32>(floor(wp * 40.0))) * 1.8 - 0.9;
+        // Smooth anchored noise, in three acts of one bug family: hash31
+        // at ~82k cells degenerated into world-axis stripes (Andrew's
+        // banding photos); a cell-constant hash3i re-read as a 25 m
+        // checkerboard; and any noise fed raw planet-centered wp sits on
+        // 0.24 m f32 plateaus that crawl with the camera. So: two smooth
+        // vnoise octaves (25 m and 8.3 m - integer 3x so one anchor
+        // serves both) on the camera-anchored exact lattice.
+        let dp = (in.rel_flag.xyz - globals.danchor.xyz) * 40.0;
+        let dith = (0.6 * vnoise_at(globals.danchor_cell.xyz, dp)
+            + 0.4 * vnoise_at(globals.danchor_cell.xyz * 3, dp * 3.0))
+            * 1.8 - 0.9;
         let cold = 1.0 - smoothstep(-globals.weather3.y, 1.0, t_pix + dith);
         // x(1-wflag): open water takes neither snow dusting nor rain
         // soaking - on mesh tiles the wet mix already masked this, but
@@ -763,6 +776,28 @@ fn hash3i(p: vec3<i32>) -> f32 {
     v ^= v >> vec3<u32>(16u);
     v.x += v.y * v.z;
     return f32(v.x & 0xFFFFFFu) / 16777216.0;
+}
+
+// trilinear value noise on an offset lattice: cell identity is base +
+// floor(p), so callers with an exact integer anchor (the dusting dither)
+// keep world-stable cells while feeding a small, camera-precise p
+fn vnoise_at(base: vec3<i32>, p: vec3<f32>) -> f32 {
+    let i = base + vec3<i32>(floor(p));
+    let f = fract(p);
+    let u = f * f * (3.0 - 2.0 * f);
+    let c000 = hash3i(i);
+    let c100 = hash3i(i + vec3<i32>(1, 0, 0));
+    let c010 = hash3i(i + vec3<i32>(0, 1, 0));
+    let c110 = hash3i(i + vec3<i32>(1, 1, 0));
+    let c001 = hash3i(i + vec3<i32>(0, 0, 1));
+    let c101 = hash3i(i + vec3<i32>(1, 0, 1));
+    let c011 = hash3i(i + vec3<i32>(0, 1, 1));
+    let c111 = hash3i(i + vec3<i32>(1, 1, 1));
+    let x00 = mix(c000, c100, u.x);
+    let x10 = mix(c010, c110, u.x);
+    let x01 = mix(c001, c101, u.x);
+    let x11 = mix(c011, c111, u.x);
+    return mix(mix(x00, x10, u.y), mix(x01, x11, u.y), u.z);
 }
 
 // trilinear value noise + a 4-octave fbm — the cloud deck's fabric
