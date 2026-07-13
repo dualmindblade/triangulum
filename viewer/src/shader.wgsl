@@ -1551,31 +1551,6 @@ fn cloud_color(
 //     ring on the weather clock (5-min period, continuous across the
 //     hourly wrap; phase 0 offset is zero, so pinned time-0 captures keep
 //     their unmorphed fabric).
-fn cloud_warp(sdir: vec3<f32>) -> vec3<f32> {
-    let q = (sdir - globals.weather2.xyz * 0.35) * 90.0
-        + cloud_seed_offset(11u);
-    let wx = vnoise(q) - 0.5;
-    let wy = vnoise(q + vec3<f32>(31.4, 7.2, 19.7)) - 0.5;
-    // Two independent taps are enough for a 3-D vector field; deriving the
-    // radial lane from both preserves folding while retiring eight hash
-    // corners per shell sample to fund W-MOTION pass 2's structured math.
-    return vec3<f32>(wx, wy, wx * 0.62 - wy * 0.38) * 0.020;
-}
-
-fn cloud_broad_morph(broad_p: vec3<f32>) -> f32 {
-    let mph = globals.weather4.w * (12.0 / 3600.0);
-    let ring = mph - 12.0 * floor(mph / 12.0);
-    let i0 = floor(ring);
-    let i1 = i0 + 1.0 - 12.0 * step(11.5, i0);
-    let f = ring - i0;
-    let m = f * f * (3.0 - 2.0 * f);
-    return mix(
-        vnoise(broad_p + vec3<f32>(17.31, 5.07, 23.9) * i0),
-        vnoise(broad_p + vec3<f32>(17.31, 5.07, 23.9) * i1),
-        m,
-    );
-}
-
 fn cloud_layer_sample_structured(
     sdir: vec3<f32>,
     view_dir: vec3<f32>,
@@ -1598,7 +1573,13 @@ fn cloud_layer_sample_structured(
     );
     let cold = 1.0 - smoothstep(-8.0, 12.0, globals.weather8.z);
     let warm = smoothstep(-2.0, 22.0, globals.weather8.z);
-    let sdir_w = structure.domain + cloud_warp(structure.domain);
+    // W-MOTION pass 1's warp/shear/morph are REVERTED (2026-07-13):
+    // at high weather clock they decorrelated and over-energized the
+    // fabric into global phantom speckle (regression zoo caught by the
+    // orbital cyclone-hunt probes; the reels never saw it because they
+    // pin t=0). Deck evolution now comes from pass 2's structured motion
+    // only; a pass-1 redo must gate on LOOK at t in {0, 1800, 3500}.
+    let sdir_w = structure.domain;
     if (kind == 2u) {
         let p0 = (sdir_w - globals.weather2.xyz * 0.72) * globals.weather6.z
             + cloud_seed_offset(2u);
@@ -1608,10 +1589,8 @@ fn cloud_layer_sample_structured(
             p0.y * 1.18 + p0.x * 0.05,
             p0.z * 0.54 - p0.x * 0.07,
         );
-        // octave shear: the fine wisps outrun the broad filaments
-        let shear = (globals.weather2.xyz * 0.62) * globals.weather6.z;
         let fabric = 0.68 * vnoise(p)
-            + 0.32 * vnoise(p * 2.07 - shear + vec3<f32>(13.1, 7.7, 29.3));
+            + 0.32 * vnoise(p * 2.07 + vec3<f32>(13.1, 7.7, 29.3));
         let wisps = smoothstep(0.57 - 0.035 * cold, 0.70 - 0.025 * cold, fabric);
         let presence = (0.16 + 0.62 * (1.0 - cover)) * (0.78 + 0.22 * cold);
         let alpha = clamp(
@@ -1626,15 +1605,13 @@ fn cloud_layer_sample_structured(
     // detail scales avoid duplication while storm cells align vertically.
     let broad_p = (sdir_w - globals.weather2.xyz) * (globals.weather6.x * 0.62)
         + cloud_seed_offset(7u);
-    let broad = clamp(cloud_broad_morph(broad_p) + 0.18 * structure.front, 0.0, 1.0);
+    let broad = clamp(vnoise(broad_p) + 0.18 * structure.front, 0.0, 1.0);
     if (kind == 1u) {
         let p = (sdir_w - globals.weather2.xyz) * globals.weather6.y
             + cloud_seed_offset(1u);
-        // octave shear on the puff detail
-        let shear1 = (globals.weather2.xyz * 0.55) * globals.weather6.y;
         let fabric = 0.52 * broad
-            + 0.32 * vnoise(p - shear1 * 0.6)
-            + 0.16 * vnoise(p * 2.03 - shear1 + vec3<f32>(31.7, 17.3, 51.1));
+            + 0.32 * vnoise(p)
+            + 0.16 * vnoise(p * 2.03 + vec3<f32>(31.7, 17.3, 51.1));
         let threshold = 0.66 - 0.25 * cover - 0.05 * precip;
         let puffs = smoothstep(threshold, threshold + 0.12, fabric);
         let presence = smoothstep(0.10, 0.38, cover) * (0.86 + 0.14 * warm);
@@ -1648,9 +1625,8 @@ fn cloud_layer_sample_structured(
 
     let p = (sdir_w - globals.weather2.xyz * 1.16) * globals.weather6.x
         + cloud_seed_offset(0u);
-    let shear0 = (globals.weather2.xyz * 0.74) * globals.weather6.x;
     let fabric = 0.68 * broad
-        + 0.32 * vnoise(p * 1.73 - shear0 + vec3<f32>(9.3, 41.7, 5.9));
+        + 0.32 * vnoise(p * 1.73 + vec3<f32>(9.3, 41.7, 5.9));
     let threshold = 0.61 - 0.09 * cover - 0.13 * precip;
     let bases = smoothstep(threshold, threshold + 0.11, fabric);
     let storm_presence = max(

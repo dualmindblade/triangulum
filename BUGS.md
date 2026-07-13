@@ -9,6 +9,22 @@ are `teleport LAT LON [ALT_KM]` viewer args at `--exagg 1` unless noted.
 
 ## OPEN
 
+### B-8 High-orbit cloud deck reads as uniform fine speckle
+At ~1000 km with live or pinned cover, the deck renders as global
+salt-and-pepper dust rather than cumulus masses; the pre-W2 control
+(d90835d) renders NO deck at that altitude at identical pins, so
+"clouds at high orbit" is itself new W2/cyclone-era behavior whose
+current form is wrong. Repro: scripts/cyclonehunt.play +
+scripts/pinhunt.play, compare against a d90835d control build.
+Bisect W2 (8449a0d) next; suspects: deck handoff/altitude constants,
+per-layer shell-hit geometry at high range, presence gates at
+low-cover. NOTE the confounder that burned an hour: mean-diff
+metrics cannot judge this - LOOK at frames. The W-MOTION pass-1
+fabric terms (warp/shear/morph) were reverted 2026-07-13 after the
+same hunt exposed them as a regression zoo at high weather clock
+(paisley marbling, octave decorrelation, variance washout); the
+pass-1 redo requires visual gates at t in {0, 1800, 3500} minimum.
+
 ### B-4 IMPORTANT: mesh-detail loading perf + ascent lagspikes (Andrew doc 2)
 "Major performance issues when loading mesh detail and lagspikes when
 ascending." The ascent class returned at a larger scale (the parent-

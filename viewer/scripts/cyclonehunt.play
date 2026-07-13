@@ -1,0 +1,20 @@
+mode fly
+weather time 3500
+teleport 20.0 0.0 1000.0
+look 0 -88
+shot hunt_000
+teleport 20.0 60.0 1000.0
+look 0 -88
+shot hunt_060
+teleport 20.0 120.0 1000.0
+look 0 -88
+shot hunt_120
+teleport 20.0 180.0 1000.0
+look 0 -88
+shot hunt_180
+teleport -25.0 240.0 1000.0
+look 0 -88
+shot hunt_240
+teleport -25.0 300.0 1000.0
+look 0 -88
+shot hunt_300
