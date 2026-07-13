@@ -382,7 +382,13 @@ fn write_shot_sidecar(
         .radius_km(triangulum_viewer::orbits::BodyId::Moon, planet.radius_km);
     let moon_relative = camera.position() - solar.moon_km;
     let moon_alt_nominal = (moon_relative.length() - moon_radius).abs();
-    let on_moon = moon_alt_nominal < camera.altitude_km.abs();
+    // Attribution follows the camera's BOUND BODY: altitude_km is already
+    // body-relative (P3), so the old comparison tested the moon's altitude
+    // against itself and lunar shots filed themselves under Neisor
+    // (Andrew's misplaced-photos report). Freecam flybys within 50 km of
+    // the lunar surface still count as moon shots.
+    let on_moon = camera.body == triangulum_viewer::orbits::BodyId::Moon
+        || moon_alt_nominal < 50.0;
     let body_direction = if on_moon {
         moon_relative.normalize_or_zero()
     } else {
@@ -1092,10 +1098,15 @@ impl App {
                 let (s, c) = roll.to_radians().sin_cos();
                 view_up = (view_up * c + right * s).normalize();
             }
-            // A photo carries a local view and must remain free so focused
-            // realignment cannot replace it with a center-look next frame.
-            // Bare map clicks preserve the caller's focused/freecam mode.
-            let focused = landing || (!has_photo_view && self.camera_rig.mode != CameraMode::Freecam);
+            // Photo views FOCUS the moon: the rig tracks a focused body by
+            // translating its center each frame with the body-local pose and
+            // look preserved exactly, so the photographed view survives and
+            // the moon no longer orbits away from under the visitor
+            // (Andrew's drift report). Bare map clicks from freecam remain
+            // freecam.
+            let focused = landing
+                || has_photo_view
+                || self.camera_rig.mode != CameraMode::Freecam;
             self.camera_rig.place_near_body(
                 triangulum_viewer::orbits::BodyId::Moon,
                 solar,
