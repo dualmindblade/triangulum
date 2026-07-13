@@ -46,7 +46,12 @@ look 0 -80
 tap lmb
 assert edit_count == 1
 assert edit_total_blocks == -1
+assert block_width_height_ratio ~ 1.0 0.02
 shot dug_regolith
+# A full-width lunar hole now owns the player column; settle onto its floor
+# before jumping to place the replacement block from clear of the body.
+wait 1.3
+assert grounded true
 tap space
 wait 0.4
 assert clearance_m > 1.5

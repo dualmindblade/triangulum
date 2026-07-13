@@ -18,7 +18,6 @@ use rayon::prelude::*;
 use triangulum_viewer::planet::{face_from_dir, Planet};
 use triangulum_viewer::voxel::{
     col_ctx_ext_body, ColCtx, Edits, LunarBody, SeasonalPlanet, VoxelBody,
-    COLUMNS_PER_FACE,
 };
 
 struct Hit {
@@ -71,7 +70,7 @@ fn main() -> anyhow::Result<()> {
     let (la, lo) = (lat.to_radians(), lon.to_radians());
     let dir = DVec3::new(la.cos() * lo.cos(), la.cos() * lo.sin(), la.sin());
     let (face, u, v) = face_from_dir(dir);
-    let nn = COLUMNS_PER_FACE as f64;
+    let nn = body.columns_per_face() as f64;
     let ci = (((u + 1.0) * 0.5) * nn).floor() as i64;
     let cj = (((v + 1.0) * 0.5) * nn).floor() as i64;
     // gnomonic columns are ~1.7 x 1.0 m at face centers; use the safe bound

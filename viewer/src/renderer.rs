@@ -933,12 +933,10 @@ impl Renderer {
         }
         let cam_pos = camera.position();
         let cam_local = camera.local_position();
-        // The shared face lattice has the same column count on every body,
-        // so columns/chunks are physically denser in direct proportion to
-        // body radius. Scale the metric patch by that ratio to preserve the
-        // established chunk working-set (and visual angular footprint)
-        // instead of asking a 0.27 R moon to stream ~1/0.27^2 more chunks.
-        // Neisor's multiplier is exactly 1.0.
+        // Preserve the established body-relative landed patch footprint and
+        // its two-regime mesh offset/handoff. With the moon's own 0.27-scale
+        // lattice this now also means ~13.7x fewer columns/chunks than the old
+        // shared-lattice path inside that unchanged lunar patch.
         let body_patch_ratio = if camera.body == BodyId::Moon {
             (camera.radius_km / planet.radius_km).clamp(0.05, 1.0)
         } else {
@@ -976,6 +974,17 @@ impl Renderer {
                     .cos()
         };
         let moon_radius = self.solar_tuning.radius_km(BodyId::Moon, planet.radius_km);
+        // Landed frames are draw-call bound by distant LOD rings long after
+        // the voxel patch and its max-level rim tiles are settled. Relax only
+        // those distant rings while within the voxel regime; the patch rim
+        // still reaches MAX_LEVEL and samples the identical moon law.
+        let moon_lod_error = if camera.body == BodyId::Moon
+            && camera.altitude_km < VOXEL_MAX_ALT_KM
+        {
+            0.25
+        } else {
+            crate::moon::tuning::LOD_ERROR_TARGET
+        };
         if self.moon_seed != planet.seed {
             self.moon_seed = planet.seed;
             self.moon_generator = Arc::new(MoonGenerator::new(planet.seed));
@@ -990,7 +999,7 @@ impl Renderer {
             select_tiles(
                 cam_pos - solar.moon_km,
                 moon_radius,
-                crate::moon::tuning::LOD_ERROR_TARGET,
+                moon_lod_error,
                 moon_focus,
             )
         } else {
@@ -1071,6 +1080,7 @@ impl Renderer {
             && camera.altitude_km < VOXEL_MAX_ALT_KM
             && !self.torches.is_empty()
         {
+            // Torches are Neisor-only and retain the original lattice.
             let nn = crate::voxel::COLUMNS_PER_FACE as f64;
             let mut ranked: Vec<(f64, (u8, u64, u64), DVec3)> = self
                 .torches
@@ -1410,7 +1420,7 @@ impl Renderer {
             self.drain_chunks();
             chunk_keys = select_chunks(cam_local, body.as_ref(), voxel_radius_m);
             let center = camera.local_direction() * body.radius_km();
-            let nn = crate::voxel::COLUMNS_PER_FACE as f64;
+            let nn = body.columns_per_face() as f64;
             let mut seasonal_refreshes = 0usize;
             for k in &chunk_keys {
                 let cached = self.chunk_cache.contains_key(k);
@@ -1948,7 +1958,7 @@ impl Renderer {
                     [0.0001, 0.0002, 0.0, 0.0]
                 } else {
                     let s = key.size_km(moon_radius);
-                    let tau = crate::moon::tuning::LOD_ERROR_TARGET;
+                    let tau = moon_lod_error;
                     [
                         (s * (1.0 / tau + 0.75)) as f32,
                         (s * (2.0 / tau - 1.45)) as f32,

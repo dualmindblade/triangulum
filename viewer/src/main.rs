@@ -551,6 +551,15 @@ fn edits_path(seed: i64) -> String {
 }
 
 fn moon_edits_path(seed: i64) -> String {
+    format!(
+        "{}/edits_moon_lattice{}_seed{}.bin",
+        assets_dir(),
+        triangulum_viewer::voxel::LUNAR_COLUMNS_PER_FACE,
+        seed
+    )
+}
+
+fn legacy_moon_edits_path(seed: i64) -> String {
     format!("{}/edits_moon_seed{}.bin", assets_dir(), seed)
 }
 
@@ -563,8 +572,7 @@ fn torches_path(seed: i64) -> String {
 /// byte >= 6 panics `face_dir`; an off-lattice column or absurd edit delta
 /// poisons meshing) — every record is range-checked on load, bad ones are
 /// dropped with a warning instead of taking the session down.
-fn valid_column(face: u8, ci: u64, cj: u64) -> bool {
-    let n = triangulum_viewer::voxel::COLUMNS_PER_FACE;
+fn valid_column(face: u8, ci: u64, cj: u64, n: u64) -> bool {
     (face as usize) < 6 && ci < n && cj < n
 }
 
@@ -598,7 +606,7 @@ fn load_torches(seed: i64) -> triangulum_viewer::voxel::Torches {
         let face = raw[o];
         let ci = u64::from_le_bytes(raw[o + 1..o + 9].try_into().unwrap());
         let cj = u64::from_le_bytes(raw[o + 9..o + 17].try_into().unwrap());
-        if !valid_column(face, ci, cj) {
+        if !valid_column(face, ci, cj, triangulum_viewer::voxel::COLUMNS_PER_FACE) {
             dropped += 1;
             continue;
         }
@@ -625,14 +633,27 @@ fn save_torches(seed: i64, torches: &triangulum_viewer::voxel::Torches) {
 }
 
 fn load_edits(seed: i64) -> triangulum_viewer::voxel::Edits {
-    load_edits_path(&edits_path(seed))
+    load_edits_path(
+        &edits_path(seed),
+        triangulum_viewer::voxel::COLUMNS_PER_FACE,
+    )
 }
 
 fn load_moon_edits(seed: i64) -> triangulum_viewer::voxel::Edits {
-    load_edits_path(&moon_edits_path(seed))
+    let path = moon_edits_path(seed);
+    if !std::path::Path::new(&path).exists()
+        && std::path::Path::new(&legacy_moon_edits_path(seed)).exists()
+    {
+        eprintln!(
+            "MOON EDIT RESET: ignoring legacy {}-column lattice edits; new lunar lattice has {} columns/face (Neisor edits are untouched)",
+            triangulum_viewer::voxel::COLUMNS_PER_FACE,
+            triangulum_viewer::voxel::LUNAR_COLUMNS_PER_FACE,
+        );
+    }
+    load_edits_path(&path, triangulum_viewer::voxel::LUNAR_COLUMNS_PER_FACE)
 }
 
-fn load_edits_path(path: &str) -> triangulum_viewer::voxel::Edits {
+fn load_edits_path(path: &str, columns_per_face: u64) -> triangulum_viewer::voxel::Edits {
     let mut out = triangulum_viewer::voxel::Edits::default();
     let Ok(raw) = std::fs::read(path) else {
         return out;
@@ -654,7 +675,7 @@ fn load_edits_path(path: &str) -> triangulum_viewer::voxel::Edits {
         if dh == 0 {
             continue; // dig-then-refill leaves a harmless no-op entry
         }
-        if !valid_column(face, ci, cj) || dh.abs() > MAX_EDIT_BLOCKS {
+        if !valid_column(face, ci, cj, columns_per_face) || dh.abs() > MAX_EDIT_BLOCKS {
             dropped += 1;
             continue;
         }
