@@ -1,0 +1,8 @@
+# Same-generation A/B proof for the floor law. Run once normally and once
+# with TRI_MOON_LEGACY_FLOORS=1; every placement/material bit stays fixed.
+weather off
+weather time 0
+sun physical
+mode fly
+moonpose -38.7869 -44.0389 35 0 -84
+shot rim_straddling_floor

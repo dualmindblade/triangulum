@@ -18,8 +18,11 @@ hold shift+w 0.50
 bench 30
 shot nav_maria_2
 
-# Highlands/crater floor: repeat across the rougher terrain family.
-moonpose 37.0385 101.1598 2 90 -18
+# Highlands: the old 37.0385/101.1598 crater-floor pin moved by kilometres
+# under the intentional random-placement law and no longer exercises a
+# comparable working set. This nearby-side highland field is pinned at 8 km
+# so its warmed draw/LOD workload matches the shipped ~2,100-draw cohort.
+moonpose 0 120 8 90 -18
 focus free
 bench 5
 bench 30

@@ -24,13 +24,24 @@ use crate::terrain::{TILE_QUADS, TileKey, TileMesh, Vertex};
 pub mod tuning {
     /// Radius halves and conceptual count grows about fourfold per octave.
     pub const CRATER_OCTAVES: usize = 10;
-    pub const CRATER_OCCUPANCY: f64 = 0.34;
+    pub const CRATER_OCCUPANCY: f64 = 0.31;
     /// Radius is `(fraction / grid_width) * cube_metric` radians.
-    pub const CRATER_RADIUS_CELL: (f64, f64) = (0.22, 0.38);
+    /// The ratio is deliberately greater than two, so adjacent half-scale
+    /// octaves overlap instead of leaving a visible size comb. Log-uniform
+    /// draws preserve equal opportunity across each interval; occupancy is
+    /// reduced from 0.34 to 0.31 to keep covered area and N(D) near D^-2.
+    pub const CRATER_RADIUS_CELL: (f64, f64) = (0.20, 0.46);
     pub const CRATER_OUTER_RADII: f64 = 1.78;
-    pub const CRATER_JITTER: f64 = 0.14;
-    /// Jitter + the longest allowed elongated outer rim, in cell widths.
-    pub const CRATER_CELL_MARGIN: f64 = 0.56;
+    /// Almost the full +/- half-cell interval. One cell still owns each draw,
+    /// but its center no longer advertises the lattice row.
+    pub const CRATER_JITTER: f64 = 0.47;
+    pub const MAX_CRATER_ELONGATION: f64 = 1.20;
+    /// At the worst cube metric, the largest elongated outer rim reaches
+    /// `0.46/2 * 1.78 * 1.20 * 1.08 = 0.530` cells from its center. Full-cell
+    /// jitter can therefore extend 0.500 cells through a cell edge; 0.54
+    /// retains a conservative cut-line margin while the 3x3 window remains
+    /// sound (`0.47 + 0.530 < 1.5` cells from the nominal center).
+    pub const CRATER_CELL_MARGIN: f64 = 0.54;
     /// The five coarse visible bins are immutable indexed cell caches. This
     /// removes repeated feature expansion during tile fill without creating a
     /// global fold; lookup still visits only the sample's nearby lattice cells.
@@ -110,7 +121,7 @@ struct Mare {
     minor: DVec3,
     radius: f64,
     elongation: f64,
-    darkness: f64,
+    albedo_target: f64,
     floor_drop: f64,
     phase: f64,
     seed: i64,
@@ -145,6 +156,10 @@ struct Crater {
     rim_lobes: f64,
     fresh_albedo: f64,
     floor_tone_delta: f64,
+    /// Local low datum composed from terrain coarser than this impact. This is
+    /// spatially constant across the bowl, unlike the inherited relief that
+    /// the impact is meant to erase.
+    floor_datum: f64,
     octave: u8,
     age_key: u64,
     noise_seed: i64,
@@ -163,6 +178,7 @@ impl Crater {
         rim_lobes: 0.0,
         fresh_albedo: 0.0,
         floor_tone_delta: 0.0,
+        floor_datum: 0.0,
         octave: 0,
         age_key: 0,
         noise_seed: 0,
@@ -190,6 +206,8 @@ pub struct MoonGenerator {
     clusters: [MareCluster; 4],
     maria: Vec<Mare>,
     crater_cache: Vec<Vec<Option<Crater>>>,
+    ray_cache: Vec<Option<Crater>>,
+    legacy_floors: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -322,6 +340,23 @@ fn log_range(lo: f64, hi: f64, u: f64) -> f64 {
     lo * (hi / lo).powf(u)
 }
 
+#[inline]
+fn crater_radius_fraction(octave: usize, u: f64) -> f64 {
+    // Preserve the shipped absolute largest/smallest bounds at the two ends;
+    // only interior octave bands widen enough to overlap their neighbors.
+    let lo = if octave + 1 == tuning::CRATER_OCTAVES {
+        0.22
+    } else {
+        tuning::CRATER_RADIUS_CELL.0
+    };
+    let hi = if octave == 0 {
+        0.38
+    } else {
+        tuning::CRATER_RADIUS_CELL.1
+    };
+    log_range(lo, hi, u)
+}
+
 fn smoothstep(a: f64, b: f64, x: f64) -> f64 {
     if (b - a).abs() < f64::EPSILON {
         return (x >= b) as u8 as f64;
@@ -332,6 +367,10 @@ fn smoothstep(a: f64, b: f64, x: f64) -> f64 {
 
 fn mix(a: f64, b: f64, t: f64) -> f64 {
     a + (b - a) * t.clamp(0.0, 1.0)
+}
+
+fn smooth_min(a: f64, b: f64, width: f64) -> f64 {
+    0.5 * (a + b - ((a - b) * (a - b) + width * width).sqrt())
 }
 
 /// Elliptical angular radius and bearing around a feature center.
@@ -560,10 +599,13 @@ impl MoonGenerator {
                         }
                         let phase = feature_unit(seed, key, domain, 4) * std::f64::consts::TAU;
                         let (major, minor) = tangent_axes(center, phase);
+                        // The two spawn families overlap broadly in size.
+                        // Their different rarity fields still make great
+                        // maria rare, without a hard 7-degree size class.
                         let radius_deg = if large {
-                            log_range(7.0, 17.0, feature_unit(seed, key, domain, 5))
+                            log_range(5.5, 17.0, feature_unit(seed, key, domain, 5))
                         } else {
-                            log_range(1.7, 7.0, feature_unit(seed, key, domain, 5))
+                            log_range(1.7, 8.5, feature_unit(seed, key, domain, 5))
                         };
                         maria.push(Mare {
                             center,
@@ -575,10 +617,10 @@ impl MoonGenerator {
                             } else {
                                 1.0 + 0.30 * feature_unit(seed, key, domain, 6)
                             },
-                            darkness: if large {
-                                0.20 + 0.13 * feature_unit(seed, key, domain, 7)
+                            albedo_target: if large {
+                                0.315 + 0.020 * feature_unit(seed, key, domain, 7)
                             } else {
-                                0.12 + 0.12 * feature_unit(seed, key, domain, 7)
+                                0.325 + 0.022 * feature_unit(seed, key, domain, 7)
                             },
                             floor_drop: if large {
                                 0.00012 + 0.00024 * feature_unit(seed, key, domain, 8)
@@ -599,6 +641,8 @@ impl MoonGenerator {
             clusters,
             maria,
             crater_cache: Vec::with_capacity(tuning::CACHED_CRATER_OCTAVES),
+            ray_cache: Vec::new(),
+            legacy_floors: std::env::var_os("TRI_MOON_LEGACY_FLOORS").is_some(),
         };
         for octave in 0..tuning::CACHED_CRATER_OCTAVES {
             let grid = 1u32 << octave;
@@ -615,6 +659,18 @@ impl MoonGenerator {
                 }
             }
             moon.crater_cache.push(bin);
+        }
+        moon.ray_cache = Vec::with_capacity(
+            6 * tuning::RAY_GRID as usize * tuning::RAY_GRID as usize,
+        );
+        for face in 0..6u8 {
+            for j in 0..tuning::RAY_GRID as u16 {
+                for i in 0..tuning::RAY_GRID as u16 {
+                    let carrier =
+                        moon.generate_ray_carrier_from_cell(CellKey { face, i, j }, None);
+                    moon.ray_cache.push(carrier);
+                }
+            }
         }
         moon
     }
@@ -651,6 +707,101 @@ impl MoonGenerator {
                 count
             })
             .collect()
+    }
+
+    /// Exact generated radii on one canonical cube face, used by the headless
+    /// histogram evidence. This enumerates records, never terrain samples, so
+    /// the finest face remains inexpensive and cannot affect render behavior.
+    pub fn crater_radius_samples_on_face(&self, face: u8) -> Vec<f64> {
+        let mut radii = Vec::new();
+        for octave in 0..tuning::CRATER_OCTAVES {
+            let grid = 1u32 << octave;
+            let domain = 0x4352_4154_4552_0000 ^ octave as u64;
+            for j in 0..grid as u16 {
+                for i in 0..grid as u16 {
+                    let key = CellKey { face, i, j };
+                    let primary = feature_hash(self.seed, key, domain, 0);
+                    let occupancy = unit_from_hash(primary);
+                    if octave > 0 && occupancy >= tuning::CRATER_OCCUPANCY {
+                        continue;
+                    }
+                    let (center, _, _, inverse_length) =
+                        packed_lattice_point(key, grid, primary, tuning::CRATER_JITTER);
+                    if octave == 0 {
+                        let spawn = mare_spawn_field(&self.clusters, center, self.seed);
+                        if occupancy >= 0.42 + 0.32 * spawn {
+                            continue;
+                        }
+                    }
+                    let fraction = crater_radius_fraction(octave, packed_unit(primary, 3));
+                    let cube_metric = inverse_length * inverse_length;
+                    radii.push((fraction / grid as f64 * cube_metric).to_degrees());
+                }
+            }
+        }
+        radii
+    }
+
+    /// Young visible craters whose inner bowls cross an older crater crest.
+    /// This deterministic evidence probe is the direct regression case for
+    /// inherited-rim flattening.
+    pub fn rim_straddling_crater_probes(&self) -> Vec<MoonFeatureProbe> {
+        let mut probes = Vec::new();
+        let mut keys = [CellKey::ZERO; tuning::RAY_CELL_VISITS];
+        for octave in 1..tuning::CACHED_CRATER_OCTAVES {
+            let grid = 1u32 << octave;
+            for face in 0..6u8 {
+                for j in 0..grid as u16 {
+                    for i in 0..grid as u16 {
+                        let Some(child) =
+                            self.crater_from_cell(octave, CellKey { face, i, j }, None)
+                        else {
+                            continue;
+                        };
+                        let locator = face_from_dir(child.center);
+                        let mut straddles = false;
+                        for older_octave in 0..octave {
+                            let count = nearby_crater_cells(
+                                locator,
+                                1u32 << older_octave,
+                                &mut keys,
+                            );
+                            for &key in &keys[..count] {
+                                let Some(parent) = self.crater_from_cell(
+                                    older_octave,
+                                    key,
+                                    Some((child.center, locator)),
+                                ) else {
+                                    continue;
+                                };
+                                let (parent_q, _, _) = feature_coords(
+                                    child.center,
+                                    parent.center,
+                                    parent.major,
+                                    parent.minor,
+                                    parent.radius,
+                                    parent.elongation,
+                                );
+                                let child_span =
+                                    child.radius * 0.64 / parent.radius.max(child.radius);
+                                if (parent_q - 1.0).abs() < child_span {
+                                    straddles = true;
+                                    break;
+                                }
+                            }
+                            if straddles {
+                                break;
+                            }
+                        }
+                        if straddles {
+                            probes.push(feature_probe(child));
+                        }
+                    }
+                }
+            }
+        }
+        probes.sort_by(|a, b| b.radius_deg.total_cmp(&a.radius_deg));
+        probes
     }
 
     pub fn ray_carrier_probes(&self) -> Vec<MoonFeatureProbe> {
@@ -716,17 +867,18 @@ impl MoonGenerator {
         let mut albedo = 0.695 + 0.064 * albedo_noise + 0.020 * grain + 0.017 * fine_grain;
         let mut smoothness: f64 = 0.0;
 
-        let mut mare_dark = 0.0f64;
+        let mut mare_mask = 0.0f64;
+        let mut mare_albedo = 1.0f64;
         let mut mare_smooth = 0.0f64;
         for mare in &self.maria {
             // The reach cutoff must cover the mask's WORST-CASE support:
-            // `irregular` bottoms out at 0.775, stretching the height
-            // feather to q = 1.10/0.775 = 1.42. The old 1.24 cutoff sliced
+            // `irregular` bottoms out at 0.665, stretching the height
+            // feather to q = 1.10/0.665 = 1.66. The old 1.24 cutoff sliced
             // through live mask values and dropped up to ~20% of the floor
             // in one step - Andrew's 492 m "discrete cliff" arcs, with the
             // sin(5b)/sin(11b) terms drawing his squished sine stripes
             // along the cut (transect + 16x16 field scan, 2026-07-12).
-            let reach = mare.radius * mare.elongation * 1.48;
+            let reach = mare.radius * mare.elongation * 1.70;
             if direction.dot(mare.center) < reach.cos() {
                 continue;
             }
@@ -739,8 +891,8 @@ impl MoonGenerator {
                 mare.elongation,
             );
             let irregular = 1.0
-                + 0.14 * gradient_noise(direction * 7.0, mare.seed)
-                + 0.060 * (5.0 * bearing + mare.phase).sin()
+                + 0.24 * gradient_noise(direction * 4.5, mare.seed)
+                + 0.070 * (5.0 * bearing + mare.phase).sin()
                 + 0.025 * (11.0 * bearing - mare.phase * 0.4).sin();
             // HEIGHT and ALBEDO separate here (Andrew's art direction):
             // geometry keeps the wide feather - basalt floods a basin, it
@@ -755,16 +907,86 @@ impl MoonGenerator {
             height = height * (1.0 - 0.84 * height_mask) - mare.floor_drop * height_mask;
             // overlapping maria SATURATE: basalt over basalt is the same
             // basalt (Andrew: intersections rendered darker than either)
-            mare_dark = mare_dark.max(mare.darkness * albedo_mask);
+            mare_mask = mare_mask.max(albedo_mask);
+            mare_albedo = mare_albedo.min(mare.albedo_target);
             mare_smooth = mare_smooth.max(albedo_mask * if mare.large { 0.96 } else { 0.86 });
         }
-        albedo -= mare_dark;
+        // Near-solid interior coverage suppresses the highland grain rather
+        // than merely subtracting a constant from it. Only the tight edge
+        // band exposes a meaningful fraction of the inherited variation.
+        albedo = mix(albedo, mare_albedo, mare_mask * 0.985);
         smoothness = smoothness.max(mare_smooth);
 
         BaseSample {
             height,
             albedo,
             smoothness,
+        }
+    }
+
+    /// Height at `direction` after the cached crater octaves strictly coarser
+    /// than `max_octave`. Cache construction proceeds coarse-to-fine, so every
+    /// record consulted here already owns its stable local floor datum.
+    fn composed_coarse_height(&self, direction: DVec3, max_octave: usize) -> f64 {
+        let base = self.base_surface(direction);
+        let mut state = SurfaceState {
+            height: base.height,
+            albedo: base.albedo,
+            smoothness: base.smoothness,
+            ray: 0.0,
+        };
+        let locator = face_from_dir(direction);
+        let mut keys = [CellKey::ZERO; tuning::RAY_CELL_VISITS];
+        let mut craters = [Crater::EMPTY; tuning::RAY_CELL_VISITS];
+        for octave in 0..max_octave.min(self.crater_cache.len()) {
+            let key_count = nearby_crater_cells(locator, 1u32 << octave, &mut keys);
+            let mut crater_count = 0usize;
+            for &key in &keys[..key_count] {
+                if let Some(crater) = self.crater_from_cell(octave, key, Some((direction, locator)))
+                {
+                    craters[crater_count] = crater;
+                    crater_count += 1;
+                }
+            }
+            craters[..crater_count].sort_unstable_by_key(|c| c.age_key);
+            for &crater in &craters[..crater_count] {
+                // Only geometry is consumed. Supplying the local base avoids
+                // reevaluating irrelevant material at each old impact center.
+                self.apply_crater_with_impact(crater, direction, &mut state, Some(base));
+            }
+        }
+        state.height
+    }
+
+    /// Pick a low, local excavation datum from terrain that existed before
+    /// this impact. Visible cached cohorts probe across the inner bowl, which
+    /// is what makes a young crater erase an older rim it straddles. Fine
+    /// saturation cohorts use the composed center value to keep their hot path
+    /// bounded; the no-raise guard in `apply_crater` remains the pillar trap's
+    /// final backstop.
+    fn impact_floor_datum(
+        &self,
+        center: DVec3,
+        major: DVec3,
+        minor: DVec3,
+        radius: f64,
+        octave: usize,
+    ) -> f64 {
+        let mut heights = [self.composed_coarse_height(center, octave); 9];
+        if octave < tuning::CACHED_CRATER_OCTAVES {
+            let angle = radius * 0.62;
+            for (index, slot) in heights[1..].iter_mut().enumerate() {
+                let bearing = index as f64 * std::f64::consts::TAU / 8.0;
+                let tangent = major * bearing.cos() + minor * bearing.sin();
+                let point = center * angle.cos() + tangent * angle.sin();
+                *slot = self.composed_coarse_height(point, octave);
+            }
+            heights.sort_unstable_by(f64::total_cmp);
+            // A low excavation datum means the pointwise no-raise ceiling is
+            // normally dormant, including when this bowl crosses an old rim.
+            heights[0]
+        } else {
+            heights[0]
         }
     }
 
@@ -802,18 +1024,18 @@ impl MoonGenerator {
             return None;
         }
         let grid = 1u32 << octave;
-        let radius_fraction = mix(
-            tuning::CRATER_RADIUS_CELL.0,
-            tuning::CRATER_RADIUS_CELL.1,
-            packed_unit(primary, 3),
-        );
+        let radius_fraction = crater_radius_fraction(octave, packed_unit(primary, 3));
         let (u, v) = packed_lattice_uv(key, grid, primary, tuning::CRATER_JITTER);
         if let Some((_, (sample_face, sample_u, sample_v))) = sample
             && key.face as usize == sample_face
         {
             let dx = (u - sample_u) * grid as f64 * 0.5;
             let dy = (v - sample_v) * grid as f64 * 0.5;
-            let max_cell_reach = radius_fraction * 0.5 * tuning::CRATER_OUTER_RADII * 1.22 * 1.08;
+            let max_cell_reach = radius_fraction
+                * 0.5
+                * tuning::CRATER_OUTER_RADII
+                * tuning::MAX_CRATER_ELONGATION
+                * 1.08;
             if dx * dx + dy * dy > max_cell_reach * max_cell_reach {
                 return None;
             }
@@ -840,18 +1062,17 @@ impl MoonGenerator {
         }
         let axis_angle = feature_unit(self.seed, key, domain, 4) * std::f64::consts::TAU;
         let (major, minor) = tangent_axes(center, axis_angle);
-        let elongated = feature_unit(self.seed, key, domain, 5) < 0.022;
-        let elongation = if elongated {
-            1.12 + 0.10 * feature_unit(self.seed, key, domain, 6)
-        } else {
-            1.0
-        };
+        // Obliquity is continuous, but strongly biased toward near-normal
+        // impacts so highly egg-shaped bowls retain their old rarity.
+        let impact_angle = feature_unit(self.seed, key, domain, 5).powf(7.0);
+        let elongation = 1.0 + (tuning::MAX_CRATER_ELONGATION - 1.0) * impact_angle;
         let scale = octave as f64 / (tuning::CRATER_OCTAVES - 1) as f64;
         let depth_factor = mix(0.024, 0.132, scale.sqrt())
             * (0.82 + 0.30 * feature_unit(self.seed, key, domain, 7));
         let roughness = mix(0.115, 0.014, scale.sqrt())
             * (0.72 + 0.42 * feature_unit(self.seed, key, domain, 8));
         let freshness = feature_unit(self.seed, key, domain, 9);
+        let floor_datum = self.impact_floor_datum(center, major, minor, radius, octave);
         Some(Crater {
             center,
             major,
@@ -864,6 +1085,7 @@ impl MoonGenerator {
             rim_lobes: 5.0 + (feature_unit(self.seed, key, domain, 11) * 10.0).floor(),
             fresh_albedo: 0.72 + 0.12 * freshness,
             floor_tone_delta: (feature_unit(self.seed, key, domain, 12) - 0.5) * 0.038,
+            floor_datum,
             octave: octave as u8,
             age_key: feature_hash(self.seed, key, domain, 13),
             noise_seed: feature_hash(self.seed, key, domain, 14) as i64,
@@ -871,6 +1093,26 @@ impl MoonGenerator {
     }
 
     fn ray_carrier_from_cell(
+        &self,
+        key: CellKey,
+        sample_direction: Option<DVec3>,
+    ) -> Option<Crater> {
+        if !self.ray_cache.is_empty() {
+            let grid = tuning::RAY_GRID as usize;
+            let index = key.face as usize * grid * grid + key.j as usize * grid + key.i as usize;
+            let carrier = self.ray_cache.get(index).copied().flatten()?;
+            if let Some(direction) = sample_direction {
+                let max_reach = carrier.radius * tuning::RAY_MAX_RADII;
+                if direction.distance_squared(carrier.center) > max_reach * max_reach {
+                    return None;
+                }
+            }
+            return Some(carrier);
+        }
+        self.generate_ray_carrier_from_cell(key, sample_direction)
+    }
+
+    fn generate_ray_carrier_from_cell(
         &self,
         key: CellKey,
         sample_direction: Option<DVec3>,
@@ -890,18 +1132,22 @@ impl MoonGenerator {
         }
         let axis_angle = feature_unit(self.seed, key, DOMAIN, 4) * std::f64::consts::TAU;
         let (major, minor) = tangent_axes(center, axis_angle);
+        let floor_datum = self.impact_floor_datum(center, major, minor, radius, 4);
         Some(Crater {
             center,
             major,
             minor,
             radius,
-            elongation: 1.0,
+            elongation: 1.0
+                + (tuning::MAX_CRATER_ELONGATION - 1.0)
+                    * feature_unit(self.seed, key, DOMAIN, 4).powf(7.0),
             depth_ratio: radius * (0.088 + 0.030 * feature_unit(self.seed, key, DOMAIN, 5)),
             roughness: 0.026 + 0.020 * feature_unit(self.seed, key, DOMAIN, 6),
             rim_phase: feature_unit(self.seed, key, DOMAIN, 7) * std::f64::consts::TAU,
             rim_lobes: 7.0 + (feature_unit(self.seed, key, DOMAIN, 8) * 8.0).floor(),
             fresh_albedo: 0.80 + 0.08 * feature_unit(self.seed, key, DOMAIN, 9),
             floor_tone_delta: (feature_unit(self.seed, key, DOMAIN, 10) - 0.5) * 0.025,
+            floor_datum,
             octave: 4,
             age_key: feature_hash(self.seed, key, DOMAIN, 11),
             noise_seed: feature_hash(self.seed, key, DOMAIN, 12) as i64,
@@ -951,9 +1197,10 @@ impl MoonGenerator {
         let scale = crater.octave as f64 / (tuning::CRATER_OCTAVES - 1) as f64;
         let floor_weight = 1.0 - smoothstep(0.70, 0.975, q);
         if floor_weight > 0.0 {
-            // One impact-center datum and material target owns the complete
-            // floor. A crater straddling a mare edge can never become a
-            // half-dark, half-light bowl.
+            // One pre-impact local datum and material target owns the complete
+            // floor. Geometry is driven toward that constant instead of
+            // subtracting the same depth from whatever old rim happens to be
+            // under each sample.
             let impact = match prefetched_impact {
                 Some(impact) => impact,
                 None => self.base_surface(crater.center),
@@ -966,11 +1213,26 @@ impl MoonGenerator {
                     direction * texture_scale,
                     crater.noise_seed.wrapping_add(91),
                 );
-            // Geometry excavates the already-composed coarse surface. Using
-            // the no-impact macro datum here would raise small impacts inside
-            // deep old basins into kilometre-scale pillars. Material remains
-            // impact-center inherited below, independently of this datum.
-            let mut target = state.height - crater.depth_ratio * floor_shape + floor_texture;
+            let mut target = if self.legacy_floors {
+                // Evidence-only A/B lens: the shipped subtractive floor keeps
+                // all inherited contrast and makes a rim run through a young
+                // bowl. Never enabled by production scripts or rendering.
+                state.height - crater.depth_ratio * floor_shape + floor_texture
+            } else {
+                let excavated =
+                    crater.floor_datum - crater.depth_ratio * floor_shape + floor_texture;
+                // An impact may lower or leave inherited terrain, never lift
+                // a deep old basin toward a stale datum. The small compulsory
+                // cut also prevents an anomalously low inherited point from
+                // becoming an unexcavated island while retaining the pillar
+                // guarantee.
+                let no_raise_ceiling = state.height - crater.depth_ratio * floor_shape * 0.08
+                    + floor_texture.min(0.0);
+                // A hard min stamped a contour wherever the two surfaces
+                // crossed. This conservative smooth minimum stays below both
+                // inputs while feathering that transition over impact depth.
+                smooth_min(excavated, no_raise_ceiling, crater.depth_ratio * 0.55)
+            };
             if crater.octave <= 2 {
                 let peak =
                     crater.depth_ratio * mix(0.48, 0.30, scale) * (-(q / 0.21).powi(2)).exp();
@@ -1673,6 +1935,204 @@ mod tests {
     }
 
     #[test]
+    fn overlapping_radius_bands_have_no_size_comb() {
+        let moon = MoonGenerator::new(42);
+        let radii = moon.crater_radius_samples_on_face(0);
+        // Ten equal log bins across the well-populated interior of the face
+        // sample. A D^-2 law predicts a 10^(2*0.15)=2.0 count increase per
+        // bin toward smaller radii. Cube metric and finite sampling broaden
+        // that target, but an empty/gapped octave comb cannot pass.
+        let mut counts = [0usize; 10];
+        let log_lo = -1.50f64; // 0.0316 degrees
+        let width = 0.15f64;
+        for radius in radii {
+            let bin = ((radius.log10() - log_lo) / width).floor() as isize;
+            if (0..counts.len() as isize).contains(&bin) {
+                counts[bin as usize] += 1;
+            }
+        }
+        assert!(counts.iter().all(|&count| count >= 15), "counts={counts:?}");
+        for pair in counts.windows(2) {
+            let smaller_to_larger = pair[0] as f64 / pair[1] as f64;
+            assert!(
+                (1.15..3.8).contains(&smaller_to_larger),
+                "counts={counts:?}, adjacent ratio={smaller_to_larger:.3}"
+            );
+        }
+        eprintln!("radius-decade counts {counts:?}");
+    }
+
+    #[test]
+    fn random_transects_obey_lunar_slope_bound() {
+        let moon = MoonGenerator::new(42);
+        let mut stream = SeedStream::new(42, 0x5452_414E_5345_4354);
+        let mut max_slope = 0.0f64;
+        let mut worst = (0usize, 0usize, 0.0f64);
+        const STEPS: usize = 128;
+        const SPAN: f64 = 0.24;
+        for transect in 0..100 {
+            let center = stream.direction();
+            let random = stream.direction();
+            let tangent = (random - center * random.dot(center)).normalize();
+            let mut previous: Option<f64> = None;
+            for step in 0..=STEPS {
+                let angle = -SPAN * 0.5 + SPAN * step as f64 / STEPS as f64;
+                let point = center * angle.cos() + tangent * angle.sin();
+                let height = moon.sample(point).height_ratio;
+                if let Some(old_height) = previous {
+                    let slope = (height - old_height).abs() / (SPAN / STEPS as f64);
+                    if slope > max_slope {
+                        max_slope = slope;
+                        worst = (transect, step, slope);
+                    }
+                }
+                previous = Some(height);
+            }
+        }
+        assert!(
+            max_slope < 1.10,
+            "100-transect max slope {max_slope:.6} at {worst:?}"
+        );
+        eprintln!("100-transect max slope {max_slope:.6} at {worst:?}");
+    }
+
+    #[test]
+    fn jitter_reach_margin_is_sound_and_cut_lines_are_continuous() {
+        let worst_reach = tuning::CRATER_RADIUS_CELL.1
+            * 0.5
+            * tuning::CRATER_OUTER_RADII
+            * tuning::MAX_CRATER_ELONGATION
+            * 1.08;
+        let edge_extension = tuning::CRATER_JITTER + worst_reach - 0.5;
+        assert!(tuning::CRATER_CELL_MARGIN >= edge_extension + 0.03);
+        assert!(tuning::CRATER_JITTER + worst_reach < 1.5);
+
+        let moon = MoonGenerator::new(42);
+        let eps = 1.0e-10;
+        for octave in 1..tuning::CRATER_OCTAVES {
+            let grid = 1u32 << octave;
+            let cell = (grid / 2).min(grid - 1) as f64;
+            for fraction in [
+                tuning::CRATER_CELL_MARGIN,
+                1.0 - tuning::CRATER_CELL_MARGIN,
+            ] {
+                let u = -1.0 + 2.0 * (cell + fraction) / grid as f64;
+                for v in [-0.83, -0.37, 0.19, 0.71] {
+                    let a = moon.sample(face_dir(0, u - eps, v));
+                    let b = moon.sample(face_dir(0, u + eps, v));
+                    assert!(
+                        (a.height_ratio - b.height_ratio).abs() < 1.0e-7,
+                        "octave={octave} u={u} v={v}"
+                    );
+                    assert!((a.albedo - b.albedo).abs() < 1.0e-5);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn younger_impact_levels_an_older_rim_without_a_pillar() {
+        let moon = MoonGenerator::new(42);
+        let mut keys = [CellKey::ZERO; tuning::RAY_CELL_VISITS];
+        let mut best: Option<(Crater, f64, f64)> = None;
+        for octave in 1..tuning::CACHED_CRATER_OCTAVES {
+            let grid = 1u32 << octave;
+            for face in 0..6u8 {
+                for j in 0..grid as u16 {
+                    for i in 0..grid as u16 {
+                        let Some(child) =
+                            moon.crater_from_cell(octave, CellKey { face, i, j }, None)
+                        else {
+                            continue;
+                        };
+                        let locator = face_from_dir(child.center);
+                        for older_octave in 0..octave {
+                            let count = nearby_crater_cells(
+                                locator,
+                                1u32 << older_octave,
+                                &mut keys,
+                            );
+                            for &key in &keys[..count] {
+                                let Some(parent) = moon.crater_from_cell(
+                                    older_octave,
+                                    key,
+                                    Some((child.center, locator)),
+                                ) else {
+                                    continue;
+                                };
+                                let (parent_q, _, _) = feature_coords(
+                                    child.center,
+                                    parent.center,
+                                    parent.major,
+                                    parent.minor,
+                                    parent.radius,
+                                    parent.elongation,
+                                );
+                                let child_span =
+                                    child.radius * 0.64 / parent.radius.max(child.radius);
+                                if (parent_q - 1.0).abs() >= child_span {
+                                    continue;
+                                }
+                                let radial = (parent.center
+                                    - child.center * parent.center.dot(child.center))
+                                    .normalize();
+                                let mut before_lo = f64::INFINITY;
+                                let mut before_hi = f64::NEG_INFINITY;
+                                let mut after_lo = f64::INFINITY;
+                                let mut after_hi = f64::NEG_INFINITY;
+                                for step in 0..=12 {
+                                    let angle = child.radius * (-0.58 + 1.16 * step as f64 / 12.0);
+                                    let point =
+                                        child.center * angle.cos() + radial * angle.sin();
+                                    let base = moon.base_surface(point);
+                                    let before = moon.composed_coarse_height(point, octave);
+                                    let mut state = SurfaceState {
+                                        height: before,
+                                        albedo: base.albedo,
+                                        smoothness: base.smoothness,
+                                        ray: 0.0,
+                                    };
+                                    moon.apply_crater_with_impact(
+                                        child,
+                                        point,
+                                        &mut state,
+                                        Some(base),
+                                    );
+                                    before_lo = before_lo.min(before);
+                                    before_hi = before_hi.max(before);
+                                    after_lo = after_lo.min(state.height);
+                                    after_hi = after_hi.max(state.height);
+                                }
+                                let before_range = before_hi - before_lo;
+                                let after_range = after_hi - after_lo;
+                                if best.is_none_or(|(_, old_range, _)| before_range > old_range) {
+                                    best = Some((child, before_range, after_range));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        let (child, before, after) = best.expect("seed 42 cached rim-straddling crater");
+        assert!(before > 2.0e-5, "weak proof case: before={before:.8}");
+        assert!(
+            after < before * 0.35,
+            "rim floor radius={}deg retained relief: before={before:.8} after={after:.8}",
+            child.radius.to_degrees()
+        );
+        eprintln!(
+            "rim-straddling floor lat={:.4} lon={:.4} radius={:.4}deg relief before={before:.8} after={after:.8}",
+            child.center.z.asin().to_degrees(),
+            child.center.y.atan2(child.center.x).to_degrees(),
+            child.radius.to_degrees(),
+        );
+        // The excavation guard is encoded pointwise above: its target never
+        // exceeds inherited height, so this flattening cannot be a raised
+        // impact-center pillar.
+    }
+
+    #[test]
     fn mare_spawn_field_and_records_are_reproducible() {
         let a = MoonGenerator::new(42);
         let b = MoonGenerator::new(42);
@@ -1682,6 +2142,82 @@ mod tests {
         let (large, mid) = a.mare_counts();
         assert!(large >= 5, "seed 42 large maria={large}");
         assert!(mid >= 15, "seed 42 mid maria={mid}");
+    }
+
+    #[test]
+    fn placement_angle_and_mare_sizes_are_continuous() {
+        let moon = MoonGenerator::new(42);
+
+        let mut elongations: Vec<u64> = moon
+            .crater_cache
+            .iter()
+            .flatten()
+            .filter_map(|crater| crater.map(|crater| crater.elongation.to_bits()))
+            .collect();
+        elongations.sort_unstable();
+        elongations.dedup();
+        assert!(elongations.len() > 100, "elongation values={}", elongations.len());
+        let max_elongation = elongations
+            .iter()
+            .map(|bits| f64::from_bits(*bits))
+            .fold(1.0f64, f64::max);
+        assert!(max_elongation > 1.15 && max_elongation <= 1.20);
+
+        let large_min = moon
+            .maria
+            .iter()
+            .filter(|mare| mare.large)
+            .map(|mare| mare.radius.to_degrees())
+            .fold(f64::INFINITY, f64::min);
+        let mid_max = moon
+            .maria
+            .iter()
+            .filter(|mare| !mare.large)
+            .map(|mare| mare.radius.to_degrees())
+            .fold(0.0f64, f64::max);
+        assert!(large_min < mid_max, "large_min={large_min} mid_max={mid_max}");
+
+        let octave = 6;
+        let grid = 1u32 << octave;
+        let domain = 0x4352_4154_4552_0000 ^ octave as u64;
+        let mut jitter_lo = 1.0f64;
+        let mut jitter_hi = -1.0f64;
+        for j in 0..grid as u16 {
+            for i in 0..grid as u16 {
+                let primary = feature_hash(42, CellKey { face: 0, i, j }, domain, 0);
+                let jitter = (packed_unit(primary, 1) * 2.0 - 1.0) * tuning::CRATER_JITTER;
+                jitter_lo = jitter_lo.min(jitter);
+                jitter_hi = jitter_hi.max(jitter);
+            }
+        }
+        assert!(jitter_lo < -0.44 && jitter_hi > 0.44, "jitter={jitter_lo}..{jitter_hi}");
+    }
+
+    #[test]
+    fn mare_interior_is_dark_and_tightly_consistent() {
+        let moon = MoonGenerator::new(42);
+        let mare = moon
+            .maria
+            .iter()
+            .filter(|mare| mare.large)
+            .max_by(|a, b| a.radius.total_cmp(&b.radius))
+            .expect("seed 42 large mare");
+        let mut lo = f64::INFINITY;
+        let mut hi = f64::NEG_INFINITY;
+        for ring in 0..=3 {
+            let angle = mare.radius * 0.10 * ring as f64;
+            for bearing in 0..16 {
+                let phase = bearing as f64 * std::f64::consts::TAU / 16.0;
+                let tangent = mare.major * phase.cos() + mare.minor * phase.sin();
+                let point = mare.center * angle.cos() + tangent * angle.sin();
+                let albedo = moon.base_surface(point).albedo;
+                lo = lo.min(albedo);
+                hi = hi.max(albedo);
+            }
+        }
+        assert!(hi < 0.36, "mare albedo={lo:.6}..{hi:.6}");
+        assert!(hi - lo < 0.012, "mare albedo={lo:.6}..{hi:.6}");
+        eprintln!("mare interior albedo {lo:.6}..{hi:.6}");
     }
 
     #[test]

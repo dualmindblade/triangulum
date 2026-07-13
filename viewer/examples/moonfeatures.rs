@@ -55,6 +55,27 @@ fn print_surviving_rays(
     }
 }
 
+fn print_radius_histogram(moon: &triangulum_viewer::moon::MoonGenerator) {
+    let radii = moon.crater_radius_samples_on_face(0);
+    let lo = radii.iter().copied().fold(f64::INFINITY, f64::min);
+    let hi = radii.iter().copied().fold(0.0f64, f64::max);
+    let (log_lo, log_hi) = (lo.log10(), hi.log10());
+    const BINS: usize = 36;
+    let mut counts = [0usize; BINS];
+    for radius in &radii {
+        let t = ((radius.log10() - log_lo) / (log_hi - log_lo)).clamp(0.0, 1.0);
+        let bin = ((t * BINS as f64) as usize).min(BINS - 1);
+        counts[bin] += 1;
+    }
+    println!("crater radius histogram face=0 samples={}", radii.len());
+    println!("radius_histogram_csv lower_deg,upper_deg,count");
+    for (bin, count) in counts.into_iter().enumerate() {
+        let lower = 10f64.powf(log_lo + (log_hi - log_lo) * bin as f64 / BINS as f64);
+        let upper = 10f64.powf(log_lo + (log_hi - log_lo) * (bin + 1) as f64 / BINS as f64);
+        println!("radius_histogram_csv {lower:.9},{upper:.9},{count}");
+    }
+}
+
 fn main() {
     let seed = std::env::args()
         .nth(1)
@@ -70,4 +91,9 @@ fn main() {
     print_group("ray carriers", &carriers);
     print_surviving_rays(&moon, &carriers);
     print_group("mare-edge craters", &moon.mare_edge_crater_probes());
+    print_group(
+        "rim-straddling craters",
+        &moon.rim_straddling_crater_probes(),
+    );
+    print_radius_histogram(&moon);
 }
