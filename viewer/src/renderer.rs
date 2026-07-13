@@ -116,6 +116,16 @@ struct Globals {
     // Equal to `weather` at ground level, blended to a fixed planet-mean
     // above the shell handoff so orbital panning cannot morph formations.
     weather8: [f32; 4],
+    // W2 presentation knobs: x ground cloud-shadow strength, y orbital
+    // cloud-alpha darkening, z fog density, w fog ceiling (km).
+    weather9: [f32; 4],
+    // W2 fog state: x dawn window, y humidity, z camera D-8 concavity,
+    // w broad saturated-cover/precip fog bank.
+    weather10: [f32; 4],
+    // W2 storm-edge SH-1-ish field: xyz tangent gradient, w base load.
+    weather11: [f32; 4],
+    // W2 storm art direction: x directional strength, y warm/green cast.
+    weather12: [f32; 4],
     // premultiplied procedural seeds. xyz are the karst breach hint (V-10):
     // low 32 bits of (seed+K).wrapping_mul(0x9E37_79B1) for K = 40961
     // (region gate), 31337 (tube n1), 51413 (tube n2); w is the independent
@@ -1523,6 +1533,12 @@ impl Renderer {
             if let Some((c, p)) = self.weather_pin {
                 w.cloud_cover = c as f64;
                 w.precip = p as f64;
+                // Pinning is a presentation override, so its visible
+                // saturation must reach the presentation humidity proxy too.
+                w.humidity = w
+                    .humidity
+                    .max(c as f64 * 0.75 + p as f64 * 0.35)
+                    .clamp(0.0, 1.0);
             }
             w
         } else {
@@ -1560,6 +1576,11 @@ impl Renderer {
                 let mut mc = 0.0f64;
                 let mut mp = 0.0f64;
                 let mut mt = 0.0f64;
+                // The exact established 14-direction W3 mean remains in
+                // orbit. Inside W2's camera-weather range, a centrally
+                // symmetric 10-direction subset leaves room for the eight
+                // compass probes: camera + deck + edge stays <= 19 weather
+                // samples per frame (WEATHER.md's hard <20 budget).
                 let dirs: [(f64, f64, f64); 14] = [
                     (1.0, 0.0, 0.0), (-1.0, 0.0, 0.0),
                     (0.0, 1.0, 0.0), (0.0, -1.0, 0.0),
@@ -1569,7 +1590,14 @@ impl Renderer {
                     (-1.0, 1.0, 1.0), (-1.0, 1.0, -1.0),
                     (-1.0, -1.0, 1.0), (-1.0, -1.0, -1.0),
                 ];
-                for (x, y, z) in dirs {
+                let edge_probes_active = neisor_cam_h_km < 40.0;
+                for (index, (x, y, z)) in dirs.into_iter().enumerate() {
+                    // Drop two opposite corner pairs only while W2's eight
+                    // probes are live. The retained ten directions are still
+                    // centrally symmetric (6 axes + 2 corner pairs).
+                    if edge_probes_active && (8..12).contains(&index) {
+                        continue;
+                    }
                     let w = crate::weather::weather_at(
                         field,
                         planet,
@@ -1583,7 +1611,7 @@ impl Renderer {
                     mp += w.precip;
                     mt += w.temp_c;
                 }
-                let n = dirs.len() as f64;
+                let n = if edge_probes_active { 10.0 } else { 14.0 };
                 cover = cover * (1.0 - m) + (mc / n) * m;
                 precip = precip * (1.0 - m) + (mp / n) * m;
                 temp = temp * (1.0 - m) + (mt / n) * m;
@@ -1643,25 +1671,31 @@ impl Renderer {
                 / (self.weather_tuning.shell_fade_km - self.weather_tuning.shell_alt_km).max(1e-6);
             1.0 - t.clamp(0.0, 1.0)
         };
+        // D-8's signed residual is also the W2 valley-pooling signal. Keep
+        // one resident raster lookup shared by particles, ground mist, and
+        // the sky veil; open water deliberately owns no concavity.
+        let camera_concavity = if camera.body == BodyId::Neisor && self.weather_on {
+            let dir = cam_pos.normalize();
+            let (face, u, v) = crate::planet::face_from_dir(dir);
+            if planet.ocean(face, u, v) > 0.5 {
+                0.0
+            } else {
+                let coarse = planet.elevation(face, u, v) as f64;
+                let local = camera.ground_km / self.exaggeration.max(1e-6);
+                crate::terrain::rain_concavity_proxy(coarse, local) as f64
+            }
+        } else {
+            0.0
+        };
         // D-8 particle interpolation reuses the same signed sub-raster
         // elevation residual carried to ground fragments. This costs one
         // already-resident bilinear elevation lookup, not another full
         // terrain sample. Snow density stays unchanged; Andrew's verdict is
         // specifically about rain collecting in crevices.
         let particle_precip = if wx.precip > 0.0 && wx.snow_frac < 1.0 {
-            let dir = cam_pos.normalize();
-            let (face, u, v) = crate::planet::face_from_dir(dir);
-            let coarse = planet.elevation(face, u, v) as f64;
-            let local = camera.ground_km / self.exaggeration.max(1e-6);
-            // Open water has no peak/crevice distinction and therefore stays
-            // at the unmodified regional particle rate.
-            let concavity = if planet.ocean(face, u, v) > 0.5 {
-                0.0
-            } else {
-                crate::terrain::rain_concavity_proxy(coarse, local) as f64
-            };
             let redistribute =
-                1.0 + self.weather_tuning.rain_crevice_bias * concavity * (1.0 - wx.snow_frac);
+                1.0 + self.weather_tuning.rain_crevice_bias * camera_concavity
+                    * (1.0 - wx.snow_frac);
             (wx.precip * redistribute).clamp(0.0, 1.0)
         } else {
             wx.precip
@@ -1670,6 +1704,69 @@ impl Renderer {
             0u32
         } else {
             (particle_precip * precip_fade * self.weather_tuning.particles_max as f64) as u32
+        };
+
+        // W2 valley mist: sunrise is derived from the planet-frame sun and
+        // site direction, so seeks and pinned solar poses reproduce exactly.
+        let dawn = if camera.body == BodyId::Neisor && self.weather_on {
+            crate::weather::dawn_window(
+                cam_pos.normalize(),
+                solar.sun_km.normalize_or_zero(),
+                self.weather_tuning.fog_dawn_window_h,
+            )
+        } else {
+            0.0
+        };
+        let broad_fog = {
+            let cover = ((wx.cloud_cover - 0.78) / 0.20).clamp(0.0, 1.0);
+            let cover = cover * cover * (3.0 - 2.0 * cover);
+            let precip = ((wx.precip - 0.05) / 0.50).clamp(0.0, 1.0);
+            let precip = precip * precip * (3.0 - 2.0 * precip);
+            cover * precip
+        };
+
+        // W2 storm edge: eight compass points on a fixed great-circle ring.
+        // The fit is first-order only (base + tangent gradient), cheap and
+        // deterministic. Above the camera-weather fade the response is zero,
+        // so the probes are skipped and orbit retains the W3 deck budget.
+        let storm_edge = if camera.body == BodyId::Neisor
+            && self.weather_on
+            && neisor_cam_h_km < 40.0
+            && let Some(field) = &self.weather_field
+        {
+            let center = cam_pos.normalize();
+            let east0 = DVec3::Z.cross(center);
+            let east = if east0.length_squared() < 1e-9 {
+                DVec3::Y
+            } else {
+                east0.normalize()
+            };
+            let north = center.cross(east);
+            let arc = (self.weather_tuning.storm_edge_probe_km / planet.radius_km)
+                .clamp(1e-6, std::f64::consts::PI * 0.45);
+            let mut probes = Vec::with_capacity(8);
+            for i in 0..8 {
+                let bearing = std::f64::consts::TAU * i as f64 / 8.0;
+                let tangent = east * bearing.cos() + north * bearing.sin();
+                let dir = center * arc.cos() + tangent * arc.sin();
+                let mut weather = crate::weather::weather_at(
+                    field,
+                    planet,
+                    dir,
+                    weather_t_s,
+                    self.effective_day_len_s(),
+                    &self.solar_tuning,
+                    &self.weather_tuning,
+                );
+                if let Some((c, p)) = self.weather_pin {
+                    weather.cloud_cover = c as f64;
+                    weather.precip = p as f64;
+                }
+                probes.push((dir, weather));
+            }
+            crate::weather::storm_edge_fit(center, &probes)
+        } else {
+            crate::weather::StormEdge::default()
         };
 
         let globals = Globals {
@@ -1792,6 +1889,30 @@ impl Renderer {
             // lunar; distant Neisor terrain still needs its own terminator,
             // fog, and orbital-weather handoff coordinate.
             weather8: [deck.0, deck.1, deck.2, neisor_cam_h_km as f32],
+            weather9: [
+                self.weather_tuning.cloud_shadow_strength as f32,
+                self.weather_tuning.orbit_cloud_shadow_strength as f32,
+                self.weather_tuning.fog_density as f32,
+                self.weather_tuning.fog_ceiling_km as f32,
+            ],
+            weather10: [
+                dawn as f32,
+                wx.humidity as f32,
+                camera_concavity as f32,
+                broad_fog as f32,
+            ],
+            weather11: [
+                storm_edge.gradient.x as f32,
+                storm_edge.gradient.y as f32,
+                storm_edge.gradient.z as f32,
+                storm_edge.base as f32,
+            ],
+            weather12: [
+                self.weather_tuning.storm_edge_strength as f32,
+                self.weather_tuning.storm_green_cast as f32,
+                1.0 / self.size.0.max(1) as f32,
+                1.0 / self.size.1.max(1) as f32,
+            ],
             karst: {
                 let kseed = |k: i64| {
                     (planet.seed.wrapping_add(k).wrapping_mul(0x9E37_79B1) & 0xFFFF_FFFF) as u32
@@ -2412,9 +2533,40 @@ impl Renderer {
         if waited {
             n_tiles = self.draw(&view, planet, camera, edits);
         }
-        // a screenshot is a complete frame for TILES too: drain the
-        // build budget so captures are independent of how many frames
-        // preceded them (byte-determinism for every instrument)
+        // A screenshot is a complete frame for TILES too. Selected children
+        // may initially draw cached ancestor stand-ins while rayon builds in
+        // the background. Rapidly drawing 256 times did not actually wait for
+        // those workers, so a populated pre-teleport cache made orbital cloud
+        // blending alternate between child and ancestor ground. Block on the
+        // tile channel just as the chunk path above does, then redraw until
+        // every selected tile is resident (byte-determinism for instruments).
+        let expected_bucket = self.structural_season(planet).bucket;
+        for _ in 0..8192 {
+            if raw || !self.tiles_deferred {
+                break;
+            }
+            match self
+                .tile_rx
+                .recv_timeout(std::time::Duration::from_secs(30))
+            {
+                Ok((k, epoch, bucket, mesh)) => {
+                    if self.tile_pending.get(&k) == Some(&epoch) {
+                        self.tile_pending.remove(&k);
+                        if bucket == expected_bucket {
+                            let mut gpu = self.upload(mesh, bucket);
+                            if let Some(old) = self.cache.get(&k) {
+                                gpu.shown_at = old.shown_at;
+                            }
+                            self.cache.insert(k, gpu);
+                        }
+                    }
+                    n_tiles = self.draw(&view, planet, camera, edits);
+                }
+                Err(_) => break,
+            }
+        }
+        // Retain a bounded non-blocking drain for urgent synchronous builds
+        // and any last result already queued between the final receive/draw.
         for _ in 0..256 {
             if raw || !self.tiles_deferred {
                 break;

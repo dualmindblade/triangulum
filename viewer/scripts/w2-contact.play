@@ -1,0 +1,41 @@
+# W2 presentation contact-sheet source. Fixed poses, pins, and clock make
+# every frame byte-identical; scripts/w2_contact_sheet.py labels the output.
+mode fly
+weather season 0.45
+
+# Clear / broken / overcast at one open-ground pose.
+teleport 0.870 -89.800 0.120
+look -35 -28
+sun 0.87 -119.80
+weather pin 0.05 0.0
+shot shadow_clear
+weather pin 0.65 0.0
+shot shadow_broken
+weather pin 0.98 0.0
+shot shadow_overcast
+
+# Dawn-mist window: two-hour edge / sunrise / opposite two-hour edge.
+teleport 13.000 133.000 0.080
+look 90 -12
+weather pin 0.92 0.0
+sun 13.0 -104.0
+shot mist_before
+sun 13.0 -134.0
+shot mist_sunrise
+sun 13.0 -164.0
+shot mist_after
+
+# Storm-edge pan: local weather is clear at t=600, while the eight-probe fit
+# has its strong storm lobe due south (yaw 180).
+weather live
+weather time 600
+teleport 15.000 35.000 0.100
+sun 15.0 20.0
+look 0 0
+shot storm_north
+look 90 0
+shot storm_east
+look 180 0
+shot storm_south
+look 270 0
+shot storm_west

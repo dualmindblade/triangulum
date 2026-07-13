@@ -52,3 +52,28 @@ mode walk
 wait 6
 assert grounded true
 state storm_walk
+
+# W2: shadowed midday broken-cumulus ground. The direct-light footprint is
+# the exact three-shell W-MOTION fabric seen overhead.
+mode fly
+teleport 0.870 -89.800 0.120
+look -35 -28
+sun 0.87 -119.80
+weather pin 0.65 0.0
+shot w2_shadowed_midday
+
+# W2: dawn mist at a measured D-8 concave site (proxy=1.0 at the camera).
+teleport 13.000 133.000 0.080
+look 90 -12
+sun 13.0 -134.0
+weather pin 0.92 0.0
+shot w2_dawn_valley_mist
+
+# W2: a clear camera cell with a strong live storm lobe due south. The
+# opposite/northern sky stays bright; this shot faces the owned horizon.
+weather live
+weather time 600
+teleport 15.000 35.000 0.100
+look 180 0
+sun 15.0 20.0
+shot w2_storm_edge

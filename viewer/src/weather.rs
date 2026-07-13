@@ -81,6 +81,22 @@ pub struct WeatherTuning {
     pub cloud_high_density: f64,
     /// W3 hard cap: even stacked shells cannot hide more orbital ground.
     pub orbit_cloud_opacity_cap: f64,
+    /// Maximum direct-light loss under an opaque daytime cloud stack.
+    pub cloud_shadow_strength: f64,
+    /// Additional subtle ground darkening under the capped orbital cloud
+    /// composite. This is deliberately weaker than the ground projection.
+    pub orbit_cloud_shadow_strength: f64,
+    /// Valley/bank fog extinction multiplier and its ceiling above the
+    /// camera-ground reference (km).
+    pub fog_density: f64,
+    pub fog_ceiling_km: f64,
+    /// Half-width of the sunrise mist window in local solar hours.
+    pub fog_dawn_window_h: f64,
+    /// Great-circle distance of the eight storm-edge probes (km), maximum
+    /// directional gloom, and the classic warm/green pre-storm cast amount.
+    pub storm_edge_probe_km: f64,
+    pub storm_edge_strength: f64,
+    pub storm_green_cast: f64,
     /// Max precipitation particles at full intensity.
     pub particles_max: u32,
 }
@@ -124,6 +140,14 @@ impl Default for WeatherTuning {
             cloud_mid_density: 0.82,
             cloud_high_density: 0.32,
             orbit_cloud_opacity_cap: 0.55,
+            cloud_shadow_strength: 0.35,
+            orbit_cloud_shadow_strength: 0.10,
+            fog_density: 0.85,
+            fog_ceiling_km: 0.24,
+            fog_dawn_window_h: 2.0,
+            storm_edge_probe_km: 650.0,
+            storm_edge_strength: 0.32,
+            storm_green_cast: 0.08,
             particles_max: 9000,
         }
     }
@@ -193,6 +217,17 @@ impl WeatherTuning {
             ("cloud_mid_density", self.cloud_mid_density),
             ("cloud_high_density", self.cloud_high_density),
             ("orbit_cloud_opacity_cap", self.orbit_cloud_opacity_cap),
+            ("cloud_shadow_strength", self.cloud_shadow_strength),
+            (
+                "orbit_cloud_shadow_strength",
+                self.orbit_cloud_shadow_strength,
+            ),
+            ("fog_density", self.fog_density),
+            ("fog_ceiling_km", self.fog_ceiling_km),
+            ("fog_dawn_window_h", self.fog_dawn_window_h),
+            ("storm_edge_probe_km", self.storm_edge_probe_km),
+            ("storm_edge_strength", self.storm_edge_strength),
+            ("storm_green_cast", self.storm_green_cast),
         ];
         if let Some((name, _)) = finite.into_iter().find(|(_, v)| !v.is_finite()) {
             return Err(format!("{name} must be finite"));
@@ -260,6 +295,25 @@ impl WeatherTuning {
             || !(0.0..=1.0).contains(&self.orbit_cloud_opacity_cap)
         {
             return Err("cloud densities and orbit opacity cap must be in [0, 1]".into());
+        }
+        if !(0.0..=1.0).contains(&self.cloud_shadow_strength)
+            || !(0.0..=1.0).contains(&self.orbit_cloud_shadow_strength)
+            || !(0.0..=1.0).contains(&self.storm_edge_strength)
+            || !(0.0..=1.0).contains(&self.storm_green_cast)
+        {
+            return Err(
+                "cloud/orbit shadow strength, storm-edge strength, and green cast must be in [0, 1]"
+                    .into(),
+            );
+        }
+        if self.fog_density < 0.0 || self.fog_ceiling_km <= 0.0 {
+            return Err("fog_density must be >= 0 and fog_ceiling_km must be > 0".into());
+        }
+        if self.fog_dawn_window_h <= 0.0 || self.fog_dawn_window_h > 12.0 {
+            return Err("fog_dawn_window_h must be in (0, 12]".into());
+        }
+        if self.storm_edge_probe_km <= 0.0 || self.storm_edge_probe_km > 3000.0 {
+            return Err("storm_edge_probe_km must be in (0, 3000]".into());
         }
         if self.particles_max > PARTICLES_MAX_CAP {
             return Err(format!("particles_max must be <= {PARTICLES_MAX_CAP}"));
@@ -403,6 +457,10 @@ pub struct Weather {
     pub precip: f64,
     /// 0 = all rain, 1 = all snow (mixed in between).
     pub snow_frac: f64,
+    /// Deterministic near-surface humidity proxy. The bake has no humidity
+    /// raster, so seasonal wetness supplies the slow term while cover and
+    /// active precipitation supply the synoptic terms.
+    pub humidity: f64,
     /// Climatological wind, m/s east/north.
     pub wind_e: f64,
     pub wind_n: f64,
@@ -832,15 +890,98 @@ pub fn weather_at(
     let precip = (over.powf(tuning.precip_gamma) * wetness).clamp(0.0, 1.0);
     let snow_frac =
         1.0 - smooth01((temp_c - tuning.snow_lo_c) / (tuning.snow_hi_c - tuning.snow_lo_c));
+    let humidity = (0.55 * wetness.min(1.0) + 0.35 * cover + 0.25 * precip).clamp(0.0, 1.0);
 
     Weather {
         temp_c,
         cloud_cover: cover,
         precip,
         snow_frac,
+        humidity,
         wind_e,
         wind_n,
         storm: synoptic,
+    }
+}
+
+/// Smooth mist window centered on local sunrise. Hours are solar-clock
+/// hours on a normalized 24-hour day, independent of the accelerated render
+/// day length. Polar day/night has no sunrise and therefore no dawn mist.
+pub fn dawn_window(surface_dir: DVec3, sun_dir: DVec3, half_width_h: f64) -> f64 {
+    if !surface_dir.is_finite()
+        || !sun_dir.is_finite()
+        || !half_width_h.is_finite()
+        || half_width_h <= 0.0
+    {
+        return 0.0;
+    }
+    let surface = surface_dir.normalize_or_zero();
+    let sun = sun_dir.normalize_or_zero();
+    if surface == DVec3::ZERO || sun == DVec3::ZERO {
+        return 0.0;
+    }
+    let latitude = surface.z.clamp(-1.0, 1.0).asin();
+    let declination = sun.z.clamp(-1.0, 1.0).asin();
+    let sunrise_cos = -latitude.tan() * declination.tan();
+    if !(-1.0..=1.0).contains(&sunrise_cos) {
+        return 0.0;
+    }
+    let longitude = surface.y.atan2(surface.x);
+    let sun_longitude = sun.y.atan2(sun.x);
+    let hour_angle = (sun_longitude - longitude + std::f64::consts::PI)
+        .rem_euclid(std::f64::consts::TAU)
+        - std::f64::consts::PI;
+    // Neisor's fixed-frame Sun longitude decreases through the day, so the
+    // positive horizon crossing is sunrise (the negative crossing is dusk).
+    let sunrise_angle = sunrise_cos.acos();
+    let delta = (hour_angle - sunrise_angle + std::f64::consts::PI)
+        .rem_euclid(std::f64::consts::TAU)
+        - std::f64::consts::PI;
+    let width = std::f64::consts::TAU * (half_width_h.clamp(0.0, 12.0) / 24.0);
+    smooth01(1.0 - delta.abs() / width.max(1e-9))
+}
+
+/// First-order directional fit for eight (or any symmetric set of) weather
+/// probes. `base + dot(view_dir, gradient)` is the storm load seen toward a
+/// horizon direction. Both outputs remain planet-frame/world-anchored.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct StormEdge {
+    pub base: f64,
+    pub gradient: DVec3,
+}
+
+fn storm_edge_load(weather: Weather) -> f64 {
+    let cover = smooth01((weather.cloud_cover - 0.48) / 0.52);
+    (cover * (0.35 + 0.65 * weather.precip)).clamp(0.0, 1.0)
+}
+
+pub fn storm_edge_fit(center_dir: DVec3, probes: &[(DVec3, Weather)]) -> StormEdge {
+    let center = center_dir.normalize_or_zero();
+    if center == DVec3::ZERO || probes.is_empty() {
+        return StormEdge::default();
+    }
+    let mut base = 0.0;
+    let mut gradient = DVec3::ZERO;
+    let mut count = 0.0;
+    for &(probe_dir, weather) in probes {
+        let probe = probe_dir.normalize_or_zero();
+        let tangent = (probe - center * probe.dot(center)).normalize_or_zero();
+        if tangent == DVec3::ZERO {
+            continue;
+        }
+        let load = storm_edge_load(weather);
+        base += load;
+        gradient += tangent * load;
+        count += 1.0;
+    }
+    if count == 0.0 {
+        return StormEdge::default();
+    }
+    StormEdge {
+        base: (base / count).clamp(0.0, 1.0),
+        // A symmetric compass ring has E[t t^T] = I/2 in its tangent
+        // plane, hence the factor two recovers the SH-1 coefficient.
+        gradient: gradient * (2.0 / count),
     }
 }
 
@@ -940,6 +1081,14 @@ mod tests {
             r#"{"cloud_low_scale":0}"#,
             r#"{"cloud_mid_density":1.01}"#,
             r#"{"orbit_cloud_opacity_cap":1.01}"#,
+            r#"{"cloud_shadow_strength":1.01}"#,
+            r#"{"orbit_cloud_shadow_strength":-0.01}"#,
+            r#"{"fog_density":-0.01}"#,
+            r#"{"fog_ceiling_km":0}"#,
+            r#"{"fog_dawn_window_h":12.01}"#,
+            r#"{"storm_edge_probe_km":3001}"#,
+            r#"{"storm_edge_strength":1.01}"#,
+            r#"{"storm_green_cast":-0.01}"#,
             r#"{"storminess":1e999}"#,
         ];
         for raw in invalid {
@@ -962,6 +1111,53 @@ mod tests {
         assert!(t.cloud_high_alt_km < t.shell_fade_km);
         assert_eq!(t.orbit_cloud_opacity_cap, 0.55);
         assert!(t.validate().is_ok());
+    }
+
+    #[test]
+    fn w2_tuning_defaults_are_bounded_and_ordered() {
+        let t = WeatherTuning::default();
+        assert_eq!(t.cloud_shadow_strength, 0.35);
+        assert!(t.orbit_cloud_shadow_strength < t.cloud_shadow_strength);
+        assert!(t.fog_density > 0.0);
+        assert!(t.fog_ceiling_km > 0.0);
+        assert!((0.0..=12.0).contains(&t.fog_dawn_window_h));
+        assert!((0.0..=1.0).contains(&t.storm_edge_strength));
+        assert!((0.0..=1.0).contains(&t.storm_green_cast));
+        assert!(t.validate().is_ok());
+    }
+
+    #[test]
+    fn dawn_window_selects_sunrise_not_noon_or_sunset() {
+        let site = DVec3::X;
+        let sunrise = DVec3::Y;
+        let noon = DVec3::X;
+        let sunset = -DVec3::Y;
+        assert_eq!(dawn_window(site, sunrise, 2.0), 1.0);
+        assert_eq!(dawn_window(site, noon, 2.0), 0.0);
+        assert_eq!(dawn_window(site, sunset, 2.0), 0.0);
+        assert_eq!(dawn_window(DVec3::Z, DVec3::X, 2.0), 0.0);
+    }
+
+    #[test]
+    fn storm_edge_fit_points_toward_the_storm() {
+        let center = DVec3::Z;
+        let clear = Weather::default();
+        let storm = Weather {
+            cloud_cover: 1.0,
+            precip: 1.0,
+            ..Weather::default()
+        };
+        let probes = [
+            (DVec3::X, storm),
+            (DVec3::Y, clear),
+            (-DVec3::X, clear),
+            (-DVec3::Y, clear),
+        ];
+        let edge = storm_edge_fit(center, &probes);
+        assert!((edge.base - 0.25).abs() < 1e-12);
+        assert!(edge.gradient.x > 0.49);
+        assert!(edge.gradient.y.abs() < 1e-12);
+        assert!(edge.gradient.z.abs() < 1e-12);
     }
 
     #[test]

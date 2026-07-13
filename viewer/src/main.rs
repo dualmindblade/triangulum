@@ -446,6 +446,7 @@ fn write_shot_sidecar(
         "cloud_cover": wx.cloud_cover,
         "precip": wx.precip,
         "snow_frac": wx.snow_frac,
+        "humidity": wx.humidity,
         "temp_c": wx.temp_c,
     });
     let js = serde_json::json!({
