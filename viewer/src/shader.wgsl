@@ -73,12 +73,17 @@ struct Globals {
     // x unused (core wrap rides in cyclone_fronts.w), y/z cover/precip boosts, w front
     // strength.
     weather14: vec4<f32>,
-    // xyz front leading/trailing/along scales in radians.
+    // xyz front leading/trailing/along scales in radians, w spiral-arm
+    // density-wave strength.
     weather15: vec4<f32>,
+    // Spiral arms: x arm count, y log-spiral twist, z/w unused.
+    weather16: vec4<f32>,
     // Planet-frame center.xyz + lifecycle-scaled intensity; front
     // normal.xyz + hemisphere-signed bounded core wrap angle (radians).
     cyclone_centers: array<vec4<f32>, 4>,
     cyclone_fronts: array<vec4<f32>, 4>,
+    // x hemisphere-signed rotating arm-pattern phase (radians), yzw unused.
+    cyclone_arms: array<vec4<f32>, 4>,
     // premultiplied cave-noise seeds (low 32 bits of
     // (seed+K).wrapping_mul(0x9E37_79B1)) for the karst breach hint:
     // x = region gate (+40961), y = tube n1 (+31337), z = tube n2 (+51413),
@@ -1426,8 +1431,26 @@ fn cloud_structure(sdir: vec3<f32>) -> CloudStructure {
             let envelope = exp(-rn2);
             let eye = 1.0 - smoothstep(0.04, 0.18, rn);
             let eyewall = 1.0 - smoothstep(0.0, 0.16, abs(rn - 0.28));
-            let profile = intensity
+            var profile = intensity
                 * (0.75 * envelope + 0.75 * eyewall - 1.40 * eye);
+            // Spiral density wave (matches the CPU term in
+            // structured_loads): the arm PATTERN rotates with storm age;
+            // the fabric stays put, so cells seed and disperse as an arm
+            // sweeps over them. Rigid in angle-space - zero shear.
+            if (globals.weather16.x > 0.5) {
+                let east = normalize(cross(vec3<f32>(0.0, 0.0, 1.0), center));
+                let north = cross(center, east);
+                let offset = sdir - center * dot(sdir, center);
+                let azimuth = atan2(dot(offset, north), dot(offset, east));
+                let hemi = select(-1.0, 1.0, center.z >= 0.0);
+                let wave = cos(globals.weather16.x * azimuth
+                    + hemi * globals.weather16.y * log(max(rn, 0.15))
+                    - globals.cyclone_arms[i].x);
+                // signed sharpening: narrower, more legible arm crests
+                let spiral = wave * abs(wave);
+                let arm_env = envelope * smoothstep(0.30, 0.55, rn);
+                profile += intensity * globals.weather15.w * spiral * arm_env;
+            }
             cyclone_signed += profile;
             cyclone_positive += max(profile, 0.0);
             eye_load = max(eye_load, intensity * eye);

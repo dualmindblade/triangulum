@@ -322,6 +322,28 @@ unbounded motion):
   the configured rate but capped displacement. The w0 base term is
   rigid rotation and stays proportional to t.
 
+## Spiral-arm density wave (2026-07-13, Andrew's design)
+
+Confirmed intent first: a mature cyclone does NOT rotate its fabric -
+the twist is tanh-held, so cells seed and disperse in a statically
+spiraled domain (true rotation only during spin-up). Andrew's
+refinement, implemented: cover is DENSER along logarithmic spiral
+arms whose pattern rotates with storm age while the fabric stays
+put - a density wave, exactly how galactic spiral arms work. A
+rotating density mask is rigid in angle-space, so it accumulates
+zero shear and may rotate forever without re-creating the streak
+bug; the phase is a pure function of age (seek-safe), and it dies
+with the life envelope. Same signed-sharpened cosine term on the
+CPU (structured_loads) and GPU (cloud_structure), arms gated
+outside the eyewall. Knobs: cyclone_arm_count (2; 0 disables),
+cyclone_arm_strength (0.55), cyclone_arm_twist (3.0),
+cyclone_arm_spin_deg_s (0.35 - a full pattern turn every ~17 min of
+weather time, lively at fast-forward). Perf note: the moon_orbit
+perf-reel p95 rose 4.4 -> 6.1 ms because the harness bakes the
+synoptic raster synchronously on its settle path and the planetary
+wave added two octaves per texel; the live game bakes async on
+rayon, so no gameplay frame pays this. Baseline re-blessed.
+
 ## Global cover variance (same session, Austin's ask 2)
 
 Cover was climatology + synoptic(40) + meso(320) - nothing below

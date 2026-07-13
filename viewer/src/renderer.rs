@@ -134,13 +134,18 @@ struct Globals {
     // x unused (core wrap now rides per-system in cyclone_fronts.w),
     // y/z cover/precip boosts, w front strength.
     weather14: [f32; 4],
-    // xyz asymmetric front leading/trailing/along scales in radians.
+    // xyz asymmetric front leading/trailing/along scales in radians,
+    // w spiral-arm density-wave strength.
     weather15: [f32; 4],
+    // Spiral arms: x arm count, y log-spiral twist, z/w unused.
+    weather16: [f32; 4],
     // Planet-frame moving centers + lifecycle-scaled intensity, followed by
     // the planet-frame front normal and the hemisphere-signed bounded core
     // wrap angle (radians).
     cyclone_centers: [[f32; 4]; crate::weather::MAX_CYCLONES],
     cyclone_fronts: [[f32; 4]; crate::weather::MAX_CYCLONES],
+    // x hemisphere-signed rotating arm-pattern phase (radians), yzw unused.
+    cyclone_arms: [[f32; 4]; crate::weather::MAX_CYCLONES],
     // premultiplied procedural seeds. xyz are the karst breach hint (V-10):
     // low 32 bits of (seed+K).wrapping_mul(0x9E37_79B1) for K = 40961
     // (region gate), 31337 (tube n1), 51413 (tube n2); w is the independent
@@ -2609,6 +2614,12 @@ impl Renderer {
                 (self.weather_tuning.front_leading_km / planet.radius_km) as f32,
                 (self.weather_tuning.front_trailing_km / planet.radius_km) as f32,
                 (self.weather_tuning.front_length_km / planet.radius_km) as f32,
+                self.weather_tuning.cyclone_arm_strength as f32,
+            ],
+            weather16: [
+                self.weather_tuning.cyclone_arm_count as f32,
+                self.weather_tuning.cyclone_arm_twist as f32,
+                0.0,
                 0.0,
             ],
             cyclone_centers: std::array::from_fn(|index| {
@@ -2634,6 +2645,9 @@ impl Renderer {
                     normal.z as f32,
                     system.wrap_angle as f32,
                 ]
+            }),
+            cyclone_arms: std::array::from_fn(|index| {
+                [cyclones.systems[index].arm_phase as f32, 0.0, 0.0, 0.0]
             }),
             karst: {
                 let kseed = |k: i64| {

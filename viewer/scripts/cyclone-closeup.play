@@ -3,6 +3,9 @@ weather time 3500
 teleport -21.9 139.0 2200.0
 look 0 -88
 shot cy_mature
+weather time 5300
+shot cy_mature_1day
+weather time 3500
 teleport 23.0 90.4 2200.0
 look 0 -88
 shot cy_second

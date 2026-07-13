@@ -116,6 +116,17 @@ pub struct WeatherTuning {
     pub cyclone_track_km_s: f64,
     pub cyclone_cover_boost: f64,
     pub cyclone_precip_boost: f64,
+    /// Andrew's density wave (2026-07-13): spiral arms along which cover is
+    /// denser, whose PATTERN rotates with storm age while the fabric stays
+    /// put - cells seed and disperse as an arm sweeps over them. A rotating
+    /// density mask is rigid in angle-space, so unlike fabric advection it
+    /// accumulates zero shear and may rotate forever. count 0 disables.
+    pub cyclone_arm_count: u32,
+    pub cyclone_arm_strength: f64,
+    /// Logarithmic-spiral pitch (radians of azimuth per ln-radius unit).
+    pub cyclone_arm_twist: f64,
+    /// Pattern angular speed (degrees/s of weather time).
+    pub cyclone_arm_spin_deg_s: f64,
     /// Finite deterministic storm life (seconds of weather time). Each
     /// system index is reborn on a freshly seeded corridor every period with
     /// a smooth grow/decay envelope; rebirth phases are staggered per index.
@@ -207,6 +218,10 @@ impl Default for WeatherTuning {
             cyclone_track_km_s: 0.35,
             cyclone_cover_boost: 0.48,
             cyclone_precip_boost: 0.68,
+            cyclone_arm_count: 2,
+            cyclone_arm_strength: 0.55,
+            cyclone_arm_twist: 3.0,
+            cyclone_arm_spin_deg_s: 0.35,
             cyclone_life_s: 6300.0,
             // ~2 radians of core twist is the most this fabric tolerates:
             // the tangential stretch peaks near 2*wrap*rn^2*exp(-rn^2), so
@@ -311,6 +326,9 @@ impl WeatherTuning {
             ("cyclone_precip_boost", self.cyclone_precip_boost),
             ("cyclone_life_s", self.cyclone_life_s),
             ("cyclone_max_wrap_deg", self.cyclone_max_wrap_deg),
+            ("cyclone_arm_strength", self.cyclone_arm_strength),
+            ("cyclone_arm_twist", self.cyclone_arm_twist),
+            ("cyclone_arm_spin_deg_s", self.cyclone_arm_spin_deg_s),
             (
                 "differential_rotation_deg_h",
                 self.differential_rotation_deg_h,
@@ -434,6 +452,18 @@ impl WeatherTuning {
         }
         if !(600.0..=604_800.0).contains(&self.cyclone_life_s) {
             return Err("cyclone_life_s must be in [600, 604800]".into());
+        }
+        if self.cyclone_arm_count > 8 {
+            return Err("cyclone_arm_count must be in 0..=8".into());
+        }
+        if !(0.0..=1.5).contains(&self.cyclone_arm_strength) {
+            return Err("cyclone_arm_strength must be in [0, 1.5]".into());
+        }
+        if self.cyclone_arm_twist.abs() > 12.0 {
+            return Err("cyclone_arm_twist magnitude must be <= 12".into());
+        }
+        if self.cyclone_arm_spin_deg_s.abs() > 5.0 {
+            return Err("cyclone_arm_spin_deg_s magnitude must be <= 5".into());
         }
         if self.cyclone_max_wrap_deg <= 0.0 || self.cyclone_max_wrap_deg > 3600.0 {
             return Err("cyclone_max_wrap_deg must be in (0, 3600]".into());
@@ -1161,6 +1191,10 @@ pub struct CycloneSystem {
     /// Hemisphere-signed accumulated core rotation (radians), saturated at
     /// cyclone_max_wrap_deg so the fabric never winds into endless streaks.
     pub wrap_angle: f64,
+    /// Hemisphere-signed spiral-arm pattern phase (radians). Unbounded in
+    /// age is safe: a rotating density MASK is rigid in angle-space and
+    /// accumulates no shear, and age resets each finite life.
+    pub arm_phase: f64,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -1309,6 +1343,7 @@ pub fn cyclone_systems(
                 - 0.5)
                 * 1.8,
             wrap_angle: -hemisphere * max_wrap * (raw_wrap / max_wrap).tanh(),
+            arm_phase: -hemisphere * tuning.cyclone_arm_spin_deg_s.to_radians() * age_s,
         };
     }
     out
@@ -1391,18 +1426,6 @@ fn structured_loads(
         if system.intensity <= 1e-6 {
             continue;
         }
-        let chord2 = (2.0 * (1.0 - dir.dot(system.center))).max(0.0);
-        if chord2 < radius2 * 9.0 {
-            let rn2 = chord2 / radius2;
-            let rn = rn2.sqrt();
-            let envelope = (-rn2).exp();
-            let eye = 1.0 - smooth01((rn - 0.04) / 0.14);
-            let eyewall = 1.0 - smooth01((rn - 0.28).abs() / 0.16);
-            let profile = system.intensity * (0.75 * envelope + 0.75 * eyewall - 1.40 * eye);
-            out.cyclone_signed += profile;
-            out.cyclone_positive += profile.max(0.0);
-        }
-
         let east0 = DVec3::Z.cross(system.center);
         let east = if east0.length_squared() < 1e-12 {
             DVec3::Y
@@ -1410,6 +1433,36 @@ fn structured_loads(
             east0.normalize()
         };
         let north = system.center.cross(east);
+        let chord2 = (2.0 * (1.0 - dir.dot(system.center))).max(0.0);
+        if chord2 < radius2 * 9.0 {
+            let rn2 = chord2 / radius2;
+            let rn = rn2.sqrt();
+            let envelope = (-rn2).exp();
+            let eye = 1.0 - smooth01((rn - 0.04) / 0.14);
+            let eyewall = 1.0 - smooth01((rn - 0.28).abs() / 0.16);
+            let mut profile = system.intensity * (0.75 * envelope + 0.75 * eyewall - 1.40 * eye);
+            // Andrew's spiral density wave: cover is denser along rotating
+            // logarithmic arms (thinner between - signed cos). Only the
+            // PATTERN moves; the fabric does not, so cloud cells seed and
+            // disperse as an arm sweeps over them. Arms live outside the
+            // eyewall and fade with the storm envelope.
+            if tuning.cyclone_arm_count > 0 {
+                let offset = dir - system.center * dir.dot(system.center);
+                let azimuth = offset.dot(north).atan2(offset.dot(east));
+                let hemisphere = if system.center.z >= 0.0 { 1.0 } else { -1.0 };
+                let wave = (tuning.cyclone_arm_count as f64 * azimuth
+                    + hemisphere * tuning.cyclone_arm_twist * rn.max(0.15).ln()
+                    - system.arm_phase)
+                    .cos();
+                // signed sharpening: narrower, more legible arm crests
+                let spiral = wave * wave.abs();
+                let arm_env = envelope * smooth01((rn - 0.30) / 0.25);
+                profile += system.intensity * tuning.cyclone_arm_strength * spiral * arm_env;
+            }
+            out.cyclone_signed += profile;
+            out.cyclone_positive += profile.max(0.0);
+        }
+
         let normal = east * system.front_angle.cos() + north * system.front_angle.sin();
         let along_axis = system.center.cross(normal).normalize();
         let cross = dir.dot(normal) - cyclone_radius * 0.58;
