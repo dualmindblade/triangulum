@@ -19,7 +19,7 @@ use crate::planet::{
     climate_surface_with_biome, climate_surface_with_biome_at_season, face_dir, hash01, hash_u64,
     vegetation_surface, ClimateSurface, MainBlock, Planet,
 };
-use crate::moon::{MoonGenerator, MoonMaterial};
+use crate::moon::{MoonGenerator, MoonMaterial, MoonSample};
 use crate::orbits::BodyId;
 use crate::terrain::{
     sample_at_season, Sample, TileMesh, Vertex, NO_BIOME_PAYLOAD, VOXEL_OCTAVES,
@@ -31,6 +31,12 @@ use std::collections::{HashMap, HashSet};
 pub use crate::planet::COLUMNS_PER_FACE;
 pub const CHUNK: u64 = 32;
 pub const VOXEL_KM: f64 = 0.001;
+/// The configured moon is exactly 0.27 Neisor radii, so its angular lattice
+/// has exactly 27/100 as many columns on each cube-face axis. 2,700,000 is
+/// also exactly divisible by the 32-column chunk edge (84,375 chunks/face),
+/// keeping face edges and chunk keys integral while matching Neisor's metric
+/// block proportions. Area density falls by 1 / 0.27^2 = 13.717421... .
+pub const LUNAR_COLUMNS_PER_FACE: u64 = COLUMNS_PER_FACE * 27 / 100;
 /// How far below the nominal surface cave carving is evaluated (blocks).
 const CAVE_DEPTH: i64 = 26;
 /// Tree canopies reach 2 columns from the trunk, and each anchor checks
@@ -247,7 +253,15 @@ pub trait VoxelBody: Send + Sync {
     fn body_id(&self) -> BodyId;
     fn radius_km(&self) -> f64;
     fn seed(&self) -> i64;
+    /// Authoritative angular column lattice for this physical body.
+    fn columns_per_face(&self) -> u64;
     fn column_ctx(&self, edits: &Edits, face: usize, ci: u64, cj: u64) -> ColCtx;
+    fn column_ctx_batch(&self, edits: &Edits, columns: &[(usize, u64, u64)]) -> Vec<ColCtx> {
+        columns
+            .iter()
+            .map(|&(face, ci, cj)| self.column_ctx(edits, face, ci, cj))
+            .collect()
+    }
     fn ground_height_km(&self, dir: DVec3, exaggeration: f64) -> f64;
     fn tree_at_column(
         &self,
@@ -395,15 +409,42 @@ fn rim_water_top_km(
 /// Canonical face/column for an extended lattice index. In-range indices keep
 /// their identity; out-of-range indices follow the cube-face direction map.
 pub fn canonical_column(face: usize, i_ext: i64, j_ext: i64) -> (u8, u64, u64) {
-    let max = COLUMNS_PER_FACE as i64;
+    canonical_column_on_lattice(COLUMNS_PER_FACE, face, i_ext, j_ext)
+}
+
+/// Body-parameterized form of [`canonical_column`]. All generic voxel paths
+/// use this form; the short wrapper remains the Neisor-only public contract.
+pub fn canonical_column_body(
+    body: &dyn VoxelBody,
+    face: usize,
+    i_ext: i64,
+    j_ext: i64,
+) -> (u8, u64, u64) {
+    canonical_column_on_lattice(body.columns_per_face(), face, i_ext, j_ext)
+}
+
+pub fn columns_per_face_for_body(body: BodyId) -> u64 {
+    match body {
+        BodyId::Moon => LUNAR_COLUMNS_PER_FACE,
+        BodyId::Sun | BodyId::Neisor => COLUMNS_PER_FACE,
+    }
+}
+
+fn canonical_column_on_lattice(
+    columns_per_face: u64,
+    face: usize,
+    i_ext: i64,
+    j_ext: i64,
+) -> (u8, u64, u64) {
+    let max = columns_per_face as i64;
     if (0..max).contains(&i_ext) && (0..max).contains(&j_ext) {
         (face as u8, i_ext as u64, j_ext as u64)
     } else {
-        let nn = COLUMNS_PER_FACE as f64;
+        let nn = columns_per_face as f64;
         let u = -1.0 + 2.0 * (i_ext as f64 + 0.5) / nn;
         let v = -1.0 + 2.0 * (j_ext as f64 + 0.5) / nn;
         let (f2, u2, v2) = crate::planet::face_from_dir(face_dir(face, u, v));
-        let (ci, cj) = column_of(u2, v2);
+        let (ci, cj) = column_of_lattice(u2, v2, columns_per_face);
         (f2 as u8, ci, cj)
     }
 }
@@ -430,7 +471,7 @@ pub fn col_ctx_ext_body(
     i_ext: i64,
     j_ext: i64,
 ) -> ColCtx {
-    let (canon_face, ci, cj) = canonical_column(face, i_ext, j_ext);
+    let (canon_face, ci, cj) = canonical_column_body(body, face, i_ext, j_ext);
     body.column_ctx(edits, canon_face as usize, ci, cj)
 }
 
@@ -668,11 +709,22 @@ fn lunar_col_ctx(
     ci: u64,
     cj: u64,
 ) -> ColCtx {
-    let nn = COLUMNS_PER_FACE as f64;
+    let nn = moon.columns_per_face() as f64;
     let u = -1.0 + 2.0 * (ci as f64 + 0.5) / nn;
     let v = -1.0 + 2.0 * (cj as f64 + 0.5) / nn;
     let direction = face_dir(face, u, v);
     let sample = moon.generator.sample(direction);
+    lunar_col_ctx_from_sample(moon, edits, face, ci, cj, sample)
+}
+
+fn lunar_col_ctx_from_sample(
+    moon: &LunarBody,
+    edits: &Edits,
+    face: usize,
+    ci: u64,
+    cj: u64,
+    sample: MoonSample,
+) -> ColCtx {
     let h_km = sample.height_ratio * moon.radius_km;
     let ground0 = (h_km * 1000.0).floor() as i64;
     let ground = ground0 + edits.get(&(face as u8, ci, cj)).copied().unwrap_or(0);
@@ -719,6 +771,7 @@ impl VoxelBody for Planet {
     fn body_id(&self) -> BodyId { BodyId::Neisor }
     fn radius_km(&self) -> f64 { self.radius_km }
     fn seed(&self) -> i64 { self.seed }
+    fn columns_per_face(&self) -> u64 { COLUMNS_PER_FACE }
     fn column_ctx(&self, edits: &Edits, face: usize, ci: u64, cj: u64) -> ColCtx {
         col_ctx(self, edits, face, ci, cj)
     }
@@ -741,6 +794,7 @@ impl VoxelBody for SeasonalPlanet {
     fn body_id(&self) -> BodyId { BodyId::Neisor }
     fn radius_km(&self) -> f64 { self.planet.radius_km }
     fn seed(&self) -> i64 { self.planet.seed }
+    fn columns_per_face(&self) -> u64 { COLUMNS_PER_FACE }
     fn column_ctx(&self, edits: &Edits, face: usize, ci: u64, cj: u64) -> ColCtx {
         col_ctx_at_season(&self.planet, edits, face, ci, cj, self.season)
     }
@@ -764,8 +818,23 @@ impl VoxelBody for LunarBody {
     fn body_id(&self) -> BodyId { BodyId::Moon }
     fn radius_km(&self) -> f64 { self.radius_km }
     fn seed(&self) -> i64 { self.generator.seed() }
+    fn columns_per_face(&self) -> u64 { LUNAR_COLUMNS_PER_FACE }
     fn column_ctx(&self, edits: &Edits, face: usize, ci: u64, cj: u64) -> ColCtx {
         lunar_col_ctx(self, edits, face, ci, cj)
+    }
+    fn column_ctx_batch(&self, edits: &Edits, columns: &[(usize, u64, u64)]) -> Vec<ColCtx> {
+        let directions: Vec<DVec3> = columns
+            .iter()
+            .map(|&(face, ci, cj)| dir_of_column_body(self, face, ci, cj))
+            .collect();
+        self.generator
+            .sample_batch(&directions)
+            .into_iter()
+            .zip(columns.iter().copied())
+            .map(|(sample, (face, ci, cj))| {
+                lunar_col_ctx_from_sample(self, edits, face, ci, cj, sample)
+            })
+            .collect()
     }
     fn ground_height_km(&self, dir: DVec3, _exaggeration: f64) -> f64 {
         self.generator.height_km(dir, self.radius_km)
@@ -1191,10 +1260,26 @@ pub fn lift_km(exaggeration: f64) -> f64 {
 }
 
 pub fn column_of(u: f64, v: f64) -> (u64, u64) {
-    let n = COLUMNS_PER_FACE as f64;
+    column_of_lattice(u, v, COLUMNS_PER_FACE)
+}
+
+fn column_of_lattice(u: f64, v: f64, columns_per_face: u64) -> (u64, u64) {
+    let n = columns_per_face as f64;
     let ci = (((u + 1.0) * 0.5 * n).clamp(0.0, n - 1.0)) as u64;
     let cj = (((v + 1.0) * 0.5 * n).clamp(0.0, n - 1.0)) as u64;
     (ci, cj)
+}
+
+pub fn column_of_body(body: &dyn VoxelBody, u: f64, v: f64) -> (u64, u64) {
+    column_of_lattice(u, v, body.columns_per_face())
+}
+
+/// Unit direction through the center of a body's canonical column.
+pub fn dir_of_column_body(body: &dyn VoxelBody, face: usize, ci: u64, cj: u64) -> DVec3 {
+    let n = body.columns_per_face() as f64;
+    let u = -1.0 + 2.0 * (ci as f64 + 0.5) / n;
+    let v = -1.0 + 2.0 * (cj as f64 + 0.5) / n;
+    face_dir(face, u, v)
 }
 
 /// The face/column the given direction points at — the column identity used
@@ -1205,13 +1290,19 @@ pub fn column_id(dir: DVec3) -> (u8, u64, u64) {
     (face as u8, ci, cj)
 }
 
+pub fn column_id_body(body: &dyn VoxelBody, dir: DVec3) -> (u8, u64, u64) {
+    let (face, u, v) = crate::planet::face_from_dir(dir);
+    let (ci, cj) = column_of_body(body, u, v);
+    (face as u8, ci, cj)
+}
+
 /// Height of the *solid* walkable surface (km, exaggerated, incl. the patch
 /// lift) under a direction. Water is NOT walkable: you wade into ponds and
 /// sink through rivers to their floor. Mirrors build_chunk's shell()/lift
 /// so feet match the visible voxel tops.
 pub fn surface_height_km(body: &dyn VoxelBody, edits: &Edits, dir: DVec3, exaggeration: f64) -> f64 {
     let (face, u, v) = crate::planet::face_from_dir(dir);
-    let (ci, cj) = column_of(u, v);
+    let (ci, cj) = column_of_body(body, u, v);
     let c = col_ctx_body(body, edits, face, ci, cj);
     // a frozen sheet is solid to EVERY world query, same rule as
     // support_below_km: aiming, placing, and torch height must see the ice
@@ -1232,7 +1323,7 @@ pub fn support_below_km(
     exaggeration: f64,
 ) -> f64 {
     let (face, u, v) = crate::planet::face_from_dir(dir);
-    let (ci, cj) = column_of(u, v);
+    let (ci, cj) = column_of_body(body, u, v);
     let c = col_ctx_body(body, edits, face, ci, cj);
     // tree trunks are solid (shrubs are not) — you bump into and can stand
     // on trunks; canopy leaves stay passable
@@ -1275,7 +1366,7 @@ pub fn ceiling_above_km(
     exaggeration: f64,
 ) -> f64 {
     let (face, u, v) = crate::planet::face_from_dir(dir);
-    let (ci, cj) = column_of(u, v);
+    let (ci, cj) = column_of_body(body, u, v);
     let c = col_ctx_body(body, edits, face, ci, cj);
     let trunk_top = body.tree_at_column(edits, face, ci, cj)
         .filter(|(k, _)| *k != TreeKind::Shrub)
@@ -1319,7 +1410,7 @@ pub fn water_surface_km(
     exaggeration: f64,
 ) -> Option<f64> {
     let (face, u, v) = crate::planet::face_from_dir(dir);
-    let (ci, cj) = column_of(u, v);
+    let (ci, cj) = column_of_body(body, u, v);
     let c = col_ctx_body(body, edits, face, ci, cj);
     let scale = VOXEL_KM * exaggeration;
     let lift = lift_km(exaggeration);
@@ -1354,7 +1445,7 @@ pub fn raycast_column(
 ) -> Option<((u8, u64, u64), (u8, u64, u64))> {
     let col_under = |dir: DVec3| {
         let (face, u, v) = crate::planet::face_from_dir(dir);
-        let (ci, cj) = column_of(u, v);
+        let (ci, cj) = column_of_body(body, u, v);
         (face as u8, ci, cj)
     };
     let mut prev = col_under(eye_km.normalize());
@@ -1396,7 +1487,12 @@ pub fn chunks_touching_column_body(body: BodyId, face: u8, ci: u64, cj: u64) -> 
     push_key(face, ci, cj);
     for dj in -TREE_MARGIN..=TREE_MARGIN {
         for di in -TREE_MARGIN..=TREE_MARGIN {
-            let (canon_face, ci, cj) = canonical_column(face as usize, i + di, j + dj);
+            let (canon_face, ci, cj) = canonical_column_on_lattice(
+                columns_per_face_for_body(body),
+                face as usize,
+                i + di,
+                j + dj,
+            );
             push_key(canon_face, ci, cj);
         }
     }
@@ -1420,7 +1516,7 @@ pub fn select_chunks(cam_pos: DVec3, body: &dyn VoxelBody, radius_m: f64) -> Vec
     let ref_axis = if dir.z.abs() < 0.9 { DVec3::Z } else { DVec3::X };
     let t1 = (ref_axis - dir * ref_axis.dot(dir)).normalize();
     let t2 = dir.cross(t1);
-    let n = COLUMNS_PER_FACE as f64;
+    let n = body.columns_per_face() as f64;
     // chunk size shrinks toward cube-face edges and corners (the gnomonic
     // cell's short axis scales as 1/(1+u^2+v^2): half size at edge middles,
     // a third at corners). Sample at 0.45x the local worst case so every
@@ -1474,7 +1570,7 @@ pub fn build_chunk(
 ) -> TileMesh {
     let n = CHUNK as i64;
     let face = key.face as usize;
-    let nn = COLUMNS_PER_FACE as f64;
+    let nn = body.columns_per_face() as f64;
     let u_of = |i: i64| -1.0 + 2.0 * i as f64 / nn;
     let v_of = |j: i64| -1.0 + 2.0 * j as f64 / nn;
 
@@ -1485,12 +1581,22 @@ pub fn build_chunk(
     let np = (n + 2 * m) as usize;
     let base_i = key.cx as i64 * n;
     let base_j = key.cy as i64 * n;
-    let mut cols: Vec<ColCtx> = Vec::with_capacity(np * np);
+    let mut column_ids = Vec::with_capacity(np * np);
     for gj in 0..np as i64 {
         for gi in 0..np as i64 {
-            cols.push(col_ctx_ext_body(body, edits, face, base_i + gi - m, base_j + gj - m));
+            let (canon_face, ci, cj) = canonical_column_body(
+                body,
+                face,
+                base_i + gi - m,
+                base_j + gj - m,
+            );
+            column_ids.push((canon_face as usize, ci, cj));
         }
     }
+    // LunarBody overrides this batch to enumerate crater/ray candidates once
+    // for the complete chunk footprint. Neisor's default preserves the exact
+    // established per-column path.
+    let cols = body.column_ctx_batch(edits, &column_ids);
     let at = |gi: i64, gj: i64| -> &ColCtx { &cols[(gj + m) as usize * np + (gi + m) as usize] };
 
     let radius = body.radius_km();
@@ -2051,7 +2157,7 @@ pub fn build_chunk(
     for aj in (-m + 2)..(n + m - 2) {
         for ai in (-m + 2)..(n + m - 2) {
             let c = at(ai, aj);
-            let (aface, aci, acj) = canonical_column(face, base_i + ai, base_j + aj);
+            let (aface, aci, acj) = canonical_column_body(body, face, base_i + ai, base_j + aj);
             // relief across the whole canopy footprint: a tree planted on a
             // slope gets its crown buried and renders as floating shards.
             // Carved ground (river/pond gullies) anywhere under the canopy
@@ -2210,15 +2316,15 @@ mod tests {
         let moon = LunarBody::new(radius, std::sync::Arc::clone(&generator));
         let edits = Edits::default();
         for (face, ci, cj) in [
-            (0usize, 5_000_000u64, 5_000_000u64),
-            (2, 3_765_432, 7_123_456),
-            (5, 8_888_888, 1_111_111),
+            (0usize, 1_350_000u64, 1_350_000u64),
+            (2, 765_432, 2_123_456),
+            (5, 2_388_888, 311_111),
         ] {
             let a = moon.column_ctx(&edits, face, ci, cj);
             let b = moon.column_ctx(&edits, face, ci, cj);
             assert_eq!(a.ground0, b.ground0);
             assert_eq!(a.h_km.to_bits(), b.h_km.to_bits());
-            let n = COLUMNS_PER_FACE as f64;
+            let n = moon.columns_per_face() as f64;
             let u = -1.0 + 2.0 * (ci as f64 + 0.5) / n;
             let v = -1.0 + 2.0 * (cj as f64 + 0.5) / n;
             let sample = generator.sample(face_dir(face, u, v));
@@ -2229,6 +2335,46 @@ mod tests {
             assert!(a.climate.is_none());
             assert_eq!(a.water, i64::MIN);
             assert_eq!(a.cave_bits, 0);
+        }
+    }
+
+    #[test]
+    fn body_lattices_round_trip_random_directions_within_one_column() {
+        let planet = test_planet();
+        let moon = LunarBody::new(
+            planet.radius_km * 0.27,
+            std::sync::Arc::new(MoonGenerator::new(planet.seed)),
+        );
+        assert_eq!(LUNAR_COLUMNS_PER_FACE, 2_700_000);
+        assert_eq!(LUNAR_COLUMNS_PER_FACE % CHUNK, 0);
+
+        let mut state = 0x6A09_E667_F3BC_C909u64;
+        let mut unit = || {
+            state = state.wrapping_add(0x9E37_79B9_7F4A_7C15);
+            let mut z = state;
+            z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+            z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+            z ^= z >> 31;
+            ((z >> 11) as f64) * (1.0 / ((1u64 << 53) as f64))
+        };
+        for body in [&planet as &dyn VoxelBody, &moon as &dyn VoxelBody] {
+            let n = body.columns_per_face() as f64;
+            for _ in 0..2_000 {
+                let z = unit() * 2.0 - 1.0;
+                let a = unit() * std::f64::consts::TAU;
+                let r = (1.0 - z * z).sqrt();
+                let dir = DVec3::new(r * a.cos(), r * a.sin(), z);
+                let id = column_id_body(body, dir);
+                let center = dir_of_column_body(body, id.0 as usize, id.1, id.2);
+                assert_eq!(column_id_body(body, center), id);
+                let angular_error = dir.dot(center).clamp(-1.0, 1.0).acos();
+                assert!(
+                    angular_error <= 3.0 / n,
+                    "{:?} angular error {angular_error} exceeded one-column bound {}",
+                    body.body_id(),
+                    3.0 / n,
+                );
+            }
         }
     }
 

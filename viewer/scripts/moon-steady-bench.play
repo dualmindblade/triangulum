@@ -1,0 +1,9 @@
+# Fully warmed landed steady-state gate. The first bench drains cold tile and
+# chunk queues; the second is the reported steady 30-frame sample.
+weather off
+weather time 0
+sun physical
+moonland -36.2094 -1 -90 -8
+wait 1
+bench 180
+bench 30

@@ -7,7 +7,7 @@
 use crate::camera::Camera;
 use crate::planet::Planet;
 use crate::voxel::{
-    ceiling_above_km, chunks_touching_column_body, column_id, raycast_column, support_below_km,
+    ceiling_above_km, chunks_touching_column_body, column_id_body, raycast_column, support_below_km,
     surface_height_km, water_surface_km, ChunkKey, Edits, Torches, VoxelBody, VOXEL_KM,
 };
 
@@ -399,7 +399,10 @@ pub fn edit_block(
     // block lands at your feet — without this it embeds the head in solid rock
     // and renders the block interior (a starfield void). Fly mode is noclip, so
     // this only guards the walking body.
-    if dh > 0 && mode == Mode::Walk && (face, ci, cj) == column_id(camera.local_direction()) {
+    if dh > 0
+        && mode == Mode::Walk
+        && (face, ci, cj) == column_id_body(body, camera.local_direction())
+    {
         let surf_top = surface_height_km(body, edits, camera.local_direction(), exaggeration);
         let block = VOXEL_KM * exaggeration;
         let feet = camera.ground_km;

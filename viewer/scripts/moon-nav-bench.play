@@ -1,0 +1,32 @@
+# Lunar lattice navigation gate. Run with TRI_RAW_CAPTURE=1 so each sampled
+# shot records the exact live streaming frame without capture settling.
+mode fly
+weather off
+weather time 0
+sun physical
+
+# Maria: each hold changes the live chunk/tile working set before measurement.
+moonpose -36.2094 -1 2 90 -18
+focus free
+bench 5
+bench 30
+shot nav_maria_0
+hold shift+w 0.50
+bench 30
+shot nav_maria_1
+hold shift+w 0.50
+bench 30
+shot nav_maria_2
+
+# Highlands/crater floor: repeat across the rougher terrain family.
+moonpose 37.0385 101.1598 2 90 -18
+focus free
+bench 5
+bench 30
+shot nav_highland_0
+hold shift+w 0.50
+bench 30
+shot nav_highland_1
+hold shift+w 0.50
+bench 30
+shot nav_highland_2

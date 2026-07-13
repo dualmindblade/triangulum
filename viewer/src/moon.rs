@@ -15,6 +15,7 @@
 //! clustered large cratons and smaller plains around their edges.
 
 use glam::DVec3;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::noise::{fbm, gradient_noise, ridged_band};
 use crate::planet::{FACES, face_dir, face_from_dir};
@@ -116,7 +117,7 @@ struct Mare {
     large: bool,
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, PartialOrd, Ord)]
 struct CellKey {
     face: u8,
     i: u16,
@@ -189,6 +190,58 @@ pub struct MoonGenerator {
     clusters: [MareCluster; 4],
     maria: Vec<Mare>,
     crater_cache: Vec<Vec<Option<Crater>>>,
+}
+
+#[derive(Clone, Copy)]
+struct PrefetchedCrater {
+    crater: Crater,
+    impact: BaseSample,
+}
+
+/// Crater candidates shared by every sample in one chunk/tile build. The
+/// union is gathered once from the build footprint; applying a candidate
+/// outside its exact reach is a no-op in the unchanged crater/ray equations.
+struct MoonCraterPrefetch {
+    octaves: [Vec<PrefetchedCrater>; tuning::CRATER_OCTAVES],
+    ray_carriers: Vec<PrefetchedCrater>,
+    samples: Vec<MoonSamplePrefetch>,
+    skip_octave: Option<usize>,
+}
+
+struct MoonSampleKeys {
+    octaves: [[CellKey; tuning::RAY_CELL_VISITS]; tuning::CRATER_OCTAVES],
+    octave_counts: [u8; tuning::CRATER_OCTAVES],
+    rays: [CellKey; tuning::RAY_CELL_VISITS],
+    ray_count: u8,
+}
+
+impl MoonSampleKeys {
+    fn empty() -> Self {
+        Self {
+            octaves: [[CellKey::ZERO; tuning::RAY_CELL_VISITS]; tuning::CRATER_OCTAVES],
+            octave_counts: [0; tuning::CRATER_OCTAVES],
+            rays: [CellKey::ZERO; tuning::RAY_CELL_VISITS],
+            ray_count: 0,
+        }
+    }
+}
+
+struct MoonSamplePrefetch {
+    octaves: [[u32; tuning::RAY_CELL_VISITS]; tuning::CRATER_OCTAVES],
+    octave_counts: [u8; tuning::CRATER_OCTAVES],
+    rays: [u32; tuning::RAY_CELL_VISITS],
+    ray_count: u8,
+}
+
+impl MoonSamplePrefetch {
+    fn empty() -> Self {
+        Self {
+            octaves: [[0; tuning::RAY_CELL_VISITS]; tuning::CRATER_OCTAVES],
+            octave_counts: [0; tuning::CRATER_OCTAVES],
+            rays: [0; tuning::RAY_CELL_VISITS],
+            ray_count: 0,
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -703,8 +756,7 @@ impl MoonGenerator {
             // overlapping maria SATURATE: basalt over basalt is the same
             // basalt (Andrew: intersections rendered darker than either)
             mare_dark = mare_dark.max(mare.darkness * albedo_mask);
-            mare_smooth =
-                mare_smooth.max(albedo_mask * if mare.large { 0.96 } else { 0.86 });
+            mare_smooth = mare_smooth.max(albedo_mask * if mare.large { 0.96 } else { 0.86 });
         }
         albedo -= mare_dark;
         smoothness = smoothness.max(mare_smooth);
@@ -857,6 +909,16 @@ impl MoonGenerator {
     }
 
     fn apply_crater(&self, crater: Crater, direction: DVec3, state: &mut SurfaceState) {
+        self.apply_crater_with_impact(crater, direction, state, None);
+    }
+
+    fn apply_crater_with_impact(
+        &self,
+        crater: Crater,
+        direction: DVec3,
+        state: &mut SurfaceState,
+        prefetched_impact: Option<BaseSample>,
+    ) {
         let reach = crater.radius * crater.elongation * tuning::CRATER_OUTER_RADII;
         if reach < std::f64::consts::PI && direction.dot(crater.center) < reach.cos() {
             return;
@@ -892,7 +954,10 @@ impl MoonGenerator {
             // One impact-center datum and material target owns the complete
             // floor. A crater straddling a mare edge can never become a
             // half-dark, half-light bowl.
-            let impact = self.base_surface(crater.center);
+            let impact = match prefetched_impact {
+                Some(impact) => impact,
+                None => self.base_surface(crater.center),
+            };
             let floor_shape = 0.96 - 0.075 * (q / 0.70).min(1.0).powi(2);
             let texture_scale = (2.8 / crater.radius).clamp(18.0, 22_000.0);
             let floor_texture = crater.depth_ratio
@@ -935,8 +1000,8 @@ impl MoonGenerator {
         // (0.42*rim_lift + the disturbed term) along every crater's crest
         // line - 492 m on the largest basin, Andrew's "discrete cliff
         // faces... affect all craters at the rim" (traced 2026-07-12).
-        let outer_falloff = smoothstep(1.0, 1.10, q)
-            * (1.0 - smoothstep(1.0, tuning::CRATER_OUTER_RADII, q));
+        let outer_falloff =
+            smoothstep(1.0, 1.10, q) * (1.0 - smoothstep(1.0, tuning::CRATER_OUTER_RADII, q));
         let ridge = (0.80
             + 0.20 * (crater.rim_lobes * bearing + crater.rim_phase).sin()
             + 0.08 * ((crater.rim_lobes * 2.0 + 3.0) * bearing - crater.rim_phase * 0.71).sin())
@@ -951,10 +1016,8 @@ impl MoonGenerator {
         // curb this effect") - only genuinely FRESH craters flash their
         // rims now; the rest keep a whisper. Rim contrast should come
         // from lighting, not paint.
-        let fresh_gate = 0.12
-            + 0.88 * smoothstep(0.80, 0.96, (crater.fresh_albedo - 0.72) / 0.12);
-        let exposed =
-            (rim_core * 0.72 + disturbed * 0.13).clamp(0.0, 0.88) * fresh_gate;
+        let fresh_gate = 0.12 + 0.88 * smoothstep(0.80, 0.96, (crater.fresh_albedo - 0.72) / 0.12);
+        let exposed = (rim_core * 0.72 + disturbed * 0.13).clamp(0.0, 0.88) * fresh_gate;
         state.albedo = mix(state.albedo, crater.fresh_albedo, exposed);
         state.albedo += 0.012 * rim_core * ridge * fresh_gate;
         state.smoothness *= 1.0 - (rim_core * 0.68 + disturbed * 0.16).clamp(0.0, 0.84);
@@ -1135,6 +1198,194 @@ impl MoonGenerator {
         }
     }
 
+    fn prefetch_for_directions(&self, directions: &[DVec3]) -> MoonCraterPrefetch {
+        let skip_octave: Option<usize> = std::env::var("TRI_MOON_SKIP_OCTAVE")
+            .ok()
+            .and_then(|v| v.parse().ok());
+        let mut octave_keys: [BTreeSet<CellKey>; tuning::CRATER_OCTAVES] =
+            std::array::from_fn(|_| BTreeSet::new());
+        let mut ray_keys = BTreeSet::new();
+        let mut keys = [CellKey::ZERO; tuning::RAY_CELL_VISITS];
+        let mut sample_keys = Vec::with_capacity(directions.len());
+        for &raw_direction in directions {
+            let mut lookup = MoonSampleKeys::empty();
+            let direction = raw_direction.normalize_or_zero();
+            if direction.length_squared() < 0.5 || !direction.is_finite() {
+                sample_keys.push(lookup);
+                continue;
+            }
+            let locator = face_from_dir(direction);
+            for (octave, set) in octave_keys.iter_mut().enumerate() {
+                if skip_octave == Some(octave) {
+                    continue;
+                }
+                if octave == 4 {
+                    let key_count = nearby_cells(
+                        direction,
+                        tuning::RAY_GRID,
+                        tuning::RAY_NEIGHBOR_RADIUS,
+                        &mut keys,
+                    );
+                    lookup.rays[..key_count].copy_from_slice(&keys[..key_count]);
+                    lookup.ray_count = key_count as u8;
+                    ray_keys.extend(keys[..key_count].iter().copied());
+                }
+                let key_count = nearby_crater_cells(locator, 1u32 << octave, &mut keys);
+                lookup.octaves[octave][..key_count].copy_from_slice(&keys[..key_count]);
+                lookup.octave_counts[octave] = key_count as u8;
+                set.extend(keys[..key_count].iter().copied());
+            }
+            sample_keys.push(lookup);
+        }
+        let mut octave_indices: [BTreeMap<CellKey, u32>; tuning::CRATER_OCTAVES] =
+            std::array::from_fn(|_| BTreeMap::new());
+        let octaves = std::array::from_fn(|octave| {
+            let mut craters = Vec::new();
+            for &key in &octave_keys[octave] {
+                if let Some(crater) = self.crater_from_cell(octave, key, None) {
+                    octave_indices[octave].insert(key, craters.len() as u32);
+                    craters.push(PrefetchedCrater {
+                        crater,
+                        impact: self.base_surface(crater.center),
+                    });
+                }
+            }
+            craters
+        });
+        let mut ray_indices = BTreeMap::new();
+        let mut ray_carriers = Vec::new();
+        for key in ray_keys {
+            if let Some(carrier) = self.ray_carrier_from_cell(key, None) {
+                ray_indices.insert(key, ray_carriers.len() as u32);
+                ray_carriers.push(PrefetchedCrater {
+                    crater: carrier,
+                    impact: self.base_surface(carrier.center),
+                });
+            }
+        }
+        let samples = sample_keys
+            .into_iter()
+            .map(|lookup| {
+                let mut sample = MoonSamplePrefetch::empty();
+                for octave in 0..tuning::CRATER_OCTAVES {
+                    let mut count = 0usize;
+                    for key in &lookup.octaves[octave][..lookup.octave_counts[octave] as usize] {
+                        if let Some(&index) = octave_indices[octave].get(key) {
+                            sample.octaves[octave][count] = index;
+                            count += 1;
+                        }
+                    }
+                    sample.octaves[octave][..count].sort_unstable_by_key(|&index| {
+                        octaves[octave][index as usize].crater.age_key
+                    });
+                    sample.octave_counts[octave] = count as u8;
+                }
+                let mut count = 0usize;
+                for key in &lookup.rays[..lookup.ray_count as usize] {
+                    if let Some(&index) = ray_indices.get(key) {
+                        sample.rays[count] = index;
+                        count += 1;
+                    }
+                }
+                sample.rays[..count]
+                    .sort_unstable_by_key(|&index| ray_carriers[index as usize].crater.age_key);
+                sample.ray_count = count as u8;
+                sample
+            })
+            .collect();
+        MoonCraterPrefetch {
+            octaves,
+            ray_carriers,
+            samples,
+            skip_octave,
+        }
+    }
+
+    fn sample_prefetched(
+        &self,
+        direction: DVec3,
+        prefetch: &MoonCraterPrefetch,
+        sample_index: usize,
+    ) -> MoonSample {
+        let direction = direction.normalize_or_zero();
+        if direction.length_squared() < 0.5 || !direction.is_finite() {
+            return MoonSample {
+                height_ratio: 0.0,
+                albedo: 0.5,
+                smoothness: 0.0,
+                ray: 0.0,
+            };
+        }
+        let base = self.base_surface(direction);
+        let mut state = SurfaceState {
+            height: base.height,
+            albedo: base.albedo,
+            smoothness: base.smoothness,
+            ray: 0.0,
+        };
+        let sample = &prefetch.samples[sample_index];
+        for (octave, crater_cache) in prefetch.octaves.iter().enumerate() {
+            if prefetch.skip_octave == Some(octave) {
+                continue;
+            }
+            for &index in &sample.octaves[octave][..sample.octave_counts[octave] as usize] {
+                let prefetched = crater_cache[index as usize];
+                self.apply_crater_with_impact(
+                    prefetched.crater,
+                    direction,
+                    &mut state,
+                    Some(prefetched.impact),
+                );
+            }
+            if octave == 4 {
+                for &index in &sample.rays[..sample.ray_count as usize] {
+                    let prefetched = prefetch.ray_carriers[index as usize];
+                    self.apply_crater_with_impact(
+                        prefetched.crater,
+                        direction,
+                        &mut state,
+                        Some(prefetched.impact),
+                    );
+                    self.apply_ray_field(prefetched.crater, direction, &mut state);
+                }
+            }
+        }
+        MoonSample {
+            height_ratio: state.height.clamp(-0.014, 0.010),
+            albedo: state.albedo.clamp(0.15, 0.96),
+            smoothness: state.smoothness.clamp(0.0, 1.0),
+            ray: state.ray.clamp(0.0, 1.0),
+        }
+    }
+
+    /// Sample a chunk/tile footprint with one amortized crater enumeration.
+    pub fn sample_batch(&self, directions: &[DVec3]) -> Vec<MoonSample> {
+        // Broad coarse-LOD tiles share few cells; their immutable generator
+        // cache is faster than building a sparse per-tile index. Compact
+        // landed 33x33 tiles and voxel chunks enumerate all crater/ray cells
+        // once and apply indexed lists per sample.
+        let anchor = directions
+            .first()
+            .copied()
+            .unwrap_or(DVec3::ZERO)
+            .normalize_or_zero();
+        let compact = directions
+            .iter()
+            .all(|&direction| (direction.normalize_or_zero() - anchor).length_squared() <= 0.0005);
+        if !compact {
+            return directions
+                .iter()
+                .map(|&direction| self.sample(direction))
+                .collect();
+        }
+        let prefetch = self.prefetch_for_directions(directions);
+        directions
+            .iter()
+            .enumerate()
+            .map(|(index, &direction)| self.sample_prefetched(direction, &prefetch, index))
+            .collect()
+    }
+
     pub fn height_km(&self, direction: DVec3, radius_km: f64) -> f64 {
         self.sample(direction).height_ratio * radius_km
     }
@@ -1173,17 +1424,18 @@ pub fn build_tile(generator: &MoonGenerator, key: TileKey, radius_km: f64) -> Ti
     let (u0, v0, size) = key.uv_range();
     let face = key.face as usize;
     let origin = key.center_dir() * radius_km;
-    let mut world = vec![DVec3::ZERO; np2 * np2];
-    let mut samples = Vec::with_capacity(np2 * np2);
+    let mut directions = Vec::with_capacity(np2 * np2);
     for gj in 0..np2 {
         for gi in 0..np2 {
             let u = u0 + size * (gi as f64 - 1.0) / TILE_QUADS as f64;
             let v = v0 + size * (gj as f64 - 1.0) / TILE_QUADS as f64;
-            let dir = face_dir(face, u, v);
-            let sample = generator.sample(dir);
-            world[gj * np2 + gi] = dir * (radius_km * (1.0 + sample.height_ratio));
-            samples.push(sample);
+            directions.push(face_dir(face, u, v));
         }
+    }
+    let samples = generator.sample_batch(&directions);
+    let mut world = vec![DVec3::ZERO; np2 * np2];
+    for (index, (&dir, sample)) in directions.iter().zip(&samples).enumerate() {
+        world[index] = dir * (radius_km * (1.0 + sample.height_ratio));
     }
 
     let half = TILE_QUADS / 2 + 1;
@@ -1316,6 +1568,42 @@ mod tests {
             a.sample(dir(23.5, -71.25)),
             MoonGenerator::new(43).sample(dir(23.5, -71.25))
         );
+    }
+
+    #[test]
+    fn prefetched_batch_is_bit_identical_to_scalar_sampling() {
+        let moon = MoonGenerator::new(42);
+        let mut directions = Vec::new();
+        // Exercise an ordinary tile footprint, a cube-face rim, and several
+        // unrelated directions so union candidates include harmless extras.
+        for j in 0..35 {
+            for i in 0..35 {
+                let u = -0.31 + 0.08 * i as f64 / 34.0;
+                let v = 0.77 + 0.08 * j as f64 / 34.0;
+                directions.push(face_dir(0, u, v));
+            }
+        }
+        for k in 0..64 {
+            let v = -0.95 + 1.9 * k as f64 / 63.0;
+            directions.push(face_dir(0, 1.0, v));
+        }
+        directions.extend([
+            dir(-36.2094, -1.0),
+            dir(37.0385, 101.1598),
+            dir(-29.5553, 33.9783),
+        ]);
+        let prefetch = moon.prefetch_for_directions(&directions);
+        for (index, &direction) in directions.iter().enumerate() {
+            let prefetched = moon.sample_prefetched(direction, &prefetch, index);
+            let scalar = moon.sample(direction);
+            assert_eq!(
+                prefetched.height_ratio.to_bits(),
+                scalar.height_ratio.to_bits()
+            );
+            assert_eq!(prefetched.albedo.to_bits(), scalar.albedo.to_bits());
+            assert_eq!(prefetched.smoothness.to_bits(), scalar.smoothness.to_bits());
+            assert_eq!(prefetched.ray.to_bits(), scalar.ray.to_bits());
+        }
     }
 
     #[test]

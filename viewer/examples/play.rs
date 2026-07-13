@@ -36,7 +36,8 @@
 //!                                 alt_km, radius_km, ground_km, support_below_km,
 //!                                 water_surface_km, ceiling_above_km,
 //!                                 vert_vel_mps, lat_deg, lon_deg, yaw_deg,
-//!                                 pitch_deg. OP: == != < <= > >= or ~ (approx,
+//!                                 pitch_deg, block_width_height_ratio.
+//!                                 OP: == != < <= > >= or ~ (approx,
 //!                                 optional 4th token = tolerance). VALUE: a
 //!                                 number, true/false, walk/fly, or `none`.
 //!   sun LAT LON                   pin the sun. WARNING: this is a GLOBAL sun
@@ -530,9 +531,25 @@ fn main() -> anyhow::Result<()> {
                     ln + 1
                 );
                 let (lat, lon) = (lat_deg.to_radians(), lon_deg.to_radians());
-                moon_probe_dir =
+                let requested =
                     glam::DVec3::new(lat.cos() * lon.cos(), lat.cos() * lon.sin(), lat.sin());
-                trace!("[{}] moonprobe {:.6} {:.6}", ln + 1, lat_deg, lon_deg);
+                let (face, ci, cj) =
+                    triangulum_viewer::voxel::column_id_body(&moon_body, requested);
+                moon_probe_dir = triangulum_viewer::voxel::dir_of_column_body(
+                    &moon_body,
+                    face as usize,
+                    ci,
+                    cj,
+                );
+                trace!(
+                    "[{}] moonprobe {:.6} {:.6} -> face {} column {} {}",
+                    ln + 1,
+                    lat_deg,
+                    lon_deg,
+                    face,
+                    ci,
+                    cj,
+                );
             }
             "look" => {
                 camera.yaw = f(1)?.to_radians();
@@ -1102,7 +1119,8 @@ fn main() -> anyhow::Result<()> {
                 let body = focused_voxel_body(&camera, &seasonal, &moon_body)
                     .unwrap_or(&seasonal);
                 let active_edits = focused_edits(&camera, &edits, &moon_edits);
-                let (column_face, column_ci, column_cj) = triangulum_viewer::voxel::column_id(dir);
+                let (column_face, column_ci, column_cj) =
+                    triangulum_viewer::voxel::column_id_body(body, dir);
                 let column = triangulum_viewer::voxel::col_ctx_body(
                     body,
                     active_edits,
@@ -1277,10 +1295,11 @@ fn main() -> anyhow::Result<()> {
                         V::N((neighbor.ground0 - column.ground0) as f64)
                     }
                     "neighbor_ceiling_km" => {
-                        let nn = triangulum_viewer::voxel::COLUMNS_PER_FACE as f64;
+                        let nn = body.columns_per_face() as f64;
                         let mut nearest = f64::INFINITY;
                         for (di, dj) in [(1i64, 0i64), (-1, 0), (0, 1), (0, -1)] {
-                            let (face, ci, cj) = triangulum_viewer::voxel::canonical_column(
+                            let (face, ci, cj) = triangulum_viewer::voxel::canonical_column_body(
+                                body,
                                 column_face as usize,
                                 column_ci as i64 + di,
                                 column_cj as i64 + dj,
@@ -1306,6 +1325,46 @@ fn main() -> anyhow::Result<()> {
                         .lunar
                         .map(|l| V::N(l.albedo as f64))
                         .unwrap_or(V::None),
+                    "block_width_height_ratio" => {
+                        // Probe actual neighboring column-center spacing in
+                        // body-local world space, then express it in Neisor
+                        // block-width units. Radial shells are one metre on
+                        // both bodies, so width / Neisor-width is the block
+                        // width/height proportion contract Andrew sees.
+                        let spacing_m = |probe_body: &dyn VoxelBody, probe_dir| {
+                            let (f, ci, cj) =
+                                triangulum_viewer::voxel::column_id_body(probe_body, probe_dir);
+                            let center = triangulum_viewer::voxel::dir_of_column_body(
+                                probe_body,
+                                f as usize,
+                                ci,
+                                cj,
+                            );
+                            let mut sum = 0.0;
+                            for (di, dj) in [(1i64, 0i64), (0, 1)] {
+                                let (nf, ni, nj) =
+                                    triangulum_viewer::voxel::canonical_column_body(
+                                        probe_body,
+                                        f as usize,
+                                        ci as i64 + di,
+                                        cj as i64 + dj,
+                                    );
+                                let neighbor = triangulum_viewer::voxel::dir_of_column_body(
+                                    probe_body,
+                                    nf as usize,
+                                    ni,
+                                    nj,
+                                );
+                                sum += (neighbor - center).length()
+                                    * probe_body.radius_km()
+                                    * 1000.0;
+                            }
+                            sum * 0.5
+                        };
+                        let body_width_m = spacing_m(body, dir);
+                        let neisor_width_m = spacing_m(&seasonal, dir);
+                        V::N(body_width_m / neisor_width_m)
+                    }
                     "lunar_material" => column
                         .lunar
                         .map(|l| {
