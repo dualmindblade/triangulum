@@ -102,6 +102,30 @@ is already built and gauntlet-enforced.
    net layer must be cleanly absent in harness runs so every
    instrument keeps its byte-exactness.
 
+## Deployment plan (Austin's infra, 2026-07-13)
+
+Domain: triangulum.dieorwrite.net (Cloudflare zone; API token lives
+in .cloudfare-creds at the repo root - GITIGNORED, never commit).
+Current machine: router forwards external 9999 -> local 8443, which
+is held by wslrelay (the WSL reverse proxy serving Austin's SSL
+apps). Two viable paths when the MP1 server lands:
+
+- RECOMMENDED - cloudflared tunnel: install cloudflared (winget),
+  create a named tunnel with the API token, CNAME
+  triangulum.dieorwrite.net to it, ingress wss -> the local game
+  server port. No router changes, no WSL-proxy surgery, TLS
+  terminates at Cloudflare, invite URL becomes
+  wss://triangulum.dieorwrite.net (plus token). Caveat: Cloudflare
+  proxies WebSockets fine on standard ports.
+- ALTERNATIVE - ride the existing 9999->8443 forward: add an SNI/
+  host route for triangulum.dieorwrite.net in the WSL proxy to the
+  game server port, DNS A record via the API. Touches Austin's
+  existing proxy config - only with him at the keyboard.
+
+Either way the DNS record is one API call with the stored token.
+Deploy is a follow-up step after the MP1 merge, not part of the
+mission.
+
 ## What multiplayer does NOT threaten
 
 The gauntlet, the reels, sync_diff, the censuses - all run on the
