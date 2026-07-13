@@ -299,6 +299,9 @@ pub struct MapEnv<'a> {
     pub cur_moon_lon: f64,
     pub cur_body: MapBody,
     pub time_scale: f64,
+    pub multiplayer_available: bool,
+    pub multiplayer_connected: bool,
+    pub multiplayer_status: &'a str,
 }
 
 /// A lat/lon rectangle (degrees) the view frames. `lat_top` is the larger
@@ -756,6 +759,12 @@ pub struct PhotoMap {
     pub pending_time_travel: Option<f64>,
     /// consumed by the app after ui(): new unified-clock rate
     pub pending_time_scale: Option<f64>,
+    /// Join controls live in the photo-map window; the app consumes these
+    /// requests after egui releases its borrows.
+    pub pending_join: Option<(String, String)>,
+    pub pending_disconnect: bool,
+    join_url: String,
+    join_name: String,
 }
 
 impl PhotoMap {
@@ -793,7 +802,16 @@ impl PhotoMap {
             travel_seeded: false,
             pending_time_travel: None,
             pending_time_scale: None,
+            pending_join: None,
+            pending_disconnect: false,
+            join_url: String::new(),
+            join_name: "Player".into(),
         }
+    }
+
+    pub fn set_join_defaults(&mut self, name: impl Into<String>, invite: Option<String>) {
+        self.join_name = name.into();
+        if let Some(invite) = invite { self.join_url = invite; }
     }
 
     pub fn toggle(&mut self) {
@@ -1009,6 +1027,33 @@ impl PhotoMap {
                         ui.label("Esc closes · scroll = zoom · drag = pan · double-click = reset · click = destination");
                     });
                 });
+                if env.multiplayer_available {
+                    ui.group(|ui| {
+                        ui.horizontal_wrapped(|ui| {
+                            ui.strong("Multiplayer (MP1)");
+                            ui.label("Name:");
+                            ui.add_enabled(
+                                !env.multiplayer_connected,
+                                egui::TextEdit::singleline(&mut self.join_name).desired_width(110.0),
+                            );
+                            ui.label("Join server:");
+                            ui.add_enabled(
+                                !env.multiplayer_connected,
+                                egui::TextEdit::singleline(&mut self.join_url)
+                                    .desired_width(430.0)
+                                    .hint_text("paste triangulum://host:port/#token or ws://..."),
+                            );
+                            if env.multiplayer_connected {
+                                if ui.button("Disconnect").clicked() { self.pending_disconnect = true; }
+                            } else if ui.button("Join").clicked() {
+                                self.pending_join = Some((self.join_url.trim().to_string(), self.join_name.trim().to_string()));
+                            }
+                        });
+                        if !env.multiplayer_status.is_empty() {
+                            ui.label(env.multiplayer_status);
+                        }
+                    });
+                }
                 // ---- time: the one clock, readable and travelable ----
                 // (Austin, 2026-07-12: verify seasons simply; stay in place,
                 // coordinates optional - map clicks still teleport as ever.)
@@ -1033,52 +1078,60 @@ impl PhotoMap {
                             cal.season_frac, env.weather_time_s, env.time_scale,
                         ));
                     });
-                    ui.horizontal_wrapped(|ui| {
-                        ui.label("Travel to:");
-                        ui.add(
-                            egui::DragValue::new(&mut self.travel_year)
-                                .range(1..=9999)
-                                .prefix("year "),
+                    if env.multiplayer_connected {
+                        ui.colored_label(
+                            egui::Color32::from_rgb(255, 205, 90),
+                            "Server operator controls time while connected (D-17); [ ], Travel, and Speed are disabled.",
                         );
-                        ui.add(
-                            egui::DragValue::new(&mut self.travel_month)
-                                .range(1..=months_per_year.max(1))
-                                .prefix("month "),
-                        );
-                        ui.add(
-                            egui::DragValue::new(&mut self.travel_day)
-                                .range(1..=days_per_month.max(1))
-                                .prefix("day "),
-                        );
-                        ui.add(
-                            egui::Slider::new(&mut self.travel_day_frac, 0.0..=1.0)
-                                .show_value(false)
-                                .text("time of day"),
-                        );
-                        if ui
-                            .button("Travel (stay here)")
-                            .on_hover_text(
-                                "seek the unified clock: sun, seasons, weather,                                  and orbits all move; your position does not",
-                            )
-                            .clicked()
-                        {
-                            self.pending_time_travel =
-                                Some(env.solar_tuning.calendar_to_t_s(
-                                    self.travel_year,
-                                    self.travel_month,
-                                    self.travel_day,
-                                    self.travel_day_frac,
-                                ));
-                        }
-                        ui.separator();
-                        ui.label("Speed:");
-                        for scale in [1.0, 10.0, 60.0, 600.0, 3600.0] {
-                            let active = (env.time_scale - scale).abs() < 0.5;
-                            if ui.selectable_label(active, format!("{scale:.0}x")).clicked()
+                    }
+                    ui.add_enabled_ui(!env.multiplayer_connected, |ui| {
+                        ui.horizontal_wrapped(|ui| {
+                            ui.label("Travel to:");
+                            ui.add(
+                                egui::DragValue::new(&mut self.travel_year)
+                                    .range(1..=9999)
+                                    .prefix("year "),
+                            );
+                            ui.add(
+                                egui::DragValue::new(&mut self.travel_month)
+                                    .range(1..=months_per_year.max(1))
+                                    .prefix("month "),
+                            );
+                            ui.add(
+                                egui::DragValue::new(&mut self.travel_day)
+                                    .range(1..=days_per_month.max(1))
+                                    .prefix("day "),
+                            );
+                            ui.add(
+                                egui::Slider::new(&mut self.travel_day_frac, 0.0..=1.0)
+                                    .show_value(false)
+                                    .text("time of day"),
+                            );
+                            if ui
+                                .button("Travel (stay here)")
+                                .on_hover_text(
+                                    "seek the unified clock: sun, seasons, weather, and orbits all move; your position does not",
+                                )
+                                .clicked()
                             {
-                                self.pending_time_scale = Some(scale);
+                                self.pending_time_travel =
+                                    Some(env.solar_tuning.calendar_to_t_s(
+                                        self.travel_year,
+                                        self.travel_month,
+                                        self.travel_day,
+                                        self.travel_day_frac,
+                                    ));
                             }
-                        }
+                            ui.separator();
+                            ui.label("Speed:");
+                            for scale in [1.0, 10.0, 60.0, 600.0, 3600.0] {
+                                let active = (env.time_scale - scale).abs() < 0.5;
+                                if ui.selectable_label(active, format!("{scale:.0}x")).clicked()
+                                {
+                                    self.pending_time_scale = Some(scale);
+                                }
+                            }
+                        });
                     });
                     ui.separator();
                 }

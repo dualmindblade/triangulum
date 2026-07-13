@@ -46,6 +46,12 @@ struct Args {
     /// --no-voxels: pure heightfield-mesh render (no chunk streaming, no
     /// hole). The eyeball twin of the sync-diff harness's `voxels off`.
     voxels: bool,
+    /// Multiplayer display name and optional startup invite. These flags are
+    /// accepted in every build; joining requires `--features multiplayer`.
+    name: String,
+    join: Option<String>,
+    /// Headless network capture waits this long for a remote presence.
+    multiplayer_wait_s: f64,
 }
 
 fn parse_args() -> Args {
@@ -65,6 +71,9 @@ fn parse_args() -> Args {
         weather: "live".into(),
         weather_time: None,
         voxels: true,
+        name: "Player".into(),
+        join: None,
+        multiplayer_wait_s: 8.0,
     };
     let argv: Vec<String> = std::env::args().collect();
     let mut i = 1;
@@ -130,6 +139,16 @@ fn parse_args() -> Args {
                 a.patch = numf(i, a.patch).clamp(0.3, 2.0);
                 i += 1;
             }
+            "--size" => {
+                if let Some((width, height)) = next(i).split_once('x')
+                    && let (Ok(width), Ok(height)) = (width.parse::<u32>(), height.parse::<u32>())
+                    && width > 0
+                    && height > 0
+                {
+                    a.size = (width, height);
+                }
+                i += 1;
+            }
             "--auto-tilt" => a.auto_tilt = true,
             "--no-voxels" => a.voxels = false,
             "--weather" => {
@@ -141,6 +160,18 @@ fn parse_args() -> Args {
                     .parse::<f64>()
                     .ok()
                     .filter(|v| v.is_finite() && *v >= 0.0);
+                i += 1;
+            }
+            "--name" => {
+                a.name = next(i);
+                i += 1;
+            }
+            "--join" => {
+                a.join = Some(next(i));
+                i += 1;
+            }
+            "--multiplayer-wait" => {
+                a.multiplayer_wait_s = numf(i, a.multiplayer_wait_s).clamp(0.5, 60.0);
                 i += 1;
             }
             other => eprintln!("unknown arg: {other}"),
@@ -192,6 +223,10 @@ fn apply_weather(renderer: &mut Renderer, planet: &Planet, spec: &str) {
 
 fn main() -> Result<()> {
     let args = parse_args();
+    #[cfg(not(feature = "multiplayer"))]
+    if args.join.is_some() {
+        anyhow::bail!("--join requires cargo build --features multiplayer");
+    }
     let planet = Arc::new(Planet::load(&assets_dir())?);
     // default pitch: look at the planet from orbit, at the horizon when low
     let auto_pitch = if args.pitch > 360.0 {
@@ -219,6 +254,10 @@ fn main() -> Result<()> {
     );
 
     if let Some(path) = args.capture.clone() {
+        #[cfg(feature = "multiplayer")]
+        if args.join.is_some() {
+            return capture_multiplayer(planet, camera, args, &path);
+        }
         return capture(planet, camera, args, &path);
     }
 
@@ -227,6 +266,15 @@ fn main() -> Result<()> {
     let mut body_edits = triangulum_viewer::voxel::BodyEdits::from_neisor(load_edits(planet_seed));
     *body_edits.for_body_mut(triangulum_viewer::orbits::BodyId::Moon) =
         load_moon_edits(planet_seed);
+    let mut photo_map = triangulum_viewer::ui::PhotoMap::new(interchange_dir().into());
+    photo_map.set_join_defaults(args.name.clone(), args.join.clone());
+    #[cfg(feature = "multiplayer")]
+    let multiplayer = MultiplayerState::new(
+        triangulum_multiplayer::load_world_identity(
+            std::path::Path::new(&assets_dir()),
+            option_env!("TRI_BUILD").unwrap_or("unstamped"),
+        )?,
+    );
     let mut app = App {
         planet,
         camera,
@@ -239,7 +287,7 @@ fn main() -> Result<()> {
         camera_rig: CameraRig::default(),
         last_frame: std::time::Instant::now(),
         mouse_locked: false,
-        photo_map: triangulum_viewer::ui::PhotoMap::new(interchange_dir().into()),
+        photo_map,
         egui_ctx: egui::Context::default(),
         egui_state: None,
         egui_paint: None,
@@ -247,7 +295,13 @@ fn main() -> Result<()> {
         edits: body_edits,
         torches: load_torches(planet_seed),
         moon_body: None,
+        #[cfg(feature = "multiplayer")]
+        multiplayer,
     };
+    #[cfg(feature = "multiplayer")]
+    if let Some(invite) = app.args.join.clone() {
+        app.begin_join(invite, app.args.name.clone());
+    }
     event_loop.run_app(&mut app)?;
     Ok(())
 }
@@ -314,6 +368,155 @@ fn capture(planet: Arc<Planet>, camera: Camera, args: Args, path: &str) -> Resul
         camera.lon.to_degrees(),
         camera.altitude_km
     );
+    Ok(())
+}
+
+#[cfg(feature = "multiplayer")]
+fn capture_multiplayer(planet: Arc<Planet>, camera: Camera, args: Args, path: &str) -> Result<()> {
+    let invite = args.join.clone().expect("multiplayer capture requires --join");
+    let identity = triangulum_multiplayer::load_world_identity(
+        std::path::Path::new(&assets_dir()),
+        option_env!("TRI_BUILD").unwrap_or("unstamped"),
+    )?;
+    let client = triangulum_viewer::net::NetworkClient::spawn();
+    client.connect(invite, args.name.clone(), identity.clone()).map_err(anyhow::Error::msg)?;
+    let started = std::time::Instant::now();
+    let deadline = started + std::time::Duration::from_secs_f64(args.multiplayer_wait_s);
+    let mut last_presence = started - std::time::Duration::from_secs(1);
+    let mut remote = triangulum_viewer::net::RemotePlayers::default();
+    let mut shared_edits = triangulum_viewer::voxel::BodyEdits::default();
+    let mut clock_slew: Option<(triangulum_multiplayer::ClockSlew, std::time::Instant, f64)> = None;
+    let mut connected = false;
+    let mut last_edit_sequence = 0u64;
+    loop {
+        while let Some(event) = client.try_recv() {
+            use triangulum_viewer::net::ClientEvent;
+            match event {
+                ClientEvent::Connecting(_) => {}
+                ClientEvent::Refused { code, message } => {
+                    anyhow::bail!("MULTIPLAYER REFUSED [{code}]: {message}");
+                }
+                ClientEvent::Disconnected(reason) => anyhow::bail!("multiplayer capture disconnected: {reason}"),
+                ClientEvent::Message(message) => match message {
+                    triangulum_multiplayer::Message::Welcome(welcome) => {
+                        if welcome.protocol_version != triangulum_multiplayer::PROTOCOL_VERSION {
+                            anyhow::bail!(
+                                "WELCOME protocol mismatch: client={} server={}",
+                                triangulum_multiplayer::PROTOCOL_VERSION,
+                                welcome.protocol_version,
+                            );
+                        }
+                        if let Some(mismatch) = welcome.identity.mismatch(&identity) {
+                            anyhow::bail!("WELCOME identity mismatch: {mismatch}");
+                        }
+                        let mut expected = 1u64;
+                        for record in welcome.edit_journal {
+                            if record.sequence != expected { anyhow::bail!("journal sequence gap in welcome"); }
+                            let body = viewer_body(record.edit.body);
+                            shared_edits.for_body_mut(body).insert(
+                                (record.edit.face, record.edit.ci, record.edit.cj),
+                                record.edit.value,
+                            );
+                            last_edit_sequence = record.sequence;
+                            expected += 1;
+                        }
+                        remote.reset(welcome.player_id, welcome.players);
+                        clock_slew = Some((
+                            triangulum_multiplayer::ClockSlew::new(0.0, &welcome.clock, 2.0),
+                            std::time::Instant::now(),
+                            welcome.clock.time_scale,
+                        ));
+                        connected = true;
+                    }
+                    triangulum_multiplayer::Message::PlayerJoined(player) => remote.join(player),
+                    triangulum_multiplayer::Message::PlayerLeft { player_id } => remote.leave(player_id),
+                    triangulum_multiplayer::Message::Presence { player_id, pose } => remote.presence(player_id, pose),
+                    triangulum_multiplayer::Message::Edit(record) => {
+                        let expected = last_edit_sequence.saturating_add(1);
+                        if record.sequence != expected {
+                            anyhow::bail!(
+                                "live journal sequence gap: expected {expected}, received {}",
+                                record.sequence,
+                            );
+                        }
+                        let body = viewer_body(record.edit.body);
+                        shared_edits.for_body_mut(body).insert(
+                            (record.edit.face, record.edit.ci, record.edit.cj), record.edit.value,
+                        );
+                        last_edit_sequence = record.sequence;
+                    }
+                    triangulum_multiplayer::Message::ClockEvent(event) => {
+                        let local = clock_slew.as_ref().map_or(0.0, |(slew, at, _)| slew.sample(at.elapsed().as_secs_f64()));
+                        clock_slew = Some((
+                            triangulum_multiplayer::ClockSlew::new(local, &event.state, 2.0),
+                            std::time::Instant::now(), event.state.time_scale,
+                        ));
+                    }
+                    triangulum_multiplayer::Message::Error { code, message } => eprintln!("SERVER ERROR [{code}]: {message}"),
+                    _ => {}
+                },
+            }
+        }
+        if connected && last_presence.elapsed() >= std::time::Duration::from_millis(67) {
+            last_presence = std::time::Instant::now();
+            let pose = triangulum_multiplayer::BodyPose {
+                body: protocol_body(camera.body),
+                lat_deg: camera.lat.to_degrees(),
+                lon_deg: camera.lon.to_degrees(),
+                alt_km: camera.ground_km + camera.altitude_km,
+                yaw_deg: camera.yaw.to_degrees(),
+                pitch_deg: camera.pitch.to_degrees(),
+                roll_deg: camera.roll.to_degrees(),
+                mode: triangulum_multiplayer::PlayerMode::Fly,
+            };
+            let _ = client.send(triangulum_multiplayer::Message::PresenceUpdate(pose));
+        }
+        let has_remote_pose = remote.iter().any(|(_, player)| player.sample(std::time::Instant::now()).is_some());
+        let slew_ready = clock_slew.as_ref().is_some_and(|(_, at, _)| at.elapsed() >= std::time::Duration::from_secs(2));
+        if connected && has_remote_pose && slew_ready { break; }
+        if std::time::Instant::now() >= deadline {
+            anyhow::bail!("timed out waiting for a second player's presence for multiplayer capture");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+    let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+        power_preference: wgpu::PowerPreference::HighPerformance,
+        compatible_surface: None,
+        force_fallback_adapter: false,
+        apply_limit_buckets: false,
+    }))?;
+    let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default()))?;
+    let mut renderer = Renderer::new(device, queue, wgpu::TextureFormat::Rgba8UnormSrgb, args.size, args.exaggeration);
+    renderer.sun_dir = args.sun.map(|(la, lo)| {
+        let (la, lo) = (la.to_radians(), lo.to_radians());
+        glam::DVec3::new(la.cos() * lo.cos(), la.cos() * lo.sin(), la.sin())
+    });
+    renderer.sun_ref_lon = args.lon.to_radians();
+    renderer.patch_scale = args.patch;
+    renderer.voxels_on = args.voxels;
+    renderer.refresh_world_snapshot(shared_edits.for_body(camera.body));
+    apply_weather(&mut renderer, &planet, &args.weather);
+    if let Some(day_len_s) = args.day_len { renderer.day_len_s = day_len_s; }
+    if let Some((slew, at, scale)) = &clock_slew {
+        renderer.set_time_scale(*scale);
+        renderer.set_weather_time_s(slew.sample(at.elapsed().as_secs_f64()));
+    }
+    let now = std::time::Instant::now();
+    renderer.set_remote_avatars(remote.iter().filter_map(|(_, player)| {
+        let pose = player.sample(now)?;
+        Some(triangulum_viewer::renderer::RemoteAvatar {
+            name: player.info.name.clone(), body: viewer_body(pose.body),
+            lat_deg: pose.lat_deg, lon_deg: pose.lon_deg, alt_km: pose.alt_km,
+            yaw_deg: pose.yaw_deg, tint: player.info.tint,
+        })
+    }).collect());
+    let edits = shared_edits.for_body(camera.body);
+    let (n, sun, sun_pinned, day_len_s) =
+        capture_with_recorded_sun(&mut renderer, &planet, &camera, edits, path)?;
+    write_shot_sidecar(path, &planet, &camera, &args, "multiplayer", sun, sun_pinned, day_len_s, &renderer)?;
+    println!("captured multiplayer {path} ({n} tiles, remote avatar + name label visible)");
     Ok(())
 }
 
@@ -519,6 +722,56 @@ struct Gfx {
 
 use triangulum_viewer::player::{Mode, PlayerState};
 
+#[cfg(feature = "multiplayer")]
+struct MultiplayerState {
+    client: triangulum_viewer::net::NetworkClient,
+    identity: triangulum_multiplayer::WorldIdentity,
+    status: String,
+    connected: bool,
+    remote_players: triangulum_viewer::net::RemotePlayers,
+    offline_edits: Option<triangulum_viewer::voxel::BodyEdits>,
+    offline_clock: Option<(f64, f64)>,
+    clock_slew: Option<(triangulum_multiplayer::ClockSlew, std::time::Instant)>,
+    last_presence: std::time::Instant,
+    last_edit_sequence: u64,
+}
+
+#[cfg(feature = "multiplayer")]
+impl MultiplayerState {
+    fn new(identity: triangulum_multiplayer::WorldIdentity) -> Self {
+        Self {
+            client: triangulum_viewer::net::NetworkClient::spawn(),
+            identity,
+            status: "Not connected".into(),
+            connected: false,
+            remote_players: Default::default(),
+            offline_edits: None,
+            offline_clock: None,
+            clock_slew: None,
+            last_presence: std::time::Instant::now() - std::time::Duration::from_secs(1),
+            last_edit_sequence: 0,
+        }
+    }
+}
+
+#[cfg(feature = "multiplayer")]
+fn protocol_body(body: triangulum_viewer::orbits::BodyId) -> triangulum_multiplayer::BodyId {
+    match body {
+        triangulum_viewer::orbits::BodyId::Neisor => triangulum_multiplayer::BodyId::Neisor,
+        triangulum_viewer::orbits::BodyId::Moon => triangulum_multiplayer::BodyId::Moon,
+        triangulum_viewer::orbits::BodyId::Sun => triangulum_multiplayer::BodyId::Sun,
+    }
+}
+
+#[cfg(feature = "multiplayer")]
+fn viewer_body(body: triangulum_multiplayer::BodyId) -> triangulum_viewer::orbits::BodyId {
+    match body {
+        triangulum_multiplayer::BodyId::Neisor => triangulum_viewer::orbits::BodyId::Neisor,
+        triangulum_multiplayer::BodyId::Moon => triangulum_viewer::orbits::BodyId::Moon,
+        triangulum_multiplayer::BodyId::Sun => triangulum_viewer::orbits::BodyId::Sun,
+    }
+}
+
 struct App {
     planet: Arc<Planet>,
     camera: Camera,
@@ -541,6 +794,8 @@ struct App {
     edits: triangulum_viewer::voxel::BodyEdits,
     torches: triangulum_viewer::voxel::Torches,
     moon_body: Option<triangulum_viewer::voxel::LunarBody>,
+    #[cfg(feature = "multiplayer")]
+    multiplayer: MultiplayerState,
 }
 
 /// Where in-game screenshots land (matches the interchange workflow).
@@ -715,6 +970,253 @@ fn save_edits(seed: i64, body: triangulum_viewer::orbits::BodyId, edits: &triang
 }
 
 impl App {
+    #[cfg(feature = "multiplayer")]
+    fn begin_join(&mut self, invite: String, name: String) {
+        if invite.trim().is_empty() {
+            self.multiplayer.status = "Join URL is empty".into();
+            return;
+        }
+        if self.multiplayer.connected {
+            self.multiplayer.client.disconnect();
+            self.restore_offline_world();
+        }
+        let name = triangulum_multiplayer::clean_player_name(&name);
+        match self.multiplayer.client.connect(
+            invite.clone(),
+            name,
+            self.multiplayer.identity.clone(),
+        ) {
+            Ok(()) => self.multiplayer.status = format!("Connecting to {invite} ..."),
+            Err(error) => self.multiplayer.status = format!("Could not start join: {error}"),
+        }
+    }
+
+    #[cfg(feature = "multiplayer")]
+    fn restore_offline_world(&mut self) {
+        if let Some(edits) = self.multiplayer.offline_edits.take() {
+            self.edits = edits;
+            if let Some(gfx) = self.gfx.as_mut() {
+                gfx.renderer.replace_world_snapshot(self.edits.for_body(self.camera.body));
+            }
+        }
+        if let Some((absolute_time_s, time_scale)) = self.multiplayer.offline_clock.take()
+            && let Some(gfx) = self.gfx.as_mut()
+        {
+            gfx.renderer.set_time_scale(time_scale);
+            gfx.renderer.set_weather_time_s(absolute_time_s);
+        }
+        self.multiplayer.connected = false;
+        self.multiplayer.remote_players.clear();
+        self.multiplayer.clock_slew = None;
+        self.multiplayer.last_edit_sequence = 0;
+        if let Some(gfx) = self.gfx.as_mut() {
+            gfx.renderer.set_remote_avatars(Vec::new());
+        }
+    }
+
+    #[cfg(feature = "multiplayer")]
+    fn apply_network_edit(&mut self, record: triangulum_multiplayer::EditRecord) -> Result<(), String> {
+        let expected = self.multiplayer.last_edit_sequence.saturating_add(1);
+        if record.sequence != expected {
+            return Err(format!("edit sequence mismatch: expected {expected}, received {}", record.sequence));
+        }
+        record.edit.validate()?;
+        let body = viewer_body(record.edit.body);
+        self.edits.for_body_mut(body).insert(
+            (record.edit.face, record.edit.ci, record.edit.cj),
+            record.edit.value,
+        );
+        if body == self.camera.body {
+            let active = self.edits.for_body(body);
+            if let Some(gfx) = self.gfx.as_mut() {
+                gfx.renderer.refresh_edits_snapshot(active);
+                let dirty = triangulum_viewer::voxel::chunks_touching_column_body(
+                    body, record.edit.face, record.edit.ci, record.edit.cj,
+                );
+                gfx.renderer.invalidate_chunks(&dirty);
+            }
+        }
+        self.multiplayer.last_edit_sequence = record.sequence;
+        Ok(())
+    }
+
+    #[cfg(feature = "multiplayer")]
+    fn install_welcome(&mut self, welcome: triangulum_multiplayer::Welcome) -> Result<(), String> {
+        if welcome.protocol_version != triangulum_multiplayer::PROTOCOL_VERSION {
+            return Err(format!(
+                "WELCOME protocol mismatch: client={} server={}",
+                triangulum_multiplayer::PROTOCOL_VERSION,
+                welcome.protocol_version
+            ));
+        }
+        if let Some(mismatch) = welcome.identity.mismatch(&self.multiplayer.identity) {
+            return Err(format!("WELCOME identity mismatch: {mismatch}"));
+        }
+        if self.multiplayer.offline_edits.is_none() {
+            self.multiplayer.offline_edits = Some(self.edits.clone());
+        }
+        self.edits = triangulum_viewer::voxel::BodyEdits::default();
+        self.multiplayer.last_edit_sequence = 0;
+        for record in welcome.edit_journal {
+            self.apply_network_edit(record)?;
+        }
+        if let Some(gfx) = self.gfx.as_mut() {
+            gfx.renderer.replace_world_snapshot(self.edits.for_body(self.camera.body));
+            let local_time = gfx.renderer.weather_time_s();
+            if self.multiplayer.offline_clock.is_none() {
+                self.multiplayer.offline_clock = Some((local_time, gfx.renderer.time_scale()));
+            }
+            gfx.renderer.set_time_scale(welcome.clock.time_scale);
+            self.multiplayer.clock_slew = Some((
+                triangulum_multiplayer::ClockSlew::new(local_time, &welcome.clock, 2.0),
+                std::time::Instant::now(),
+            ));
+        }
+        let peers = welcome.players.len();
+        self.multiplayer.remote_players.reset(welcome.player_id, welcome.players);
+        self.multiplayer.connected = true;
+        self.multiplayer.status = format!(
+            "Connected as player {} · {} other player{} · server controls time (D-17)",
+            welcome.player_id,
+            peers,
+            if peers == 1 { "" } else { "s" },
+        );
+        Ok(())
+    }
+
+    #[cfg(feature = "multiplayer")]
+    fn drain_multiplayer(&mut self) {
+        let mut events = Vec::new();
+        while let Some(event) = self.multiplayer.client.try_recv() { events.push(event); }
+        for event in events {
+            use triangulum_viewer::net::ClientEvent;
+            match event {
+                ClientEvent::Connecting(invite) => {
+                    self.multiplayer.status = format!("Connecting to {invite} ...");
+                }
+                ClientEvent::Refused { code, message } => {
+                    let loud = format!("MULTIPLAYER REFUSED [{code}]: {message}");
+                    eprintln!("{loud}");
+                    self.multiplayer.status = loud;
+                    self.restore_offline_world();
+                }
+                ClientEvent::Disconnected(reason) => {
+                    let was_refused = self.multiplayer.status.starts_with("MULTIPLAYER REFUSED");
+                    self.restore_offline_world();
+                    if !was_refused {
+                        self.multiplayer.status = format!("Disconnected: {reason}");
+                        eprintln!("MULTIPLAYER DISCONNECTED: {reason}");
+                    }
+                }
+                ClientEvent::Message(message) => {
+                    use triangulum_multiplayer::Message;
+                    match message {
+                        Message::Welcome(welcome) => {
+                            if let Err(error) = self.install_welcome(welcome) {
+                                eprintln!("MULTIPLAYER REFUSED LOCALLY: {error}");
+                                self.multiplayer.status = format!("MULTIPLAYER REFUSED LOCALLY: {error}");
+                                self.multiplayer.client.disconnect();
+                                self.restore_offline_world();
+                            }
+                        }
+                        Message::Edit(record) => {
+                            if let Err(error) = self.apply_network_edit(record) {
+                                eprintln!("MULTIPLAYER DIVERGENCE: {error}");
+                                self.multiplayer.status = format!("Disconnected: {error}");
+                                self.multiplayer.client.disconnect();
+                                self.restore_offline_world();
+                            }
+                        }
+                        Message::Presence { player_id, pose } => {
+                            self.multiplayer.remote_players.presence(player_id, pose);
+                        }
+                        Message::PlayerJoined(player) => {
+                            self.multiplayer.status = format!("{} joined · server controls time (D-17)", player.name);
+                            self.multiplayer.remote_players.join(player);
+                        }
+                        Message::PlayerLeft { player_id } => {
+                            self.multiplayer.remote_players.leave(player_id);
+                            self.multiplayer.status = format!("Player {player_id} left · server controls time (D-17)");
+                        }
+                        Message::ClockEvent(event) => {
+                            if let Some(gfx) = self.gfx.as_mut() {
+                                let local_time = gfx.renderer.weather_time_s();
+                                gfx.renderer.set_time_scale(event.state.time_scale);
+                                self.multiplayer.clock_slew = Some((
+                                    triangulum_multiplayer::ClockSlew::new(local_time, &event.state, 2.0),
+                                    std::time::Instant::now(),
+                                ));
+                            }
+                            self.multiplayer.status = format!("Authoritative clock event {:?} · server controls time (D-17)", event.kind);
+                        }
+                        Message::Error { code, message } => {
+                            eprintln!("MULTIPLAYER SERVER ERROR [{code}]: {message}");
+                            self.multiplayer.status = format!("Server: {message}");
+                        }
+                        Message::Pong { .. } | Message::Ping { .. } => {}
+                        Message::Hello(_) | Message::Refusal(_) | Message::EditRequest(_)
+                        | Message::PresenceUpdate(_) | Message::ClockCommand(_) => {}
+                    }
+                }
+            }
+        }
+    }
+
+    #[cfg(feature = "multiplayer")]
+    fn update_multiplayer(&mut self) {
+        self.drain_multiplayer();
+        if let Some((slew, started)) = &self.multiplayer.clock_slew
+            && let Some(gfx) = self.gfx.as_mut()
+        {
+            let elapsed = started.elapsed().as_secs_f64();
+            gfx.renderer.set_weather_time_s(slew.sample(elapsed));
+            if slew.complete(elapsed) { self.multiplayer.clock_slew = None; }
+        }
+        if self.multiplayer.connected
+            && self.multiplayer.last_presence.elapsed() >= std::time::Duration::from_millis(67)
+        {
+            self.multiplayer.last_presence = std::time::Instant::now();
+            if self.camera.body == triangulum_viewer::orbits::BodyId::Sun {
+                return;
+            }
+            let mode = match self.player.mode {
+                Mode::Fly => triangulum_multiplayer::PlayerMode::Fly,
+                Mode::Walk => triangulum_multiplayer::PlayerMode::Walk,
+            };
+            let pose = triangulum_multiplayer::BodyPose {
+                body: protocol_body(self.camera.body),
+                lat_deg: self.camera.lat.to_degrees(),
+                lon_deg: self.camera.lon.to_degrees(),
+                alt_km: self.camera.ground_km + self.camera.altitude_km,
+                yaw_deg: self.camera.yaw.to_degrees(),
+                pitch_deg: self.camera.pitch.to_degrees(),
+                roll_deg: self.camera.roll.to_degrees(),
+                mode,
+            };
+            let _ = self.multiplayer.client.send(triangulum_multiplayer::Message::PresenceUpdate(pose));
+        }
+    }
+
+    #[cfg(feature = "multiplayer")]
+    fn refresh_remote_avatars(&mut self) {
+        let now = std::time::Instant::now();
+        let avatars = if self.multiplayer.connected {
+            self.multiplayer.remote_players.iter().filter_map(|(_, remote)| {
+                let pose = remote.sample(now)?;
+                Some(triangulum_viewer::renderer::RemoteAvatar {
+                    name: remote.info.name.clone(),
+                    body: viewer_body(pose.body),
+                    lat_deg: pose.lat_deg,
+                    lon_deg: pose.lon_deg,
+                    alt_km: pose.alt_km,
+                    yaw_deg: pose.yaw_deg,
+                    tint: remote.info.tint,
+                })
+            }).collect()
+        } else { Vec::new() };
+        if let Some(gfx) = self.gfx.as_mut() { gfx.renderer.set_remote_avatars(avatars); }
+    }
+
     /// Break (dh = -1) or place (dh = +1) a block at the targeted column.
     /// Breaking removes the top block of the column you hit; placing is
     /// face-aware: aiming at the side of something builds on the column in
@@ -739,7 +1241,7 @@ impl App {
             triangulum_viewer::orbits::BodyId::Sun => return,
         };
         let edits = self.edits.for_body_mut(body_id);
-        if let Some(dirty) = triangulum_viewer::player::edit_block(
+        if let Some(outcome) = triangulum_viewer::player::edit_block_detailed(
             body,
             edits,
             &self.camera,
@@ -749,7 +1251,7 @@ impl App {
         ) {
             if let Some(gfx) = self.gfx.as_mut() {
                 gfx.renderer.refresh_edits_snapshot(edits);
-                gfx.renderer.invalidate_chunks(&dirty);
+                gfx.renderer.invalidate_chunks(&outcome.dirty);
             }
             self.player.refresh_after_edit(
                 body,
@@ -757,12 +1259,37 @@ impl App {
                 &self.camera,
                 self.args.exaggeration,
             );
+            #[cfg(feature = "multiplayer")]
+            if self.multiplayer.connected {
+                let (face, ci, cj) = outcome.column;
+                let request = triangulum_multiplayer::EditRequest {
+                    body: protocol_body(body_id),
+                    face,
+                    ci,
+                    cj,
+                    value: outcome.value,
+                };
+                if let Err(error) = self.multiplayer.client.send(
+                    triangulum_multiplayer::Message::EditRequest(request),
+                ) {
+                    self.multiplayer.status = format!("Could not send edit: {error}");
+                }
+            } else {
+                save_edits(self.planet.seed, body_id, edits);
+            }
+            #[cfg(not(feature = "multiplayer"))]
             save_edits(self.planet.seed, body_id, edits);
         }
     }
 
     /// R: toggle a torch on the walkable top of the targeted column.
     fn toggle_torch(&mut self) {
+        #[cfg(feature = "multiplayer")]
+        if self.multiplayer.connected {
+            self.multiplayer.status =
+                "Torch placement is offline-only in MP1; shared column edits remain enabled".into();
+            return;
+        }
         if self.camera.body != triangulum_viewer::orbits::BodyId::Neisor {
             return;
         }
@@ -1154,6 +1681,10 @@ impl App {
                 gfx.renderer.refresh_edits_snapshot(moon_edits);
             }
         }
+        #[cfg(feature = "multiplayer")]
+        let local_time_authority = !self.multiplayer.connected;
+        #[cfg(not(feature = "multiplayer"))]
+        let local_time_authority = true;
         if let (Some(on), Some(gfx)) = (act.weather_on, self.gfx.as_mut()) {
             gfx.renderer.weather_on = on;
             gfx.renderer.weather_pin = if on {
@@ -1162,11 +1693,16 @@ impl App {
             } else {
                 None
             };
-            if on && let Some(t_s) = act.weather_time_s.filter(|v| v.is_finite() && *v >= 0.0) {
+            if local_time_authority
+                && on
+                && let Some(t_s) = act.weather_time_s.filter(|v| v.is_finite() && *v >= 0.0)
+            {
                 gfx.renderer.set_weather_time_s(t_s);
             }
         }
-        if let (Some(t), Some(gfx)) = (act.day_time_s.filter(|v| v.is_finite()), self.gfx.as_mut())
+        if local_time_authority
+            && let (Some(t), Some(gfx)) =
+                (act.day_time_s.filter(|v| v.is_finite()), self.gfx.as_mut())
         {
             // Apply this AFTER the absolute weather/orbit seek: the daily
             // offset is defined relative to that absolute coordinate.
@@ -1354,6 +1890,9 @@ impl App {
             }
         }
 
+        #[cfg(feature = "multiplayer")]
+        self.update_multiplayer();
+
         // window title as a tiny HUD, twice a second (the teleport prompt
         // owns the title while it's open)
         self.title_timer += dt;
@@ -1372,14 +1911,23 @@ impl App {
                     }
                     None => String::new(),
                 };
+                #[cfg(feature = "multiplayer")]
+                let multiplayer = if self.multiplayer.connected {
+                    " | MULTIPLAYER · server controls time (D-17)"
+                } else {
+                    ""
+                };
+                #[cfg(not(feature = "multiplayer"))]
+                let multiplayer = "";
                 gfx.window.set_title(&format!(
-                    "Neisor [{}] — {} | lat {:.3} lon {:.3} alt {:.3} km{}",
+                    "Neisor [{}] — {} | lat {:.3} lon {:.3} alt {:.3} km{}{}",
                     option_env!("TRI_BUILD").unwrap_or("unstamped"),
                     mode,
                     self.camera.lat.to_degrees(),
                     self.camera.lon.to_degrees(),
                     self.camera.altitude_km,
-                    perf
+                    perf,
+                    multiplayer,
                 ));
             }
         }
@@ -1569,7 +2117,11 @@ impl ApplicationHandler for App {
                                     K::BracketLeft | K::BracketRight => {
                                         const LADDER: [f64; 5] =
                                             [1.0, 10.0, 60.0, 600.0, 3600.0];
-                                        if let Some(gfx) = self.gfx.as_mut() {
+                                        #[cfg(feature = "multiplayer")]
+                                        let time_enabled = !self.multiplayer.connected;
+                                        #[cfg(not(feature = "multiplayer"))]
+                                        let time_enabled = true;
+                                        if time_enabled && let Some(gfx) = self.gfx.as_mut() {
                                             let cur = gfx.renderer.time_scale();
                                             let idx = LADDER
                                                 .iter()
@@ -1700,6 +2252,8 @@ impl ApplicationHandler for App {
             }
             WindowEvent::RedrawRequested => {
                 self.update();
+                #[cfg(feature = "multiplayer")]
+                self.refresh_remote_avatars();
                 // photo map: build this frame's UI before borrowing gfx for
                 // the draw (split borrows via locals)
                 let mut ui_frame = None;
@@ -1734,6 +2288,12 @@ impl ApplicationHandler for App {
                         }
                         _ => triangulum_viewer::ui::MapBody::Neisor,
                     };
+                    #[cfg(feature = "multiplayer")]
+                    let (multiplayer_connected, multiplayer_status) =
+                        (self.multiplayer.connected, self.multiplayer.status.as_str());
+                    #[cfg(not(feature = "multiplayer"))]
+                    let (multiplayer_connected, multiplayer_status) =
+                        (false, "Multiplayer support is not compiled into this binary");
                     let env = triangulum_viewer::ui::MapEnv {
                         planet: &self.planet,
                         weather_field: renderer.weather_field.as_ref().map(|v| &**v),
@@ -1749,6 +2309,9 @@ impl ApplicationHandler for App {
                         cur_moon_lon,
                         cur_body,
                         time_scale: renderer.time_scale(),
+                        multiplayer_available: cfg!(feature = "multiplayer"),
+                        multiplayer_connected,
+                        multiplayer_status,
                     };
                     let full = self.egui_ctx.run_ui(raw, |ctx| {
                         action = pm.ui(ctx, &env);
@@ -1757,7 +2320,28 @@ impl ApplicationHandler for App {
                     let prims = self.egui_ctx.tessellate(full.shapes, full.pixels_per_point);
                     ui_frame = Some((prims, full.textures_delta, full.pixels_per_point));
                 }
-                if let Some(t_s) = self.photo_map.pending_time_travel.take()
+                #[cfg(feature = "multiplayer")]
+                if self.photo_map.pending_disconnect {
+                    self.photo_map.pending_disconnect = false;
+                    self.multiplayer.client.disconnect();
+                    self.restore_offline_world();
+                    self.multiplayer.status = "Disconnected; single-player world restored".into();
+                }
+                #[cfg(feature = "multiplayer")]
+                if let Some((invite, name)) = self.photo_map.pending_join.take() {
+                    self.begin_join(invite, name);
+                }
+                #[cfg(not(feature = "multiplayer"))]
+                {
+                    self.photo_map.pending_disconnect = false;
+                    self.photo_map.pending_join = None;
+                }
+                #[cfg(feature = "multiplayer")]
+                let local_time_authority = !self.multiplayer.connected;
+                #[cfg(not(feature = "multiplayer"))]
+                let local_time_authority = true;
+                if local_time_authority
+                    && let Some(t_s) = self.photo_map.pending_time_travel.take()
                     && let Some(gfx) = self.gfx.as_mut()
                 {
                     gfx.renderer.set_weather_time_s(t_s);
@@ -1765,10 +2349,15 @@ impl ApplicationHandler for App {
                     // a timeskip keeps the local pose per the P1 spec; the
                     // seasonal chunk buckets refresh through streaming.
                 }
-                if let Some(s) = self.photo_map.pending_time_scale.take()
+                if local_time_authority
+                    && let Some(s) = self.photo_map.pending_time_scale.take()
                     && let Some(gfx) = self.gfx.as_mut()
                 {
                     gfx.renderer.set_time_scale(s);
+                }
+                if !local_time_authority {
+                    self.photo_map.pending_time_travel = None;
+                    self.photo_map.pending_time_scale = None;
                 }
                 let gfx = self.gfx.as_mut().unwrap();
                 use wgpu::CurrentSurfaceTexture as Cst;

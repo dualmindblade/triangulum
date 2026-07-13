@@ -166,6 +166,32 @@ struct BodyVertex {
     normal: [f32; 3],
 }
 
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct AvatarVertex {
+    position: [f32; 3],
+    normal: [f32; 3],
+    color: [f32; 4],
+}
+
+/// Renderer-facing snapshot of an interpolated remote body-local pose. The
+/// network module owns interpolation; the renderer owns the physical-body
+/// transform and never receives a planet-global f32 coordinate.
+#[derive(Clone, Debug)]
+pub struct RemoteAvatar {
+    pub name: String,
+    pub body: BodyId,
+    pub lat_deg: f64,
+    pub lon_deg: f64,
+    /// Radial height above the nominal body radius, at eye level.
+    pub alt_km: f64,
+    pub yaw_deg: f64,
+    pub tint: [f32; 3],
+}
+
+const MAX_REMOTE_AVATARS: usize = 16;
+const MAX_AVATAR_VERTICES: usize = 131_072;
+
 /// How many placed torches can light a frame at once (nearest win).
 pub const MAX_LIGHTS: usize = 16;
 
@@ -231,9 +257,12 @@ pub struct Renderer {
     body_pipeline: wgpu::RenderPipeline,
     moon_pipeline: wgpu::RenderPipeline,
     precip_pipeline: wgpu::RenderPipeline,
+    avatar_pipeline: wgpu::RenderPipeline,
     body_vertex_buf: wgpu::Buffer,
     body_index_buf: wgpu::Buffer,
     body_index_count: u32,
+    avatar_vertex_buf: wgpu::Buffer,
+    remote_avatars: Vec<RemoteAvatar>,
     bind_group: wgpu::BindGroup,
     globals_buf: wgpu::Buffer,
     tiles_buf: wgpu::Buffer,
@@ -376,6 +405,91 @@ fn body_sphere_mesh() -> (Vec<BodyVertex>, Vec<u32>) {
         }
     }
     (vertices, indices)
+}
+
+fn avatar_vertex(position: DVec3, normal: DVec3, color: [f32; 4], camera: DVec3) -> AvatarVertex {
+    let relative = position - camera;
+    AvatarVertex {
+        position: [relative.x as f32, relative.y as f32, relative.z as f32],
+        normal: [normal.x as f32, normal.y as f32, normal.z as f32],
+        color,
+    }
+}
+
+fn avatar_quad(
+    out: &mut Vec<AvatarVertex>,
+    points: [DVec3; 4],
+    normal: DVec3,
+    color: [f32; 4],
+    camera: DVec3,
+) {
+    for index in [0usize, 1, 2, 0, 2, 3] {
+        if out.len() >= MAX_AVATAR_VERTICES { return; }
+        out.push(avatar_vertex(points[index], normal, color, camera));
+    }
+}
+
+fn avatar_box(
+    out: &mut Vec<AvatarVertex>,
+    center: DVec3,
+    right: DVec3,
+    forward: DVec3,
+    up: DVec3,
+    color: [f32; 4],
+    camera: DVec3,
+) {
+    let p = |r: f64, f: f64, u: f64| center + right * r + forward * f + up * u;
+    avatar_quad(out, [p(-1.0, -1.0, -1.0), p(1.0, -1.0, -1.0), p(1.0, -1.0, 1.0), p(-1.0, -1.0, 1.0)], -forward.normalize(), color, camera);
+    avatar_quad(out, [p(1.0, 1.0, -1.0), p(-1.0, 1.0, -1.0), p(-1.0, 1.0, 1.0), p(1.0, 1.0, 1.0)], forward.normalize(), color, camera);
+    avatar_quad(out, [p(-1.0, 1.0, -1.0), p(-1.0, -1.0, -1.0), p(-1.0, -1.0, 1.0), p(-1.0, 1.0, 1.0)], -right.normalize(), color, camera);
+    avatar_quad(out, [p(1.0, -1.0, -1.0), p(1.0, 1.0, -1.0), p(1.0, 1.0, 1.0), p(1.0, -1.0, 1.0)], right.normalize(), color, camera);
+    avatar_quad(out, [p(-1.0, -1.0, 1.0), p(1.0, -1.0, 1.0), p(1.0, 1.0, 1.0), p(-1.0, 1.0, 1.0)], up.normalize(), color, camera);
+    avatar_quad(out, [p(-1.0, 1.0, -1.0), p(1.0, 1.0, -1.0), p(1.0, -1.0, -1.0), p(-1.0, -1.0, -1.0)], -up.normalize(), color, camera);
+}
+
+fn glyph_rows(ch: char) -> [u8; 7] {
+    match ch.to_ascii_uppercase() {
+        'A' => [0x0e, 0x11, 0x11, 0x1f, 0x11, 0x11, 0x11],
+        'B' => [0x1e, 0x11, 0x11, 0x1e, 0x11, 0x11, 0x1e],
+        'C' => [0x0f, 0x10, 0x10, 0x10, 0x10, 0x10, 0x0f],
+        'D' => [0x1e, 0x11, 0x11, 0x11, 0x11, 0x11, 0x1e],
+        'E' => [0x1f, 0x10, 0x10, 0x1e, 0x10, 0x10, 0x1f],
+        'F' => [0x1f, 0x10, 0x10, 0x1e, 0x10, 0x10, 0x10],
+        'G' => [0x0f, 0x10, 0x10, 0x17, 0x11, 0x11, 0x0f],
+        'H' => [0x11, 0x11, 0x11, 0x1f, 0x11, 0x11, 0x11],
+        'I' => [0x1f, 0x04, 0x04, 0x04, 0x04, 0x04, 0x1f],
+        'J' => [0x01, 0x01, 0x01, 0x01, 0x11, 0x11, 0x0e],
+        'K' => [0x11, 0x12, 0x14, 0x18, 0x14, 0x12, 0x11],
+        'L' => [0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x1f],
+        'M' => [0x11, 0x1b, 0x15, 0x15, 0x11, 0x11, 0x11],
+        'N' => [0x11, 0x19, 0x15, 0x13, 0x11, 0x11, 0x11],
+        'O' => [0x0e, 0x11, 0x11, 0x11, 0x11, 0x11, 0x0e],
+        'P' => [0x1e, 0x11, 0x11, 0x1e, 0x10, 0x10, 0x10],
+        'Q' => [0x0e, 0x11, 0x11, 0x11, 0x15, 0x12, 0x0d],
+        'R' => [0x1e, 0x11, 0x11, 0x1e, 0x14, 0x12, 0x11],
+        'S' => [0x0f, 0x10, 0x10, 0x0e, 0x01, 0x01, 0x1e],
+        'T' => [0x1f, 0x04, 0x04, 0x04, 0x04, 0x04, 0x04],
+        'U' => [0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x0e],
+        'V' => [0x11, 0x11, 0x11, 0x11, 0x11, 0x0a, 0x04],
+        'W' => [0x11, 0x11, 0x11, 0x15, 0x15, 0x15, 0x0a],
+        'X' => [0x11, 0x11, 0x0a, 0x04, 0x0a, 0x11, 0x11],
+        'Y' => [0x11, 0x11, 0x0a, 0x04, 0x04, 0x04, 0x04],
+        'Z' => [0x1f, 0x01, 0x02, 0x04, 0x08, 0x10, 0x1f],
+        '0' => [0x0e, 0x11, 0x13, 0x15, 0x19, 0x11, 0x0e],
+        '1' => [0x04, 0x0c, 0x14, 0x04, 0x04, 0x04, 0x1f],
+        '2' => [0x0e, 0x11, 0x01, 0x02, 0x04, 0x08, 0x1f],
+        '3' => [0x1e, 0x01, 0x01, 0x0e, 0x01, 0x01, 0x1e],
+        '4' => [0x02, 0x06, 0x0a, 0x12, 0x1f, 0x02, 0x02],
+        '5' => [0x1f, 0x10, 0x10, 0x1e, 0x01, 0x01, 0x1e],
+        '6' => [0x0e, 0x10, 0x10, 0x1e, 0x11, 0x11, 0x0e],
+        '7' => [0x1f, 0x01, 0x02, 0x04, 0x08, 0x08, 0x08],
+        '8' => [0x0e, 0x11, 0x11, 0x0e, 0x11, 0x11, 0x0e],
+        '9' => [0x0e, 0x11, 0x11, 0x0f, 0x01, 0x01, 0x0e],
+        '-' => [0, 0, 0, 0x1f, 0, 0, 0],
+        '_' => [0, 0, 0, 0, 0, 0, 0x1f],
+        ' ' => [0; 7],
+        _ => [0x0e, 0x11, 0x02, 0x04, 0x04, 0, 0x04],
+    }
 }
 
 impl Renderer {
@@ -613,6 +727,44 @@ impl Renderer {
             cache: None,
         });
 
+        let avatar_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("remote avatars"),
+            layout: Some(&layout),
+            vertex: wgpu::VertexState {
+                module: &shader,
+                entry_point: Some("vs_avatar"),
+                compilation_options: Default::default(),
+                buffers: &[Some(wgpu::VertexBufferLayout {
+                    array_stride: std::mem::size_of::<AvatarVertex>() as u64,
+                    step_mode: wgpu::VertexStepMode::Vertex,
+                    attributes: &wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3, 2 => Float32x4],
+                })],
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &shader,
+                entry_point: Some("fs_avatar"),
+                compilation_options: Default::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format,
+                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            primitive: wgpu::PrimitiveState { cull_mode: None, ..Default::default() },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: wgpu::TextureFormat::Depth32Float,
+                // Body boxes must self-occlude; glyph pixels sit 2 mm in
+                // front of their label backplate so they remain stable too.
+                depth_write_enabled: Some(true),
+                depth_compare: Some(wgpu::CompareFunction::Greater),
+                stencil: Default::default(),
+                bias: Default::default(),
+            }),
+            multisample: Default::default(),
+            multiview_mask: None,
+            cache: None,
+        });
+
         let (body_vertices, body_indices) = body_sphere_mesh();
         let body_vertex_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("solar body sphere vertices"),
@@ -625,6 +777,12 @@ impl Renderer {
             usage: wgpu::BufferUsages::INDEX,
         });
         let body_index_count = body_indices.len() as u32;
+        let avatar_vertex_buf = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("remote avatar vertices"),
+            size: (MAX_AVATAR_VERTICES * std::mem::size_of::<AvatarVertex>()) as u64,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
 
         let depth = Self::make_depth(&device, size);
         let (tx, rx) = mpsc::channel();
@@ -675,9 +833,12 @@ impl Renderer {
             body_pipeline,
             moon_pipeline,
             precip_pipeline,
+            avatar_pipeline,
             body_vertex_buf,
             body_index_buf,
             body_index_count,
+            avatar_vertex_buf,
+            remote_avatars: Vec::new(),
             bind_group,
             globals_buf,
             tiles_buf,
@@ -757,6 +918,114 @@ impl Renderer {
         }
     }
 
+    pub fn set_remote_avatars(&mut self, avatars: Vec<RemoteAvatar>) {
+        self.remote_avatars = avatars.into_iter().take(MAX_REMOTE_AVATARS).collect();
+    }
+
+    fn build_avatar_vertices(
+        &self,
+        camera: &Camera,
+        solar: SolarState,
+        neisor_radius_km: f64,
+    ) -> Vec<AvatarVertex> {
+        let camera_pos = camera.position();
+        let (_, label_up, label_right) = camera.view_basis();
+        let moon_radius = self.solar_tuning.radius_km(BodyId::Moon, neisor_radius_km);
+        let mut out = Vec::new();
+        for avatar in &self.remote_avatars {
+            let (body_center, radius) = match avatar.body {
+                BodyId::Neisor => (DVec3::ZERO, neisor_radius_km),
+                BodyId::Moon => (solar.moon_km, moon_radius),
+                BodyId::Sun => continue,
+            };
+            if !avatar.lat_deg.is_finite() || !avatar.lon_deg.is_finite() || !avatar.alt_km.is_finite() {
+                continue;
+            }
+            let lat = avatar.lat_deg.to_radians();
+            let lon = avatar.lon_deg.to_radians();
+            let up = DVec3::new(lat.cos() * lon.cos(), lat.cos() * lon.sin(), lat.sin());
+            let eye = body_center + up * (radius + avatar.alt_km);
+            let distance = (eye - camera_pos).length();
+            // A metre-sized placeholder is not useful beyond this range. In
+            // particular, a player on the moon is never reinterpreted as a
+            // tiny Neisor-local offset when the observer is on Neisor.
+            if !(0.00025..=10.0).contains(&distance) { continue; }
+            let mut east = DVec3::Z.cross(up).normalize_or_zero();
+            if east.length_squared() < 0.5 { east = DVec3::X; }
+            let north = up.cross(east).normalize();
+            let yaw = avatar.yaw_deg.to_radians();
+            let forward = (north * yaw.cos() + east * yaw.sin()).normalize();
+            let right = (north * (yaw + std::f64::consts::FRAC_PI_2).cos()
+                + east * (yaw + std::f64::consts::FRAC_PI_2).sin()).normalize();
+            let feet = eye - up * crate::player::EYE_KM;
+            let color = [avatar.tint[0], avatar.tint[1], avatar.tint[2], 1.0];
+            // Torso and head: deliberately simple MP1 block figure.
+            avatar_box(
+                &mut out,
+                feet + up * 0.00072,
+                right * 0.00032,
+                forward * 0.00018,
+                up * 0.00050,
+                color,
+                camera_pos,
+            );
+            avatar_box(
+                &mut out,
+                feet + up * 0.00151,
+                right * 0.00023,
+                forward * 0.00022,
+                up * 0.00025,
+                [
+                    (avatar.tint[0] * 0.82 + 0.18).min(1.0),
+                    (avatar.tint[1] * 0.82 + 0.18).min(1.0),
+                    (avatar.tint[2] * 0.82 + 0.18).min(1.0),
+                    1.0,
+                ],
+                camera_pos,
+            );
+
+            let chars = avatar.name.chars().take(12).collect::<Vec<_>>();
+            if chars.is_empty() { continue; }
+            let pixel = 0.00006;
+            let label_width = chars.len() as f64 * 6.0 * pixel;
+            let label_height = 7.0 * pixel;
+            let anchor = eye + up * 0.00062;
+            let facing = (camera_pos - anchor).normalize_or_zero();
+            let half_r = label_right * (label_width * 0.5 + pixel * 0.65);
+            let half_u = label_up * (label_height * 0.5 + pixel * 0.65);
+            avatar_quad(
+                &mut out,
+                [anchor - half_r - half_u, anchor + half_r - half_u, anchor + half_r + half_u, anchor - half_r + half_u],
+                facing,
+                [0.005, 0.007, 0.012, 0.80],
+                camera_pos,
+            );
+            let left = -label_width * 0.5;
+            let top = label_height * 0.5;
+            for (char_index, ch) in chars.into_iter().enumerate() {
+                for (row, bits) in glyph_rows(ch).into_iter().enumerate() {
+                    for col in 0..5 {
+                        if bits & (1 << (4 - col)) == 0 { continue; }
+                        let x = left + (char_index as f64 * 6.0 + col as f64 + 0.5) * pixel;
+                        let y = top - (row as f64 + 0.5) * pixel;
+                        let center = anchor + label_right * x + label_up * y + facing * 0.000002;
+                        let hr = label_right * pixel * 0.43;
+                        let hu = label_up * pixel * 0.43;
+                        avatar_quad(
+                            &mut out,
+                            [center - hr - hu, center + hr - hu, center + hr + hu, center - hr + hu],
+                            facing,
+                            [0.96, 0.98, 1.0, 1.0],
+                            camera_pos,
+                        );
+                    }
+                }
+            }
+        }
+        out.truncate(MAX_AVATAR_VERTICES);
+        out
+    }
+
     pub fn set_render_time_s(&mut self, t_s: f64) {
         if t_s.is_finite() {
             self.render_time_s = t_s.max(0.0);
@@ -829,6 +1098,17 @@ impl Renderer {
     pub fn refresh_world_snapshot(&mut self, edits: &Edits) {
         self.refresh_edits_snapshot(edits);
         self.torch_snapshot = Arc::new(self.torches.clone());
+    }
+
+    /// A join/disconnect swaps the entire mutable world rather than one
+    /// column. Drop resident chunks so no mesh from the previous journal can
+    /// survive the state boundary.
+    pub fn replace_world_snapshot(&mut self, edits: &Edits) {
+        self.refresh_edits_snapshot(edits);
+        self.chunk_epoch = self.chunk_epoch.wrapping_add(1);
+        self.chunk_pending.clear();
+        self.chunk_stale.clear();
+        self.chunk_cache.clear();
     }
 
     pub fn set_torches(&mut self, torches: Torches) {
@@ -2300,6 +2580,15 @@ impl Renderer {
         }
         self.evict();
 
+        let avatar_vertices = self.build_avatar_vertices(camera, solar, planet.radius_km);
+        if !avatar_vertices.is_empty() {
+            self.queue.write_buffer(
+                &self.avatar_vertex_buf,
+                0,
+                bytemuck::cast_slice(&avatar_vertices),
+            );
+        }
+
         let mut encoder = self.device.create_command_encoder(&Default::default());
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -2370,6 +2659,12 @@ impl Renderer {
                 pass.set_vertex_buffer(0, tile.vertex_buf.slice(..));
                 pass.set_index_buffer(tile.index_buf.slice(..), wgpu::IndexFormat::Uint32);
                 pass.draw_indexed(0..tile.index_count, 0, 0..1);
+            }
+            if !avatar_vertices.is_empty() {
+                pass.set_pipeline(&self.avatar_pipeline);
+                pass.set_bind_group(0, &self.bind_group, &[0]);
+                pass.set_vertex_buffer(0, self.avatar_vertex_buf.slice(..));
+                pass.draw(0..avatar_vertices.len() as u32, 0..1);
             }
             // precipitation: instanced rain streaks / snow flakes around the
             // camera, alpha-blended over everything, occluded by terrain

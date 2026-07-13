@@ -371,11 +371,21 @@ impl PlayerState {
     }
 }
 
+/// Detailed result used by the multiplayer app. The absolute resulting value
+/// makes a server-sequenced edit deterministic last-write-wins per column.
+#[derive(Clone, Debug)]
+pub struct EditOutcome {
+    pub dirty: Vec<ChunkKey>,
+    pub column: (u8, u64, u64),
+    pub value: i64,
+}
+
 /// Break (dh = -1) or place (dh = +1) a block at the targeted column.
 /// Breaking removes the top block of the column you hit; placing is
 /// face-aware: aiming at the side of something builds on the column in
 /// front of it. Returns the chunks whose meshes went stale, or None if
-/// nothing was in reach.
+/// nothing was in reach. This wrapper remains the play harness's unchanged
+/// API; the window app uses [`edit_block_detailed`] when networking is built.
 pub fn edit_block(
     body: &dyn VoxelBody,
     edits: &mut Edits,
@@ -384,6 +394,18 @@ pub fn edit_block(
     dh: i64,
     exaggeration: f64,
 ) -> Option<Vec<ChunkKey>> {
+    edit_block_detailed(body, edits, camera, mode, dh, exaggeration)
+        .map(|outcome| outcome.dirty)
+}
+
+pub fn edit_block_detailed(
+    body: &dyn VoxelBody,
+    edits: &mut Edits,
+    camera: &Camera,
+    mode: Mode,
+    dh: i64,
+    exaggeration: f64,
+) -> Option<EditOutcome> {
     let reach_m = if mode == Mode::Walk { 8.0 } else { 60.0 };
     let (hit, prev) = raycast_column(
         body,
@@ -414,8 +436,13 @@ pub fn edit_block(
             return None;
         }
     }
-    *edits.entry((face, ci, cj)).or_insert(0) += dh;
-    Some(chunks_touching_column_body(body.body_id(), face, ci, cj))
+    let value = edits.entry((face, ci, cj)).or_insert(0);
+    *value += dh;
+    Some(EditOutcome {
+        dirty: chunks_touching_column_body(body.body_id(), face, ci, cj),
+        column: (face, ci, cj),
+        value: *value,
+    })
 }
 
 /// Toggle a torch on the walkable top of the targeted column. Returns the

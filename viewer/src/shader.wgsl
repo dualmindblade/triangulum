@@ -1961,6 +1961,40 @@ fn fs_body(in: BodyOut) -> @location(0) vec4<f32> {
     return vec4<f32>(globals.sun_tint.rgb * 3.2, above);
 }
 
+// ---------------------------------------------------- remote MP1 avatars
+
+struct AvatarIn {
+    @location(0) position: vec3<f32>,
+    @location(1) normal: vec3<f32>,
+    @location(2) color: vec4<f32>,
+};
+
+struct AvatarOut {
+    @builtin(position) clip: vec4<f32>,
+    @location(0) normal: vec3<f32>,
+    @location(1) color: vec4<f32>,
+};
+
+@vertex
+fn vs_avatar(in: AvatarIn) -> AvatarOut {
+    var out: AvatarOut;
+    out.clip = globals.view_proj * vec4<f32>(in.position, 1.0);
+    out.normal = normalize(in.normal);
+    out.color = in.color;
+    return out;
+}
+
+@fragment
+fn fs_avatar(in: AvatarOut) -> @location(0) vec4<f32> {
+    let direct = max(dot(normalize(in.normal), globals.sun_dir.xyz), 0.0);
+    let light = 0.42 + direct * 0.58;
+    // Near-black label backplates retain their authored value; colored body
+    // boxes receive the same simple directional read as the world.
+    let is_backplate = select(0.0, 1.0, max(in.color.r, max(in.color.g, in.color.b)) < 0.05);
+    let rgb = mix(in.color.rgb * light, in.color.rgb, is_backplate);
+    return vec4<f32>(rgb, in.color.a);
+}
+
 // --------------------------------------------------------- precipitation
 
 struct PrecipOut {
