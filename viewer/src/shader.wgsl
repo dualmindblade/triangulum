@@ -53,6 +53,17 @@ struct Globals {
     // not morph when an orbital camera pans (the ground responses below
     // keep reading `weather`, which stays the camera sample)
     weather8: vec4<f32>,
+    // W2: x ground cloud-shadow strength, y orbital cloud-alpha darkening,
+    // z fog density, w fog ceiling above the camera-ground reference (km)
+    weather9: vec4<f32>,
+    // W2 fog state: x dawn window, y humidity, z camera concavity,
+    // w broad saturated cover+precip bank
+    weather10: vec4<f32>,
+    // W2 storm-edge first-order field: xyz tangent gradient, w base load
+    weather11: vec4<f32>,
+    // W2 storm art direction: x gloom strength, y warm/green cast;
+    // zw = inverse viewport size for a terrain-independent orbital ray
+    weather12: vec4<f32>,
     // premultiplied cave-noise seeds (low 32 bits of
     // (seed+K).wrapping_mul(0x9E37_79B1)) for the karst breach hint:
     // x = region gate (+40961), y = tube n1 (+31337), z = tube n2 (+51413),
@@ -1109,7 +1120,18 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     // below-horizon sun otherwise kept lighting at FULL coefficient — tree
     // canopy sides facing the set sun glowed all night, opposite the moon
     // ("tree shading is backwards", night photo at 0.626 68.962)
-    let sun_coeff = mix(1.0, 0.60, day) * odim * day;
+    // W2 cloud shadows use the exact same shell intersections, fabric,
+    // seed, advection, and W-MOTION evolution as the visible clouds. This
+    // fragment path is shared by mesh tiles and voxel chunks by construction.
+    var cloud_shadow = 0.0;
+    if (globals.weather.w < 500.0
+        && day > 0.003
+        && wcam > 0.003
+        && globals.weather9.x > 0.0) {
+        cloud_shadow = cloud_shadow_at_ground(in.rel_flag.xyz, pixel_sun);
+    }
+    let sun_coeff = mix(1.0, 0.60, day) * odim * day
+        * (1.0 - globals.weather9.x * cloud_shadow * wcam);
     var c = base * (ambient + sun_coeff * light);
     if (in.rel_flag.w < 0.5) {
         if (in.water.a > 1.5) {
@@ -1162,13 +1184,78 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         // this gain preserves the pinned ground-level moonlight reel while
         // `moon_phase` supplies the new geometric waxing/waning behavior.
         * (1.0 - day) * moon_up * moon_phase * 1.15;
+    // W2 storm edge on distant terrain. The CPU's eight-probe fit is in the
+    // same planet frame as this camera-relative ray, so the dark horizon
+    // stays attached to the approaching front while the camera pans.
+    let storm_view = normalize(in.rel_flag.xyz);
+    let storm_load = clamp(
+        globals.weather11.w + dot(storm_view, globals.weather11.xyz),
+        0.0,
+        1.0,
+    );
+    let storm_far = smoothstep(6.0, 90.0, in.dist_km) * wcam * day;
+    let storm_gloom = storm_load * storm_far * globals.weather12.x;
+    c *= 1.0 - 0.58 * storm_gloom;
+    c = mix(
+        c,
+        vec3<f32>(0.37, 0.42, 0.29) * (0.18 + 0.82 * day),
+        storm_gloom * globals.weather12.y,
+    );
     // Clouds v2 / W3: once the camera rises above the high shell, composite
     // the same three deterministic formations over terrain pixels. The
     // helper stacks far-to-near shell hits and hard-caps the combined alpha,
     // so clouds can never fully obscure orbital ground.
     if (globals.weather.w < 500.0 && globals.weather8.w > globals.weather5.y) {
-        let orbital = cloud_orbit_composite(normalize(in.rel_flag.xyz));
+        // Reconstruct from the fragment coordinate exactly as the sky pass
+        // does. Interpolated terrain position can reach the same screen ray
+        // through different asynchronous triangulations with different last
+        // bits, which sharp cloud thresholds amplified into non-byte-stable
+        // orbital captures.
+        let orbital_ndc = vec2<f32>(
+            in.clip.x * globals.weather12.z * 2.0 - 1.0,
+            1.0 - in.clip.y * globals.weather12.w * 2.0,
+        );
+        let orbital_p = globals.inv_view_proj * vec4<f32>(orbital_ndc, 1.0, 1.0);
+        let orbital_ray = normalize(orbital_p.xyz / orbital_p.w);
+        let orbital = cloud_orbit_composite(orbital_ray);
+        // The unclouded output already hides last-bit asynchronous LOD
+        // lighting differences below one sRGB byte. Cloud blending can move
+        // those same values onto opposite byte boundaries, so stabilize the
+        // pre-cloud ground far below one display step.
+        c = floor(c * 4096.0 + vec3<f32>(0.5)) / 4096.0;
+        // From orbit there is no camera-local sun projection. The same
+        // capped composite alpha instead gives its ground a subtle footprint.
+        c *= 1.0 - globals.weather9.y * orbital.a * day;
         c = mix(c, orbital.rgb, orbital.a);
+    }
+    // W2 height fog: dawn humidity pools in locally concave D-8 terrain;
+    // near-saturated cover+precip contributes a broad bank. A horizontal
+    // ceiling keeps peaks readable above the valley veil.
+    if (globals.weather.w < 500.0 && wcam > 0.0 && globals.weather9.z > 0.0) {
+        let concavity = smoothstep(0.04, 0.72, in.beach.w * 2.0 - 1.0);
+        let humid = smoothstep(0.55, 0.88, globals.weather10.y);
+        let valley_mist = concavity * humid * globals.weather10.x;
+        let mist_source = max(valley_mist, globals.weather10.w);
+        if (mist_source > 0.001) {
+            let wp_fog = in.rel_flag.xyz - globals.center.xyz;
+            let r_fog = length(globals.center.xyz) - max(globals.weather8.w, 0.0);
+            let elev_fog = length(wp_fog) - r_fog;
+            let above_floor = elev_fog - globals.misc.w;
+            let below_ceiling = 1.0 - smoothstep(
+                globals.weather9.w * 0.68,
+                globals.weather9.w,
+                above_floor,
+            );
+            let mist = (1.0 - exp(
+                -in.dist_km * globals.weather9.z * mist_source,
+            )) * below_ceiling * wcam * atm;
+            let mist_col = mix(
+                vec3<f32>(0.55, 0.62, 0.66),
+                vec3<f32>(0.48, 0.51, 0.45),
+                globals.weather.x * 0.35,
+            ) * (0.18 + 0.82 * day);
+            c = mix(c, mist_col, clamp(mist, 0.0, 0.88));
+        }
     }
     let fog = (1.0 - exp(-in.dist_km * 0.0035)) * atm * 0.7;
     c = mix(c, vec3<f32>(0.55, 0.70, 0.88) * (0.15 + 0.85 * day), fog);
@@ -1430,6 +1517,54 @@ fn cloud_layer_on_ray(ray: vec3<f32>, altitude_km: f32, kind: u32) -> vec4<f32> 
     return cloud_layer_sample(hit.xyz, ray, kind);
 }
 
+fn cloud_layer_from_ground(
+    rel: vec3<f32>,
+    ray: vec3<f32>,
+    altitude_km: f32,
+    kind: u32,
+) -> f32 {
+    // General positive ray/sphere root: mountains can sit outside a low
+    // shell, in which case an outward sun ray correctly finds no crossing.
+    let wp = rel - globals.center.xyz;
+    let r_ground = length(globals.center.xyz) - max(globals.weather8.w, 0.0);
+    let r_shell = r_ground + altitude_km;
+    let b = dot(wp, ray);
+    let disc = b * b - (dot(wp, wp) - r_shell * r_shell);
+    if (disc <= 0.0) {
+        return 0.0;
+    }
+    let root = sqrt(disc);
+    let near_t = -b - root;
+    let far_t = -b + root;
+    let t_hit = select(far_t, near_t, near_t > 0.0);
+    if (t_hit <= 0.0) {
+        return 0.0;
+    }
+    let sdir = normalize(wp + ray * t_hit);
+    // Calling cloud_layer_sample (rather than duplicating a threshold)
+    // guarantees the shadow fabric includes every W-MOTION term exactly.
+    return cloud_layer_sample(sdir, ray, kind).a;
+}
+
+fn cloud_shadow_at_ground(rel: vec3<f32>, sun: vec3<f32>) -> f32 {
+    let count = u32(globals.weather5.z + 0.5);
+    var transmittance = 1.0;
+    if (count >= 3u) {
+        transmittance *= 1.0 - cloud_layer_from_ground(
+            rel, sun, globals.weather3.z, 0u,
+        );
+    }
+    transmittance *= 1.0 - cloud_layer_from_ground(
+        rel, sun, globals.weather5.x, 1u,
+    );
+    if (count >= 2u) {
+        transmittance *= 1.0 - cloud_layer_from_ground(
+            rel, sun, globals.weather5.y, 2u,
+        );
+    }
+    return clamp(1.0 - transmittance, 0.0, 1.0);
+}
+
 fn cloud_over(acc: vec4<f32>, near_layer: vec4<f32>) -> vec4<f32> {
     let a = near_layer.a + acc.a * (1.0 - near_layer.a);
     if (a <= 1e-5) {
@@ -1517,6 +1652,23 @@ fn fs_sky(in: SkyOut) -> @location(0) vec4<f32> {
     let wcover = globals.weather.x;
     let murk = wcover * (0.35 + 0.45 * globals.weather.y);
     c = mix(c, vec3<f32>(0.52, 0.56, 0.62) * (0.05 + 0.95 * day), murk * day);
+    // W2 storm-edge sky: the first-order compass fit acts strongest at the
+    // horizon, leaving the opposite sky visibly brighter. Camera anchoring
+    // retires through the established wcam orbital fade.
+    let wcam = 1.0 - smoothstep(8.0, 40.0, max(globals.weather8.w, 0.0));
+    let storm_horizon = 1.0 - smoothstep(0.02, 0.58, max(h, 0.0));
+    let storm_load = clamp(
+        globals.weather11.w + dot(dir, globals.weather11.xyz),
+        0.0,
+        1.0,
+    );
+    let storm_gloom = storm_load * storm_horizon * globals.weather12.x * day * wcam;
+    c *= 1.0 - 0.62 * storm_gloom;
+    c = mix(
+        c,
+        vec3<f32>(0.37, 0.42, 0.29) * (0.12 + 0.88 * day),
+        storm_gloom * globals.weather12.y,
+    );
     // a low sun warms the sky around it
     let toward = pow(max(dot(dir, sun), 0.0), 6.0);
     let low = 1.0 - smoothstep(0.05, 0.35, sunh);
@@ -1531,6 +1683,33 @@ fn fs_sky(in: SkyOut) -> @location(0) vec4<f32> {
     let atmosphere = select(1.0, 0.0, globals.body_frame.w > 0.5);
     let atm = exp(-max(globals.sky.w, 0.0) / 45.0) * atmosphere;
     c *= atm;
+    // W2 sky-side half of the height fog: when the eye is below the fog
+    // ceiling, a soft horizontal veil meets the ground bank without drawing
+    // geometry or storing state.
+    if (globals.weather.w < 500.0 && globals.weather9.z > 0.0 && wcam > 0.0) {
+        let humid = smoothstep(0.55, 0.88, globals.weather10.y);
+        let pooled = smoothstep(0.04, 0.72, globals.weather10.z)
+            * humid * globals.weather10.x;
+        let mist_source = max(pooled, globals.weather10.w);
+        let eye_above_ground = max(globals.weather8.w - globals.misc.w, 0.0);
+        let below_ceiling = 1.0 - smoothstep(
+            globals.weather9.w * 0.68,
+            globals.weather9.w,
+            eye_above_ground,
+        );
+        let horizontal = 1.0 - smoothstep(0.0, 0.22, abs(h));
+        let veil = clamp(
+            mist_source * globals.weather9.z * below_ceiling * horizontal * wcam,
+            0.0,
+            0.82,
+        );
+        let veil_col = mix(
+            vec3<f32>(0.55, 0.62, 0.66),
+            vec3<f32>(0.48, 0.51, 0.45),
+            globals.weather.x * 0.35,
+        ) * (0.18 + 0.82 * day);
+        c = mix(c, veil_col, veil);
+    }
     // limb glow: from orbit, rays that graze past the planet pass through
     // its atmosphere shell — a thin lit rim hugging the dark disc. The ray
     // is measured by its closest approach to the planet center; the glow
