@@ -663,6 +663,8 @@ impl MoonGenerator {
         let mut albedo = 0.695 + 0.064 * albedo_noise + 0.020 * grain + 0.017 * fine_grain;
         let mut smoothness: f64 = 0.0;
 
+        let mut mare_dark = 0.0f64;
+        let mut mare_smooth = 0.0f64;
         for mare in &self.maria {
             // The reach cutoff must cover the mask's WORST-CASE support:
             // `irregular` bottoms out at 0.775, stretching the height
@@ -698,9 +700,14 @@ impl MoonGenerator {
                 continue;
             }
             height = height * (1.0 - 0.84 * height_mask) - mare.floor_drop * height_mask;
-            albedo -= mare.darkness * albedo_mask;
-            smoothness = smoothness.max(albedo_mask * if mare.large { 0.96 } else { 0.86 });
+            // overlapping maria SATURATE: basalt over basalt is the same
+            // basalt (Andrew: intersections rendered darker than either)
+            mare_dark = mare_dark.max(mare.darkness * albedo_mask);
+            mare_smooth =
+                mare_smooth.max(albedo_mask * if mare.large { 0.96 } else { 0.86 });
         }
+        albedo -= mare_dark;
+        smoothness = smoothness.max(mare_smooth);
 
         BaseSample {
             height,

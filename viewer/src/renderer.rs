@@ -892,6 +892,12 @@ impl Renderer {
             if self.chunk_pending.get(&k) == Some(&epoch) {
                 self.chunk_pending.remove(&k);
                 let gpu = self.upload(mesh, bucket);
+                // re-uploads of a live key (edits, refreshes) keep their
+                // ease state - only genuinely new arrivals rise/dissolve
+                let mut gpu = gpu;
+                if let Some(old) = self.chunk_cache.get(&k) {
+                    gpu.shown_at = old.shown_at;
+                }
                 self.chunk_cache.insert(k, gpu);
                 landed += 1;
                 if landed.is_multiple_of(16) {
@@ -1004,6 +1010,12 @@ impl Renderer {
                 .collect();
             for (key, mesh) in built {
                 let gpu = self.upload(mesh, crate::weather::StructuralSeason::ANNUAL_BUCKET);
+                // re-uploads of a live key (edits, refreshes) keep their
+                // ease state - only genuinely new arrivals rise/dissolve
+                let mut gpu = gpu;
+                if let Some(old) = self.moon_cache.get(&key) {
+                    gpu.shown_at = old.shown_at;
+                }
                 self.moon_cache.insert(key, gpu);
             }
         }
@@ -1099,7 +1111,19 @@ impl Renderer {
                 self.tile_pending.remove(&k);
                 if bucket == structural_season.bucket {
                     let gpu = self.upload(mesh, bucket);
-                    self.cache.insert(k, gpu);
+                    // re-uploads of a live key (edits, refreshes) keep their
+                    // ease state - only genuinely new arrivals rise/dissolve
+                    let mut gpu = gpu;
+                    if let Some(old) = self.cache.get(&k) {
+                        gpu.shown_at = old.shown_at;
+                    }
+                    // re-uploads of a live key (edits, refreshes) keep their
+            // ease state - only genuinely new arrivals rise/dissolve
+            let mut gpu = gpu;
+            if let Some(old) = self.cache.get(&k) {
+                gpu.shown_at = old.shown_at;
+            }
+            self.cache.insert(k, gpu);
                 }
             }
         }
@@ -1206,6 +1230,12 @@ impl Renderer {
         };
         for (k, mesh) in built {
             let gpu = self.upload(mesh, structural_season.bucket);
+            // re-uploads of a live key (edits, refreshes) keep their
+            // ease state - only genuinely new arrivals rise/dissolve
+            let mut gpu = gpu;
+            if let Some(old) = self.cache.get(&k) {
+                gpu.shown_at = old.shown_at;
+            }
             self.cache.insert(k, gpu);
         }
         self.tiles_deferred = keys.iter().any(|key| {
@@ -1321,7 +1351,19 @@ impl Renderer {
                     .collect();
                 for (k, mesh) in built {
                     let gpu = self.upload(mesh, structural_season.bucket);
-                    self.cache.insert(k, gpu);
+                    // re-uploads of a live key (edits, refreshes) keep their
+                    // ease state - only genuinely new arrivals rise/dissolve
+                    let mut gpu = gpu;
+                    if let Some(old) = self.cache.get(&k) {
+                        gpu.shown_at = old.shown_at;
+                    }
+                    // re-uploads of a live key (edits, refreshes) keep their
+            // ease state - only genuinely new arrivals rise/dissolve
+            let mut gpu = gpu;
+            if let Some(old) = self.cache.get(&k) {
+                gpu.shown_at = old.shown_at;
+            }
+            self.cache.insert(k, gpu);
                 }
             }
             // ANCESTOR STAND-INS SUPPRESS THEIR DRAWN DESCENDANTS: when a
@@ -1804,7 +1846,21 @@ impl Renderer {
                 tile.shown_at = self.frame_counter;
             }
             tile.last_used = self.frame_counter;
-            let off = tile.origin_km - cam_pos;
+            // Two precision regimes. NEAR (the body you stand on): the f64
+            // difference cast once keeps sub-mm alignment - splitting into
+            // two f32 terms here would displace ground tiles by up to a
+            // meter (reel-caught). FAR (another body, 10^5 km away): each
+            // tile's offset quantizes to f32 on a DIFFERENT 8 m step and
+            // the body shimmers tile-by-tile as the camera moves (Andrew:
+            // "celestial bodies jitter violently") - a SHARED anchor makes
+            // the rounding rigid: the body wobbles whole (invisible),
+            // tiles stay mutually coherent.
+            let precise = tile.origin_km - cam_pos;
+            let off = if precise.length_squared() > 50_000.0 * 50_000.0 {
+                tile.origin_km.as_vec3().as_dvec3() + (-cam_pos).as_vec3().as_dvec3()
+            } else {
+                precise
+            };
             // w: 0 = voxel chunk, 1 = far tile (soft water tint), 2 = deep
             // tile (crisp stepped water). Tiles (>0) get the hole cut.
             let flag = match key {
@@ -1879,7 +1935,14 @@ impl Renderer {
             let tile = self.moon_cache.get_mut(key).unwrap();
             tile.last_used = self.frame_counter;
             // Moon-local tile origin + body center - camera, all in f64.
-            let off = moon_rel + tile.origin_km;
+            // same two-regime rule as terrain tiles: precise when landed
+            // on / near the moon, rigid shared anchor from planet range
+            let precise = moon_rel + tile.origin_km;
+            let off = if precise.length_squared() > 50_000.0 * 50_000.0 {
+                moon_rel.as_vec3().as_dvec3() + tile.origin_km.as_vec3().as_dvec3()
+            } else {
+                precise
+            };
             let morph = if key.level > 0 && std::env::var_os("TRI_NO_MORPH").is_none() {
                 if std::env::var_os("TRI_FORCE_MORPH").is_some() {
                     [0.0001, 0.0002, 0.0, 0.0]
@@ -1923,7 +1986,14 @@ impl Renderer {
                 tile.shown_at = self.frame_counter;
             }
             tile.last_used = self.frame_counter;
-            let off = moon_rel + tile.origin_km;
+            // same two-regime rule as terrain tiles: precise when landed
+            // on / near the moon, rigid shared anchor from planet range
+            let precise = moon_rel + tile.origin_km;
+            let off = if precise.length_squared() > 50_000.0 * 50_000.0 {
+                moon_rel.as_vec3().as_dvec3() + tile.origin_km.as_vec3().as_dvec3()
+            } else {
+                precise
+            };
             let ease = if self.settle_visuals {
                 0.0
             } else {
@@ -2309,7 +2379,13 @@ impl Renderer {
                     if self.chunk_pending.get(&k) == Some(&epoch) {
                         self.chunk_pending.remove(&k);
                         let gpu = self.upload(mesh, bucket);
-                        self.chunk_cache.insert(k, gpu);
+                        // re-uploads of a live key (edits, refreshes) keep their
+                // ease state - only genuinely new arrivals rise/dissolve
+                let mut gpu = gpu;
+                if let Some(old) = self.chunk_cache.get(&k) {
+                    gpu.shown_at = old.shown_at;
+                }
+                self.chunk_cache.insert(k, gpu);
                         landed += 1;
                         if landed.is_multiple_of(16) {
                             self.enforce_chunk_budget();
