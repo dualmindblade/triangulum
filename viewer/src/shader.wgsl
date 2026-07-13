@@ -46,12 +46,14 @@ struct Globals {
     weather5: vec4<f32>,
     // xyz = low/mid/high cloud noise scales, w = rain crevice-bias strength
     weather6: vec4<f32>,
-    // xyz = low/mid/high cloud density multipliers, w spare
+    // xyz = low/mid/high cloud density multipliers; w marks a pinned deck
+    // (the uniform raster still exists, while exact scalar pins preserve
+    // pre-W2.5 capture bytes)
     weather7: vec4<f32>,
-    // cloud DECK shape inputs (x cover, y precip, z temp C): camera weather
-    // at ground, planet-mean above the shell handoff - deck formations must
-    // not morph when an orbital camera pans (the ground responses below
-    // keep reading `weather`, which stays the camera sample)
+    // cloud DECK scalar compatibility inputs: xy retain exact pins, z is the
+    // camera-to-planet-mean temperature handoff, w is Neisor camera altitude.
+    // Live cover/precip SHAPE comes from the synoptic raster below; ground
+    // responses keep reading `weather`, which stays the camera sample.
     weather8: vec4<f32>,
     // W2: x ground cloud-shadow strength, y orbital cloud-alpha darkening,
     // z fog density, w fog ceiling above the camera-ground reference (km)
@@ -105,6 +107,8 @@ struct Tile {
 
 @group(0) @binding(0) var<uniform> globals: Globals;
 @group(0) @binding(1) var<uniform> tile: Tile;
+@group(0) @binding(2) var synoptic_raster: texture_2d_array<f32>;
+@group(0) @binding(3) var synoptic_sampler: sampler;
 
 struct VsIn {
     @location(0) pos: vec3<f32>,
@@ -1536,6 +1540,60 @@ fn cloud_color(
     return mix(col, vec3<f32>(0.98, 0.62, 0.38), sunset);
 }
 
+/// Project a planet direction into the viewer's edge-inclusive cube-face
+/// convention (planet.rs::FACES), then linearly sample the exact CPU-baked
+/// cover/precip bytes. A sub-tenth-texel, world-stable hash dither breaks up
+/// any residual 64x64 interpolation contour without changing regional shape.
+fn synoptic_deck_sample(sdir_in: vec3<f32>) -> vec2<f32> {
+    let sdir = normalize(sdir_in);
+    let hash_cell = floor(sdir * 512.0);
+    let jitter = vec2<f32>(
+        hash31(hash_cell + vec3<f32>(17.0, 41.0, 73.0)),
+        hash31(hash_cell + vec3<f32>(89.0, 13.0, 29.0)),
+    ) - vec2<f32>(0.5);
+    let helper = select(
+        vec3<f32>(0.0, 0.0, 1.0),
+        vec3<f32>(0.0, 1.0, 0.0),
+        abs(sdir.z) > 0.90,
+    );
+    let tangent = normalize(cross(helper, sdir));
+    let bitangent = cross(sdir, tangent);
+    let d = normalize(sdir + (tangent * jitter.x + bitangent * jitter.y) * 0.0015);
+
+    let ad = abs(d);
+    var face = 0i;
+    var uv = vec2<f32>(0.0);
+    // Ties prefer X, then Y, then Z, matching face_from_dir's face order.
+    if (ad.x >= ad.y && ad.x >= ad.z) {
+        if (d.x >= 0.0) {
+            face = 0i;
+            uv = vec2<f32>(d.y, d.z) / ad.x;
+        } else {
+            face = 1i;
+            uv = vec2<f32>(-d.y, d.z) / ad.x;
+        }
+    } else if (ad.y >= ad.z) {
+        if (d.y >= 0.0) {
+            face = 2i;
+            uv = vec2<f32>(-d.x, d.z) / ad.y;
+        } else {
+            face = 3i;
+            uv = vec2<f32>(d.x, d.z) / ad.y;
+        }
+    } else if (d.z >= 0.0) {
+        face = 4i;
+        uv = vec2<f32>(d.y, -d.x) / ad.z;
+    } else {
+        face = 5i;
+        uv = vec2<f32>(d.y, d.x) / ad.z;
+    }
+    // Texel nodes include u/v = +/-1. Convert them to texel centers so
+    // hardware linear filtering is the exact twin of sample_face().
+    let tc = (uv * 0.5 + vec2<f32>(0.5)) * (63.0 / 64.0)
+        + vec2<f32>(0.5 / 64.0);
+    return textureSampleLevel(synoptic_raster, synoptic_sampler, tc, face, 0.0).rg;
+}
+
 // kind: 0 low storm base, 1 middle cumulus, 2 high cirrus. Shape, coverage,
 // and color read cover/precip/temp; shell position reads only seed plus the
 // advected weather clock, preserving the determinism contract.
@@ -1557,15 +1615,20 @@ fn cloud_layer_sample_structured(
     kind: u32,
     structure: CloudStructure,
 ) -> vec4<f32> {
+    let spatial = synoptic_deck_sample(sdir);
+    // Pins still upload a uniform raster (map/instrument contract), but the
+    // scalar bypass avoids UNORM8 rounding changes in established pinned
+    // reels. Live shape always comes from the spatial raster.
+    let base_weather = select(spatial, globals.weather8.xy, globals.weather7.w > 0.5);
     let cover = clamp(
-        globals.weather8.x
+        base_weather.x
             + globals.weather14.y * structure.cyclone_signed
             + globals.weather14.w * structure.front,
         0.0,
         1.0,
     );
     let precip = clamp(
-        globals.weather8.y
+        base_weather.y
             + globals.weather14.z * structure.cyclone_positive
             + globals.weather14.w * 0.75 * structure.front,
         0.0,
@@ -1592,7 +1655,13 @@ fn cloud_layer_sample_structured(
         let fabric = 0.68 * vnoise(p)
             + 0.32 * vnoise(p * 2.07 + vec3<f32>(13.1, 7.7, 29.3));
         let wisps = smoothstep(0.57 - 0.035 * cold, 0.70 - 0.025 * cold, fabric);
-        let presence = (0.16 + 0.62 * (1.0 - cover)) * (0.78 + 0.22 * cold);
+        let legacy_presence = (0.16 + 0.62 * (1.0 - cover)) * (0.78 + 0.22 * cold);
+        // Low cover still favors cirrus, but a genuinely clear SYNOPTIC lane
+        // must remain visibly clear from orbit. The old inverse-cover law
+        // made cover=0 the strongest global fine-speckle case (B-8). Pins
+        // retain that exact law so established comparison reels do not move.
+        let live_presence = legacy_presence * smoothstep(0.035, 0.22, cover);
+        let presence = select(live_presence, legacy_presence, globals.weather7.w > 0.5);
         let alpha = clamp(
             wisps * presence * globals.weather7.z * (1.0 - 0.35 * structure.eye),
             0.0,

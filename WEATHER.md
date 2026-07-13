@@ -1,6 +1,6 @@
 # WEATHER.md — living weather for Neisor
 
-Status: W1 + clouds v2/W3 presentation + W4 structural seasons landed (2026-07-12). A long-running thread; this doc is
+Status: W1 + clouds v2/W3 + W2.5 spatial deck/wind map + W4 structural seasons landed (2026-07-13). A long-running thread; this doc is
 the contract. Owner: Austin + Andrew (taste), Fable (architecture).
 
 ## What we're building
@@ -36,8 +36,10 @@ reproduces the identical weather. Seekable, rewindable, deterministic.
 parallax cloud shells and their capped orbital composite, sun dimming under
 overcast, precipitation particles,
 snow dusting and rain-darkening on the ground, and someday cloud shadows,
-fog banks, lightning. Reads Layer 2 once per frame at the camera (cheap)
-plus per-pixel procedural detail in the shaders.
+fog banks, lightning. Camera-local ground/particle/fog responses read Layer 2
+at the camera. Cloud SHAPE reads a deterministic 6x64x64 RGBA8 synoptic raster
+at each shell-hit direction, then adds per-pixel formation fabric below the
+raster scale. The teleport map's Clouds-now layer samples those exact bytes.
 
 ## The determinism contract (non-negotiable)
 
@@ -56,6 +58,11 @@ plus per-pixel procedural detail in the shaders.
   it. Pre-weather sidecars are the deliberate cut line: they warn and fall
   back to live weather at time zero because their storm state is unknowable.
   A photo of a storm is a coordinate you can teleport back into.
+- W2.5's synoptic raster is rebuilt from scratch at a deterministic two-second
+  absolute-weather-time bucket. It is never advected incrementally and never
+  keyed by frame count. Live replay/cold capture therefore upload identical
+  98,304 bytes; pins upload a uniform cover/precip raster (the shader retains
+  exact scalar pin values to avoid UNORM8 rounding changes in old reels).
 - Weather presentation touches NOTHING structural: terrain::sample still reads annual
   means, so every census number and physics assert is untouched by
   construction. Structural seasonality (W4) is where that changes, gated.
@@ -105,8 +112,11 @@ Weather must never create a new mesh-vs-voxel disagreement:
   composited far-to-near and their COMBINED alpha is then hard-capped by
   `orbit_cloud_opacity_cap` (default 0.55). The below-deck path hands over
   between the 8.2 km high shell and 15 km camera altitude.
-- Performance: Layer 2 evaluated per-frame at the camera + a handful of
-  probe points (< 20 samples); per-pixel work is shader noise only.
+- Performance: camera responses and W2 compass probes retain their small
+  per-frame sample budget. W2.5 additionally evaluates 24,576 independent
+  raster texels once per deterministic two-second bucket (parallel CPU bake,
+  ~4-7 ms on the gate machine, ~0.03-0.06 ms/frame amortized at 60 fps).
+  Each visible/shadow cloud shell sample adds one filtered texture read.
 
 ## Tuning surface
 
@@ -130,6 +140,8 @@ Clouds-v2 and D-8 defaults (the documented art knobs):
 | `cloud_low_density` / `cloud_mid_density` / `cloud_high_density` | 0.92 / 0.82 / 0.32 | per-shell opacity multipliers before stacking |
 | `orbit_cloud_opacity_cap` | 0.55 | hard cap after all orbital layers are stacked |
 | `rain_crevice_bias` | 0.18 | maximum signed rain redistribution at deep trough/peak proxies |
+| `wind_map_density` | 180 | target comet streamlines in the visible Neisor map window |
+| `wind_map_length_km` | 1250 | whole-map streamline length; scales down with zoom |
 
 The crevice proxy is `(coarse_elevation - detailed_elevation) / 120 m`,
 clamped to `[-1,1]`. The coarse term is the smooth ~30 km elevation raster;
@@ -147,9 +159,14 @@ a warning and fall back to all defaults; malformed tuning can never feed NaNs
 or an unbounded instance count to a frame.
 
 The photo map's **Clouds now** layer reads the same on/off/pin state and
-absolute weather time as the renderer. Live fronts invalidate its expensive
-raster on a 60-second weather-time bucket (not every frame); pinned clouds are
-constant, and weather-off intentionally draws an empty cloud overlay.
+absolute weather time as the renderer. It samples the renderer's current
+synoptic raster rather than evaluating a parallel per-map-pixel field; its UI
+texture refreshes on that raster's deterministic two-second source key, while
+seasonal-only bases retain their 60-second cadence. Pinned clouds are constant,
+and weather-off intentionally draws an empty cloud overlay. The
+Neisor-only **Wind** toggle integrates deterministic short streamlines through
+the baked east/north wind plus the active analytic cyclone/zonal drift; comet
+tails and heads remain legible at whole-planet and zoomed map scales.
 
 ## Phase roadmap
 
@@ -164,6 +181,14 @@ constant, and weather-off intentionally draws an empty cloud overlay.
 - **Clouds v2 / W3 (2026-07-11):** three weather-typed 2-D shells at distinct
   altitudes fake depth through parallax; the same seeded formations composite
   over the planet from space with a hard post-stack opacity cap.
+- **W2.5 (2026-07-13):** the heterogeneous deck. Layer-2 cover/precip are
+  baked to a 6x64x64 edge-inclusive cube-face raster and sampled bilinearly at
+  each shell hit (sub-texel world-stable dither hides interpolation contours).
+  Regional storm belts/clear lanes now agree with Clouds-now from ground to
+  orbit; existing fabric supplies the local scale. B-8's zero-cover cirrus
+  inversion is gated in live mode so a clear synoptic lane actually clears,
+  while pinned captures retain the established uniform law. Added the Neisor
+  wind-streamline map layer and headless `weathermap` evidence exporter.
 - **W4 (design settled 2026-07-12, below):** structural seasonality —
   frozen lakes melt in summer, sea ice advances/retreats (seaice_monthly
   is already baked per month!), snow line moves in sample(), deciduous

@@ -287,6 +287,9 @@ pub enum BaseLayer {
 pub struct MapEnv<'a> {
     pub planet: &'a Planet,
     pub weather_field: Option<&'a crate::weather::WeatherField>,
+    /// The exact quantized bytes bound to the cloud-deck shader. Clouds-now
+    /// samples this instead of independently re-evaluating weather_at.
+    pub synoptic_raster: Option<&'a crate::weather::SynopticRaster>,
     pub weather_tuning: &'a crate::weather::WeatherTuning,
     pub solar_tuning: &'a crate::orbits::SolarTuning,
     pub weather_time_s: f64,
@@ -358,13 +361,13 @@ struct MapSig {
     clouds: bool,
     weather_on: bool,
     weather_pin: Option<(f32, f32)>,
-    /// 60-second buckets refresh live fronts at a useful visual cadence while
-    /// avoiding a costly map synthesis every frame.
+    /// Live clouds use the renderer raster's two-second key; seasonal-only
+    /// bases retain their cheaper 60-second refresh cadence.
     weather_time_bucket: Option<i64>,
     bounds: Bounds,
 }
 
-const MAP_WEATHER_BUCKET_S: f64 = 60.0;
+const MAP_SEASON_BUCKET_S: f64 = 60.0;
 
 fn map_weather_time_bucket(
     base: BaseLayer,
@@ -373,15 +376,20 @@ fn map_weather_time_bucket(
     weather_pin: Option<(f32, f32)>,
     weather_time_s: f64,
 ) -> Option<i64> {
-    let time_sensitive =
-        (clouds && weather_on && weather_pin.is_none()) || base != BaseLayer::Biomes;
+    let moving_clouds = clouds && weather_on && weather_pin.is_none();
+    let time_sensitive = moving_clouds || base != BaseLayer::Biomes;
     time_sensitive.then(|| {
         let t_s = if weather_time_s.is_finite() {
             weather_time_s
         } else {
             0.0
         };
-        (t_s / MAP_WEATHER_BUCKET_S).floor() as i64
+        let bucket_s = if moving_clouds {
+            crate::weather::SYNOPTIC_RASTER_INTERVAL_S
+        } else {
+            MAP_SEASON_BUCKET_S
+        };
+        (t_s / bucket_s).floor() as i64
     })
 }
 
@@ -487,8 +495,8 @@ fn biome_color(planet: &Planet, f: usize, u: f64, v: f64, relief: bool) -> [f32;
 /// Rasterize the base color field for `b` at `w`x`h`. Rivers/lakes/markers are
 /// NOT drawn here (they are vector overlays); this is the biome / temperature
 /// / precipitation field, optionally relief-shaded, with the live cloud field
-/// alpha-composited on top. Cost is dominated by the cloud layer (per-pixel
-/// synoptic fbm via `weather_at`) — timed at the call site.
+/// alpha-composited on top. Clouds sample the renderer's tiny shared raster,
+/// so map synthesis no longer performs synoptic fbm once per map pixel.
 fn synth_map(
     env: &MapEnv,
     base: BaseLayer,
@@ -503,21 +511,23 @@ fn synth_map(
     let angle = std::f64::consts::TAU * season;
     let (sn1, cs1) = angle.sin_cos();
     let (sn2, cs2) = (2.0 * angle).sin_cos();
-    // Clouds-now can touch every map pixel, so resolve the immutable cyclone
-    // bank once for the whole raster rather than rescoring baked candidate
-    // tracks in every `weather_at` call.
-    let cyclones = env
-        .weather_field
-        .map_or_else(crate::weather::CycloneSystems::default, |wf| {
-            crate::weather::cyclone_systems(
-                wf,
-                planet.seed,
-                planet.radius_km,
-                season,
-                env.weather_time_s,
-                env.weather_tuning,
-            )
-        });
+    // Legacy/no-frame fallback only: normal map synthesis reads the exact
+    // renderer raster below. Resolve systems once if a caller has not drawn
+    // a frame yet and therefore supplies no current raster.
+    let fallback_cyclones = (clouds && env.synoptic_raster.is_none())
+        .then(|| {
+            env.weather_field.map(|wf| {
+                crate::weather::cyclone_systems(
+                    wf,
+                    planet.seed,
+                    planet.radius_km,
+                    season,
+                    env.weather_time_s,
+                    env.weather_tuning,
+                )
+            })
+        })
+        .flatten();
     let (tstops, pstops) = (temp_stops(), precip_stops());
     let mut px = vec![Color32::BLACK; w * h];
     for y in 0..h {
@@ -559,24 +569,43 @@ fn synth_map(
                 && env.weather_on
                 && let Some(wf) = env.weather_field
             {
-                let cover = env.weather_pin.map_or_else(
-                    || {
-                        crate::weather::weather_at_with_cyclones(
-                            wf,
-                            planet,
-                            dir,
-                            env.weather_time_s,
-                            env.day_len_s,
-                            env.solar_tuning,
-                            env.weather_tuning,
-                            &cyclones,
-                        )
-                        .cloud_cover as f32
-                    },
-                    |(cover, _)| cover,
-                );
+                let cover = if let Some((cover, _)) = env.weather_pin {
+                    // Exact scalar pins mirror the shader's compatibility
+                    // path; the uploaded raster remains spatially uniform.
+                    cover
+                } else if let Some(raster) = env.synoptic_raster.filter(|raster| {
+                    matches!(
+                        raster.source(),
+                        crate::weather::SynopticRasterSource::Live { seed, .. }
+                            if seed == planet.seed
+                    )
+                }) {
+                    raster.sample(dir).0 as f32
+                } else {
+                    crate::weather::weather_at_with_cyclones(
+                        wf,
+                        planet,
+                        dir,
+                        env.weather_time_s,
+                        env.day_len_s,
+                        env.solar_tuning,
+                        env.weather_tuning,
+                        fallback_cyclones
+                            .as_ref()
+                            .expect("cloud fallback resolved cyclone bank"),
+                    )
+                    .cloud_cover as f32
+                };
                 if cover > 0.01 {
-                    let a = cover.powf(1.1) * 0.9;
+                    let a = if env.weather_pin.is_some() {
+                        cover.powf(1.1) * 0.9
+                    } else {
+                        // Match the deck's presence gates: weak synoptic
+                        // cover should leave a recognizable clear lane on
+                        // the map, while storm regions remain emphatic.
+                        let x = ((cover - 0.16) / 0.78).clamp(0.0, 1.0);
+                        x * x * (3.0 - 2.0 * x) * 0.9
+                    };
                     let cl = disp(
                         0.95 - 0.42 * cover,
                         0.95 - 0.40 * cover,
@@ -601,6 +630,268 @@ fn synth_map(
         source_size: egui::Vec2::new(w as f32, h as f32),
         pixels: px,
     }
+}
+
+#[derive(Clone, Debug)]
+struct WindStroke {
+    points: Vec<DVec3>,
+    mean_speed_mps: f64,
+}
+
+fn wind_hash01(seed: i64, x: usize, y: usize, lane: u64) -> f64 {
+    let mut z = seed as u64
+        ^ (x as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15)
+        ^ (y as u64).wrapping_mul(0xD1B5_4A32_D192_ED03)
+        ^ lane.wrapping_mul(0x94D0_49BB_1331_11EB);
+    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    z ^= z >> 31;
+    ((z >> 11) as f64) * (1.0 / ((1u64 << 53) as f64))
+}
+
+/// Integrate deterministic short paths through the map's instantaneous
+/// tangent field. Seeds are view-local (so both the whole globe and a zoomed
+/// weather window retain useful density); every path sample is still a pure
+/// function of seed, absolute weather time, and direction.
+fn wind_streamlines(env: &MapEnv, bounds: Bounds, zoom: f64) -> Vec<WindStroke> {
+    let Some(field) = env.weather_field else {
+        return Vec::new();
+    };
+    let season = crate::weather::season_frac(env.weather_time_s, env.day_len_s, env.solar_tuning);
+    let cyclones = if env.weather_on {
+        crate::weather::cyclone_systems(
+            field,
+            env.planet.seed,
+            env.planet.radius_km,
+            season,
+            env.weather_time_s,
+            env.weather_tuning,
+        )
+    } else {
+        crate::weather::CycloneSystems::default()
+    };
+    let target = env.weather_tuning.wind_map_density as usize;
+    let aspect = ((bounds.lon_right - bounds.lon_left)
+        / (bounds.lat_top - bounds.lat_bot).max(1e-6))
+    .clamp(0.5, 4.0);
+    let cols = ((target as f64 * aspect).sqrt().round() as usize).max(1);
+    let rows = target.div_ceil(cols).max(1);
+    let path_km = env.weather_tuning.wind_map_length_km / zoom.max(1.0).sqrt();
+    const STEPS: usize = 14;
+    let base_step = path_km / STEPS as f64 / env.planet.radius_km.max(1e-6);
+    let mut strokes = Vec::with_capacity(target);
+    for y in 0..rows {
+        for x in 0..cols {
+            if strokes.len() >= target {
+                break;
+            }
+            let jx = wind_hash01(env.planet.seed, x, y, 1) - 0.5;
+            let jy = wind_hash01(env.planet.seed, x, y, 2) - 0.5;
+            let fx = (x as f64 + 0.5 + jx * 0.64) / cols as f64;
+            let fy = (y as f64 + 0.5 + jy * 0.64) / rows as f64;
+            let lon = bounds.lon_left + (bounds.lon_right - bounds.lon_left) * fx;
+            let lat = (bounds.lat_top + (bounds.lat_bot - bounds.lat_top) * fy).clamp(-89.5, 89.5);
+            let (slat, clat) = lat.to_radians().sin_cos();
+            let lon_r = lon.to_radians();
+            let mut dir = DVec3::new(clat * lon_r.cos(), clat * lon_r.sin(), slat);
+            let mut points = Vec::with_capacity(STEPS + 1);
+            let mut speed_sum = 0.0;
+            points.push(dir);
+            for _ in 0..STEPS {
+                let wind = crate::weather::synoptic_wind_tangent_with_cyclones(
+                    field,
+                    dir,
+                    env.planet.radius_km,
+                    env.weather_tuning,
+                    &cyclones,
+                );
+                let speed = wind.length();
+                if !speed.is_finite() || speed < 0.05 {
+                    break;
+                }
+                speed_sum += speed;
+                let tangent = wind / speed;
+                // Calm paths stay short; ordinary 10-20 m/s flow consumes
+                // the tuned length; storm cores can extend modestly beyond.
+                let strength = (0.38 + 0.62 * (speed / 18.0).clamp(0.0, 1.35)).min(1.22);
+                let theta = base_step * strength;
+                dir = (dir * theta.cos() + tangent * theta.sin()).normalize();
+                points.push(dir);
+            }
+            if points.len() >= 3 {
+                strokes.push(WindStroke {
+                    mean_speed_mps: speed_sum / (points.len() - 1) as f64,
+                    points,
+                });
+            }
+        }
+    }
+    strokes
+}
+
+fn paint_wind_streamlines(
+    paint: &egui::Painter,
+    rect: egui::Rect,
+    bounds: Bounds,
+    strokes: &[WindStroke],
+) {
+    for stroke in strokes {
+        let n = stroke.points.len().saturating_sub(1).max(1);
+        let energy = (stroke.mean_speed_mps / 24.0).clamp(0.0, 1.0) as f32;
+        for (index, pair) in stroke.points.windows(2).enumerate() {
+            let (lat0, lon0) = dir_to_geo(pair[0]);
+            let (lat1, lon1) = dir_to_geo(pair[1]);
+            if (lon0 - lon1).abs() > 90.0 {
+                continue;
+            }
+            let a = bounds.project(rect, lat0, lon0);
+            let b = bounds.project(rect, lat1, lon1);
+            let f = (index + 1) as f32 / n as f32;
+            let alpha = (38.0 + 190.0 * f.powf(1.35)) as u8;
+            let color = Color32::from_rgba_unmultiplied(
+                (105.0 + 70.0 * energy) as u8,
+                (195.0 + 45.0 * energy) as u8,
+                255,
+                alpha,
+            );
+            paint.line_segment([a, b], egui::Stroke::new(0.65 + 1.35 * f, color));
+        }
+        if let Some(&head) = stroke.points.last() {
+            let (lat, lon) = dir_to_geo(head);
+            let p = bounds.project(rect, lat, lon);
+            paint.circle_filled(p, 1.35, Color32::from_rgba_unmultiplied(210, 245, 255, 230));
+        }
+    }
+}
+
+fn blend_map_pixel(image: &mut egui::ColorImage, x: i32, y: i32, color: Color32) {
+    if x < 0 || y < 0 || x >= image.size[0] as i32 || y >= image.size[1] as i32 {
+        return;
+    }
+    let index = y as usize * image.size[0] + x as usize;
+    let dst = image.pixels[index].to_array();
+    let src = color.to_array();
+    let a = src[3] as f32 / 255.0;
+    image.pixels[index] = Color32::from_rgb(
+        (dst[0] as f32 * (1.0 - a) + src[0] as f32 * a).round() as u8,
+        (dst[1] as f32 * (1.0 - a) + src[1] as f32 * a).round() as u8,
+        (dst[2] as f32 * (1.0 - a) + src[2] as f32 * a).round() as u8,
+    );
+}
+
+fn rasterize_map_line(
+    image: &mut egui::ColorImage,
+    a: (f64, f64),
+    b: (f64, f64),
+    radius: i32,
+    color: Color32,
+) {
+    let dx = b.0 - a.0;
+    let dy = b.1 - a.1;
+    let steps = dx.abs().max(dy.abs()).ceil().max(1.0) as usize;
+    for step in 0..=steps {
+        let t = step as f64 / steps as f64;
+        let x = (a.0 + dx * t).round() as i32;
+        let y = (a.1 + dy * t).round() as i32;
+        for oy in -radius..=radius {
+            for ox in -radius..=radius {
+                if ox * ox + oy * oy <= radius * radius {
+                    blend_map_pixel(image, x + ox, y + oy, color);
+                }
+            }
+        }
+    }
+}
+
+fn rasterize_wind_streamlines(
+    image: &mut egui::ColorImage,
+    bounds: Bounds,
+    strokes: &[WindStroke],
+) {
+    let image_width = image.size[0] as f64;
+    let image_height = image.size[1] as f64;
+    let project = |dir: DVec3| {
+        let (lat, lon) = dir_to_geo(dir);
+        (
+            (lon - bounds.lon_left) / (bounds.lon_right - bounds.lon_left) * image_width,
+            (bounds.lat_top - lat) / (bounds.lat_top - bounds.lat_bot) * image_height,
+        )
+    };
+    for stroke in strokes {
+        let n = stroke.points.len().saturating_sub(1).max(1);
+        let energy = (stroke.mean_speed_mps / 24.0).clamp(0.0, 1.0) as f32;
+        for (index, pair) in stroke.points.windows(2).enumerate() {
+            let (_, lon0) = dir_to_geo(pair[0]);
+            let (_, lon1) = dir_to_geo(pair[1]);
+            if (lon0 - lon1).abs() > 90.0 {
+                continue;
+            }
+            let f = (index + 1) as f32 / n as f32;
+            let color = Color32::from_rgba_unmultiplied(
+                (105.0 + 70.0 * energy) as u8,
+                (195.0 + 45.0 * energy) as u8,
+                255,
+                (38.0 + 190.0 * f.powf(1.35)) as u8,
+            );
+            rasterize_map_line(
+                image,
+                project(pair[0]),
+                project(pair[1]),
+                (f > 0.7) as i32,
+                color,
+            );
+        }
+        if let Some(&head) = stroke.points.last() {
+            let p = project(head);
+            rasterize_map_line(
+                image,
+                p,
+                p,
+                2,
+                Color32::from_rgba_unmultiplied(210, 245, 255, 230),
+            );
+        }
+    }
+}
+
+/// Headless twin of the Neisor teleport-map raster, used by visual gates and
+/// evidence capture without opening a window. It shares `synth_map` and the
+/// exact streamline geometry with the interactive toggle.
+pub fn weather_map_image(
+    env: &MapEnv,
+    center_lat: f64,
+    center_lon: f64,
+    zoom: f64,
+    width: usize,
+    height: usize,
+    show_clouds: bool,
+    show_wind: bool,
+) -> egui::ColorImage {
+    let zoom = zoom.clamp(1.0, MAX_ZOOM);
+    let half_lon = 180.0 / zoom;
+    let half_lat = 90.0 / zoom;
+    let center_lon = center_lon.clamp(-180.0 + half_lon, 180.0 - half_lon);
+    let center_lat = center_lat.clamp(-90.0 + half_lat, 90.0 - half_lat);
+    let bounds = Bounds {
+        lat_top: center_lat + half_lat,
+        lat_bot: center_lat - half_lat,
+        lon_left: center_lon - half_lon,
+        lon_right: center_lon + half_lon,
+    };
+    let mut image = synth_map(
+        env,
+        BaseLayer::Biomes,
+        true,
+        show_clouds,
+        bounds,
+        width.max(64),
+        height.max(32),
+    );
+    if show_wind {
+        let strokes = wind_streamlines(env, bounds, zoom);
+        rasterize_wind_streamlines(&mut image, bounds, &strokes);
+    }
+    image
 }
 
 /// Equirectangular moon chart synthesized from the exact mesh law.  Albedo is
@@ -739,6 +1030,7 @@ pub struct PhotoMap {
     show_rivers: bool,
     show_lakes: bool,
     show_clouds: bool,
+    show_wind: bool,
     show_markers: bool,
     // ---- pan/zoom view (equirectangular); zoom 1 = whole planet ----
     view_zoom: f64,
@@ -790,6 +1082,7 @@ impl PhotoMap {
             show_rivers: true,
             show_lakes: true,
             show_clouds: false,
+            show_wind: false,
             show_markers: true,
             view_zoom: 1.0,
             view_center_lat: 0.0,
@@ -811,7 +1104,9 @@ impl PhotoMap {
 
     pub fn set_join_defaults(&mut self, name: impl Into<String>, invite: Option<String>) {
         self.join_name = name.into();
-        if let Some(invite) = invite { self.join_url = invite; }
+        if let Some(invite) = invite {
+            self.join_url = invite;
+        }
     }
 
     pub fn toggle(&mut self) {
@@ -1162,6 +1457,13 @@ impl PhotoMap {
                     };
                     ui.checkbox(&mut self.show_clouds, "Clouds now")
                         .on_hover_text(cloud_tip);
+                    ui.add_enabled(
+                        self.body == MapBody::Neisor,
+                        egui::Checkbox::new(&mut self.show_wind, "Wind"),
+                    )
+                    .on_hover_text(
+                        "Neisor only: short comet streamlines integrated through baked wind plus current synoptic storm drift",
+                    );
                     ui.checkbox(&mut self.show_markers, "Markers")
                         .on_hover_text("photo markers");
                     ui.separator();
@@ -1254,11 +1556,11 @@ impl PhotoMap {
                         // (a drag slippy-pans the existing pixels; the crisp
                         // rebuild lands when it settles) ---
                         let ppp = ui.ctx().pixels_per_point();
-                        // resolution cap keeps every re-synth well under ~200 ms
-                        // (measured; see the commit message). Cost per pixel:
-                        // clouds carry a synoptic fbm (dear), the temp/precip
-                        // climatology two harmonic bilinears (~2x biomes), and
-                        // biomes are cheapest — so the crisp cap tracks the base.
+                        // Resolution cap keeps every re-synth well under ~200 ms
+                        // (measured; see the commit message). Cloud cover is now
+                        // one cheap shared-raster lookup; temp/precip still carry
+                        // two harmonic bilinears (~2x biomes), and biomes are
+                        // cheapest — so the crisp cap tracks the base.
                         // Below the cap the map is native; above it LINEAR-
                         // upscales (soft, but clouds/temp are soft fields).
                         let (cap_w, cap_h) = if self.body == MapBody::Moon {
@@ -1428,6 +1730,11 @@ impl PhotoMap {
                                 );
                                 paint.line_segment([pa, pb], egui::Stroke::new(width, col));
                             }
+                        }
+
+                        if self.body == MapBody::Neisor && self.show_wind {
+                            let strokes = wind_streamlines(env, bounds, self.view_zoom);
+                            paint_wind_streamlines(&paint, rect, bounds, &strokes);
                         }
 
                         // markers, "you are here", custom destination (top)
@@ -2375,11 +2682,11 @@ mod tests {
     #[test]
     fn clouds_now_bucket_tracks_only_moving_or_seasonal_fields() {
         assert_eq!(
-            map_weather_time_bucket(BaseLayer::Biomes, true, true, None, 59.9),
+            map_weather_time_bucket(BaseLayer::Biomes, true, true, None, 1.9),
             Some(0)
         );
         assert_eq!(
-            map_weather_time_bucket(BaseLayer::Biomes, true, true, None, 60.0),
+            map_weather_time_bucket(BaseLayer::Biomes, true, true, None, 2.0),
             Some(1)
         );
         assert_eq!(

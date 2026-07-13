@@ -9,7 +9,21 @@ are `teleport LAT LON [ALT_KM]` viewer args at `--exagg 1` unless noted.
 
 ## OPEN
 
-### B-8 High-orbit cloud deck reads as uniform fine speckle
+### B-8 High-orbit cloud deck reads as uniform fine speckle — RESOLVED W2.5 (uncommitted)
+W2.5 resolution (2026-07-13, `sol/w25-heterogeneous`): the deck no
+longer derives live shape from the camera-to-planet-mean scalar. A pure
+6x64x64 RGBA8 cube raster bakes field cover/precip at deterministic
+two-second weather-time buckets; every low/mid/high shell hit samples those
+same bytes per pixel, while its existing fabric supplies formation detail.
+The teleport map reads the identical raster. Zero-cover live regions now
+gate out the old inverse-cover cirrus presence, so orbital clear lanes stay
+clear instead of becoming maximum fine speckle. Exact pins still upload a
+uniform raster and take the legacy scalar/presence path, preserving reel
+comparability. The t=3500 contact gate shows regional belts and local fabric
+at 12,000/4,000/500 km, and a north-up map/sky pair visibly shares the two
+continents, central strait, and thick/clear lanes. This entry remains under
+OPEN only until the mission lands and has the required fixing commit hash.
+
 At ~1000 km with live or pinned cover, the deck renders as global
 salt-and-pepper dust rather than cumulus masses; the pre-W2 control
 (d90835d) renders NO deck at that altitude at identical pins, so

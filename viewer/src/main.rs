@@ -2297,6 +2297,7 @@ impl ApplicationHandler for App {
                     let env = triangulum_viewer::ui::MapEnv {
                         planet: &self.planet,
                         weather_field: renderer.weather_field.as_ref().map(|v| &**v),
+                        synoptic_raster: Some(&renderer.synoptic_raster),
                         weather_tuning: &renderer.weather_tuning,
                         solar_tuning: &renderer.solar_tuning,
                         weather_time_s: renderer.weather_time_s(),

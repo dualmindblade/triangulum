@@ -4,11 +4,13 @@
 //! draws, no wall clock — so any (seed, position, time) reproduces the
 //! identical weather: the play harness and photo sidecars stay exact.
 //!
-//! Layer 3 (what you SEE) lives in renderer.rs + shader.wgsl and reads one
-//! `Weather` sample per frame at the camera; per-pixel detail is shader
-//! noise driven by the same uniforms.
+//! Layer 3 (what you SEE) lives in renderer.rs + shader.wgsl. Camera-local
+//! responses read one `Weather` sample per frame; deck shape reads the small
+//! deterministic `SynopticRaster` below at each shell-hit direction, with
+//! shader fabric supplying the sub-raster scales.
 
 use glam::DVec3;
+use rayon::prelude::*;
 
 use crate::noise::fbm_band;
 use crate::planet::Planet;
@@ -118,6 +120,11 @@ pub struct WeatherTuning {
     pub front_leading_km: f64,
     pub front_trailing_km: f64,
     pub front_length_km: f64,
+    /// Teleport-map wind visualization. `wind_map_density` is the target
+    /// number of comet streamlines in the visible map window; length is the
+    /// whole-planet (1x zoom) path length and scales down as the map zooms.
+    pub wind_map_density: u32,
+    pub wind_map_length_km: f64,
     /// Max precipitation particles at full intensity.
     pub particles_max: u32,
 }
@@ -185,6 +192,8 @@ impl Default for WeatherTuning {
             front_leading_km: 90.0,
             front_trailing_km: 360.0,
             front_length_km: 1800.0,
+            wind_map_density: 180,
+            wind_map_length_km: 1250.0,
             particles_max: 9000,
         }
     }
@@ -282,6 +291,7 @@ impl WeatherTuning {
             ("front_leading_km", self.front_leading_km),
             ("front_trailing_km", self.front_trailing_km),
             ("front_length_km", self.front_length_km),
+            ("wind_map_length_km", self.wind_map_length_km),
         ];
         if let Some((name, _)) = finite.into_iter().find(|(_, v)| !v.is_finite()) {
             return Err(format!("{name} must be finite"));
@@ -318,8 +328,7 @@ impl WeatherTuning {
             || !(0.0..=1.0).contains(&self.rain_crevice_bias)
         {
             return Err(
-                "overcast_sun_floor, rain_darken, and rain_crevice_bias must be in [0, 1]"
-                    .into(),
+                "overcast_sun_floor, rain_darken, and rain_crevice_bias must be in [0, 1]".into(),
             );
         }
         if self.dust_full_c <= 0.0 {
@@ -330,9 +339,7 @@ impl WeatherTuning {
             || self.cloud_high_alt_km <= self.cloud_mid_alt_km
             || self.shell_fade_km <= self.cloud_high_alt_km
         {
-            return Err(
-                "cloud altitudes require 0 <= low < mid < high < shell_fade_km".into(),
-            );
+            return Err("cloud altitudes require 0 <= low < mid < high < shell_fade_km".into());
         }
         if !(1..=3).contains(&self.cloud_layer_count) {
             return Err("cloud_layer_count must be in 1..=3".into());
@@ -401,12 +408,17 @@ impl WeatherTuning {
         {
             return Err("front scales require 0 < leading < trailing < length <= 6000 km".into());
         }
+        if !(16..=1024).contains(&self.wind_map_density) {
+            return Err("wind_map_density must be in 16..=1024".into());
+        }
+        if self.wind_map_length_km <= 0.0 || self.wind_map_length_km > 5000.0 {
+            return Err("wind_map_length_km must be in (0, 5000]".into());
+        }
         if self.particles_max > PARTICLES_MAX_CAP {
             return Err(format!("particles_max must be <= {PARTICLES_MAX_CAP}"));
         }
         Ok(())
     }
-
 }
 
 /// The legacy structural epoch. Its bucket deliberately evaluates the annual
@@ -528,7 +540,11 @@ pub fn hysteretic_frozen(
     freeze_c: f64,
     thaw_c: f64,
 ) -> bool {
-    let edge = if trend_c_per_orbit >= 0.0 { thaw_c } else { freeze_c };
+    let edge = if trend_c_per_orbit >= 0.0 {
+        thaw_c
+    } else {
+        freeze_c
+    };
     temp_c < edge + (comparator.clamp(0.0, 1.0) - 0.5)
 }
 
@@ -554,6 +570,192 @@ pub struct Weather {
     pub storm: f64,
 }
 
+/// The deck's spatial Layer-2 bridge. At 64 edge-inclusive texels per cube
+/// face, one RGBA8 upload is 98,304 bytes. R/G carry cloud cover and
+/// precipitation; B is reserved for a future spatial temperature channel and
+/// A remains opaque. The byte layout is face-major, then v row, then u.
+pub const SYNOPTIC_RASTER_RES: usize = 64;
+pub const SYNOPTIC_RASTER_BYTES: usize = 6 * SYNOPTIC_RASTER_RES * SYNOPTIC_RASTER_RES * 4;
+/// A deterministic time bucket avoids evaluating 24,576 weather points every
+/// frame. It is a pure function of absolute weather time (never frame count or
+/// accumulated state), so a capture starting cold chooses the same raster as
+/// continuous playback. Two seconds is only ~3 km of default front advection.
+pub const SYNOPTIC_RASTER_INTERVAL_S: f64 = 2.0;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SynopticRasterSource {
+    Off,
+    Live {
+        seed: i64,
+        weather_time_bits: u64,
+    },
+    Pinned {
+        seed: i64,
+        cover_bits: u32,
+        precip_bits: u32,
+    },
+}
+
+/// Quantize the rebuild clock without introducing any history. Explicit
+/// seeks and replay captures therefore resolve the same source key directly.
+pub fn synoptic_raster_time_s(weather_time_s: f64) -> f64 {
+    let t = if weather_time_s.is_finite() {
+        weather_time_s.max(0.0)
+    } else {
+        0.0
+    };
+    let q = (t / SYNOPTIC_RASTER_INTERVAL_S).floor() * SYNOPTIC_RASTER_INTERVAL_S;
+    if q == 0.0 { 0.0 } else { q }
+}
+
+fn unorm8(value: f64) -> u8 {
+    (value.clamp(0.0, 1.0) * 255.0).round() as u8
+}
+
+#[derive(Clone, Debug)]
+pub struct SynopticRaster {
+    source: SynopticRasterSource,
+    bytes: Vec<u8>,
+}
+
+impl Default for SynopticRaster {
+    fn default() -> Self {
+        Self::off()
+    }
+}
+
+impl SynopticRaster {
+    pub fn off() -> Self {
+        Self::uniform_with_source(0.0, 0.0, SynopticRasterSource::Off)
+    }
+
+    pub fn pinned(seed: i64, cover: f32, precip: f32) -> Self {
+        Self::uniform_with_source(
+            cover as f64,
+            precip as f64,
+            SynopticRasterSource::Pinned {
+                seed,
+                cover_bits: cover.to_bits(),
+                precip_bits: precip.to_bits(),
+            },
+        )
+    }
+
+    fn uniform_with_source(cover: f64, precip: f64, source: SynopticRasterSource) -> Self {
+        let texel = [unorm8(cover), unorm8(precip), 0, 255];
+        let mut bytes = vec![0; SYNOPTIC_RASTER_BYTES];
+        bytes
+            .par_chunks_mut(4)
+            .for_each(|pixel| pixel.copy_from_slice(&texel));
+        Self { source, bytes }
+    }
+
+    /// Bake the complete CPU weather field at cube-face texel nodes. This is
+    /// a direct, stateless evaluation: the same assets, seed, tuning, and
+    /// weather time always produce identical bytes, independent of thread
+    /// scheduling or what raster was baked previously.
+    pub fn bake_live(
+        field: &WeatherField,
+        planet: &Planet,
+        weather_time_s: f64,
+        day_len_s: f64,
+        solar_tuning: &crate::orbits::SolarTuning,
+        tuning: &WeatherTuning,
+    ) -> Self {
+        let time = if weather_time_s.is_finite() {
+            weather_time_s.max(0.0)
+        } else {
+            0.0
+        };
+        let season = season_frac(time, day_len_s, solar_tuning);
+        let cyclones = cyclone_systems(field, planet.seed, planet.radius_km, season, time, tuning);
+        let mut bytes = vec![0; SYNOPTIC_RASTER_BYTES];
+        bytes
+            .par_chunks_mut(4)
+            .enumerate()
+            .for_each(|(index, pixel)| {
+                let face_stride = SYNOPTIC_RASTER_RES * SYNOPTIC_RASTER_RES;
+                let face = index / face_stride;
+                let within = index % face_stride;
+                let y = within / SYNOPTIC_RASTER_RES;
+                let x = within % SYNOPTIC_RASTER_RES;
+                let denom = (SYNOPTIC_RASTER_RES - 1) as f64;
+                let u = -1.0 + 2.0 * x as f64 / denom;
+                let v = -1.0 + 2.0 * y as f64 / denom;
+                let dir = crate::planet::face_dir(face, u, v);
+                let weather = weather_at_with_cyclones(
+                    field,
+                    planet,
+                    dir,
+                    time,
+                    day_len_s,
+                    solar_tuning,
+                    tuning,
+                    &cyclones,
+                );
+                pixel.copy_from_slice(&[
+                    unorm8(weather.cloud_cover),
+                    unorm8(weather.precip),
+                    0,
+                    255,
+                ]);
+            });
+        Self {
+            source: SynopticRasterSource::Live {
+                seed: planet.seed,
+                weather_time_bits: time.to_bits(),
+            },
+            bytes,
+        }
+    }
+
+    pub fn source(&self) -> SynopticRasterSource {
+        self.source
+    }
+
+    pub fn bytes(&self) -> &[u8] {
+        &self.bytes
+    }
+
+    pub fn resolution(&self) -> usize {
+        SYNOPTIC_RASTER_RES
+    }
+
+    pub fn sample(&self, dir: DVec3) -> (f64, f64) {
+        let dir = dir.normalize_or_zero();
+        if dir == DVec3::ZERO || !dir.is_finite() {
+            return (0.0, 0.0);
+        }
+        let (face, u, v) = crate::planet::face_from_dir(dir);
+        self.sample_face(face, u, v)
+    }
+
+    /// CPU twin of the shader's edge-inclusive, linearly filtered array
+    /// lookup. Keeping this public lets the teleport map display the exact
+    /// bytes the cloud deck sees rather than re-evaluating a parallel field.
+    pub fn sample_face(&self, face: usize, u: f64, v: f64) -> (f64, f64) {
+        let res = SYNOPTIC_RASTER_RES;
+        let x = ((u * 0.5 + 0.5) * (res - 1) as f64).clamp(0.0, (res - 1) as f64);
+        let y = ((v * 0.5 + 0.5) * (res - 1) as f64).clamp(0.0, (res - 1) as f64);
+        let x0 = x.floor() as usize;
+        let y0 = y.floor() as usize;
+        let x1 = (x0 + 1).min(res - 1);
+        let y1 = (y0 + 1).min(res - 1);
+        let fx = x - x0 as f64;
+        let fy = y - y0 as f64;
+        let at = |xx: usize, yy: usize, channel: usize| {
+            let index = ((face * res * res + yy * res + xx) * 4) + channel;
+            self.bytes[index] as f64 / 255.0
+        };
+        let bilinear = |channel| {
+            let a = at(x0, y0, channel) * (1.0 - fx) + at(x1, y0, channel) * fx;
+            let b = at(x0, y1, channel) * (1.0 - fx) + at(x1, y1, channel) * fx;
+            a * (1.0 - fy) + b * fy
+        };
+        (bilinear(0), bilinear(1))
+    }
+}
+
 // WEA2 keeps temperature at k=1 and adds k=2 cosine/sine terms for the two
 // fields whose real monthly series are commonly bimodal. Internally a legacy
 // WEA1 file is expanded to this layout with those four terms zero-filled.
@@ -577,15 +779,7 @@ const L_WIND_N: usize = 13;
 const L_SEAICE_0: usize = 14;
 
 const WEA1_TO_WEA2: [usize; WEA1_LAYERS] = [
-    L_TEMP_A,
-    L_TEMP_B,
-    L_PRC_MEAN,
-    L_PRC_A1,
-    L_PRC_B1,
-    L_CLD_MEAN,
-    L_CLD_A1,
-    L_CLD_B1,
-    L_WIND_E,
+    L_TEMP_A, L_TEMP_B, L_PRC_MEAN, L_PRC_A1, L_PRC_B1, L_CLD_MEAN, L_CLD_A1, L_CLD_B1, L_WIND_E,
     L_WIND_N,
 ];
 
@@ -682,7 +876,12 @@ impl WeatherField {
                     .collect()
             })
             .collect();
-        Ok(Self { res, faces, temp_harmonics, has_seaice: version == 3 })
+        Ok(Self {
+            res,
+            faces,
+            temp_harmonics,
+            has_seaice: version == 3,
+        })
     }
 
     /// Bilinear layer sample at (face, u, v) — mirrors planet.rs::bilinear.
@@ -721,7 +920,10 @@ impl WeatherField {
             a * (1.0 - fy) + b * fy
         };
         let face_layers = &self.faces[face];
-        [interpolate(&face_layers[layers[0]]), interpolate(&face_layers[layers[1]])]
+        [
+            interpolate(&face_layers[layers[0]]),
+            interpolate(&face_layers[layers[1]]),
+        ]
     }
 
     #[inline(always)]
@@ -836,20 +1038,18 @@ impl WeatherField {
         canonical: bool,
     ) -> (f64, f64) {
         let [a, b] = self.temp_pair_at(face, u, v);
-        let temp = if canonical { annual } else { annual + a * cs + b * sn };
+        let temp = if canonical {
+            annual
+        } else {
+            annual + a * cs + b * sn
+        };
         let trend = std::f64::consts::TAU * (-a * sn + b * cs);
         (temp, trend)
     }
 
     /// Sign of the local Fourier temperature derivative (C per orbit).
     /// Positive means the hysteresis loop is on its thawing branch.
-    pub fn seasonal_temp_trend(
-        &self,
-        face: usize,
-        u: f64,
-        v: f64,
-        season_frac: f64,
-    ) -> f64 {
+    pub fn seasonal_temp_trend(&self, face: usize, u: f64, v: f64, season_frac: f64) -> f64 {
         // This public convenience path is kept for map/probe callers; hot
         // structural sampling uses `seasonal_temp_state` once.
         let a = self.at(face, L_TEMP_A, u, v);
@@ -862,13 +1062,7 @@ impl WeatherField {
     /// Cyclic linear interpolation of the twelve baked monthly sea-ice
     /// rasters. Returns None for legacy WEA1/2 assets so callers can fall
     /// back loudly and deterministically during migration.
-    pub fn sea_ice_fraction(
-        &self,
-        face: usize,
-        u: f64,
-        v: f64,
-        season_frac: f64,
-    ) -> Option<f64> {
+    pub fn sea_ice_fraction(&self, face: usize, u: f64, v: f64, season_frac: f64) -> Option<f64> {
         if !self.has_seaice {
             return None;
         }
@@ -879,6 +1073,18 @@ impl WeatherField {
         let i1 = (m0 + 1).rem_euclid(12) as usize;
         let [a, b] = self.pair_at(face, [L_SEAICE_0 + i0, L_SEAICE_0 + i1], u, v);
         Some((a * (1.0 - t) + b * t).clamp(0.0, 1.0))
+    }
+
+    /// Annual baked wind at a world direction, in metres per second along
+    /// the local east/north basis. The wind map integrates this same
+    /// bilinear field and composes current analytic storm drift on top.
+    pub fn wind_at(&self, dir: DVec3) -> (f64, f64) {
+        let dir = dir.normalize_or_zero();
+        if dir == DVec3::ZERO || !dir.is_finite() {
+            return (0.0, 0.0);
+        }
+        let (face, u, v) = crate::planet::face_from_dir(dir);
+        (self.at(face, L_WIND_E, u, v), self.at(face, L_WIND_N, u, v))
     }
 }
 
@@ -1132,6 +1338,62 @@ fn structured_loads(
     out
 }
 
+/// Tangent wind used by the teleport-map streamline layer. The climatology
+/// remains the physical base; bounded visual drift from the same current
+/// cyclone bank and differential rotation that move the cloud structures is
+/// composed on top. This is a pure vector field, not particle accumulation.
+pub fn synoptic_wind_tangent_with_cyclones(
+    field: &WeatherField,
+    dir: DVec3,
+    radius_km: f64,
+    tuning: &WeatherTuning,
+    cyclones: &CycloneSystems,
+) -> DVec3 {
+    let dir = dir.normalize_or_zero();
+    if dir == DVec3::ZERO || !dir.is_finite() {
+        return DVec3::ZERO;
+    }
+    let east0 = DVec3::Z.cross(dir);
+    let east = if east0.length_squared() < 1e-12 {
+        DVec3::Y
+    } else {
+        east0.normalize()
+    };
+    let north = dir.cross(east);
+    let (wind_e, wind_n) = field.wind_at(dir);
+    let mut tangent = east * wind_e + north * wind_n;
+
+    let cyclone_radius = (tuning.cyclone_radius_km / radius_km.max(1e-6)).max(1e-9);
+    let radius2 = cyclone_radius * cyclone_radius;
+    // The presentation spin is intentionally accelerated, so converting its
+    // angular rate literally would yield kilometre-per-second arrows. Keep
+    // its direction and relative tuning while bounding the map contribution
+    // to a meteorological 0..36 m/s range.
+    let spin_mps = (24.0 * (tuning.cyclone_spin_deg_s / 0.75)).clamp(-36.0, 36.0);
+    for system in cyclones.systems.iter().take(cyclones.count as usize) {
+        if system.intensity <= 1e-6 {
+            continue;
+        }
+        let chord2 = (2.0 * (1.0 - dir.dot(system.center))).max(0.0);
+        if chord2 >= radius2 * 9.0 {
+            continue;
+        }
+        let falloff = (-chord2 / radius2).exp() * system.intensity;
+        let around = system.center.cross(dir).normalize_or_zero();
+        let hemisphere = if system.center.z >= 0.0 { 1.0 } else { -1.0 };
+        tangent += around * (hemisphere * spin_mps * falloff);
+        // A small convergent component makes paths curl into rain bands
+        // instead of drawing perfect circles around every analytic center.
+        let inward = (system.center - dir * system.center.dot(dir)).normalize_or_zero();
+        tangent += inward * (4.0 * falloff);
+    }
+
+    let cos2_lat = (1.0 - dir.z * dir.z).max(0.0);
+    let rotation_deg_h =
+        tuning.differential_rotation_deg_h + tuning.differential_rotation_shear_deg_h * cos2_lat;
+    tangent + east * (rotation_deg_h / 42.0 * 4.0).clamp(-8.0, 8.0)
+}
+
 /// Move a sampling direction upstream by a tangent arc vector. `arc.length()`
 /// is an angle in radians on the unit sphere, not a chord/tangent
 /// approximation. Rodrigues' axis-angle rotation therefore keeps moving (and
@@ -1220,7 +1482,11 @@ pub fn weather_at_with_cyclones(
     // Layer 2: the "sim" — noise advected along the climatological wind.
     // The domain slides, the function never changes: stateless, seekable.
     let east0 = DVec3::Z.cross(dir);
-    let east = if east0.length_squared() < 1e-9 { DVec3::Y } else { east0.normalize() };
+    let east = if east0.length_squared() < 1e-9 {
+        DVec3::Y
+    } else {
+        east0.normalize()
+    };
     let north = dir.cross(east);
     let drift = (east * wind_e + north * wind_n)
         * (tuning.synoptic_speed * t_s / (1000.0 * planet.radius_km));
@@ -1368,6 +1634,33 @@ mod tests {
         raw
     }
 
+    fn synoptic_weather_bytes() -> Vec<u8> {
+        const RES: usize = 4;
+        let mut raw = Vec::new();
+        raw.extend_from_slice(b"WEA3");
+        raw.extend_from_slice(&(RES as u32).to_le_bytes());
+        raw.extend_from_slice(&(LAYERS as u32).to_le_bytes());
+        for face in 0..6 {
+            for layer in 0..LAYERS {
+                for y in 0..RES {
+                    for x in 0..RES {
+                        let spatial = face as f32 * 0.025 + x as f32 * 0.012 + y as f32 * 0.008;
+                        let value = match layer {
+                            L_PRC_MEAN => 105.0 + spatial * 80.0,
+                            L_CLD_MEAN => 0.34 + spatial,
+                            L_WIND_E => 4.0 + face as f32 * 0.6 + y as f32 * 0.2,
+                            L_WIND_N => -2.0 + x as f32 * 0.7,
+                            L_SEAICE_0..=25 => 0.0,
+                            _ => 0.0,
+                        };
+                        raw.extend_from_slice(&value.to_le_bytes());
+                    }
+                }
+            }
+        }
+        raw
+    }
+
     #[test]
     fn wea1_loads_loudly_with_zero_semiannual_terms() {
         let field = WeatherField::from_bytes(&weather_bytes(b"WEA1", WEA1_LAYERS)).unwrap();
@@ -1389,10 +1682,7 @@ mod tests {
     #[test]
     fn wea3_preserves_monthly_sea_ice() {
         let field = WeatherField::from_bytes(&weather_bytes(b"WEA3", LAYERS)).unwrap();
-        assert_eq!(
-            field.sea_ice_fraction(0, 0.0, 0.0, 0.5 / 12.0),
-            Some(1.0)
-        );
+        assert_eq!(field.sea_ice_fraction(0, 0.0, 0.0, 0.5 / 12.0), Some(1.0));
     }
 
     #[test]
@@ -1462,6 +1752,9 @@ mod tests {
             r#"{"front_leading_km":0}"#,
             r#"{"front_leading_km":400,"front_trailing_km":300}"#,
             r#"{"front_trailing_km":400,"front_length_km":300}"#,
+            r#"{"wind_map_density":15}"#,
+            r#"{"wind_map_density":1025}"#,
+            r#"{"wind_map_length_km":0}"#,
             r#"{"storminess":1e999}"#,
         ];
         for raw in invalid {
@@ -1508,7 +1801,111 @@ mod tests {
         assert!(t.cyclone_track_km_s > 0.0);
         assert!(t.front_leading_km < t.front_trailing_km);
         assert!(t.front_trailing_km < t.front_length_km);
+        assert!((16..=1024).contains(&t.wind_map_density));
+        assert!(t.wind_map_length_km > 0.0);
         assert!(t.validate().is_ok());
+    }
+
+    #[test]
+    fn synoptic_raster_is_byte_deterministic_and_matches_weather_texels() {
+        let field = WeatherField::from_bytes(&synoptic_weather_bytes()).unwrap();
+        let planet = crate::planet::weather_test_planet(42);
+        let tuning = WeatherTuning::default();
+        let solar = crate::orbits::SolarTuning::default();
+        let time = 1234.5;
+        let a =
+            SynopticRaster::bake_live(&field, &planet, time, solar.day_length_s, &solar, &tuning);
+        let b =
+            SynopticRaster::bake_live(&field, &planet, time, solar.day_length_s, &solar, &tuning);
+        assert_eq!(a.bytes(), b.bytes());
+        assert_eq!(a.bytes().len(), SYNOPTIC_RASTER_BYTES);
+        assert_eq!(
+            a.source(),
+            SynopticRasterSource::Live {
+                seed: 42,
+                weather_time_bits: time.to_bits(),
+            }
+        );
+
+        let tolerance = 0.5 / 255.0 + 1e-12;
+        for face in 0..6 {
+            for &(x, y) in &[(0usize, 0usize), (13, 29), (37, 51), (63, 63)] {
+                let denom = (SYNOPTIC_RASTER_RES - 1) as f64;
+                let u = -1.0 + 2.0 * x as f64 / denom;
+                let v = -1.0 + 2.0 * y as f64 / denom;
+                let dir = crate::planet::face_dir(face, u, v);
+                let expected = weather_at(
+                    &field,
+                    &planet,
+                    dir,
+                    time,
+                    solar.day_length_s,
+                    &solar,
+                    &tuning,
+                );
+                let got = a.sample_face(face, u, v);
+                assert!(
+                    (got.0 - expected.cloud_cover).abs() <= tolerance,
+                    "face {face} ({x},{y}) cover {} != {}",
+                    got.0,
+                    expected.cloud_cover,
+                );
+                assert!(
+                    (got.1 - expected.precip).abs() <= tolerance,
+                    "face {face} ({x},{y}) precip {} != {}",
+                    got.1,
+                    expected.precip,
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn pinned_synoptic_raster_is_uniform_and_time_independent() {
+        let a = SynopticRaster::pinned(42, 0.65, 0.2);
+        let b = SynopticRaster::pinned(42, 0.65, 0.2);
+        assert_eq!(a.bytes(), b.bytes());
+        for pixel in a.bytes().chunks_exact(4) {
+            assert_eq!(pixel, &a.bytes()[0..4]);
+        }
+        let center = a.sample(DVec3::new(1.0, 0.2, -0.4));
+        assert!((center.0 - unorm8(0.65) as f64 / 255.0).abs() < 1e-12);
+        assert!((center.1 - unorm8(0.2) as f64 / 255.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn map_wind_field_is_deterministic_finite_and_tangent() {
+        let field = WeatherField::from_bytes(&synoptic_weather_bytes()).unwrap();
+        let planet = crate::planet::weather_test_planet(42);
+        let tuning = WeatherTuning::default();
+        let systems = cyclone_systems(&field, 42, planet.radius_km, 0.45, 3500.0, &tuning);
+        for dir in [
+            DVec3::new(1.0, 0.2, 0.1).normalize(),
+            DVec3::new(-0.3, 0.8, -0.4).normalize(),
+            DVec3::new(0.01, 0.02, 1.0).normalize(),
+        ] {
+            let a = synoptic_wind_tangent_with_cyclones(
+                &field,
+                dir,
+                planet.radius_km,
+                &tuning,
+                &systems,
+            );
+            let b = synoptic_wind_tangent_with_cyclones(
+                &field,
+                dir,
+                planet.radius_km,
+                &tuning,
+                &systems,
+            );
+            assert_eq!(
+                a.to_array().map(f64::to_bits),
+                b.to_array().map(f64::to_bits)
+            );
+            assert!(a.is_finite());
+            assert!(a.length() > 0.05);
+            assert!(a.dot(dir).abs() < 1e-10, "wind left tangent plane: {a:?}");
+        }
     }
 
     #[test]
@@ -1635,8 +2032,8 @@ mod tests {
                 // this is the same intended-vs-effective measurement used in
                 // the W-8 evidence table, rather than acos' [0, pi] fold.
                 let phase = (-got.y).atan2(got.x).rem_euclid(std::f64::consts::TAU);
-                let effective = phase + (angle / std::f64::consts::TAU).floor()
-                    * std::f64::consts::TAU;
+                let effective =
+                    phase + (angle / std::f64::consts::TAU).floor() * std::f64::consts::TAU;
                 assert!((effective - angle).abs() < 1e-12);
                 assert!((got.length() - 1.0).abs() < 1e-12);
             }

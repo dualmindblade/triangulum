@@ -4,10 +4,10 @@
 use crate::camera::Camera;
 use crate::moon::{MoonGenerator, build_tile as build_moon_tile};
 use crate::orbits::{BodyId, SolarState, SolarTuning};
-use crate::planet::{boundary_shader_seedmul, Planet};
-use crate::terrain::{build_tile_at_season, select_tiles, TileKey, TileMesh, Vertex};
+use crate::planet::{Planet, boundary_shader_seedmul};
+use crate::terrain::{TileKey, TileMesh, Vertex, build_tile_at_season, select_tiles};
 use crate::voxel::{
-    build_chunk, select_chunks, ChunkKey, Edits, LunarBody, SeasonalPlanet, Torches, VoxelBody,
+    ChunkKey, Edits, LunarBody, SeasonalPlanet, Torches, VoxelBody, build_chunk, select_chunks,
 };
 use anyhow::Result;
 use glam::{DQuat, DVec3, Mat4};
@@ -110,11 +110,12 @@ struct Globals {
     weather5: [f32; 4],
     // xyz = low/mid/high shell noise scales, w = D-8 rain crevice bias
     weather6: [f32; 4],
-    // xyz = low/mid/high shell density multipliers; w spare
+    // xyz = low/mid/high shell density multipliers; w = pinned-raster exact
+    // compatibility path (uniform texture still uploads for instruments)
     weather7: [f32; 4],
-    // cloud DECK shape inputs: x cover, y precip, z temp (C), w spare.
-    // Equal to `weather` at ground level, blended to a fixed planet-mean
-    // above the shell handoff so orbital panning cannot morph formations.
+    // cloud DECK scalar compatibility inputs: x/y exact cover/precip pins,
+    // z temperature (C), w Neisor camera altitude. Live cover/precip SHAPE
+    // comes from the synoptic raster, not these scalar lanes.
     weather8: [f32; 4],
     // W2 presentation knobs: x ground cloud-shadow strength, y orbital
     // cloud-alpha darkening, z fog density, w fog ceiling (km).
@@ -266,6 +267,7 @@ pub struct Renderer {
     bind_group: wgpu::BindGroup,
     globals_buf: wgpu::Buffer,
     tiles_buf: wgpu::Buffer,
+    weather_raster_texture: wgpu::Texture,
     depth: wgpu::TextureView,
     pub size: (u32, u32),
     pub format: wgpu::TextureFormat,
@@ -363,6 +365,12 @@ pub struct Renderer {
     /// Living weather (WEATHER.md). None = no weather.bin, sky stays clear.
     pub weather_field: Option<Arc<crate::weather::WeatherField>>,
     pub weather_tuning: crate::weather::WeatherTuning,
+    /// Exact CPU bytes currently bound as the deck's spatial cover/precip
+    /// field. The teleport map borrows this same raster.
+    pub synoptic_raster: crate::weather::SynopticRaster,
+    synoptic_raster_uploaded: bool,
+    pub synoptic_raster_bakes: u64,
+    pub synoptic_raster_last_bake_ms: f64,
     pub solar_tuning: SolarTuning,
     /// Master switch (--weather off, `weather off` in scripts).
     pub weather_on: bool,
@@ -424,7 +432,9 @@ fn avatar_quad(
     camera: DVec3,
 ) {
     for index in [0usize, 1, 2, 0, 2, 3] {
-        if out.len() >= MAX_AVATAR_VERTICES { return; }
+        if out.len() >= MAX_AVATAR_VERTICES {
+            return;
+        }
         out.push(avatar_vertex(points[index], normal, color, camera));
     }
 }
@@ -439,12 +449,78 @@ fn avatar_box(
     camera: DVec3,
 ) {
     let p = |r: f64, f: f64, u: f64| center + right * r + forward * f + up * u;
-    avatar_quad(out, [p(-1.0, -1.0, -1.0), p(1.0, -1.0, -1.0), p(1.0, -1.0, 1.0), p(-1.0, -1.0, 1.0)], -forward.normalize(), color, camera);
-    avatar_quad(out, [p(1.0, 1.0, -1.0), p(-1.0, 1.0, -1.0), p(-1.0, 1.0, 1.0), p(1.0, 1.0, 1.0)], forward.normalize(), color, camera);
-    avatar_quad(out, [p(-1.0, 1.0, -1.0), p(-1.0, -1.0, -1.0), p(-1.0, -1.0, 1.0), p(-1.0, 1.0, 1.0)], -right.normalize(), color, camera);
-    avatar_quad(out, [p(1.0, -1.0, -1.0), p(1.0, 1.0, -1.0), p(1.0, 1.0, 1.0), p(1.0, -1.0, 1.0)], right.normalize(), color, camera);
-    avatar_quad(out, [p(-1.0, -1.0, 1.0), p(1.0, -1.0, 1.0), p(1.0, 1.0, 1.0), p(-1.0, 1.0, 1.0)], up.normalize(), color, camera);
-    avatar_quad(out, [p(-1.0, 1.0, -1.0), p(1.0, 1.0, -1.0), p(1.0, -1.0, -1.0), p(-1.0, -1.0, -1.0)], -up.normalize(), color, camera);
+    avatar_quad(
+        out,
+        [
+            p(-1.0, -1.0, -1.0),
+            p(1.0, -1.0, -1.0),
+            p(1.0, -1.0, 1.0),
+            p(-1.0, -1.0, 1.0),
+        ],
+        -forward.normalize(),
+        color,
+        camera,
+    );
+    avatar_quad(
+        out,
+        [
+            p(1.0, 1.0, -1.0),
+            p(-1.0, 1.0, -1.0),
+            p(-1.0, 1.0, 1.0),
+            p(1.0, 1.0, 1.0),
+        ],
+        forward.normalize(),
+        color,
+        camera,
+    );
+    avatar_quad(
+        out,
+        [
+            p(-1.0, 1.0, -1.0),
+            p(-1.0, -1.0, -1.0),
+            p(-1.0, -1.0, 1.0),
+            p(-1.0, 1.0, 1.0),
+        ],
+        -right.normalize(),
+        color,
+        camera,
+    );
+    avatar_quad(
+        out,
+        [
+            p(1.0, -1.0, -1.0),
+            p(1.0, 1.0, -1.0),
+            p(1.0, 1.0, 1.0),
+            p(1.0, -1.0, 1.0),
+        ],
+        right.normalize(),
+        color,
+        camera,
+    );
+    avatar_quad(
+        out,
+        [
+            p(-1.0, -1.0, 1.0),
+            p(1.0, -1.0, 1.0),
+            p(1.0, 1.0, 1.0),
+            p(-1.0, 1.0, 1.0),
+        ],
+        up.normalize(),
+        color,
+        camera,
+    );
+    avatar_quad(
+        out,
+        [
+            p(-1.0, 1.0, -1.0),
+            p(1.0, 1.0, -1.0),
+            p(1.0, -1.0, -1.0),
+            p(-1.0, -1.0, -1.0),
+        ],
+        -up.normalize(),
+        color,
+        camera,
+    );
 }
 
 fn glyph_rows(ch: char) -> [u8; 7] {
@@ -530,6 +606,22 @@ impl Renderer {
                     },
                     count: None,
                 },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2Array,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 3,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
             ],
         });
 
@@ -544,6 +636,36 @@ impl Renderer {
             size: TILE_UNIFORM_STRIDE * MAX_TILES as u64,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
+        });
+        let weather_raster_texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("synoptic weather raster"),
+            size: wgpu::Extent3d {
+                width: crate::weather::SYNOPTIC_RASTER_RES as u32,
+                height: crate::weather::SYNOPTIC_RASTER_RES as u32,
+                depth_or_array_layers: 6,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        let weather_raster_view =
+            weather_raster_texture.create_view(&wgpu::TextureViewDescriptor {
+                label: Some("synoptic weather raster array view"),
+                dimension: Some(wgpu::TextureViewDimension::D2Array),
+                ..Default::default()
+            });
+        let weather_raster_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("synoptic weather bilinear sampler"),
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            address_mode_w: wgpu::AddressMode::ClampToEdge,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            mipmap_filter: wgpu::MipmapFilterMode::Nearest,
+            ..Default::default()
         });
         let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: None,
@@ -560,6 +682,14 @@ impl Renderer {
                         offset: 0,
                         size: wgpu::BufferSize::new(32),
                     }),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::TextureView(&weather_raster_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: wgpu::BindingResource::Sampler(&weather_raster_sampler),
                 },
             ],
         });
@@ -842,6 +972,7 @@ impl Renderer {
             bind_group,
             globals_buf,
             tiles_buf,
+            weather_raster_texture,
             depth,
             size,
             format,
@@ -883,6 +1014,10 @@ impl Renderer {
             torch_snapshot: Arc::new(Torches::default()),
             weather_field: None,
             weather_tuning: crate::weather::WeatherTuning::default(),
+            synoptic_raster: crate::weather::SynopticRaster::off(),
+            synoptic_raster_uploaded: false,
+            synoptic_raster_bakes: 0,
+            synoptic_raster_last_bake_ms: 0.0,
             solar_tuning: SolarTuning::default(),
             weather_on: true,
             weather_pin: None,
@@ -909,6 +1044,85 @@ impl Renderer {
                 view_formats: &[],
             })
             .create_view(&Default::default())
+    }
+
+    fn refresh_synoptic_raster(&mut self, planet: &Planet, weather_time_s: f64) {
+        use crate::weather::{SynopticRaster, SynopticRasterSource};
+
+        let live_time = crate::weather::synoptic_raster_time_s(weather_time_s);
+        let desired = if !self.weather_on || self.weather_field.is_none() {
+            SynopticRasterSource::Off
+        } else if let Some((cover, precip)) = self.weather_pin {
+            SynopticRasterSource::Pinned {
+                seed: planet.seed,
+                cover_bits: cover.to_bits(),
+                precip_bits: precip.to_bits(),
+            }
+        } else {
+            SynopticRasterSource::Live {
+                seed: planet.seed,
+                weather_time_bits: live_time.to_bits(),
+            }
+        };
+        if self.synoptic_raster_uploaded && self.synoptic_raster.source() == desired {
+            return;
+        }
+
+        let start = std::time::Instant::now();
+        let raster = match desired {
+            SynopticRasterSource::Off => SynopticRaster::off(),
+            SynopticRasterSource::Pinned {
+                cover_bits,
+                precip_bits,
+                ..
+            } => SynopticRaster::pinned(
+                planet.seed,
+                f32::from_bits(cover_bits),
+                f32::from_bits(precip_bits),
+            ),
+            SynopticRasterSource::Live { .. } => SynopticRaster::bake_live(
+                self.weather_field
+                    .as_deref()
+                    .expect("live source requires weather field"),
+                planet,
+                live_time,
+                self.effective_day_len_s(),
+                &self.solar_tuning,
+                &self.weather_tuning,
+            ),
+        };
+        let res = crate::weather::SYNOPTIC_RASTER_RES as u32;
+        self.queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &self.weather_raster_texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            raster.bytes(),
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(res * 4),
+                rows_per_image: Some(res),
+            },
+            wgpu::Extent3d {
+                width: res,
+                height: res,
+                depth_or_array_layers: 6,
+            },
+        );
+        self.synoptic_raster = raster;
+        self.synoptic_raster_uploaded = true;
+        self.synoptic_raster_bakes = self.synoptic_raster_bakes.saturating_add(1);
+        self.synoptic_raster_last_bake_ms = start.elapsed().as_secs_f64() * 1000.0;
+        if std::env::var_os("TRI_WEATHER_RASTER_STATS").is_some() {
+            eprintln!(
+                "synoptic raster {:?}: {:.3} ms ({} bytes)",
+                self.synoptic_raster.source(),
+                self.synoptic_raster_last_bake_ms,
+                self.synoptic_raster.bytes().len(),
+            );
+        }
     }
 
     pub fn resize(&mut self, size: (u32, u32)) {
@@ -938,7 +1152,10 @@ impl Renderer {
                 BodyId::Moon => (solar.moon_km, moon_radius),
                 BodyId::Sun => continue,
             };
-            if !avatar.lat_deg.is_finite() || !avatar.lon_deg.is_finite() || !avatar.alt_km.is_finite() {
+            if !avatar.lat_deg.is_finite()
+                || !avatar.lon_deg.is_finite()
+                || !avatar.alt_km.is_finite()
+            {
                 continue;
             }
             let lat = avatar.lat_deg.to_radians();
@@ -949,14 +1166,19 @@ impl Renderer {
             // A metre-sized placeholder is not useful beyond this range. In
             // particular, a player on the moon is never reinterpreted as a
             // tiny Neisor-local offset when the observer is on Neisor.
-            if !(0.00025..=10.0).contains(&distance) { continue; }
+            if !(0.00025..=10.0).contains(&distance) {
+                continue;
+            }
             let mut east = DVec3::Z.cross(up).normalize_or_zero();
-            if east.length_squared() < 0.5 { east = DVec3::X; }
+            if east.length_squared() < 0.5 {
+                east = DVec3::X;
+            }
             let north = up.cross(east).normalize();
             let yaw = avatar.yaw_deg.to_radians();
             let forward = (north * yaw.cos() + east * yaw.sin()).normalize();
             let right = (north * (yaw + std::f64::consts::FRAC_PI_2).cos()
-                + east * (yaw + std::f64::consts::FRAC_PI_2).sin()).normalize();
+                + east * (yaw + std::f64::consts::FRAC_PI_2).sin())
+            .normalize();
             let feet = eye - up * crate::player::EYE_KM;
             let color = [avatar.tint[0], avatar.tint[1], avatar.tint[2], 1.0];
             // Torso and head: deliberately simple MP1 block figure.
@@ -985,7 +1207,9 @@ impl Renderer {
             );
 
             let chars = avatar.name.chars().take(12).collect::<Vec<_>>();
-            if chars.is_empty() { continue; }
+            if chars.is_empty() {
+                continue;
+            }
             let pixel = 0.00006;
             let label_width = chars.len() as f64 * 6.0 * pixel;
             let label_height = 7.0 * pixel;
@@ -995,7 +1219,12 @@ impl Renderer {
             let half_u = label_up * (label_height * 0.5 + pixel * 0.65);
             avatar_quad(
                 &mut out,
-                [anchor - half_r - half_u, anchor + half_r - half_u, anchor + half_r + half_u, anchor - half_r + half_u],
+                [
+                    anchor - half_r - half_u,
+                    anchor + half_r - half_u,
+                    anchor + half_r + half_u,
+                    anchor - half_r + half_u,
+                ],
                 facing,
                 [0.005, 0.007, 0.012, 0.80],
                 camera_pos,
@@ -1005,7 +1234,9 @@ impl Renderer {
             for (char_index, ch) in chars.into_iter().enumerate() {
                 for (row, bits) in glyph_rows(ch).into_iter().enumerate() {
                     for col in 0..5 {
-                        if bits & (1 << (4 - col)) == 0 { continue; }
+                        if bits & (1 << (4 - col)) == 0 {
+                            continue;
+                        }
                         let x = left + (char_index as f64 * 6.0 + col as f64 + 0.5) * pixel;
                         let y = top - (row as f64 + 0.5) * pixel;
                         let center = anchor + label_right * x + label_up * y + facing * 0.000002;
@@ -1013,7 +1244,12 @@ impl Renderer {
                         let hu = label_up * pixel * 0.43;
                         avatar_quad(
                             &mut out,
-                            [center - hr - hu, center + hr - hu, center + hr + hu, center - hr + hu],
+                            [
+                                center - hr - hu,
+                                center + hr - hu,
+                                center + hr + hu,
+                                center - hr + hu,
+                            ],
                             facing,
                             [0.96, 0.98, 1.0, 1.0],
                             camera_pos,
@@ -1148,9 +1384,7 @@ impl Renderer {
             // target only by solar parallax over one planet radius
             // (~0.005 deg, far below the discs' angular sizes).
             let from = state.sun_km.normalize();
-            state = state.rotated_about_neisor(
-                DQuat::from_rotation_arc(from, target.normalize()),
-            );
+            state = state.rotated_about_neisor(DQuat::from_rotation_arc(from, target.normalize()));
         }
         state
     }
@@ -1276,8 +1510,7 @@ impl Renderer {
         } else {
             1.0
         };
-        let voxel_radius_m = (200.0
-            + (VOXEL_MAX_ALT_KM - camera.altitude_km).max(0.0) * 120.0)
+        let voxel_radius_m = (200.0 + (VOXEL_MAX_ALT_KM - camera.altitude_km).max(0.0) * 120.0)
             * self.patch_scale
             * body_patch_ratio;
         let focus = (camera.body == BodyId::Neisor && camera.altitude_km < VOXEL_MAX_ALT_KM)
@@ -1287,6 +1520,7 @@ impl Renderer {
         // upload globals (camera-relative view-projection, f64 -> f32 at the end)
         let t_s = self.render_time_s;
         let weather_t_s = self.weather_time_s();
+        self.refresh_synoptic_raster(planet, weather_t_s);
         let structural_season = self.structural_season(planet);
         let solar = self.solar_state(cam_pos, planet.radius_km);
         let sun_rel = solar.sun_km - cam_pos;
@@ -1312,8 +1546,7 @@ impl Renderer {
         // the voxel patch and its max-level rim tiles are settled. Relax only
         // those distant rings while within the voxel regime; the patch rim
         // still reaches MAX_LEVEL and samples the identical moon law.
-        let moon_lod_error = if camera.body == BodyId::Moon
-            && camera.altitude_km < VOXEL_MAX_ALT_KM
+        let moon_lod_error = if camera.body == BodyId::Moon && camera.altitude_km < VOXEL_MAX_ALT_KM
         {
             0.25
         } else {
@@ -1324,8 +1557,7 @@ impl Renderer {
             self.moon_generator = Arc::new(MoonGenerator::new(planet.seed));
             self.moon_cache.clear();
         }
-        let moon_focus = (camera.body == BodyId::Moon
-            && camera.altitude_km < VOXEL_MAX_ALT_KM)
+        let moon_focus = (camera.body == BodyId::Moon && camera.altitude_km < VOXEL_MAX_ALT_KM)
             .then(|| (camera.local_direction(), voxel_radius_m / 1000.0 + 0.2));
         let moon_keys = if body_visible(moon_rel, moon_radius) {
             // Selection is body-local f64.  The generic cube-sphere quadtree
@@ -1364,10 +1596,8 @@ impl Renderer {
         }
         let voxel_body: Option<Arc<dyn VoxelBody>> = match camera.body {
             BodyId::Neisor => {
-                let body: Arc<dyn VoxelBody> = Arc::new(SeasonalPlanet::new(
-                    Arc::clone(planet),
-                    structural_season,
-                ));
+                let body: Arc<dyn VoxelBody> =
+                    Arc::new(SeasonalPlanet::new(Arc::clone(planet), structural_season));
                 Some(body)
             }
             BodyId::Moon => Some(Arc::new(LunarBody::new(
@@ -1433,7 +1663,10 @@ impl Renderer {
             ranked.sort_by(|a, b| a.0.total_cmp(&b.0));
             for &(_, (f, ci, cj), dir) in ranked.iter().take(MAX_LIGHTS) {
                 let top = crate::voxel::surface_height_km(
-                    voxel_body.as_ref().expect("Neisor has a voxel body").as_ref(),
+                    voxel_body
+                        .as_ref()
+                        .expect("Neisor has a voxel body")
+                        .as_ref(),
                     edits,
                     dir,
                     self.exaggeration,
@@ -1462,12 +1695,12 @@ impl Renderer {
                         gpu.shown_at = old.shown_at;
                     }
                     // re-uploads of a live key (edits, refreshes) keep their
-            // ease state - only genuinely new arrivals rise/dissolve
-            let mut gpu = gpu;
-            if let Some(old) = self.cache.get(&k) {
-                gpu.shown_at = old.shown_at;
-            }
-            self.cache.insert(k, gpu);
+                    // ease state - only genuinely new arrivals rise/dissolve
+                    let mut gpu = gpu;
+                    if let Some(old) = self.cache.get(&k) {
+                        gpu.shown_at = old.shown_at;
+                    }
+                    self.cache.insert(k, gpu);
                 }
             }
         }
@@ -1483,20 +1716,46 @@ impl Renderer {
             })
             .copied()
             .collect();
-        for key in stale_tiles.into_iter().take(8) {
-            if self.tile_pending.contains_key(&key) {
-                continue;
+        if self.settle_visuals && !stale_tiles.is_empty() {
+            // A capture is an instrument, not a live transition: build the
+            // complete selected season snapshot as one deterministic batch.
+            // Iterating the eight-per-frame live throttle can never converge
+            // after a long teleport reel if the cache budget evicts an old
+            // stand-in for each replacement.
+            use rayon::prelude::*;
+            let built: Vec<(TileKey, TileMesh)> = stale_tiles
+                .par_iter()
+                .map(|key| {
+                    (
+                        *key,
+                        build_tile_at_season(planet, *key, exagg, structural_season),
+                    )
+                })
+                .collect();
+            for (key, mesh) in built {
+                let mut gpu = self.upload(mesh, structural_season.bucket);
+                if let Some(old) = self.cache.get(&key) {
+                    gpu.shown_at = old.shown_at;
+                }
+                self.cache.insert(key, gpu);
+                self.tile_pending.remove(&key);
             }
-            let epoch = self.tile_epoch;
-            self.tile_epoch = self.tile_epoch.wrapping_add(1);
-            self.tile_pending.insert(key, epoch);
-            let tx = self.tile_tx.clone();
-            let planet = Arc::clone(planet);
-            let season = structural_season;
-            rayon::spawn(move || {
-                let mesh = build_tile_at_season(&planet, key, exagg, season);
-                let _ = tx.send((key, epoch, season.bucket, mesh));
-            });
+        } else {
+            for key in stale_tiles.into_iter().take(8) {
+                if self.tile_pending.contains_key(&key) {
+                    continue;
+                }
+                let epoch = self.tile_epoch;
+                self.tile_epoch = self.tile_epoch.wrapping_add(1);
+                self.tile_pending.insert(key, epoch);
+                let tx = self.tile_tx.clone();
+                let planet = Arc::clone(planet);
+                let season = structural_season;
+                rayon::spawn(move || {
+                    let mesh = build_tile_at_season(&planet, key, exagg, season);
+                    let _ = tx.send((key, epoch, season.bucket, mesh));
+                });
+            }
         }
         let missing: Vec<TileKey> = keys
             .iter()
@@ -1547,7 +1806,7 @@ impl Renderer {
             // grids on the ground, mesh fragments among voxels, pale water
             // plane bits reading as ground clouds (Andrew's field report,
             // 2026-07-12). They are few (patch-adjacent only).
-            if !k.deep && covered(&self.cache, k) {
+            if !self.settle_visuals && !k.deep && covered(&self.cache, k) {
                 if !self.tile_pending.contains_key(k) {
                     let epoch = self.tile_epoch;
                     self.tile_epoch = self.tile_epoch.wrapping_add(1);
@@ -1569,7 +1828,12 @@ impl Renderer {
             use rayon::prelude::*;
             urgent
                 .par_iter()
-                .map(|k| (*k, build_tile_at_season(planet, *k, exagg, structural_season)))
+                .map(|k| {
+                    (
+                        *k,
+                        build_tile_at_season(planet, *k, exagg, structural_season),
+                    )
+                })
                 .collect()
         };
         for (k, mesh) in built {
@@ -1595,6 +1859,9 @@ impl Renderer {
         // background so the coarser ring is ready before it is selected.
         let mut prefetched = 0usize;
         for k in &keys {
+            if self.settle_visuals {
+                break;
+            }
             if prefetched >= 4 {
                 break;
             }
@@ -1691,7 +1958,12 @@ impl Renderer {
                 use rayon::prelude::*;
                 let built: Vec<(TileKey, TileMesh)> = leftovers
                     .par_iter()
-                    .map(|k| (*k, build_tile_at_season(planet, *k, exagg, structural_season)))
+                    .map(|k| {
+                        (
+                            *k,
+                            build_tile_at_season(planet, *k, exagg, structural_season),
+                        )
+                    })
                     .collect();
                 for (k, mesh) in built {
                     let gpu = self.upload(mesh, structural_season.bucket);
@@ -1702,12 +1974,12 @@ impl Renderer {
                         gpu.shown_at = old.shown_at;
                     }
                     // re-uploads of a live key (edits, refreshes) keep their
-            // ease state - only genuinely new arrivals rise/dissolve
-            let mut gpu = gpu;
-            if let Some(old) = self.cache.get(&k) {
-                gpu.shown_at = old.shown_at;
-            }
-            self.cache.insert(k, gpu);
+                    // ease state - only genuinely new arrivals rise/dissolve
+                    let mut gpu = gpu;
+                    if let Some(old) = self.cache.get(&k) {
+                        gpu.shown_at = old.shown_at;
+                    }
+                    self.cache.insert(k, gpu);
                 }
             }
             // ANCESTOR STAND-INS SUPPRESS THEIR DRAWN DESCENDANTS: when a
@@ -1760,9 +2032,9 @@ impl Renderer {
                 let cached = self.chunk_cache.contains_key(k);
                 let edit_stale = self.chunk_stale.contains(k);
                 let season_stale = self
-                        .chunk_cache
-                        .get(k)
-                        .is_some_and(|chunk| chunk.season_bucket != structural_season.bucket);
+                    .chunk_cache
+                    .get(k)
+                    .is_some_and(|chunk| chunk.season_bucket != structural_season.bucket);
                 let stale = edit_stale || season_stale;
                 if cached && !stale {
                     continue; // current mesh already on screen
@@ -1800,8 +2072,13 @@ impl Renderer {
                     };
                     let season_bucket = structural_season.bucket;
                     rayon::spawn(move || {
-                        let mesh =
-                            build_chunk(body.as_ref(), edits.as_ref(), torches.as_ref(), key, exagg);
+                        let mesh = build_chunk(
+                            body.as_ref(),
+                            edits.as_ref(),
+                            torches.as_ref(),
+                            key,
+                            exagg,
+                        );
                         let _ = tx.send((key, epoch, season_bucket, mesh));
                     });
                 }
@@ -1822,10 +2099,7 @@ impl Renderer {
         // freshly teleported -> no hole, mesh shows while blocks stream in.
         let mut hole = [0.0f32; 4];
         let mut hole_up = [0.0f32; 4];
-        if voxel_body.is_some()
-            && camera.altitude_km < VOXEL_MAX_ALT_KM
-            && self.voxels_on
-        {
+        if voxel_body.is_some() && camera.altitude_km < VOXEL_MAX_ALT_KM && self.voxels_on {
             let r_km = crate::voxel::safe_hole_radius_km(voxel_radius_m)
                 .min((unbuilt_min_km - 0.096).max(0.0));
             // center + up are set whenever the patch exists (the rim-sink
@@ -1898,15 +2172,10 @@ impl Renderer {
             }
         };
         self.last_weather = wx;
-        // The cloud DECK's shape inputs must not follow the camera from
-        // orbit: one camera-anchored sample means panning in space sweeps
-        // the sample point and the formations morph as you move (Austin,
-        // 2026-07-12 - "one layer changing around"). Blend the deck's
-        // cover/precip/temp toward a fixed planet-mean (14 fixed
-        // directions, same field, same t - camera-free and deterministic)
-        // over the SAME shell handoff the drift uses; at ground level the
-        // deck stays exactly the local weather you are in. A pin overrides
-        // both ends, so pinned captures are unchanged.
+        // Live cover/precip shape now comes from the spatial raster. Retain
+        // the established camera-to-planet-mean scalar handoff for formation
+        // temperature and for the exact pinned compatibility path. A pin
+        // overrides both ends, keeping established pinned captures unchanged.
         let deck = if camera.body == BodyId::Neisor
             && self.weather_on
             && let Some(field) = &self.weather_field
@@ -1924,19 +2193,25 @@ impl Renderer {
                 let mut mc = 0.0f64;
                 let mut mp = 0.0f64;
                 let mut mt = 0.0f64;
-                // The exact established 14-direction W3 mean remains in
-                // orbit. Inside W2's camera-weather range, a centrally
-                // symmetric 10-direction subset leaves room for the eight
-                // compass probes: camera + deck + edge stays <= 19 weather
-                // samples per frame (WEATHER.md's hard <20 budget).
+                // The established 14-direction W3 temperature mean remains
+                // in orbit. Inside W2's camera-weather range, retain its
+                // centrally symmetric 10-direction subset while the eight
+                // compass probes are active.
                 let dirs: [(f64, f64, f64); 14] = [
-                    (1.0, 0.0, 0.0), (-1.0, 0.0, 0.0),
-                    (0.0, 1.0, 0.0), (0.0, -1.0, 0.0),
-                    (0.0, 0.0, 1.0), (0.0, 0.0, -1.0),
-                    (1.0, 1.0, 1.0), (1.0, 1.0, -1.0),
-                    (1.0, -1.0, 1.0), (1.0, -1.0, -1.0),
-                    (-1.0, 1.0, 1.0), (-1.0, 1.0, -1.0),
-                    (-1.0, -1.0, 1.0), (-1.0, -1.0, -1.0),
+                    (1.0, 0.0, 0.0),
+                    (-1.0, 0.0, 0.0),
+                    (0.0, 1.0, 0.0),
+                    (0.0, -1.0, 0.0),
+                    (0.0, 0.0, 1.0),
+                    (0.0, 0.0, -1.0),
+                    (1.0, 1.0, 1.0),
+                    (1.0, 1.0, -1.0),
+                    (1.0, -1.0, 1.0),
+                    (1.0, -1.0, -1.0),
+                    (-1.0, 1.0, 1.0),
+                    (-1.0, 1.0, -1.0),
+                    (-1.0, -1.0, 1.0),
+                    (-1.0, -1.0, -1.0),
                 ];
                 let edge_probes_active = neisor_cam_h_km < 40.0;
                 for (index, (x, y, z)) in dirs.into_iter().enumerate() {
@@ -2042,9 +2317,8 @@ impl Renderer {
         // terrain sample. Snow density stays unchanged; Andrew's verdict is
         // specifically about rain collecting in crevices.
         let particle_precip = if wx.precip > 0.0 && wx.snow_frac < 1.0 {
-            let redistribute =
-                1.0 + self.weather_tuning.rain_crevice_bias * camera_concavity
-                    * (1.0 - wx.snow_frac);
+            let redistribute = 1.0
+                + self.weather_tuning.rain_crevice_bias * camera_concavity * (1.0 - wx.snow_frac);
             (wx.precip * redistribute).clamp(0.0, 1.0)
         } else {
             wx.precip
@@ -2233,7 +2507,8 @@ impl Renderer {
                 self.weather_tuning.cloud_low_density as f32,
                 self.weather_tuning.cloud_mid_density as f32,
                 self.weather_tuning.cloud_high_density as f32,
-                0.0,
+                (self.weather_on && self.weather_field.is_some() && self.weather_pin.is_some())
+                    as u8 as f32,
             ],
             // w is Neisor camera altitude even while the active sky frame is
             // lunar; distant Neisor terrain still needs its own terminator,
@@ -2417,9 +2692,7 @@ impl Renderer {
                         let ease = if k.deep || self.settle_visuals {
                             0.0
                         } else {
-                            let age = self
-                                .frame_counter
-                                .saturating_sub(self.cache[&k].shown_at);
+                            let age = self.frame_counter.saturating_sub(self.cache[&k].shown_at);
                             (1.0 - age as f32 / 18.0).clamp(0.0, 1.0)
                         };
                         [start as f32, end as f32, ease, 0.0]
@@ -2506,9 +2779,10 @@ impl Renderer {
             moon_draws.push((*key, slot));
         }
         let mut moon_chunk_draws = Vec::with_capacity(lunar_chunk_keys.len());
-        for key in lunar_chunk_keys.iter().take(
-            MAX_TILES.saturating_sub(draws.len() + moon_draws.len() + 1),
-        ) {
+        for key in lunar_chunk_keys
+            .iter()
+            .take(MAX_TILES.saturating_sub(draws.len() + moon_draws.len() + 1))
+        {
             let slot = (draws.len() + moon_draws.len() + moon_chunk_draws.len()) as u32;
             let tile = self.chunk_cache.get_mut(key).unwrap();
             if tile.last_used + 1 < self.frame_counter {
@@ -2894,97 +3168,132 @@ impl Renderer {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
             view_formats: &[],
         });
-        let view = texture.create_view(&Default::default());
-        let mut n_tiles = self.draw(&view, planet, camera, edits);
         // TRI_RAW_CAPTURE: diagnostic mode - capture EXACTLY the single
         // live frame, no chunk wait, no tile drain. This is the only lens
         // that can see stand-in churn and motion flicker (the drains below
         // deliberately hide them for byte-determinism).
         let raw = std::env::var_os("TRI_RAW_CAPTURE").is_some();
         self.settle_visuals = !raw;
+        // Capture settling must cover the INITIAL draw too. Previously it
+        // was enabled only afterward, so a shot with no pending tiles kept
+        // that first frame's temporal LOD ease. The ease age depended on
+        // which asynchronous prefetch landed first and made consecutive
+        // pinned orbital captures differ by a few thousand +/-1 pixels.
+        let view = texture.create_view(&Default::default());
+        let mut n_tiles = self.draw(&view, planet, camera, edits);
         if !raw {
             // free the anti-thrash overshoot BEFORE allocating the capture
             // texture + readback: photo-press was an OOM trigger in play
             self.evict();
         }
-        // a screenshot is a complete frame: block (bounded) until every
-        // streamed chunk has landed, then draw again with full coverage
-        let mut waited = false;
-        let mut landed = 0usize;
-        for _ in 0..8192 {
-            if raw || self.chunk_pending.is_empty() {
-                break;
-            }
-            match self
-                .chunk_rx
-                .recv_timeout(std::time::Duration::from_secs(30))
-            {
-                Ok((k, epoch, bucket, mesh)) => {
-                    if self.chunk_pending.get(&k) == Some(&epoch) {
-                        self.chunk_pending.remove(&k);
-                        let gpu = self.upload(mesh, bucket);
-                        // re-uploads of a live key (edits, refreshes) keep their
-                // ease state - only genuinely new arrivals rise/dissolve
-                let mut gpu = gpu;
-                if let Some(old) = self.chunk_cache.get(&k) {
-                    gpu.shown_at = old.shown_at;
-                }
-                self.chunk_cache.insert(k, gpu);
-                        landed += 1;
-                        if landed.is_multiple_of(16) {
-                            self.enforce_chunk_budget();
-                        }
-                    }
-                    waited = true;
-                }
-                Err(_) => break,
-            }
-        }
-        if landed > 0 {
-            self.enforce_chunk_budget();
-        }
-        if waited {
-            n_tiles = self.draw(&view, planet, camera, edits);
-        }
-        // A screenshot is a complete frame for TILES too. Selected children
-        // may initially draw cached ancestor stand-ins while rayon builds in
-        // the background. Rapidly drawing 256 times did not actually wait for
-        // those workers, so a populated pre-teleport cache made orbital cloud
-        // blending alternate between child and ancestor ground. Block on the
-        // tile channel just as the chunk path above does, then redraw until
-        // every selected tile is resident (byte-determinism for instruments).
+        // A screenshot is a complete frame for BOTH streaming systems.
+        // Drain chunks and tiles as one convergence loop: a redraw after a
+        // chunk drain can queue another boundary chunk, and `tiles_deferred`
+        // deliberately includes that chunk state. The former two independent
+        // loops could therefore wait 30 s on the TILE channel while only a
+        // CHUNK was outstanding, then capture whichever builds happened to
+        // land during 256 non-blocking spins. Time-stepped ground reels were
+        // consequently scheduling-dependent even though weather was pure.
         let expected_bucket = self.structural_season(planet).bucket;
-        for _ in 0..8192 {
-            if raw || !self.tiles_deferred {
+        let mut settled = raw || (self.chunk_pending.is_empty() && !self.tiles_deferred);
+        let mut stream_error = None;
+        // Structural-season swaps intentionally admit only eight stale tile
+        // rebuilds per draw. MAX_TILES/8 therefore covers even the renderer's
+        // theoretical full selected set while preserving a finite bound.
+        for _round in 0..MAX_TILES.div_ceil(8) {
+            if settled {
                 break;
             }
-            match self
-                .tile_rx
-                .recv_timeout(std::time::Duration::from_secs(30))
-            {
-                Ok((k, epoch, bucket, mesh)) => {
-                    if self.tile_pending.get(&k) == Some(&epoch) {
-                        self.tile_pending.remove(&k);
-                        if bucket == expected_bucket {
+
+            let mut chunk_landed = 0usize;
+            for _ in 0..8192 {
+                if self.chunk_pending.is_empty() {
+                    break;
+                }
+                match self
+                    .chunk_rx
+                    .recv_timeout(std::time::Duration::from_secs(30))
+                {
+                    Ok((k, epoch, bucket, mesh)) => {
+                        if self.chunk_pending.get(&k) == Some(&epoch) {
+                            self.chunk_pending.remove(&k);
                             let mut gpu = self.upload(mesh, bucket);
-                            if let Some(old) = self.cache.get(&k) {
+                            if let Some(old) = self.chunk_cache.get(&k) {
                                 gpu.shown_at = old.shown_at;
                             }
-                            self.cache.insert(k, gpu);
+                            self.chunk_cache.insert(k, gpu);
+                            chunk_landed += 1;
+                            if chunk_landed.is_multiple_of(16) {
+                                self.enforce_chunk_budget();
+                            }
                         }
                     }
-                    n_tiles = self.draw(&view, planet, camera, edits);
+                    Err(err) => {
+                        stream_error = Some(format!("chunk stream stalled: {err}"));
+                        break;
+                    }
                 }
-                Err(_) => break,
             }
-        }
-        // Retain a bounded non-blocking drain for urgent synchronous builds
-        // and any last result already queued between the final receive/draw.
-        for _ in 0..256 {
-            if raw || !self.tiles_deferred {
+            if chunk_landed > 0 {
+                self.enforce_chunk_budget();
+            }
+            if stream_error.is_some() {
                 break;
             }
+
+            // Drain only when selected coverage is incomplete. Pending
+            // parent-prefetch work is allowed to finish later because it is
+            // not in this frame's resolved draw set.
+            for _ in 0..8192 {
+                if !self.tiles_deferred || self.tile_pending.is_empty() {
+                    break;
+                }
+                match self
+                    .tile_rx
+                    .recv_timeout(std::time::Duration::from_secs(30))
+                {
+                    Ok((k, epoch, bucket, mesh)) => {
+                        if self.tile_pending.get(&k) == Some(&epoch) {
+                            self.tile_pending.remove(&k);
+                            if bucket == expected_bucket {
+                                let mut gpu = self.upload(mesh, bucket);
+                                if let Some(old) = self.cache.get(&k) {
+                                    gpu.shown_at = old.shown_at;
+                                }
+                                self.cache.insert(k, gpu);
+                            }
+                        }
+                    }
+                    Err(err) => {
+                        stream_error = Some(format!("tile stream stalled: {err}"));
+                        break;
+                    }
+                }
+            }
+            if stream_error.is_some() {
+                break;
+            }
+
+            // Re-selection observes every landed mesh and may expose the
+            // next refinement boundary. Iterate until that draw reports no
+            // selected stand-ins or pending chunks.
             n_tiles = self.draw(&view, planet, camera, edits);
+            settled = self.chunk_pending.is_empty() && !self.tiles_deferred;
+        }
+        if !settled {
+            self.settle_visuals = false;
+            anyhow::bail!(
+                "capture streaming did not settle (chunks pending {}, tiles pending {}, deferred {}, chunk cache {}, tile cache {}){}",
+                self.chunk_pending.len(),
+                self.tile_pending.len(),
+                self.tiles_deferred,
+                self.chunk_cache.len(),
+                self.cache.len(),
+                stream_error
+                    .as_deref()
+                    .map(|err| format!(": {err}"))
+                    .unwrap_or_default()
+            );
         }
 
         let bytes_per_row = (w * 4 + 255) / 256 * 256;

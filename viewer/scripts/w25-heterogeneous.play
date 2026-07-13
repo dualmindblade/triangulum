@@ -1,0 +1,39 @@
+# W2.5 heterogeneous-deck visual gate. Live weather only: pins deliberately
+# retain their pre-W2.5 uniform comparison field.
+mode fly
+weather live
+weather season 0.45
+weather time 3500
+
+# Whole-disc context: several synoptic belts must read at once.
+teleport 15.0 60.0 12000.0
+look 0 -86
+sun 5.0 40.0
+shot global_wide
+
+# Perspective twin of the zoom-3 map centered at (20,0). The two continents
+# and intervening strait anchor the correspondence while clear and thick
+# raster lanes remain legible in both projections.
+teleport 20.0 0.0 4000.0
+look 0 -86
+sun 18.0 -15.0
+shot match_orbit
+
+# The same regional system closer in, with the land/ocean cover contrast and
+# sub-synoptic formation fabric both retained.
+teleport 20.0 0.0 500.0
+look 0 -70
+sun 18.0 -15.0
+shot mid_altitude
+
+# Land extrema measured from the t=3500 raster: thick and clear are only
+# ~17 degrees apart, making this a controlled ground-level contrast pair.
+teleport -8.97313 -40.07289 0.120
+look 40 22
+sun -8.0 -55.0
+shot ground_thick
+
+teleport -22.44177 -26.20011 0.120
+look 40 22
+sun -18.0 -41.0
+shot ground_clear

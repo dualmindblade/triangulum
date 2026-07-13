@@ -603,6 +603,35 @@ pub struct Planet {
     pub weather: Option<std::sync::Arc<crate::weather::WeatherField>>,
 }
 
+/// Lightweight all-land fixture for sibling-module unit tests that exercise
+/// weather against the real `Planet` sampling API without loading the 160 MiB
+/// baked asset set once more in the parallel test process.
+#[cfg(test)]
+pub(crate) fn weather_test_planet(seed: i64) -> Planet {
+    let res = 4usize;
+    let n = res * res;
+    let koppen = vec![6u8; n];
+    let face = || FaceRaster {
+        res,
+        elev_km: vec![0.2; n],
+        koppen: koppen.clone(),
+        climate_edge: climate_edge_mask(&koppen, res),
+        range_edge: climate_range_edge_mask(&koppen, &vec![[8.0, 500.0]; n], res),
+        rough_km: vec![0.0; n],
+        climate: vec![[8.0, 500.0]; n],
+        flow_log10: vec![0.0; n],
+        ocean: vec![0.0; n],
+        water: vec![0.0; n],
+    };
+    Planet {
+        radius_km: 6371.0,
+        seed,
+        faces: (0..6).map(|_| face()).collect(),
+        rivers: crate::rivers::RiverIndex::empty(6371.0),
+        weather: None,
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 struct RasterPosition {
     face: usize,
