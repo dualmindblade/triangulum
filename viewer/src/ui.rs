@@ -298,6 +298,7 @@ pub struct MapEnv<'a> {
     pub cur_moon_lat: f64,
     pub cur_moon_lon: f64,
     pub cur_body: MapBody,
+    pub time_scale: f64,
 }
 
 /// A lat/lon rectangle (degrees) the view frames. `lat_top` is the larger
@@ -729,6 +730,16 @@ pub struct PhotoMap {
     /// popup off-center forever ("back to the old version" - Austin,
     /// 2026-07-12); on any size change we force a re-center.
     last_screen: Option<egui::Vec2>,
+    // ---- time travel (Austin, 2026-07-12: verify the seasons easily) ----
+    travel_year: i64,
+    travel_month: i64,
+    travel_day: i64,
+    travel_day_frac: f64,
+    travel_seeded: bool,
+    /// consumed by the app after ui(): absolute seconds to seek to
+    pub pending_time_travel: Option<f64>,
+    /// consumed by the app after ui(): new unified-clock rate
+    pub pending_time_scale: Option<f64>,
 }
 
 impl PhotoMap {
@@ -759,6 +770,13 @@ impl PhotoMap {
             view_center_lat: 0.0,
             view_center_lon: 0.0,
             last_screen: None,
+            travel_year: 1,
+            travel_month: 1,
+            travel_day: 1,
+            travel_day_frac: 0.5,
+            travel_seeded: false,
+            pending_time_travel: None,
+            pending_time_scale: None,
         }
     }
 
@@ -975,6 +993,79 @@ impl PhotoMap {
                         ui.label("Esc closes · scroll = zoom · drag = pan · double-click = reset · click = destination");
                     });
                 });
+                // ---- time: the one clock, readable and travelable ----
+                // (Austin, 2026-07-12: verify seasons simply; stay in place,
+                // coordinates optional - map clicks still teleport as ever.)
+                {
+                    let cal = env.solar_tuning.calendar(env.weather_time_s);
+                    if !self.travel_seeded {
+                        self.travel_year = cal.year;
+                        self.travel_month = cal.month;
+                        self.travel_day = cal.day;
+                        self.travel_day_frac =
+                            (cal.hour as f64 + cal.minute as f64 / 60.0) / 24.0;
+                        self.travel_seeded = true;
+                    }
+                    let months_per_year = (env.solar_tuning.year_days()
+                        / env.solar_tuning.lunar_days())
+                    .round() as i64;
+                    let days_per_month = env.solar_tuning.lunar_days().round() as i64;
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label(format!(
+                            "Now: year {} month {} day {}  {:02}:{:02} — season {:.3} — t = {:.1} s — speed {}x",
+                            cal.year, cal.month, cal.day, cal.hour, cal.minute,
+                            cal.season_frac, env.weather_time_s, env.time_scale,
+                        ));
+                    });
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label("Travel to:");
+                        ui.add(
+                            egui::DragValue::new(&mut self.travel_year)
+                                .range(1..=9999)
+                                .prefix("year "),
+                        );
+                        ui.add(
+                            egui::DragValue::new(&mut self.travel_month)
+                                .range(1..=months_per_year.max(1))
+                                .prefix("month "),
+                        );
+                        ui.add(
+                            egui::DragValue::new(&mut self.travel_day)
+                                .range(1..=days_per_month.max(1))
+                                .prefix("day "),
+                        );
+                        ui.add(
+                            egui::Slider::new(&mut self.travel_day_frac, 0.0..=1.0)
+                                .show_value(false)
+                                .text("time of day"),
+                        );
+                        if ui
+                            .button("Travel (stay here)")
+                            .on_hover_text(
+                                "seek the unified clock: sun, seasons, weather,                                  and orbits all move; your position does not",
+                            )
+                            .clicked()
+                        {
+                            self.pending_time_travel =
+                                Some(env.solar_tuning.calendar_to_t_s(
+                                    self.travel_year,
+                                    self.travel_month,
+                                    self.travel_day,
+                                    self.travel_day_frac,
+                                ));
+                        }
+                        ui.separator();
+                        ui.label("Speed:");
+                        for scale in [1.0, 10.0, 60.0, 600.0, 3600.0] {
+                            let active = (env.time_scale - scale).abs() < 0.5;
+                            if ui.selectable_label(active, format!("{scale:.0}x")).clicked()
+                            {
+                                self.pending_time_scale = Some(scale);
+                            }
+                        }
+                    });
+                    ui.separator();
+                }
                 // ---- body + layer controls ----
                 let body_before = self.body;
                 ui.horizontal_wrapped(|ui| {

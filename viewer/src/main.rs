@@ -1541,21 +1541,47 @@ impl ApplicationHandler for App {
                             if !event.repeat {
                                 match code {
                                     K::KeyG => {
-                                        // walk/fly on the CURRENT body: F/G
-                                        // yanked moonwalkers back to Neisor
-                                        // (Austin, 2026-07-12). Unfocused
-                                        // freecam falls back to Neisor as
-                                        // before; the sun has no ground.
+                                        // walk/fly IN PLACE: focus_camera
+                                        // re-places the camera at the orbit
+                                        // view, so calling it while already
+                                        // focused yanked moonwalkers to
+                                        // space (Andrew, twice). Refocus
+                                        // only from freecam/sun; otherwise
+                                        // just switch the mode.
                                         let body = self.mode_switch_body();
-                                        self.focus_camera(body);
+                                        if self.camera_rig.focused_body() != Some(body) {
+                                            self.focus_camera(body);
+                                        }
                                         self.player.set_walk(&mut self.camera);
                                     }
                                     K::KeyF => {
                                         let body = self.mode_switch_body();
-                                        self.focus_camera(body);
+                                        if self.camera_rig.focused_body() != Some(body) {
+                                            self.focus_camera(body);
+                                        }
                                         self.player.set_fly(&mut self.camera);
                                     }
                                     K::KeyC => self.cycle_camera_focus(),
+                                    // time fast-forward ladder (Austin):
+                                    // [ slower, ] faster - the ONE clock
+                                    // (sun, seasons, weather, orbits)
+                                    K::BracketLeft | K::BracketRight => {
+                                        const LADDER: [f64; 5] =
+                                            [1.0, 10.0, 60.0, 600.0, 3600.0];
+                                        if let Some(gfx) = self.gfx.as_mut() {
+                                            let cur = gfx.renderer.time_scale();
+                                            let idx = LADDER
+                                                .iter()
+                                                .position(|s| (s - cur).abs() < 0.5)
+                                                .unwrap_or(0);
+                                            let next = if code == K::BracketRight {
+                                                (idx + 1).min(LADDER.len() - 1)
+                                            } else {
+                                                idx.saturating_sub(1)
+                                            };
+                                            gfx.renderer.set_time_scale(LADDER[next]);
+                                        }
+                                    }
                                     K::Space => self.player.jump(),
                                     K::KeyR => self.toggle_torch(),
                                     K::KeyT => {
@@ -1721,6 +1747,7 @@ impl ApplicationHandler for App {
                         cur_moon_lat,
                         cur_moon_lon,
                         cur_body,
+                        time_scale: renderer.time_scale(),
                     };
                     let full = self.egui_ctx.run_ui(raw, |ctx| {
                         action = pm.ui(ctx, &env);
@@ -1728,6 +1755,19 @@ impl ApplicationHandler for App {
                     st.handle_platform_output(&gfx.window, full.platform_output);
                     let prims = self.egui_ctx.tessellate(full.shapes, full.pixels_per_point);
                     ui_frame = Some((prims, full.textures_delta, full.pixels_per_point));
+                }
+                if let Some(t_s) = self.photo_map.pending_time_travel.take()
+                    && let Some(gfx) = self.gfx.as_mut()
+                {
+                    gfx.renderer.set_weather_time_s(t_s);
+                    // the focused rig re-centers on its body every frame, so
+                    // a timeskip keeps the local pose per the P1 spec; the
+                    // seasonal chunk buckets refresh through streaming.
+                }
+                if let Some(s) = self.photo_map.pending_time_scale.take()
+                    && let Some(gfx) = self.gfx.as_mut()
+                {
+                    gfx.renderer.set_time_scale(s);
                 }
                 let gfx = self.gfx.as_mut().unwrap();
                 use wgpu::CurrentSurfaceTexture as Cst;

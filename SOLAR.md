@@ -98,6 +98,28 @@ the P2 merge (rotation about Neisor's center). Next: P3 moon landing.
 - P4 RESOURCES + GAMEPLAY: underground reservoirs, ice mining, and
   whatever the eclipse/tide/astronomy decisions (below) turn into.
 
+## Moon final form - the r3 roadmap (Andrew's doc, 2026-07-12 late)
+
+Ported from viewer/interchange/moon-informal-bug-and-refinement-doc
+.txt (his blue-pen mare target: current-and-target-lunar-mare.JPG).
+
+- MARIA MERGE: keep the existing centers and distribution; grow each
+  mare so the central cluster overlaps and interconnects (slightly
+  more total coverage); overall shapes MUCH more circular but with
+  far noisier fine edges - kill the straight-line/patchy look. The
+  pen boundary is the acceptance sketch.
+- RAYS v2: "currently resemble snakes" - each ray keeps ONE
+  consistent color along its length (no banding end to end), rays
+  are STRAIGHT (no macro warping; roughness comes as fine granular
+  ejection texture, not bends), the radial distribution fills the
+  gaps near the rim/halo evenly (length variance stays).
+- Deferred local features: hills; crater sizes continuing down to
+  tens of meters.
+- Future (blocked on other systems): boulder/cobblestone block types
+  (post-textures); sub-voxel rubble piles with levels like water
+  (post block-models). Oblique-impact butterfly ejecta pairs with
+  the B-6 elliptical-frame fix.
+
 ## Ideas banked for Andrew (decision points when he wants them)
 
 - Eclipse art direction (D-16 candidate): solar eclipses sweeping a

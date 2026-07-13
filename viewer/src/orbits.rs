@@ -584,6 +584,58 @@ pub fn lunar_shadow_fraction(
     )
 }
 
+/// The in-world calendar on Andrew's D-5 clock: days per month = one lunar
+/// cycle, months per year = year/lunar. All derived from tuning, so other
+/// bodies/systems can generalize later. Year/month/day are 1-based for
+/// display; time-of-day is on the day cycle.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CalendarTime {
+    pub year: i64,
+    pub month: i64,
+    pub day: i64,
+    pub hour: i64,
+    pub minute: i64,
+    pub season_frac: f64,
+}
+
+impl SolarTuning {
+    pub fn calendar(&self, t_s: f64) -> CalendarTime {
+        let day_s = self.day_length_s.max(1.0);
+        let days_per_month = self.lunar_days().max(1.0);
+        let days_per_year = self.year_days().max(1.0);
+        let total_days = (finite_time(t_s) / day_s).max(0.0);
+        let year = (total_days / days_per_year).floor();
+        let day_of_year = total_days - year * days_per_year;
+        let month = (day_of_year / days_per_month).floor();
+        let day = day_of_year - month * days_per_month;
+        let day_frac = day - day.floor();
+        let hour = (day_frac * 24.0).floor();
+        let minute = ((day_frac * 24.0 - hour) * 60.0).floor();
+        CalendarTime {
+            year: year as i64 + 1,
+            month: month as i64 + 1,
+            day: day.floor() as i64 + 1,
+            hour: hour as i64,
+            minute: minute as i64,
+            season_frac: (day_of_year / days_per_year).clamp(0.0, 1.0),
+        }
+    }
+
+    /// Inverse: absolute seconds for a (1-based) calendar date at a
+    /// fraction-of-day. Clamped to sane ranges rather than erroring.
+    pub fn calendar_to_t_s(&self, year: i64, month: i64, day: i64, day_frac: f64) -> f64 {
+        let day_s = self.day_length_s.max(1.0);
+        let days_per_month = self.lunar_days().max(1.0);
+        let days_per_year = self.year_days().max(1.0);
+        let months_per_year = (days_per_year / days_per_month).round().max(1.0);
+        let y = (year.max(1) - 1) as f64;
+        let m = ((month.max(1) - 1) as f64).min(months_per_year - 1.0);
+        let d = ((day.max(1) - 1) as f64).min(days_per_month - 1.0);
+        ((y * days_per_year + m * days_per_month + d + day_frac.clamp(0.0, 1.0)) * day_s)
+            .max(0.0)
+    }
+}
+
 fn finite_time(t_s: f64) -> f64 {
     if t_s.is_finite() { t_s } else { 0.0 }
 }
@@ -599,6 +651,22 @@ fn effective_day_length(day_length_s: f64) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn calendar_round_trips_on_the_d5_clock() {
+        let t = SolarTuning::default();
+        for &(y, m, d, f) in
+            &[(1, 1, 1, 0.0), (3, 7, 4, 0.5), (12, 12, 7, 0.999), (2, 5, 2, 0.25)]
+        {
+            let t_s = t.calendar_to_t_s(y, m, d, f);
+            let cal = t.calendar(t_s);
+            assert_eq!((cal.year, cal.month, cal.day), (y, m, d), "date {y}/{m}/{d}");
+            let frac = (cal.hour as f64 + cal.minute as f64 / 60.0) / 24.0;
+            assert!((frac - f).abs() < 0.002, "day frac {f} vs {frac}");
+        }
+        // month/day counts derive from the tuning: 12 months of 7 days
+        assert_eq!((t.year_days() / t.lunar_days()).round() as i64, 12);
+    }
 
     #[test]
     fn defaults_are_andrew_d5_clock() {

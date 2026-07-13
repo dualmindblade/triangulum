@@ -9,6 +9,38 @@ are `teleport LAT LON [ALT_KM]` viewer args at `--exagg 1` unless noted.
 
 ## OPEN
 
+### B-4 IMPORTANT: mesh-detail loading perf + ascent lagspikes (Andrew doc 2)
+"Major performance issues when loading mesh detail and lagspikes when
+ascending." The ascent class returned at a larger scale (the parent-
+prefetch fix of 96124d5 covered the earlier form). Needs live
+profiling with TRI_RAW_CAPTURE + the frame_ms sidecars; suspects:
+tile build cost at the fattest LODs (impostor candidate enumeration -
+the ledgered lean-vertex/candidate-cache perf mission), prefetch not
+covering fast ascents, moon mesh LOD builds competing in the same
+rayon pool. Repro hint from the doc: 80.909 -74.619 1229.
+
+### B-5 Teleport-to-moon: violent rotation jitter at pitch -90
+"The camera starts by looking directly down at the planet, so that
+may be part of the issue" - looking straight down makes the view
+basis degenerate (look parallel to radial up); the near-body
+placement should nudge pitch off the pole or derive the basis from
+the travel direction. (Photo-map moon teleports default pitch -86.)
+
+### B-6 Oblong craters cast circular halos/rays
+Side-impact (elongated) craters keep a CIRCULAR proximal halo and
+ray field: apply_ray_field passes elongation 1.0 and the halo radial
+test ignores the crater frame. Rays/halos should inherit the crater's
+elliptical frame (and real oblique impacts throw asymmetric
+butterfly ejecta - r3 material, see SOLAR.md roadmap).
+
+### B-7 Crater seams at cube-face boundaries
+Andrew's photos "Cube face boundary inside crater" (31.315 44.679)
+and "Crater shape discontinuity" (48.042 -37.405): crater fields
+change across cube-face seams - the per-face cell enumeration or the
+canonical-owner projection disagrees at the boundary. Same family as
+the (fixed) B-3 gate-cut cliffs; probe with rimtransect-style scans
+across the seam.
+
 ### B-2 Moon crater singularity ("black hole") — FIXED by moonscape v2
 Verified at merge review: the site renders as ordinary regolith plain,
 probe height -0.179 km (a legitimate crater floor), and

@@ -258,6 +258,10 @@ pub struct Renderer {
     /// Base deterministic simulation clock. Sun/day cycle and non-weather
     /// animation read this directly.
     render_time_s: f64,
+    /// unified-clock fast-forward (1.0 = real time); see weather_time_s
+    time_scale: f64,
+    time_anchor_abs_s: f64,
+    time_anchor_render_s: f64,
     /// Weather is the same deterministic clock plus a seek offset. Replaying
     /// an absolute storm time also seeks the orbital clock; a separate daily
     /// rotation offset preserves exact photo-sidecar time-of-day restores.
@@ -677,6 +681,9 @@ impl Renderer {
             day_len_s: SolarTuning::default().day_length_s,
             sun_ref_lon: 0.0,
             render_time_s: 0.0,
+            time_scale: 1.0,
+            time_anchor_abs_s: 0.0,
+            time_anchor_render_s: 0.0,
             weather_time_offset_s: 0.0,
             day_time_offset_s: 0.0,
             patch_scale: 1.0,
@@ -742,8 +749,31 @@ impl Renderer {
 
     /// Absolute deterministic weather time. This is the time recorded in
     /// photo sidecars and fed to every climatology/synoptic/presentation path.
+    /// time_scale fast-forwards the WHOLE unified clock (sun, seasons,
+    /// weather, orbits) relative to the anchor frozen when the scale was set;
+    /// scale 1 with a zero anchor reduces to the plain offset form.
     pub fn weather_time_s(&self) -> f64 {
-        self.render_time_s + self.weather_time_offset_s
+        self.time_anchor_abs_s
+            + (self.render_time_s - self.time_anchor_render_s) * self.time_scale
+            + self.weather_time_offset_s
+    }
+
+    pub fn time_scale(&self) -> f64 {
+        self.time_scale
+    }
+
+    /// Change the clock rate WITHOUT jumping: the current absolute time is
+    /// folded into the anchor so the seam is continuous, then time advances
+    /// at the new rate. Pure function of (render clock, anchors) afterward -
+    /// the play harness never touches this, so every instrument stays exact.
+    pub fn set_time_scale(&mut self, scale: f64) {
+        if !scale.is_finite() || scale <= 0.0 {
+            return;
+        }
+        let now_abs = self.weather_time_s();
+        self.time_anchor_abs_s = now_abs - self.weather_time_offset_s;
+        self.time_anchor_render_s = self.render_time_s;
+        self.time_scale = scale;
     }
 
     pub fn effective_day_len_s(&self) -> f64 {
@@ -758,7 +788,9 @@ impl Renderer {
     /// simulation time advances, so restored fronts and bodies keep moving.
     pub fn set_weather_time_s(&mut self, t_s: f64) {
         if t_s.is_finite() {
-            self.weather_time_offset_s = t_s.max(0.0) - self.render_time_s;
+            let scaled_base = self.time_anchor_abs_s
+                + (self.render_time_s - self.time_anchor_render_s) * self.time_scale;
+            self.weather_time_offset_s = t_s.max(0.0) - scaled_base;
         }
     }
 
