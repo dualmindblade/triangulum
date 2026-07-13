@@ -15,13 +15,21 @@
 
 param(
     [string]$Hostname = 'triangulum.dieorwrite.net',
-    [string]$Service = 'http://localhost:7777'
+    # Explicit IPv4: "localhost" resolves to ::1 first on this machine,
+    # where wslrelay (Austin's WSL app proxy) also listens on 7777.
+    [string]$Service = 'http://127.0.0.1:7777'
 )
 
 $ErrorActionPreference = 'Stop'
 $root = Split-Path $PSScriptRoot -Parent
 $creds = Get-Content (Join-Path $root '.cloudfare-creds') | ConvertFrom-StringData
-$h = @{ Authorization = "Bearer $($creds.CLOUDFARE_API_TOKEN)"; 'Content-Type' = 'application/json' }
+# Tunnel ops use CLOUDFARE_TUNNEL_API_TOKEN (account token with
+# Cloudflare Tunnel Edit) when present; DNS ops fall back to the
+# original zone token if the tunnel token lacks zone DNS Edit.
+$tunnelToken = $creds.CLOUDFARE_TUNNEL_API_TOKEN
+if (-not $tunnelToken) { $tunnelToken = $creds.CLOUDFARE_API_TOKEN }
+$h = @{ Authorization = "Bearer $tunnelToken"; 'Content-Type' = 'application/json' }
+$hDns = @{ Authorization = "Bearer $($creds.CLOUDFARE_API_TOKEN)"; 'Content-Type' = 'application/json' }
 $zone = $creds.CLOUDFARE_ZONE_ID
 $api = 'https://api.cloudflare.com/client/v4'
 
@@ -51,13 +59,13 @@ Write-Host "ingress: $Hostname -> $Service"
 # 3. Proxied CNAME to the tunnel (create or repoint).
 $sub = $Hostname.Split('.')[0]
 $target = "$tid.cfargotunnel.com"
-$existing = (Invoke-RestMethod -Uri "$api/zones/$zone/dns_records?type=CNAME&name=$Hostname" -Headers $h).result
+$existing = (Invoke-RestMethod -Uri "$api/zones/$zone/dns_records?type=CNAME&name=$Hostname" -Headers $hDns).result
 $rec = @{ type = 'CNAME'; name = $sub; content = $target; proxied = $true } | ConvertTo-Json
 if ($existing.Count -gt 0) {
-    Invoke-RestMethod -Method Put -Uri "$api/zones/$zone/dns_records/$($existing[0].id)" -Headers $h -Body $rec | Out-Null
+    Invoke-RestMethod -Method Put -Uri "$api/zones/$zone/dns_records/$($existing[0].id)" -Headers $hDns -Body $rec | Out-Null
     Write-Host "DNS updated: $Hostname -> $target"
 } else {
-    Invoke-RestMethod -Method Post -Uri "$api/zones/$zone/dns_records" -Headers $h -Body $rec | Out-Null
+    Invoke-RestMethod -Method Post -Uri "$api/zones/$zone/dns_records" -Headers $hDns -Body $rec | Out-Null
     Write-Host "DNS created: $Hostname -> $target"
 }
 

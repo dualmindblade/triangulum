@@ -21,3 +21,8 @@ viewer/target/
 
 # local tool binaries (cloudflared etc.)
 /tools/
+.game-token
+server-run.log
+server-run.err
+tunnel-run.log
+tunnel-run.err

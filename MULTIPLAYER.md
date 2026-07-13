@@ -102,47 +102,42 @@ is already built and gauntlet-enforced.
    net layer must be cleanly absent in harness runs so every
    instrument keeps its byte-exactness.
 
-## Deployment (Austin's infra; status 2026-07-13)
+## Deployment: LIVE (2026-07-13)
 
-Domain: triangulum.dieorwrite.net (Cloudflare zone; API token lives
-in .cloudfare-creds at the repo root - GITIGNORED, never commit).
-Path chosen: cloudflared named tunnel - no router changes, no
-surgery on the wslrelay 9999->8443 forward, TLS terminates at
-Cloudflare, and Cloudflare proxies WebSockets on standard ports.
+wss://triangulum.dieorwrite.net is up - verified end to end with a
+client joining through the public edge (WELCOME + journal sync).
+Cloudflared named tunnel 86002e2b... with 4 HA connections; TLS
+terminates at Cloudflare; no router changes; wslrelay untouched.
 
-DONE (this machine is tunnel-ready):
-- Client + server speak wss: tokio-tungstenite rustls
-  (webpki roots, ring provider installed at connect), parse_invite
-  accepts wss:// invites, server grew --public-url so it prints the
-  tunnel invite (wss://triangulum.dieorwrite.net/?token=...) instead
-  of the LAN form. Verified end to end: TLS handshake + WebSocket
-  upgrade against a public wss endpoint, and the local ws:// path
-  unregressed (client-sim WELCOME).
-- tools/cloudflared.exe 2026.7.1 (standalone binary; winget MSI
-  needs an elevation prompt, skipped). tools/ and .tunnel-token are
-  gitignored.
-- scripts/deploy_tunnel.ps1: idempotent one-shot that creates the
-  tunnel, sets ingress -> http://localhost:7777, creates/repoints
-  the proxied CNAME, and writes the connector token to
-  .tunnel-token. DNS Edit permission verified working.
+Pieces:
+- Client + server speak wss: tokio-tungstenite rustls (webpki
+  roots, ring provider installed at connect), parse_invite accepts
+  wss:// invites, server prints the public invite via --public-url.
+- Tokens (.cloudfare-creds, GITIGNORED): CLOUDFARE_API_TOKEN (zone
+  DNS edit) + CLOUDFARE_TUNNEL_API_TOKEN (account token with
+  Cloudflare Tunnel Edit; the /user/tokens/verify endpoint rejects
+  account tokens - harmless). The connector run-token lives in
+  .tunnel-token, the game token in .game-token (both gitignored).
+- scripts/deploy_tunnel.ps1: idempotent create/repair of tunnel +
+  ingress + CNAME. Ingress MUST be http://127.0.0.1:7777, never
+  "localhost": on this machine localhost resolves to ::1 first,
+  where wslrelay also listens on 7777 - the tunnel then delivers
+  game traffic to Austin's app proxy (302 /login) instead of the
+  game server. Diagnosed 2026-07-13; docker also holds :::7777.
+- tools/cloudflared.exe 2026.7.1 (standalone; winget MSI needs an
+  elevation prompt). tools/ is gitignored.
 
-BLOCKED on one dashboard action (Austin): the API token lacks
-Account -> Cloudflare Tunnel -> Edit (tunnel create returns 403;
-reads and DNS writes work). Add it at dash.cloudflare.com ->
-My Profile -> API Tokens -> edit the token -> add that permission,
-then run: powershell scripts\deploy_tunnel.ps1
-
-RUNBOOK once deployed (two terminals):
+RUNBOOK (two terminals from the repo root):
   viewer\target\release\triangulum-server.exe --token GAMETOKEN ^
-    --public-url wss://triangulum.dieorwrite.net
+    --public-url wss://triangulum.dieorwrite.net --no-console
   tools\cloudflared.exe tunnel run --token-file .tunnel-token
-Laptop joiner: same build + assets (impediment 1/2), then paste the
-server's printed wss invite into the Join field.
+The server prints the invite; paste it into the laptop's Join
+field. Joiner needs the same build + baked assets (impediments 1/2).
 
-Dead end tried: TryCloudflare quick tunnels (account-less stopgap) -
-the connector registers but the edge 404s the assigned hostname
-indefinitely (both quic and http2); not worth fighting since the
-named tunnel needs only the token permission.
+Notes: plex.dieorwrite.net rides a separate pre-existing tunnel -
+do not touch. Dead end tried: TryCloudflare quick tunnels register
+but their edge 404s the hostname indefinitely (both quic and
+http2); named tunnels have no such issue.
 
 ## What multiplayer does NOT threaten
 
