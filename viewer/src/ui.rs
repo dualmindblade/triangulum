@@ -500,6 +500,21 @@ fn synth_map(
     let angle = std::f64::consts::TAU * season;
     let (sn1, cs1) = angle.sin_cos();
     let (sn2, cs2) = (2.0 * angle).sin_cos();
+    // Clouds-now can touch every map pixel, so resolve the immutable cyclone
+    // bank once for the whole raster rather than rescoring baked candidate
+    // tracks in every `weather_at` call.
+    let cyclones = env
+        .weather_field
+        .map_or_else(crate::weather::CycloneSystems::default, |wf| {
+            crate::weather::cyclone_systems(
+                wf,
+                planet.seed,
+                planet.radius_km,
+                season,
+                env.weather_time_s,
+                env.weather_tuning,
+            )
+        });
     let (tstops, pstops) = (temp_stops(), precip_stops());
     let mut px = vec![Color32::BLACK; w * h];
     for y in 0..h {
@@ -543,7 +558,7 @@ fn synth_map(
             {
                 let cover = env.weather_pin.map_or_else(
                     || {
-                        crate::weather::weather_at(
+                        crate::weather::weather_at_with_cyclones(
                             wf,
                             planet,
                             dir,
@@ -551,6 +566,7 @@ fn synth_map(
                             env.day_len_s,
                             env.solar_tuning,
                             env.weather_tuning,
+                            &cyclones,
                         )
                         .cloud_cover as f32
                     },

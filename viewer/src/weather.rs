@@ -97,6 +97,27 @@ pub struct WeatherTuning {
     pub storm_edge_probe_km: f64,
     pub storm_edge_strength: f64,
     pub storm_green_cast: f64,
+    /// W-MOTION pass 2: bounded analytic storm systems. Centers follow
+    /// deterministic zonal tracks; the baked cloud/precip climatology picks
+    /// their tracks and continuously scales their strength.
+    pub cyclone_count: u32,
+    pub cyclone_radius_km: f64,
+    /// Accelerated visual angular speed at the cyclone core (degrees/s).
+    pub cyclone_spin_deg_s: f64,
+    /// Closed-form eastward center speed along the latitude track (km/s).
+    pub cyclone_track_km_s: f64,
+    pub cyclone_cover_boost: f64,
+    pub cyclone_precip_boost: f64,
+    /// Domain rotation about the spin axis (degrees/hour). The shear term is
+    /// multiplied by cos^2(latitude), matching WEATHER.md's analytic law.
+    pub differential_rotation_deg_h: f64,
+    pub differential_rotation_shear_deg_h: f64,
+    /// Parent-attached asymmetric fronts: a narrow leading ridge followed by
+    /// a wider trailing smear, both limited along the front's length.
+    pub front_strength: f64,
+    pub front_leading_km: f64,
+    pub front_trailing_km: f64,
+    pub front_length_km: f64,
     /// Max precipitation particles at full intensity.
     pub particles_max: u32,
 }
@@ -105,6 +126,10 @@ pub struct WeatherTuning {
 /// unbounded instance count. This is deliberately generous (11x the shipped
 /// default) while still turning a typo such as 4 billion into a loud fallback.
 pub const PARTICLES_MAX_CAP: u32 = 100_000;
+/// Fixed shader/uniform budget. `cyclone_count` selects a prefix at runtime;
+/// unused lanes stay zero so tuning cannot turn into an unbounded fragment
+/// loop.
+pub const MAX_CYCLONES: usize = 4;
 
 impl Default for WeatherTuning {
     fn default() -> Self {
@@ -148,6 +173,18 @@ impl Default for WeatherTuning {
             storm_edge_probe_km: 650.0,
             storm_edge_strength: 0.32,
             storm_green_cast: 0.08,
+            cyclone_count: 2,
+            cyclone_radius_km: 950.0,
+            cyclone_spin_deg_s: 0.75,
+            cyclone_track_km_s: 0.35,
+            cyclone_cover_boost: 0.48,
+            cyclone_precip_boost: 0.68,
+            differential_rotation_deg_h: 18.0,
+            differential_rotation_shear_deg_h: 24.0,
+            front_strength: 0.38,
+            front_leading_km: 90.0,
+            front_trailing_km: 360.0,
+            front_length_km: 1800.0,
             particles_max: 9000,
         }
     }
@@ -228,6 +265,23 @@ impl WeatherTuning {
             ("storm_edge_probe_km", self.storm_edge_probe_km),
             ("storm_edge_strength", self.storm_edge_strength),
             ("storm_green_cast", self.storm_green_cast),
+            ("cyclone_radius_km", self.cyclone_radius_km),
+            ("cyclone_spin_deg_s", self.cyclone_spin_deg_s),
+            ("cyclone_track_km_s", self.cyclone_track_km_s),
+            ("cyclone_cover_boost", self.cyclone_cover_boost),
+            ("cyclone_precip_boost", self.cyclone_precip_boost),
+            (
+                "differential_rotation_deg_h",
+                self.differential_rotation_deg_h,
+            ),
+            (
+                "differential_rotation_shear_deg_h",
+                self.differential_rotation_shear_deg_h,
+            ),
+            ("front_strength", self.front_strength),
+            ("front_leading_km", self.front_leading_km),
+            ("front_trailing_km", self.front_trailing_km),
+            ("front_length_km", self.front_length_km),
         ];
         if let Some((name, _)) = finite.into_iter().find(|(_, v)| !v.is_finite()) {
             return Err(format!("{name} must be finite"));
@@ -314,6 +368,38 @@ impl WeatherTuning {
         }
         if self.storm_edge_probe_km <= 0.0 || self.storm_edge_probe_km > 3000.0 {
             return Err("storm_edge_probe_km must be in (0, 3000]".into());
+        }
+        if self.cyclone_count as usize > MAX_CYCLONES {
+            return Err(format!("cyclone_count must be in 0..={MAX_CYCLONES}"));
+        }
+        if self.cyclone_radius_km <= 0.0 || self.cyclone_radius_km > 3000.0 {
+            return Err("cyclone_radius_km must be in (0, 3000]".into());
+        }
+        if self.cyclone_spin_deg_s.abs() > 5.0 {
+            return Err("cyclone_spin_deg_s magnitude must be <= 5".into());
+        }
+        if self.cyclone_track_km_s < 0.0 || self.cyclone_track_km_s > 5.0 {
+            return Err("cyclone_track_km_s must be in [0, 5]".into());
+        }
+        if !(0.0..=1.5).contains(&self.cyclone_cover_boost)
+            || !(0.0..=1.5).contains(&self.cyclone_precip_boost)
+        {
+            return Err("cyclone cover/precip boosts must be in [0, 1.5]".into());
+        }
+        if self.differential_rotation_deg_h.abs() > 360.0
+            || self.differential_rotation_shear_deg_h.abs() > 360.0
+        {
+            return Err("differential rotation rates must have magnitude <= 360 deg/h".into());
+        }
+        if !(0.0..=1.5).contains(&self.front_strength) {
+            return Err("front_strength must be in [0, 1.5]".into());
+        }
+        if self.front_leading_km <= 0.0
+            || self.front_trailing_km <= self.front_leading_km
+            || self.front_length_km <= self.front_trailing_km
+            || self.front_length_km > 6000.0
+        {
+            return Err("front scales require 0 < leading < trailing < length <= 6000 km".into());
         }
         if self.particles_max > PARTICLES_MAX_CAP {
             return Err(format!("particles_max must be <= {PARTICLES_MAX_CAP}"));
@@ -807,6 +893,245 @@ pub fn season_frac(
     solar_tuning.season_frac(t_s, planet_day_len_s)
 }
 
+/// One closed-form W-MOTION storm system at the requested weather time.
+/// `intensity` is sampled from the baked seasonal storm climatology at the
+/// moving center; there is no lifetime counter or mutable storm state.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct CycloneSystem {
+    pub center: DVec3,
+    pub intensity: f64,
+    /// Orientation of the attached front's leading-edge normal in the local
+    /// east/north frame.
+    pub front_angle: f64,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct CycloneSystems {
+    pub count: u32,
+    pub systems: [CycloneSystem; MAX_CYCLONES],
+}
+
+impl Default for CycloneSystems {
+    fn default() -> Self {
+        Self {
+            count: 0,
+            systems: [CycloneSystem::default(); MAX_CYCLONES],
+        }
+    }
+}
+
+/// Stable 53-bit seed hash. Runtime weather never draws from an RNG; every
+/// candidate track and front bearing is addressed directly by index/lane.
+fn cyclone_hash01(seed: i64, index: u32, lane: u32) -> f64 {
+    let mut z = (seed as u64)
+        .wrapping_add(0x9E37_79B9_7F4A_7C15u64.wrapping_mul(index as u64 + 1))
+        .wrapping_add(0xD1B5_4A32_D192_ED03u64.wrapping_mul(lane as u64 + 1));
+    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    z ^= z >> 31;
+    ((z >> 11) as f64) * (1.0 / ((1u64 << 53) as f64))
+}
+
+fn seeded_cyclone_track(seed: i64, index: u32, candidate: u32) -> (f64, f64) {
+    // Alternate hemispheres so a small N does not accidentally put every
+    // system in one storm belt. Candidate latitude/longitude remain seed-
+    // addressed; the climatology chooses among them below.
+    let north = ((index as u64 + seed as u64) & 1) == 0;
+    let sign = if north { 1.0 } else { -1.0 };
+    let latitude = sign * (20.0 + 32.0 * cyclone_hash01(seed, index, candidate * 3)).to_radians();
+    let longitude = std::f64::consts::TAU * cyclone_hash01(seed, index, candidate * 3 + 1)
+        - std::f64::consts::PI;
+    (latitude, longitude)
+}
+
+fn cyclone_track_center(
+    latitude: f64,
+    longitude0: f64,
+    t_s: f64,
+    radius_km: f64,
+    tuning: &WeatherTuning,
+) -> DVec3 {
+    let cos_lat = latitude.cos();
+    let longitude = (longitude0
+        + tuning.cyclone_track_km_s * t_s / (radius_km * cos_lat.max(0.15)))
+    .rem_euclid(std::f64::consts::TAU);
+    DVec3::new(
+        cos_lat * longitude.cos(),
+        cos_lat * longitude.sin(),
+        latitude.sin(),
+    )
+}
+
+fn climate_cloud_precip_at(field: &WeatherField, dir: DVec3, season_frac: f64) -> (f64, f64) {
+    let (face, u, v) = crate::planet::face_from_dir(dir);
+    let angle = std::f64::consts::TAU * season_frac;
+    let (sn1, cs1) = angle.sin_cos();
+    let (sn2, cs2) = (2.0 * angle).sin_cos();
+    let precip = (field.at(face, L_PRC_MEAN, u, v)
+        + field.at(face, L_PRC_A1, u, v) * cs1
+        + field.at(face, L_PRC_B1, u, v) * sn1
+        + field.at(face, L_PRC_A2, u, v) * cs2
+        + field.at(face, L_PRC_B2, u, v) * sn2)
+        .max(0.0);
+    let cloud = (field.at(face, L_CLD_MEAN, u, v)
+        + field.at(face, L_CLD_A1, u, v) * cs1
+        + field.at(face, L_CLD_B1, u, v) * sn1
+        + field.at(face, L_CLD_A2, u, v) * cs2
+        + field.at(face, L_CLD_B2, u, v) * sn2)
+        .clamp(0.0, 1.0);
+    (cloud, precip)
+}
+
+fn storm_climatology(cloud: f64, precip: f64, tuning: &WeatherTuning) -> f64 {
+    let wet = (precip / tuning.precip_wet_norm).clamp(0.0, 1.0);
+    smooth01((0.72 * cloud + 0.28 * wet - 0.18) / 0.62)
+}
+
+/// Resolve the fixed-size system bank for one weather instant. Eight seeded
+/// candidate tracks per system are scored against the annual baked storm
+/// field, so placement favors storm corridors without storing anything.
+/// Current seasonal climatology then modulates presence along the zonal path.
+pub fn cyclone_systems(
+    field: &WeatherField,
+    seed: i64,
+    radius_km: f64,
+    season_frac: f64,
+    t_s: f64,
+    tuning: &WeatherTuning,
+) -> CycloneSystems {
+    let mut out = CycloneSystems {
+        count: tuning.cyclone_count.min(MAX_CYCLONES as u32),
+        ..CycloneSystems::default()
+    };
+    for index in 0..out.count {
+        let mut best = (f64::NEG_INFINITY, 0.0, 0.0);
+        for candidate in 0..8 {
+            let (latitude, longitude) = seeded_cyclone_track(seed, index, candidate);
+            let base = cyclone_track_center(latitude, longitude, 0.0, radius_km, tuning);
+            let (face, u, v) = crate::planet::face_from_dir(base);
+            let cloud = field.at(face, L_CLD_MEAN, u, v).clamp(0.0, 1.0);
+            let precip = field.at(face, L_PRC_MEAN, u, v).max(0.0);
+            // The tiny final term is only a deterministic tie breaker for a
+            // flat/synthetic bake; it cannot outweigh climatology.
+            let score = 0.72 * cloud
+                + 0.28 * (precip / tuning.precip_wet_norm).clamp(0.0, 1.0)
+                + cyclone_hash01(seed, index, candidate * 3 + 2) * 1e-9;
+            if score > best.0 {
+                best = (score, latitude, longitude);
+            }
+        }
+        let center = cyclone_track_center(best.1, best.2, t_s, radius_km, tuning);
+        let (cloud, precip) = climate_cloud_precip_at(field, center, season_frac);
+        out.systems[index as usize] = CycloneSystem {
+            center,
+            intensity: storm_climatology(cloud, precip, tuning),
+            front_angle: (cyclone_hash01(seed, index, 97) - 0.5) * 1.8,
+        };
+    }
+    out
+}
+
+fn rotate_axis(v: DVec3, axis: DVec3, angle: f64) -> DVec3 {
+    let (sin, cos) = angle.sin_cos();
+    (v * cos + axis.cross(v) * sin + axis * axis.dot(v) * (1.0 - cos)).normalize()
+}
+
+/// Inverse-map the procedural cloud domain into the co-rotating frame of
+/// each nearby cyclone, then through the latitude-dependent zonal rotation.
+/// This is O(1) in time: a seek evaluates the same closed form as playback.
+fn structured_weather_domain(
+    dir: DVec3,
+    t_s: f64,
+    radius_km: f64,
+    tuning: &WeatherTuning,
+    cyclones: &CycloneSystems,
+) -> DVec3 {
+    let mut mapped = dir.normalize_or_zero();
+    let radius = tuning.cyclone_radius_km / radius_km;
+    let radius2 = radius * radius;
+    for system in cyclones.systems.iter().take(cyclones.count as usize) {
+        if system.intensity <= 1e-6 {
+            continue;
+        }
+        let chord2 = (2.0 * (1.0 - dir.dot(system.center))).max(0.0);
+        if chord2 >= radius2 * 9.0 {
+            continue;
+        }
+        let falloff = (-chord2 / radius2).exp() * system.intensity;
+        let hemisphere = if system.center.z >= 0.0 { 1.0 } else { -1.0 };
+        let angle = -hemisphere * tuning.cyclone_spin_deg_s.to_radians() * t_s * falloff;
+        mapped = rotate_axis(mapped, system.center, angle);
+    }
+    let cos2_lat = (1.0 - dir.z * dir.z).max(0.0);
+    let theta = (tuning.differential_rotation_deg_h
+        + tuning.differential_rotation_shear_deg_h * cos2_lat)
+        .to_radians()
+        * (t_s / 3600.0);
+    rotate_axis(mapped, DVec3::Z, -theta)
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct StructuredLoads {
+    cyclone_signed: f64,
+    cyclone_positive: f64,
+    front: f64,
+}
+
+/// Radial storm/eye profile plus an asymmetric finite front ridge. Chord and
+/// tangent coordinates avoid acos in the per-sample path and match the GPU
+/// approximation over the configured synoptic radii.
+fn structured_loads(
+    dir: DVec3,
+    radius_km: f64,
+    tuning: &WeatherTuning,
+    cyclones: &CycloneSystems,
+) -> StructuredLoads {
+    let mut out = StructuredLoads::default();
+    let cyclone_radius = tuning.cyclone_radius_km / radius_km;
+    let radius2 = cyclone_radius * cyclone_radius;
+    let leading = tuning.front_leading_km / radius_km;
+    let trailing = tuning.front_trailing_km / radius_km;
+    let length = tuning.front_length_km / radius_km;
+    for system in cyclones.systems.iter().take(cyclones.count as usize) {
+        if system.intensity <= 1e-6 {
+            continue;
+        }
+        let chord2 = (2.0 * (1.0 - dir.dot(system.center))).max(0.0);
+        if chord2 < radius2 * 9.0 {
+            let rn2 = chord2 / radius2;
+            let rn = rn2.sqrt();
+            let envelope = (-rn2).exp();
+            let eye = 1.0 - smooth01((rn - 0.04) / 0.14);
+            let eyewall = 1.0 - smooth01((rn - 0.28).abs() / 0.16);
+            let profile = system.intensity * (0.75 * envelope + 0.75 * eyewall - 1.40 * eye);
+            out.cyclone_signed += profile;
+            out.cyclone_positive += profile.max(0.0);
+        }
+
+        let east0 = DVec3::Z.cross(system.center);
+        let east = if east0.length_squared() < 1e-12 {
+            DVec3::Y
+        } else {
+            east0.normalize()
+        };
+        let north = system.center.cross(east);
+        let normal = east * system.front_angle.cos() + north * system.front_angle.sin();
+        let along_axis = system.center.cross(normal).normalize();
+        let cross = dir.dot(normal) - cyclone_radius * 0.58;
+        let along = dir.dot(along_axis);
+        if along.abs() < length * 1.8 && cross.abs() < trailing * 3.0 {
+            let width = if cross >= 0.0 { leading } else { trailing };
+            let cross_profile = 1.0 - smooth01(cross.abs() / (width * 1.5));
+            let along_profile = 1.0 - smooth01((along.abs() / length - 0.65) / 0.65);
+            out.front += system.intensity * cross_profile * along_profile;
+        }
+    }
+    out.cyclone_signed = out.cyclone_signed.clamp(-1.0, 2.0);
+    out.cyclone_positive = out.cyclone_positive.clamp(0.0, 2.0);
+    out.front = out.front.clamp(0.0, 1.5);
+    out
+}
+
 /// Move a sampling direction upstream by a tangent arc vector. `arc.length()`
 /// is an angle in radians on the unit sphere, not a chord/tangent
 /// approximation. Rodrigues' axis-angle rotation therefore keeps moving (and
@@ -841,6 +1166,32 @@ pub fn weather_at(
     solar_tuning: &crate::orbits::SolarTuning,
     tuning: &WeatherTuning,
 ) -> Weather {
+    let t_yr = season_frac(t_s, day_len_s, solar_tuning);
+    let cyclones = cyclone_systems(field, planet.seed, planet.radius_km, t_yr, t_s, tuning);
+    weather_at_with_cyclones(
+        field,
+        planet,
+        dir,
+        t_s,
+        day_len_s,
+        solar_tuning,
+        tuning,
+        &cyclones,
+    )
+}
+
+/// Hot path for a frame/map sweep: callers resolve the immutable cyclone
+/// bank once and reuse it for the camera, deck mean, and W2 compass probes.
+pub fn weather_at_with_cyclones(
+    field: &WeatherField,
+    planet: &Planet,
+    dir: DVec3,
+    t_s: f64,
+    day_len_s: f64,
+    solar_tuning: &crate::orbits::SolarTuning,
+    tuning: &WeatherTuning,
+    cyclones: &CycloneSystems,
+) -> Weather {
     let (face, u, v) = crate::planet::face_from_dir(dir);
     let t_yr = season_frac(t_s, day_len_s, solar_tuning);
     let angle = std::f64::consts::TAU * t_yr;
@@ -873,21 +1224,30 @@ pub fn weather_at(
     let north = dir.cross(east);
     let drift = (east * wind_e + north * wind_n)
         * (tuning.synoptic_speed * t_s / (1000.0 * planet.radius_km));
-    let adv = advect_great_circle(dir, drift);
+    let structured = structured_weather_domain(dir, t_s, planet.radius_km, tuning, cyclones);
+    let adv = advect_great_circle(structured, drift);
     let seed = planet.seed;
     let synoptic = fbm_band(adv, 0, 3, tuning.synoptic_freq, seed.wrapping_add(80081));
     // the fine texture drifts a little faster (gust fronts outrun systems)
     let adv2 = advect_great_circle(dir, drift * 1.6);
     let meso = fbm_band(adv2, 0, 2, tuning.meso_freq, seed.wrapping_add(90091));
 
-    let raw = cld + tuning.storminess * synoptic + 0.18 * meso;
+    let structure = structured_loads(dir, planet.radius_km, tuning, cyclones);
+    let raw = cld
+        + tuning.storminess * synoptic
+        + 0.18 * meso
+        + tuning.cyclone_cover_boost * structure.cyclone_signed
+        + tuning.front_strength * structure.front;
     let cover = smooth01((raw - tuning.cover_lo) / (tuning.cover_hi - tuning.cover_lo));
 
     // precipitation: falls out of heavy cover, scaled by how wet this
     // climate is right now (a desert overcast passes dry)
     let wetness = (prc / tuning.precip_wet_norm).clamp(0.0, 1.5);
     let over = ((cover - tuning.precip_threshold) / (1.0 - tuning.precip_threshold)).max(0.0);
-    let precip = (over.powf(tuning.precip_gamma) * wetness).clamp(0.0, 1.0);
+    let structured_precip = wetness.min(1.0)
+        * (tuning.cyclone_precip_boost * structure.cyclone_positive
+            + tuning.front_strength * 0.75 * structure.front);
+    let precip = (over.powf(tuning.precip_gamma) * wetness + structured_precip).clamp(0.0, 1.0);
     let snow_frac =
         1.0 - smooth01((temp_c - tuning.snow_lo_c) / (tuning.snow_hi_c - tuning.snow_lo_c));
     let humidity = (0.55 * wetness.min(1.0) + 0.35 * cover + 0.25 * precip).clamp(0.0, 1.0);
@@ -900,7 +1260,8 @@ pub fn weather_at(
         humidity,
         wind_e,
         wind_n,
-        storm: synoptic,
+        storm: (synoptic + 0.55 * structure.cyclone_positive + 0.35 * structure.front)
+            .clamp(-1.0, 1.0),
     }
 }
 
@@ -1089,6 +1450,18 @@ mod tests {
             r#"{"storm_edge_probe_km":3001}"#,
             r#"{"storm_edge_strength":1.01}"#,
             r#"{"storm_green_cast":-0.01}"#,
+            r#"{"cyclone_count":5}"#,
+            r#"{"cyclone_radius_km":0}"#,
+            r#"{"cyclone_spin_deg_s":5.01}"#,
+            r#"{"cyclone_track_km_s":-0.01}"#,
+            r#"{"cyclone_cover_boost":1.51}"#,
+            r#"{"cyclone_precip_boost":-0.01}"#,
+            r#"{"differential_rotation_deg_h":361}"#,
+            r#"{"differential_rotation_shear_deg_h":-361}"#,
+            r#"{"front_strength":1.51}"#,
+            r#"{"front_leading_km":0}"#,
+            r#"{"front_leading_km":400,"front_trailing_km":300}"#,
+            r#"{"front_trailing_km":400,"front_length_km":300}"#,
             r#"{"storminess":1e999}"#,
         ];
         for raw in invalid {
@@ -1124,6 +1497,71 @@ mod tests {
         assert!((0.0..=1.0).contains(&t.storm_edge_strength));
         assert!((0.0..=1.0).contains(&t.storm_green_cast));
         assert!(t.validate().is_ok());
+    }
+
+    #[test]
+    fn wmotion2_defaults_are_bounded_and_asymmetric() {
+        let t = WeatherTuning::default();
+        assert!((t.cyclone_count as usize) <= MAX_CYCLONES);
+        assert!(t.cyclone_radius_km > 0.0);
+        assert!(t.cyclone_spin_deg_s.abs() > 0.0);
+        assert!(t.cyclone_track_km_s > 0.0);
+        assert!(t.front_leading_km < t.front_trailing_km);
+        assert!(t.front_trailing_km < t.front_length_km);
+        assert!(t.validate().is_ok());
+    }
+
+    #[test]
+    fn cyclone_centers_are_deterministic_at_two_times_and_cross_hour_smoothly() {
+        let field = WeatherField::from_bytes(&weather_bytes(b"WEA3", LAYERS)).unwrap();
+        let tuning = WeatherTuning::default();
+        let sample = |time| cyclone_systems(&field, 42, 6371.0, 0.45, time, &tuning);
+        let at_zero_a = sample(0.0);
+        let at_zero_b = sample(0.0);
+        let at_later_a = sample(1234.5);
+        let at_later_b = sample(1234.5);
+        for index in 0..tuning.cyclone_count as usize {
+            assert_eq!(
+                at_zero_a.systems[index].center.to_array().map(f64::to_bits),
+                at_zero_b.systems[index].center.to_array().map(f64::to_bits),
+            );
+            assert_eq!(
+                at_later_a.systems[index]
+                    .center
+                    .to_array()
+                    .map(f64::to_bits),
+                at_later_b.systems[index]
+                    .center
+                    .to_array()
+                    .map(f64::to_bits),
+            );
+            assert!((at_zero_a.systems[index].center.length() - 1.0).abs() < 1e-12);
+            assert!((at_later_a.systems[index].center.length() - 1.0).abs() < 1e-12);
+            assert!(
+                at_zero_a.systems[index]
+                    .center
+                    .distance(at_later_a.systems[index].center)
+                    > 1e-6
+            );
+        }
+        let before = sample(3599.999).systems[0].center;
+        let after = sample(3600.001).systems[0].center;
+        assert!(before.distance(after) < 1e-6, "hour boundary jumped");
+        let probe = (before + DVec3::Y * 0.04).normalize();
+        let systems_before = sample(3599.999);
+        let systems_after = sample(3600.001);
+        let domain_before =
+            structured_weather_domain(probe, 3599.999, 6371.0, &tuning, &systems_before);
+        let domain_after =
+            structured_weather_domain(probe, 3600.001, 6371.0, &tuning, &systems_after);
+        assert!(
+            domain_before.distance(domain_after) < 1e-4,
+            "structured domain reset at the hourly presentation wrap"
+        );
+        let loads_before = structured_loads(probe, 6371.0, &tuning, &systems_before);
+        let loads_after = structured_loads(probe, 6371.0, &tuning, &systems_after);
+        assert!((loads_before.cyclone_signed - loads_after.cyclone_signed).abs() < 1e-4);
+        assert!((loads_before.front - loads_after.front).abs() < 1e-4);
     }
 
     #[test]
