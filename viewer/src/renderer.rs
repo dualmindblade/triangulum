@@ -371,6 +371,16 @@ pub struct Renderer {
     synoptic_raster_uploaded: bool,
     pub synoptic_raster_bakes: u64,
     pub synoptic_raster_last_bake_ms: f64,
+    /// in-flight async live bake (LIVE frames never block on the ~4-10 ms
+    /// bake: they draw the previous raster until the worker delivers -
+    /// captures keep the synchronous deterministic path). Without this the
+    /// bake ran inline on every 2 s weather boundary (a periodic hitch) and
+    /// collapsed under time fast-forward, where 600x crosses hundreds of
+    /// boundaries per real second (perf-reel catch: moon_orbit 3.3->7.8 ms).
+    synoptic_raster_pending: Option<(
+        crate::weather::SynopticRasterSource,
+        std::sync::mpsc::Receiver<crate::weather::SynopticRaster>,
+    )>,
     pub solar_tuning: SolarTuning,
     /// Master switch (--weather off, `weather off` in scripts).
     pub weather_on: bool,
@@ -1018,6 +1028,7 @@ impl Renderer {
             synoptic_raster_uploaded: false,
             synoptic_raster_bakes: 0,
             synoptic_raster_last_bake_ms: 0.0,
+            synoptic_raster_pending: None,
             solar_tuning: SolarTuning::default(),
             weather_on: true,
             weather_pin: None,
@@ -1046,7 +1057,34 @@ impl Renderer {
             .create_view(&Default::default())
     }
 
-    fn refresh_synoptic_raster(&mut self, planet: &Planet, weather_time_s: f64) {
+    fn upload_synoptic_raster(&mut self, raster: crate::weather::SynopticRaster) {
+        let res = crate::weather::SYNOPTIC_RASTER_RES as u32;
+        self.queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &self.weather_raster_texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            raster.bytes(),
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(res * 4),
+                rows_per_image: Some(res),
+            },
+            wgpu::Extent3d {
+                width: res,
+                height: res,
+                depth_or_array_layers: 6,
+            },
+        );
+        self.synoptic_raster = raster;
+        self.synoptic_raster_uploaded = true;
+        self.synoptic_raster_bakes = self.synoptic_raster_bakes.saturating_add(1);
+    }
+
+    fn refresh_synoptic_raster(&mut self, planet_arc: &Arc<Planet>, weather_time_s: f64) {
+        let planet: &Planet = planet_arc;
         use crate::weather::{SynopticRaster, SynopticRasterSource};
 
         let live_time = crate::weather::synoptic_raster_time_s(weather_time_s);
@@ -1065,8 +1103,44 @@ impl Renderer {
             }
         };
         if self.synoptic_raster_uploaded && self.synoptic_raster.source() == desired {
+            self.synoptic_raster_pending = None;
             return;
         }
+        // LIVE frames bake off-thread; captures (settle_visuals) and the
+        // pinned/off sources (trivially cheap) stay synchronous so every
+        // instrument remains a pure function of weather time.
+        let is_live = matches!(desired, SynopticRasterSource::Live { .. });
+        if is_live && !self.settle_visuals {
+            match &self.synoptic_raster_pending {
+                Some((src, rx)) if *src == desired => {
+                    if let Ok(raster) = rx.try_recv() {
+                        self.upload_synoptic_raster(raster);
+                        self.synoptic_raster_pending = None;
+                    }
+                    return; // draw with the previous raster meanwhile
+                }
+                _ => {}
+            }
+            let (tx, rx) = std::sync::mpsc::channel();
+            let field = std::sync::Arc::clone(
+                self.weather_field
+                    .as_ref()
+                    .expect("live source requires weather field"),
+            );
+            let planet = Arc::clone(planet_arc);
+            let day_len = self.effective_day_len_s();
+            let solar = self.solar_tuning.clone();
+            let weather = self.weather_tuning.clone();
+            rayon::spawn(move || {
+                let raster = crate::weather::SynopticRaster::bake_live(
+                    &field, &planet, live_time, day_len, &solar, &weather,
+                );
+                let _ = tx.send(raster);
+            });
+            self.synoptic_raster_pending = Some((desired, rx));
+            return;
+        }
+        self.synoptic_raster_pending = None;
 
         let start = std::time::Instant::now();
         let raster = match desired {
@@ -1091,29 +1165,7 @@ impl Renderer {
                 &self.weather_tuning,
             ),
         };
-        let res = crate::weather::SYNOPTIC_RASTER_RES as u32;
-        self.queue.write_texture(
-            wgpu::TexelCopyTextureInfo {
-                texture: &self.weather_raster_texture,
-                mip_level: 0,
-                origin: wgpu::Origin3d::ZERO,
-                aspect: wgpu::TextureAspect::All,
-            },
-            raster.bytes(),
-            wgpu::TexelCopyBufferLayout {
-                offset: 0,
-                bytes_per_row: Some(res * 4),
-                rows_per_image: Some(res),
-            },
-            wgpu::Extent3d {
-                width: res,
-                height: res,
-                depth_or_array_layers: 6,
-            },
-        );
-        self.synoptic_raster = raster;
-        self.synoptic_raster_uploaded = true;
-        self.synoptic_raster_bakes = self.synoptic_raster_bakes.saturating_add(1);
+        self.upload_synoptic_raster(raster);
         self.synoptic_raster_last_bake_ms = start.elapsed().as_secs_f64() * 1000.0;
         if std::env::var_os("TRI_WEATHER_RASTER_STATS").is_some() {
             eprintln!(
