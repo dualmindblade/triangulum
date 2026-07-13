@@ -102,29 +102,47 @@ is already built and gauntlet-enforced.
    net layer must be cleanly absent in harness runs so every
    instrument keeps its byte-exactness.
 
-## Deployment plan (Austin's infra, 2026-07-13)
+## Deployment (Austin's infra; status 2026-07-13)
 
 Domain: triangulum.dieorwrite.net (Cloudflare zone; API token lives
 in .cloudfare-creds at the repo root - GITIGNORED, never commit).
-Current machine: router forwards external 9999 -> local 8443, which
-is held by wslrelay (the WSL reverse proxy serving Austin's SSL
-apps). Two viable paths when the MP1 server lands:
+Path chosen: cloudflared named tunnel - no router changes, no
+surgery on the wslrelay 9999->8443 forward, TLS terminates at
+Cloudflare, and Cloudflare proxies WebSockets on standard ports.
 
-- RECOMMENDED - cloudflared tunnel: install cloudflared (winget),
-  create a named tunnel with the API token, CNAME
-  triangulum.dieorwrite.net to it, ingress wss -> the local game
-  server port. No router changes, no WSL-proxy surgery, TLS
-  terminates at Cloudflare, invite URL becomes
-  wss://triangulum.dieorwrite.net (plus token). Caveat: Cloudflare
-  proxies WebSockets fine on standard ports.
-- ALTERNATIVE - ride the existing 9999->8443 forward: add an SNI/
-  host route for triangulum.dieorwrite.net in the WSL proxy to the
-  game server port, DNS A record via the API. Touches Austin's
-  existing proxy config - only with him at the keyboard.
+DONE (this machine is tunnel-ready):
+- Client + server speak wss: tokio-tungstenite rustls
+  (webpki roots, ring provider installed at connect), parse_invite
+  accepts wss:// invites, server grew --public-url so it prints the
+  tunnel invite (wss://triangulum.dieorwrite.net/?token=...) instead
+  of the LAN form. Verified end to end: TLS handshake + WebSocket
+  upgrade against a public wss endpoint, and the local ws:// path
+  unregressed (client-sim WELCOME).
+- tools/cloudflared.exe 2026.7.1 (standalone binary; winget MSI
+  needs an elevation prompt, skipped). tools/ and .tunnel-token are
+  gitignored.
+- scripts/deploy_tunnel.ps1: idempotent one-shot that creates the
+  tunnel, sets ingress -> http://localhost:7777, creates/repoints
+  the proxied CNAME, and writes the connector token to
+  .tunnel-token. DNS Edit permission verified working.
 
-Either way the DNS record is one API call with the stored token.
-Deploy is a follow-up step after the MP1 merge, not part of the
-mission.
+BLOCKED on one dashboard action (Austin): the API token lacks
+Account -> Cloudflare Tunnel -> Edit (tunnel create returns 403;
+reads and DNS writes work). Add it at dash.cloudflare.com ->
+My Profile -> API Tokens -> edit the token -> add that permission,
+then run: powershell scripts\deploy_tunnel.ps1
+
+RUNBOOK once deployed (two terminals):
+  viewer\target\release\triangulum-server.exe --token GAMETOKEN ^
+    --public-url wss://triangulum.dieorwrite.net
+  tools\cloudflared.exe tunnel run --token-file .tunnel-token
+Laptop joiner: same build + assets (impediment 1/2), then paste the
+server's printed wss invite into the Join field.
+
+Dead end tried: TryCloudflare quick tunnels (account-less stopgap) -
+the connector registers but the edge 404s the assigned hostname
+indefinitely (both quic and http2); not worth fighting since the
+named tunnel needs only the token permission.
 
 ## What multiplayer does NOT threaten
 

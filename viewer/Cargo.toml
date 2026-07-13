@@ -18,6 +18,7 @@ multiplayer = [
     "dep:tokio",
     "dep:tokio-tungstenite",
     "dep:triangulum-multiplayer",
+    "dep:rustls",
 ]
 
 [dependencies]
@@ -35,5 +36,6 @@ wgpu = "30.0.0"
 winit = "0.30.13"
 futures-util = { version = "0.3", optional = true }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time"], optional = true }
-tokio-tungstenite = { version = "0.28", optional = true }
+tokio-tungstenite = { version = "0.28", optional = true, features = ["rustls-tls-webpki-roots"] }
+rustls = { version = "0.23", optional = true, default-features = false, features = ["ring", "logging", "std", "tls12"] }
 triangulum-multiplayer = { path = "multiplayer", optional = true }

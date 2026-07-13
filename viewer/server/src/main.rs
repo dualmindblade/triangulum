@@ -18,6 +18,7 @@ use triangulum_multiplayer::{
 struct Args {
     bind: String,
     public_host: Option<String>,
+    public_url: Option<String>,
     token: Option<String>,
     assets: PathBuf,
     journal: Option<PathBuf>,
@@ -32,6 +33,7 @@ impl Args {
         let mut out = Self {
             bind: "127.0.0.1:7777".into(),
             public_host: None,
+            public_url: None,
             token: None,
             assets: default_assets_dir(),
             journal: None,
@@ -51,6 +53,10 @@ impl Args {
                 }
                 "--public-host" => {
                     out.public_host = Some(next());
+                    i += 1;
+                }
+                "--public-url" => {
+                    out.public_url = Some(next());
                     i += 1;
                 }
                 "--token" => {
@@ -80,7 +86,7 @@ impl Args {
                 "--no-console" => out.no_console = true,
                 "--help" | "-h" => {
                     println!(
-                        "triangulum-server [--bind HOST:PORT] [--public-host HOST] [--token TOKEN] [--assets DIR] [--journal FILE] [--build-hash HASH] [--time SECONDS] [--time-scale SCALE] [--no-console]"
+                        "triangulum-server [--bind HOST:PORT] [--public-host HOST] [--public-url wss://HOST] [--token TOKEN] [--assets DIR] [--journal FILE] [--build-hash HASH] [--time SECONDS] [--time-scale SCALE] [--no-console]"
                     );
                     std::process::exit(0);
                 }
@@ -97,6 +103,11 @@ impl Args {
                 .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.' | '~'))
         {
             bail!("--token may contain only URL-safe letters, digits, '-', '_', '.', and '~'");
+        }
+        if let Some(url) = &out.public_url {
+            if !url.starts_with("ws://") && !url.starts_with("wss://") {
+                bail!("--public-url must start with ws:// or wss://");
+            }
         }
         if !out.absolute_time_s.is_finite() || out.absolute_time_s < 0.0 {
             bail!("--time must be finite and non-negative");
@@ -254,8 +265,14 @@ async fn main() -> Result<()> {
         journal_path.display(),
         state.journal.lock().await.journal().records().len()
     );
-    println!("  invite: triangulum://{public_authority}/#{token}");
-    println!("  websocket: ws://{public_authority}/?token={token}");
+    if let Some(url) = &args.public_url {
+        let url = url.trim_end_matches('/');
+        println!("  invite: {url}/?token={token}");
+        println!("  local invite: triangulum://{public_authority}/#{token}");
+    } else {
+        println!("  invite: triangulum://{public_authority}/#{token}");
+        println!("  websocket: ws://{public_authority}/?token={token}");
+    }
     println!("  D-17: clock authority is SERVER OPERATOR ONLY");
     if !args.no_console {
         println!("  operator commands: seek SECONDS | scale FACTOR | status | help");

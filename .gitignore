@@ -17,3 +17,7 @@ viewer/target/
 
 # local secrets - never commit
 .cloudfare-creds
+.tunnel-token
+
+# local tool binaries (cloudflared etc.)
+/tools/

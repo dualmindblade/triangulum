@@ -140,6 +140,9 @@ async fn run_connection(
         websocket_url,
         token,
     } = parse_invite(raw_invite).map_err(|e| e.to_string())?;
+    // wss:// invites (tunneled servers) need a process-level rustls
+    // provider; installing twice is a benign error.
+    let _ = rustls::crypto::ring::default_provider().install_default();
     let (websocket, _) = tokio_tungstenite::connect_async(websocket_url.as_str())
         .await
         .map_err(|e| format!("connect {websocket_url}: {e}"))?;

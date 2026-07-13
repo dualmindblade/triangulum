@@ -34,12 +34,7 @@ pub fn parse_invite(input: &str) -> Result<Invite, InviteError> {
             token: token.to_string(),
         });
     }
-    if input.starts_with("wss://") {
-        return Err(InviteError(
-            "wss:// is not enabled in MP1; use the server's printed ws:// invite".into(),
-        ));
-    }
-    if input.starts_with("ws://") {
+    if input.starts_with("ws://") || input.starts_with("wss://") {
         let without_fragment = input.split('#').next().unwrap_or(input);
         let token = query_value(without_fragment, "token")
             .or_else(|| input.split_once('#').map(|(_, v)| v))
@@ -51,7 +46,7 @@ pub fn parse_invite(input: &str) -> Result<Invite, InviteError> {
         });
     }
     Err(InviteError(
-        "invite must start with triangulum:// or ws://".into(),
+        "invite must start with triangulum://, ws://, or wss://".into(),
     ))
 }
 
@@ -72,5 +67,15 @@ mod tests {
         let custom = parse_invite("triangulum://127.0.0.1:7777/#abc123").unwrap();
         assert_eq!(custom.websocket_url, "ws://127.0.0.1:7777/?token=abc123");
         assert_eq!(parse_invite(&custom.websocket_url).unwrap(), custom);
+    }
+
+    #[test]
+    fn parses_tls_invite_for_tunneled_servers() {
+        let tls = parse_invite("wss://triangulum.dieorwrite.net/?token=abc123").unwrap();
+        assert_eq!(
+            tls.websocket_url,
+            "wss://triangulum.dieorwrite.net/?token=abc123"
+        );
+        assert_eq!(tls.token, "abc123");
     }
 }
