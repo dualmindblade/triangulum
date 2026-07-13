@@ -163,6 +163,13 @@ lands here.
 \[Same message as before, the current biome and block colors are
 satisfactory and can be tweaked later when textures are added.\]
 
+### D-17 Multiplayer time authority
+Time travel and fast-forward are global actions on a shared server:
+who may bend time? MP1 default until decided: the server operator
+only (clients' [ ]/Travel controls disabled with a note). Options:
+op-only, per-player permission, majority vote, "anyone" (chaos mode,
+which honestly might be fun for you two).
+
 ## Answered (the design record)
 
 ### 2026-07-12 - D-16 Eclipses + solar-system idea verdicts (Andrew,

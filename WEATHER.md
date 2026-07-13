@@ -219,6 +219,14 @@ constant, and weather-off intentionally draws an empty cloud overlay.
   deserts (precip=0 + high wind), wind-swayed trees/shrubs, puddle
   accumulation on flats, snow depth as voxel overlay, weather-aware
   ambient audio.
+- **W4.1 (roadmap, Austin 2026-07-13):** smoother seasonal landscape
+  transitions - the 24/year season buckets step visibly under time
+  fast-forward ("make the increments smaller"). Directions: raise the
+  bucket count (cheap, more rebuild churn), or interpolate the frozen
+  class per column across the bucket boundary via the existing
+  hysteresis band + comparator dither so refreshes land as advancing
+  fronts rather than steps. Verified context: seasons work, ice
+  dynamics read plausibly at speed.
 - **W-MOTION (banked 2026-07-12, Austin: "distortions in the field that
   evolve over time... full turbulence as the ceiling", everything
   deterministic and O(1) in t):** true turbulence needs path-dependent
