@@ -67,15 +67,16 @@ struct Globals {
     // zw = inverse viewport size for a terrain-independent orbital ray
     weather12: vec4<f32>,
     // W-MOTION pass 2: x/y accumulated base/shear differential rotation,
+    // x accumulated rigid base rotation, y bounded zonal shear phase,
     // z cyclone angular radius, w active bounded system count.
     weather13: vec4<f32>,
-    // x accumulated cyclone core angle, y/z cover/precip boosts, w front
+    // x unused (core wrap rides in cyclone_fronts.w), y/z cover/precip boosts, w front
     // strength.
     weather14: vec4<f32>,
     // xyz front leading/trailing/along scales in radians.
     weather15: vec4<f32>,
-    // Planet-frame center.xyz + baked intensity; front normal.xyz +
-    // hemisphere spin sign.
+    // Planet-frame center.xyz + lifecycle-scaled intensity; front
+    // normal.xyz + hemisphere-signed bounded core wrap angle (radians).
     cyclone_centers: array<vec4<f32>, 4>,
     cyclone_fronts: array<vec4<f32>, 4>,
     // premultiplied cave-noise seeds (low 32 bits of
@@ -1395,9 +1396,10 @@ fn cloud_rotate_z(v: vec3<f32>, angle: f32) -> vec3<f32> {
 // W-MOTION pass 2's complete structured field. The physical sample direction
 // selects storm/front presence while `domain` is inverse-mapped into each
 // nearby vortex's co-rotating frame and then through
-// theta(lat,t)=(w0+w1*cos^2(lat))*t. All centers and accumulated angles came
-// from f64 absolute weather time on the CPU; the hourly particle clock never
-// resets these terms.
+// theta(lat,t) = w0*t + slosh(t)*cos^2(lat). All centers, wrap angles, and
+// the bounded shear phase came from f64 absolute weather time on the CPU;
+// the hourly particle clock never resets these terms, and no term
+// accumulates unbounded differential shear.
 fn cloud_structure(sdir: vec3<f32>) -> CloudStructure {
     var mapped = sdir;
     var cyclone_signed = 0.0;
@@ -1432,11 +1434,10 @@ fn cloud_structure(sdir: vec3<f32>) -> CloudStructure {
 
             let cyclone_frame = globals.cyclone_fronts[i];
             let falloff = envelope * intensity;
-            mapped = cloud_rotate_axis(
-                mapped,
-                center,
-                -cyclone_frame.w * globals.weather14.x * falloff,
-            );
+            // cyclone_fronts.w is the hemisphere-signed BOUNDED core wrap
+            // (tanh-saturated on the CPU): long clocks tighten toward a
+            // fixed spiral and unwind as the storm's life envelope dies.
+            mapped = cloud_rotate_axis(mapped, center, cyclone_frame.w * falloff);
         }
 
         // A system on the far side of the planet owns neither this vortex

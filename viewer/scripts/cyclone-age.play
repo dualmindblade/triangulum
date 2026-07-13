@@ -1,0 +1,25 @@
+mode fly
+weather time 0
+teleport 20.0 40.0 5000.0
+look 0 -88
+shot ca_t0
+weather time 1800
+shot ca_t1800
+weather time 3500
+shot ca_t3500
+weather time 20000
+shot ca_t20000
+weather time 100000
+shot ca_t100000
+weather time 500000
+shot ca_t500000
+teleport -25.0 240.0 5000.0
+look 0 -88
+shot ca_far_t500000
+weather time 349
+teleport 30.0 40.0 5000.0
+look 0 -88
+shot ca_cover_349
+teleport -10.0 200.0 5000.0
+look 0 -88
+shot ca_cover_349b

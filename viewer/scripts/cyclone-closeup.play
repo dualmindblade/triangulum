@@ -1,0 +1,12 @@
+mode fly
+weather time 3500
+teleport -21.9 139.0 2200.0
+look 0 -88
+shot cy_mature
+teleport 23.0 90.4 2200.0
+look 0 -88
+shot cy_second
+weather time 20000
+teleport -27.8 7.6 2200.0
+look 0 -88
+shot cy_young

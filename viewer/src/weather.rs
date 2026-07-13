@@ -31,6 +31,12 @@ pub struct WeatherTuning {
     pub synoptic_freq: f64,
     /// Base frequency of the small cloud texture (~100 km at 320).
     pub meso_freq: f64,
+    /// Planetary cover wave: a continent-scale band added to the cloud
+    /// climatology so global cover varies (large clear breaks, dense belts)
+    /// instead of averaging out. ~hemisphere-scale features at 5.
+    pub planetary_freq: f64,
+    /// Amplitude of the planetary wave in `raw` cover units. 0 disables.
+    pub planetary_strength: f64,
     /// Cloud-cover contrast curve: cover = smoothstep(lo, hi, raw).
     pub cover_lo: f64,
     pub cover_hi: f64,
@@ -110,10 +116,23 @@ pub struct WeatherTuning {
     pub cyclone_track_km_s: f64,
     pub cyclone_cover_boost: f64,
     pub cyclone_precip_boost: f64,
+    /// Finite deterministic storm life (seconds of weather time). Each
+    /// system index is reborn on a freshly seeded corridor every period with
+    /// a smooth grow/decay envelope; rebirth phases are staggered per index.
+    pub cyclone_life_s: f64,
+    /// Total fabric wrap a vortex may accumulate at its core (degrees). The
+    /// spiral tightens toward this asymptote (tanh) instead of winding
+    /// without bound into thread-thin streaks.
+    pub cyclone_max_wrap_deg: f64,
     /// Domain rotation about the spin axis (degrees/hour). The shear term is
     /// multiplied by cos^2(latitude), matching WEATHER.md's analytic law.
     pub differential_rotation_deg_h: f64,
     pub differential_rotation_shear_deg_h: f64,
+    /// Period (s) of the bounded zonal-shear slosh. The cos^2(lat) shear
+    /// phase is A*sin(2*pi*t/P) with A chosen so the t=0 rate matches
+    /// differential_rotation_shear_deg_h; unlike shear*t it cannot stretch
+    /// the fabric into east-west threads on long clocks.
+    pub zonal_shear_period_s: f64,
     /// Parent-attached asymmetric fronts: a narrow leading ridge followed by
     /// a wider trailing smear, both limited along the front's length.
     pub front_strength: f64,
@@ -145,6 +164,8 @@ impl Default for WeatherTuning {
             synoptic_speed: 150.0,
             synoptic_freq: 40.0,
             meso_freq: 320.0,
+            planetary_freq: 5.0,
+            planetary_strength: 0.32,
             cover_lo: 0.25,
             cover_hi: 0.85,
             precip_threshold: 0.55,
@@ -186,8 +207,15 @@ impl Default for WeatherTuning {
             cyclone_track_km_s: 0.35,
             cyclone_cover_boost: 0.48,
             cyclone_precip_boost: 0.68,
+            cyclone_life_s: 6300.0,
+            // ~2 radians of core twist is the most this fabric tolerates:
+            // the tangential stretch peaks near 2*wrap*rn^2*exp(-rn^2), so
+            // 480 deg already shears fine cloud texture into the concentric
+            // thread artifact of the "Cyclone Evolution" photos.
+            cyclone_max_wrap_deg: 120.0,
             differential_rotation_deg_h: 18.0,
             differential_rotation_shear_deg_h: 24.0,
+            zonal_shear_period_s: 14400.0,
             front_strength: 0.38,
             front_leading_km: 90.0,
             front_trailing_km: 360.0,
@@ -238,6 +266,8 @@ impl WeatherTuning {
             ("synoptic_speed", self.synoptic_speed),
             ("synoptic_freq", self.synoptic_freq),
             ("meso_freq", self.meso_freq),
+            ("planetary_freq", self.planetary_freq),
+            ("planetary_strength", self.planetary_strength),
             ("cover_lo", self.cover_lo),
             ("cover_hi", self.cover_hi),
             ("precip_threshold", self.precip_threshold),
@@ -279,6 +309,8 @@ impl WeatherTuning {
             ("cyclone_track_km_s", self.cyclone_track_km_s),
             ("cyclone_cover_boost", self.cyclone_cover_boost),
             ("cyclone_precip_boost", self.cyclone_precip_boost),
+            ("cyclone_life_s", self.cyclone_life_s),
+            ("cyclone_max_wrap_deg", self.cyclone_max_wrap_deg),
             (
                 "differential_rotation_deg_h",
                 self.differential_rotation_deg_h,
@@ -287,6 +319,7 @@ impl WeatherTuning {
                 "differential_rotation_shear_deg_h",
                 self.differential_rotation_shear_deg_h,
             ),
+            ("zonal_shear_period_s", self.zonal_shear_period_s),
             ("front_strength", self.front_strength),
             ("front_leading_km", self.front_leading_km),
             ("front_trailing_km", self.front_trailing_km),
@@ -301,6 +334,12 @@ impl WeatherTuning {
         }
         if self.synoptic_freq <= 0.0 || self.meso_freq <= 0.0 {
             return Err("synoptic_freq and meso_freq must be > 0".into());
+        }
+        if self.planetary_freq <= 0.0 || self.planetary_freq > 64.0 {
+            return Err("planetary_freq must be in (0, 64]".into());
+        }
+        if !(0.0..=1.5).contains(&self.planetary_strength) {
+            return Err("planetary_strength must be in [0, 1.5]".into());
         }
         if self.cover_lo >= self.cover_hi {
             return Err("cover_lo must be < cover_hi".into());
@@ -393,10 +432,19 @@ impl WeatherTuning {
         {
             return Err("cyclone cover/precip boosts must be in [0, 1.5]".into());
         }
+        if !(600.0..=604_800.0).contains(&self.cyclone_life_s) {
+            return Err("cyclone_life_s must be in [600, 604800]".into());
+        }
+        if self.cyclone_max_wrap_deg <= 0.0 || self.cyclone_max_wrap_deg > 3600.0 {
+            return Err("cyclone_max_wrap_deg must be in (0, 3600]".into());
+        }
         if self.differential_rotation_deg_h.abs() > 360.0
             || self.differential_rotation_shear_deg_h.abs() > 360.0
         {
             return Err("differential rotation rates must have magnitude <= 360 deg/h".into());
+        }
+        if !(60.0..=604_800.0).contains(&self.zonal_shear_period_s) {
+            return Err("zonal_shear_period_s must be in [60, 604800]".into());
         }
         if !(0.0..=1.5).contains(&self.front_strength) {
             return Err("front_strength must be in [0, 1.5]".into());
@@ -1100,8 +1148,9 @@ pub fn season_frac(
 }
 
 /// One closed-form W-MOTION storm system at the requested weather time.
-/// `intensity` is sampled from the baked seasonal storm climatology at the
-/// moving center; there is no lifetime counter or mutable storm state.
+/// `intensity` is the baked seasonal storm climatology at the moving center
+/// times a deterministic finite-life envelope; there is no lifetime counter
+/// or mutable storm state — age is a pure function of (t, seed, index).
 #[derive(Clone, Copy, Debug, Default)]
 pub struct CycloneSystem {
     pub center: DVec3,
@@ -1109,6 +1158,9 @@ pub struct CycloneSystem {
     /// Orientation of the attached front's leading-edge normal in the local
     /// east/north frame.
     pub front_angle: f64,
+    /// Hemisphere-signed accumulated core rotation (radians), saturated at
+    /// cyclone_max_wrap_deg so the fabric never winds into endless streaks.
+    pub wrap_angle: f64,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -1138,14 +1190,17 @@ fn cyclone_hash01(seed: i64, index: u32, lane: u32) -> f64 {
     ((z >> 11) as f64) * (1.0 / ((1u64 << 53) as f64))
 }
 
-fn seeded_cyclone_track(seed: i64, index: u32, candidate: u32) -> (f64, f64) {
+fn seeded_cyclone_track(seed: i64, index: u32, epoch_salt: u32, candidate: u32) -> (f64, f64) {
     // Alternate hemispheres so a small N does not accidentally put every
     // system in one storm belt. Candidate latitude/longitude remain seed-
-    // addressed; the climatology chooses among them below.
+    // addressed; the climatology chooses among them below. The epoch salt
+    // re-rolls the corridors each finite life, so storms visit different
+    // parts of their hemisphere over long clocks.
     let north = ((index as u64 + seed as u64) & 1) == 0;
     let sign = if north { 1.0 } else { -1.0 };
-    let latitude = sign * (20.0 + 32.0 * cyclone_hash01(seed, index, candidate * 3)).to_radians();
-    let longitude = std::f64::consts::TAU * cyclone_hash01(seed, index, candidate * 3 + 1)
+    let lane = epoch_salt.wrapping_mul(64).wrapping_add(candidate * 3);
+    let latitude = sign * (20.0 + 32.0 * cyclone_hash01(seed, index, lane)).to_radians();
+    let longitude = std::f64::consts::TAU * cyclone_hash01(seed, index, lane + 1)
         - std::f64::consts::PI;
     (latitude, longitude)
 }
@@ -1209,10 +1264,24 @@ pub fn cyclone_systems(
         count: tuning.cyclone_count.min(MAX_CYCLONES as u32),
         ..CycloneSystems::default()
     };
+    let life = tuning.cyclone_life_s.max(1.0);
     for index in 0..out.count {
+        // Finite deterministic life: the epoch clock is phase-staggered per
+        // index so the bank never turns over all at once, and age is a pure
+        // function of (t, seed, index) — a seek lands mid-life correctly.
+        let phase = cyclone_hash01(seed, index, 11) * life;
+        let cycle_t = t_s + phase;
+        let epoch = (cycle_t / life).floor();
+        let age_s = cycle_t - epoch * life;
+        let epoch_salt = (epoch as i64).rem_euclid(1 << 24) as u32;
+        // Grow in over the first ~18% of life, decay over the last ~22%.
+        let age01 = age_s / life;
+        let lifecycle = smooth01(age01 / 0.18) * (1.0 - smooth01((age01 - 0.78) / 0.22));
+
         let mut best = (f64::NEG_INFINITY, 0.0, 0.0);
         for candidate in 0..8 {
-            let (latitude, longitude) = seeded_cyclone_track(seed, index, candidate);
+            let (latitude, longitude) =
+                seeded_cyclone_track(seed, index, epoch_salt, candidate);
             let base = cyclone_track_center(latitude, longitude, 0.0, radius_km, tuning);
             let (face, u, v) = crate::planet::face_from_dir(base);
             let cloud = field.at(face, L_CLD_MEAN, u, v).clamp(0.0, 1.0);
@@ -1221,17 +1290,25 @@ pub fn cyclone_systems(
             // flat/synthetic bake; it cannot outweigh climatology.
             let score = 0.72 * cloud
                 + 0.28 * (precip / tuning.precip_wet_norm).clamp(0.0, 1.0)
-                + cyclone_hash01(seed, index, candidate * 3 + 2) * 1e-9;
+                + cyclone_hash01(seed, index, epoch_salt.wrapping_mul(64).wrapping_add(candidate * 3 + 2)) * 1e-9;
             if score > best.0 {
                 best = (score, latitude, longitude);
             }
         }
-        let center = cyclone_track_center(best.1, best.2, t_s, radius_km, tuning);
+        // The track drifts by age, not absolute time: each rebirth starts at
+        // the head of its corridor instead of inheriting an epoch of drift.
+        let center = cyclone_track_center(best.1, best.2, age_s, radius_km, tuning);
         let (cloud, precip) = climate_cloud_precip_at(field, center, season_frac);
+        let hemisphere = if center.z >= 0.0 { 1.0 } else { -1.0 };
+        let max_wrap = tuning.cyclone_max_wrap_deg.to_radians();
+        let raw_wrap = tuning.cyclone_spin_deg_s.to_radians() * age_s;
         out.systems[index as usize] = CycloneSystem {
             center,
-            intensity: storm_climatology(cloud, precip, tuning),
-            front_angle: (cyclone_hash01(seed, index, 97) - 0.5) * 1.8,
+            intensity: storm_climatology(cloud, precip, tuning) * lifecycle,
+            front_angle: (cyclone_hash01(seed, index, epoch_salt.wrapping_mul(64).wrapping_add(33))
+                - 0.5)
+                * 1.8,
+            wrap_angle: -hemisphere * max_wrap * (raw_wrap / max_wrap).tanh(),
         };
     }
     out
@@ -1240,6 +1317,19 @@ pub fn cyclone_systems(
 fn rotate_axis(v: DVec3, axis: DVec3, angle: f64) -> DVec3 {
     let (sin, cos) = angle.sin_cos();
     (v * cos + axis.cross(v) * sin + axis * axis.dot(v) * (1.0 - cos)).normalize()
+}
+
+/// Bounded zonal-shear phase (radians). shear*t winds the fabric between
+/// latitudes without limit — by t~100000 s the whole deck is east-west
+/// threads. This slosh keeps the configured shear RATE at its zero
+/// crossings while capping total relative displacement at
+/// rate * period / (2*pi). Shared by the CPU domain and the GPU uniform so
+/// both renderers stay one truth.
+pub fn zonal_shear_phase(t_s: f64, tuning: &WeatherTuning) -> f64 {
+    let period = tuning.zonal_shear_period_s.max(1.0);
+    let rate = tuning.differential_rotation_shear_deg_h.to_radians() / 3600.0;
+    let amplitude = rate * period / std::f64::consts::TAU;
+    amplitude * (std::f64::consts::TAU * t_s / period).sin()
 }
 
 /// Inverse-map the procedural cloud domain into the co-rotating frame of
@@ -1264,15 +1354,14 @@ fn structured_weather_domain(
             continue;
         }
         let falloff = (-chord2 / radius2).exp() * system.intensity;
-        let hemisphere = if system.center.z >= 0.0 { 1.0 } else { -1.0 };
-        let angle = -hemisphere * tuning.cyclone_spin_deg_s.to_radians() * t_s * falloff;
-        mapped = rotate_axis(mapped, system.center, angle);
+        // The bounded per-system wrap replaces rate*t: the spiral tightens
+        // toward cyclone_max_wrap_deg and relaxes as the life envelope dies,
+        // so long clocks never wind the fabric into thread-thin streaks.
+        mapped = rotate_axis(mapped, system.center, system.wrap_angle * falloff);
     }
     let cos2_lat = (1.0 - dir.z * dir.z).max(0.0);
-    let theta = (tuning.differential_rotation_deg_h
-        + tuning.differential_rotation_shear_deg_h * cos2_lat)
-        .to_radians()
-        * (t_s / 3600.0);
+    let theta = tuning.differential_rotation_deg_h.to_radians() * (t_s / 3600.0)
+        + zonal_shear_phase(t_s, tuning) * cos2_lat;
     rotate_axis(mapped, DVec3::Z, -theta)
 }
 
@@ -1497,9 +1586,14 @@ pub fn weather_at_with_cyclones(
     // the fine texture drifts a little faster (gust fronts outrun systems)
     let adv2 = advect_great_circle(dir, drift * 1.6);
     let meso = fbm_band(adv2, 0, 2, tuning.meso_freq, seed.wrapping_add(90091));
+    // the planetary wave crawls: continent-scale breaks and dense belts
+    // migrate slower than the synoptic systems embedded in them
+    let adv3 = advect_great_circle(dir, drift * 0.55);
+    let planetary = fbm_band(adv3, 0, 2, tuning.planetary_freq, seed.wrapping_add(70071));
 
     let structure = structured_loads(dir, planet.radius_km, tuning, cyclones);
     let raw = cld
+        + tuning.planetary_strength * planetary
         + tuning.storminess * synoptic
         + 0.18 * meso
         + tuning.cyclone_cover_boost * structure.cyclone_signed

@@ -288,6 +288,53 @@ tails and heads remain legible at whole-planet and zoomed map scales.
   zonal sheer, a similar type of simulation would be an awesome touch
   to stars and gas giants.\]
 
+## The bounded-shear law (2026-07-13, from Andrew's "Cyclone Evolution" photos)
+
+Any domain-warp term of the form rate*t with a SPATIALLY VARYING
+coefficient accumulates unbounded differential shear and eventually
+strips the cloud fabric into threads. Two terms had this disease and
+both are now bounded; treat this as a standing rule for every future
+W-MOTION term (a rigid whole-sphere rotation is the only safe
+unbounded motion):
+
+- CYCLONE WRAP: was exp(-r^2)*w*t (208 fabric turns by t=100000 s).
+  Now each system carries a per-life bounded wrap angle,
+  max_wrap*tanh(rate*age/max_wrap), computed once on the CPU and
+  consumed identically by the CPU field and the GPU uniform
+  (cyclone_fronts.w). The fabric tolerates about 2 radians of core
+  twist before tangential stretch (~2*wrap*rn^2*exp(-rn^2)) reads as
+  concentric threads - hence cyclone_max_wrap_deg = 120 with the
+  eye/eyewall/envelope loads carrying the storm shape. 480 exactly
+  reproduces Andrew's photos; keep tuning under ~200.
+- CYCLONE LIFECYCLE: storms are finite now - cyclone_life_s (6300 s
+  = 3.5 game days) with a smooth grow(18%)/mature/decay(22%)
+  envelope on intensity, phase-staggered per system index, and each
+  life re-rolls its seeded corridor (epoch-salted candidate tracks),
+  so long clocks see storms born, wander, and die across the storm
+  belts instead of two eternal vortices winding forever. Age is a
+  pure function of (t, seed, index): a time-travel seek lands
+  mid-life correctly, O(1).
+- ZONAL SHEAR: theta = (w0 + w1*cos^2 lat)*t stretched the whole
+  deck into east-west threads by t~100000 s (28 game hours - minutes
+  of wall time at 600x). The w1 term is now a bounded slosh,
+  A*sin(2*pi*t/P) with A = rate*P/(2*pi) (zonal_shear_period_s,
+  default 14400 s), so bands slide back and forth (QBO-style) with
+  the configured rate but capped displacement. The w0 base term is
+  rigid rotation and stays proportional to t.
+
+## Global cover variance (same session, Austin's ask 2)
+
+Cover was climatology + synoptic(40) + meso(320) - nothing below
+synoptic scale, so global cover averaged out homogeneous. A
+PLANETARY WAVE band now sits under the stack: fbm_band(2 octaves,
+planetary_freq = 5 ~ hemisphere-scale) advected at 0.55x the
+synoptic drift, amplitude planetary_strength = 0.32 in raw-cover
+units. Continent-sized breaks and dense belts, CPU-only (rides the
+W2.5 raster into the deck; no shader change). Answer to Austin's
+question: cover IS driven by the baked cloud/precip climatology
+(WEA3), which gives the geographic pattern - the planetary wave adds
+the missing largest-scale variance on top.
+
 ## Decision points for Andrew
 
 Moved to DECISIONS.md (repo root). D-6 and D-8's 2026-07-11 verdicts are the

@@ -127,16 +127,18 @@ struct Globals {
     weather11: [f32; 4],
     // W2 storm art direction: x directional strength, y warm/green cast.
     weather12: [f32; 4],
-    // W-MOTION pass 2: x/y accumulated base/shear rotation, z cyclone
-    // angular radius, w active bounded system count.
+    // W-MOTION pass 2: x accumulated rigid base rotation, y bounded zonal
+    // shear phase (slosh), z cyclone angular radius, w active bounded
+    // system count.
     weather13: [f32; 4],
-    // x accumulated cyclone core angle, y/z cover/precip boosts, w front
-    // strength.
+    // x unused (core wrap now rides per-system in cyclone_fronts.w),
+    // y/z cover/precip boosts, w front strength.
     weather14: [f32; 4],
     // xyz asymmetric front leading/trailing/along scales in radians.
     weather15: [f32; 4],
-    // Planet-frame moving centers + baked intensity, followed by the
-    // planet-frame front normal and hemisphere spin sign.
+    // Planet-frame moving centers + lifecycle-scaled intensity, followed by
+    // the planet-frame front normal and the hemisphere-signed bounded core
+    // wrap angle (radians).
     cyclone_centers: [[f32; 4]; crate::weather::MAX_CYCLONES],
     cyclone_fronts: [[f32; 4]; crate::weather::MAX_CYCLONES],
     // premultiplied procedural seeds. xyz are the karst breach hint (V-10):
@@ -2593,17 +2595,12 @@ impl Renderer {
             weather13: [
                 (self.weather_tuning.differential_rotation_deg_h.to_radians() * weather_t_s
                     / 3600.0) as f32,
-                (self
-                    .weather_tuning
-                    .differential_rotation_shear_deg_h
-                    .to_radians()
-                    * weather_t_s
-                    / 3600.0) as f32,
+                crate::weather::zonal_shear_phase(weather_t_s, &self.weather_tuning) as f32,
                 (self.weather_tuning.cyclone_radius_km / planet.radius_km) as f32,
                 cyclones.count as f32,
             ],
             weather14: [
-                (self.weather_tuning.cyclone_spin_deg_s.to_radians() * weather_t_s) as f32,
+                0.0,
                 self.weather_tuning.cyclone_cover_boost as f32,
                 self.weather_tuning.cyclone_precip_boost as f32,
                 self.weather_tuning.front_strength as f32,
@@ -2635,7 +2632,7 @@ impl Renderer {
                     normal.x as f32,
                     normal.y as f32,
                     normal.z as f32,
-                    if system.center.z >= 0.0 { 1.0 } else { -1.0 },
+                    system.wrap_angle as f32,
                 ]
             }),
             karst: {
