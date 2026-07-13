@@ -126,6 +126,18 @@ struct Globals {
     weather11: [f32; 4],
     // W2 storm art direction: x directional strength, y warm/green cast.
     weather12: [f32; 4],
+    // W-MOTION pass 2: x/y accumulated base/shear rotation, z cyclone
+    // angular radius, w active bounded system count.
+    weather13: [f32; 4],
+    // x accumulated cyclone core angle, y/z cover/precip boosts, w front
+    // strength.
+    weather14: [f32; 4],
+    // xyz asymmetric front leading/trailing/along scales in radians.
+    weather15: [f32; 4],
+    // Planet-frame moving centers + baked intensity, followed by the
+    // planet-frame front normal and hemisphere spin sign.
+    cyclone_centers: [[f32; 4]; crate::weather::MAX_CYCLONES],
+    cyclone_fronts: [[f32; 4]; crate::weather::MAX_CYCLONES],
     // premultiplied procedural seeds. xyz are the karst breach hint (V-10):
     // low 32 bits of (seed+K).wrapping_mul(0x9E37_79B1) for K = 40961
     // (region gate), 31337 (tube n1), 51413 (tube n2); w is the independent
@@ -1545,6 +1557,29 @@ impl Renderer {
         }
         hole_up[3] = if self.underwater { 1.0 } else { 0.0 };
 
+        // Resolve W-MOTION's immutable system bank once for this frame. The
+        // camera sample, orbital deck mean, W2 probes, and GPU uniforms all
+        // reuse these exact centers/intensities.
+        let cyclones = if camera.body == BodyId::Neisor
+            && self.weather_on
+            && let Some(field) = &self.weather_field
+        {
+            crate::weather::cyclone_systems(
+                field,
+                planet.seed,
+                planet.radius_km,
+                crate::weather::season_frac(
+                    weather_t_s,
+                    self.effective_day_len_s(),
+                    &self.solar_tuning,
+                ),
+                weather_t_s,
+                &self.weather_tuning,
+            )
+        } else {
+            crate::weather::CycloneSystems::default()
+        };
+
         // living weather: ONE field sample per frame, at the camera. The
         // shaders add per-pixel detail from the same uniforms, so weather
         // stays a pure function of (seed, position, weather time) — the
@@ -1553,7 +1588,7 @@ impl Renderer {
             && self.weather_on
             && let Some(field) = &self.weather_field
         {
-            let mut w = crate::weather::weather_at(
+            let mut w = crate::weather::weather_at_with_cyclones(
                 field,
                 planet,
                 cam_pos.normalize(),
@@ -1561,6 +1596,7 @@ impl Renderer {
                 self.effective_day_len_s(),
                 &self.solar_tuning,
                 &self.weather_tuning,
+                &cyclones,
             );
             if let Some((c, p)) = self.weather_pin {
                 w.cloud_cover = c as f64;
@@ -1630,7 +1666,7 @@ impl Renderer {
                     if edge_probes_active && (8..12).contains(&index) {
                         continue;
                     }
-                    let w = crate::weather::weather_at(
+                    let w = crate::weather::weather_at_with_cyclones(
                         field,
                         planet,
                         DVec3::new(x, y, z).normalize(),
@@ -1638,6 +1674,7 @@ impl Renderer {
                         self.effective_day_len_s(),
                         &self.solar_tuning,
                         &self.weather_tuning,
+                        &cyclones,
                     );
                     mc += w.cloud_cover;
                     mp += w.precip;
@@ -1781,7 +1818,7 @@ impl Renderer {
                 let bearing = std::f64::consts::TAU * i as f64 / 8.0;
                 let tangent = east * bearing.cos() + north * bearing.sin();
                 let dir = center * arc.cos() + tangent * arc.sin();
-                let mut weather = crate::weather::weather_at(
+                let mut weather = crate::weather::weather_at_with_cyclones(
                     field,
                     planet,
                     dir,
@@ -1789,6 +1826,7 @@ impl Renderer {
                     self.effective_day_len_s(),
                     &self.solar_tuning,
                     &self.weather_tuning,
+                    &cyclones,
                 );
                 if let Some((c, p)) = self.weather_pin {
                     weather.cloud_cover = c as f64;
@@ -1945,6 +1983,54 @@ impl Renderer {
                 1.0 / self.size.0.max(1) as f32,
                 1.0 / self.size.1.max(1) as f32,
             ],
+            weather13: [
+                (self.weather_tuning.differential_rotation_deg_h.to_radians() * weather_t_s
+                    / 3600.0) as f32,
+                (self
+                    .weather_tuning
+                    .differential_rotation_shear_deg_h
+                    .to_radians()
+                    * weather_t_s
+                    / 3600.0) as f32,
+                (self.weather_tuning.cyclone_radius_km / planet.radius_km) as f32,
+                cyclones.count as f32,
+            ],
+            weather14: [
+                (self.weather_tuning.cyclone_spin_deg_s.to_radians() * weather_t_s) as f32,
+                self.weather_tuning.cyclone_cover_boost as f32,
+                self.weather_tuning.cyclone_precip_boost as f32,
+                self.weather_tuning.front_strength as f32,
+            ],
+            weather15: [
+                (self.weather_tuning.front_leading_km / planet.radius_km) as f32,
+                (self.weather_tuning.front_trailing_km / planet.radius_km) as f32,
+                (self.weather_tuning.front_length_km / planet.radius_km) as f32,
+                0.0,
+            ],
+            cyclone_centers: std::array::from_fn(|index| {
+                let system = cyclones.systems[index];
+                [
+                    system.center.x as f32,
+                    system.center.y as f32,
+                    system.center.z as f32,
+                    system.intensity as f32,
+                ]
+            }),
+            cyclone_fronts: std::array::from_fn(|index| {
+                if index >= cyclones.count as usize {
+                    return [0.0; 4];
+                }
+                let system = cyclones.systems[index];
+                let east = DVec3::Z.cross(system.center).normalize();
+                let north = system.center.cross(east);
+                let normal = east * system.front_angle.cos() + north * system.front_angle.sin();
+                [
+                    normal.x as f32,
+                    normal.y as f32,
+                    normal.z as f32,
+                    if system.center.z >= 0.0 { 1.0 } else { -1.0 },
+                ]
+            }),
             karst: {
                 let kseed = |k: i64| {
                     (planet.seed.wrapping_add(k).wrapping_mul(0x9E37_79B1) & 0xFFFF_FFFF) as u32

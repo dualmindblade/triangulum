@@ -77,3 +77,67 @@ teleport 15.000 35.000 0.100
 look 180 0
 sun 15.0 20.0
 shot w2_storm_edge
+
+# W-MOTION pass 2 flagship: fixed orbital camera over seeded cyclone 0.
+# Four explicit seeks prove closed-form rotation within a two-minute watch
+# (and keep one extra minute to make the direction unmistakable).
+mode fly
+weather pin 0.12 0.0
+weather season 0.45
+teleport 22.148333 -168.473674 291.400
+look 0 -90
+sun 22.15 176.53
+weather time 0
+shot cyclone_orbit_t000
+weather time 60
+shot cyclone_orbit_t060
+weather time 120
+shot cyclone_orbit_t120
+weather time 180
+shot cyclone_orbit_t180
+
+# Seeded cyclone 1 reaches a stormy coastline one deterministic track lap
+# later. Its t=86400 front/rainband lies over land here, giving W2's exact
+# shared shell projection readable terrain on which to show rotation.
+teleport -29.124872 -129.012415 0.120
+look 35 -52
+sun -23.0 -144.01
+weather time 86400
+shot cyclone_shadow_t000
+weather time 86460
+shot cyclone_shadow_t060
+weather time 86520
+shot cyclone_shadow_t120
+weather time 86580
+shot cyclone_shadow_t180
+
+# Seeded system 1's attached front ridge crosses this fixed sea-level pose at
+# t=1800. Clear pinned background isolates the sharp leading edge and broad
+# trailing smear while the parent center carries both eastward.
+teleport -29.124872 9.920242 0.080
+look 270 8
+sun -23.0 -5.08
+weather time 600
+shot front_ground_t0600
+weather time 1200
+shot front_ground_t1200
+weather time 1800
+shot front_ground_t1800
+weather time 2400
+shot front_ground_t2400
+
+# W2 storm-edge gloom follows the CPU weather field, not a screen decal. At
+# this fixed site cyclone 1 approaches from the west and arrives overhead at
+# t=3600; live weather leaves the compass-probe gradient intact.
+weather live
+teleport -27.606985 10.856851 0.100
+look 270 0
+sun -23.0 -4.14
+weather time 0
+shot cyclone_gloom_t0000
+weather time 1200
+shot cyclone_gloom_t1200
+weather time 2400
+shot cyclone_gloom_t2400
+weather time 3600
+shot cyclone_gloom_t3600

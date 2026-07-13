@@ -1,0 +1,20 @@
+# W-MOTION pass 2 shader-cost gate. The first batch drains async terrain and
+# warms the pipeline; only the following 30-frame batch is compared. Ground
+# uses fpsbench.play's established jungle pose; orbit intentionally looks
+# through seeded cyclone 0 so its bounded rotation/front loop is active.
+mode fly
+weather pin 0.45 0.0
+weather season 0.45
+teleport -0.906 -67.804 0.094
+look -210 -17
+sun -0.91 -82.80
+weather time 349
+bench 60
+bench 30
+
+teleport 22.148333 -168.473674 291.400
+look 0 -86
+sun 22.15 176.53
+weather time 120
+bench 15
+bench 30

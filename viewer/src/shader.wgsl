@@ -64,6 +64,18 @@ struct Globals {
     // W2 storm art direction: x gloom strength, y warm/green cast;
     // zw = inverse viewport size for a terrain-independent orbital ray
     weather12: vec4<f32>,
+    // W-MOTION pass 2: x/y accumulated base/shear differential rotation,
+    // z cyclone angular radius, w active bounded system count.
+    weather13: vec4<f32>,
+    // x accumulated cyclone core angle, y/z cover/precip boosts, w front
+    // strength.
+    weather14: vec4<f32>,
+    // xyz front leading/trailing/along scales in radians.
+    weather15: vec4<f32>,
+    // Planet-frame center.xyz + baked intensity; front normal.xyz +
+    // hemisphere spin sign.
+    cyclone_centers: array<vec4<f32>, 4>,
+    cyclone_fronts: array<vec4<f32>, 4>,
     // premultiplied cave-noise seeds (low 32 bits of
     // (seed+K).wrapping_mul(0x9E37_79B1)) for the karst breach hint:
     // x = region gate (+40961), y = tube n1 (+31337), z = tube n2 (+51413),
@@ -1352,6 +1364,120 @@ fn cloud_seed_offset(layer: u32) -> vec3<f32> {
     ) * 0.03125;
 }
 
+struct CloudStructure {
+    domain: vec3<f32>,
+    cyclone_signed: f32,
+    cyclone_positive: f32,
+    front: f32,
+    eye: f32,
+};
+
+fn cloud_rotate_axis(v: vec3<f32>, axis: vec3<f32>, angle: f32) -> vec3<f32> {
+    let sn = sin(angle);
+    let cs = cos(angle);
+    // Rodrigues preserves length for unit inputs/axes; renormalizing every
+    // shell/system only paid an inverse sqrt to correct roundoff that noise
+    // cannot resolve.
+    return v * cs + cross(axis, v) * sn
+        + axis * dot(axis, v) * (1.0 - cs);
+}
+
+fn cloud_rotate_z(v: vec3<f32>, angle: f32) -> vec3<f32> {
+    let sn = sin(angle);
+    let cs = cos(angle);
+    return vec3<f32>(v.x * cs - v.y * sn, v.x * sn + v.y * cs, v.z);
+}
+
+// W-MOTION pass 2's complete structured field. The physical sample direction
+// selects storm/front presence while `domain` is inverse-mapped into each
+// nearby vortex's co-rotating frame and then through
+// theta(lat,t)=(w0+w1*cos^2(lat))*t. All centers and accumulated angles came
+// from f64 absolute weather time on the CPU; the hourly particle clock never
+// resets these terms.
+fn cloud_structure(sdir: vec3<f32>) -> CloudStructure {
+    var mapped = sdir;
+    var cyclone_signed = 0.0;
+    var cyclone_positive = 0.0;
+    var front_load = 0.0;
+    var eye_load = 0.0;
+    let radius = max(globals.weather13.z, 1e-6);
+    let radius2 = radius * radius;
+    let count = u32(globals.weather13.w + 0.5);
+    for (var i = 0u; i < 4u; i += 1u) {
+        if (i >= count) {
+            break;
+        }
+        let packed = globals.cyclone_centers[i];
+        let center = packed.xyz;
+        let intensity = packed.w;
+        if (intensity <= 1e-5) {
+            continue;
+        }
+        let chord2 = max(2.0 * (1.0 - dot(sdir, center)), 0.0);
+        if (chord2 < radius2 * 9.0) {
+            let rn2 = chord2 / radius2;
+            let rn = sqrt(rn2);
+            let envelope = exp(-rn2);
+            let eye = 1.0 - smoothstep(0.04, 0.18, rn);
+            let eyewall = 1.0 - smoothstep(0.0, 0.16, abs(rn - 0.28));
+            let profile = intensity
+                * (0.75 * envelope + 0.75 * eyewall - 1.40 * eye);
+            cyclone_signed += profile;
+            cyclone_positive += max(profile, 0.0);
+            eye_load = max(eye_load, intensity * eye);
+
+            let cyclone_frame = globals.cyclone_fronts[i];
+            let falloff = envelope * intensity;
+            mapped = cloud_rotate_axis(
+                mapped,
+                center,
+                -cyclone_frame.w * globals.weather14.x * falloff,
+            );
+        }
+
+        // A system on the far side of the planet owns neither this vortex
+        // neighborhood nor its finite front. Reject it before fetching the
+        // front frame and taking the two oriented distances.
+        let front_reach = globals.weather15.z * 1.8
+            + globals.weather15.y * 3.0 + radius * 0.58;
+        if (chord2 > front_reach * front_reach) {
+            continue;
+        }
+
+        // The planet-frame normal is precomputed once on the CPU. Positive
+        // cross-distance is the razor leading side; negative distance uses
+        // the wider trailing smear.
+        let cyclone_frame = globals.cyclone_fronts[i];
+        let normal = cyclone_frame.xyz;
+        let along_axis = cross(center, normal);
+        let cross_distance = dot(sdir, normal) - radius * 0.58;
+        let along = dot(sdir, along_axis);
+        if (abs(along) < globals.weather15.z * 1.8
+            && abs(cross_distance) < globals.weather15.y * 3.0) {
+            let width = select(
+                globals.weather15.y,
+                globals.weather15.x,
+                cross_distance >= 0.0,
+            );
+            let cross_q = abs(cross_distance) / width;
+            let along_q = abs(along) / globals.weather15.z;
+            let cross_profile = 1.0 - smoothstep(0.0, 1.5, cross_q);
+            let along_profile = 1.0 - smoothstep(0.65, 1.30, along_q);
+            front_load += intensity * cross_profile * along_profile;
+        }
+    }
+    let cos2_lat = max(1.0 - sdir.z * sdir.z, 0.0);
+    let theta = globals.weather13.x + globals.weather13.y * cos2_lat;
+    mapped = cloud_rotate_z(mapped, -theta);
+    return CloudStructure(
+        mapped,
+        clamp(cyclone_signed, -1.0, 2.0),
+        clamp(cyclone_positive, 0.0, 2.0),
+        clamp(front_load, 0.0, 1.5),
+        clamp(eye_load, 0.0, 1.0),
+    );
+}
+
 fn cloud_shell_hit(ray: vec3<f32>, altitude_km: f32) -> vec4<f32> {
     // Below a shell the positive far root is overhead; outside it the near
     // root lies between an orbital eye and the ground. w < 0 means no hit.
@@ -1377,9 +1503,9 @@ fn cloud_color(
     view_dir: vec3<f32>,
     kind: u32,
     fabric: f32,
+    cover: f32,
+    precip: f32,
 ) -> vec3<f32> {
-    let cover = globals.weather8.x;
-    let precip = globals.weather8.y;
     let sun_h = dot(sdir, globals.sun_dir.xyz);
     let local_day = smoothstep(-0.08, 0.15, sun_h);
     var col = vec3<f32>(0.96, 0.97, 1.00);
@@ -1428,11 +1554,12 @@ fn cloud_color(
 fn cloud_warp(sdir: vec3<f32>) -> vec3<f32> {
     let q = (sdir - globals.weather2.xyz * 0.35) * 90.0
         + cloud_seed_offset(11u);
-    return vec3<f32>(
-        vnoise(q) - 0.5,
-        vnoise(q + vec3<f32>(31.4, 7.2, 19.7)) - 0.5,
-        vnoise(q + vec3<f32>(11.9, 47.3, 3.1)) - 0.5,
-    ) * 0.020;
+    let wx = vnoise(q) - 0.5;
+    let wy = vnoise(q + vec3<f32>(31.4, 7.2, 19.7)) - 0.5;
+    // Two independent taps are enough for a 3-D vector field; deriving the
+    // radial lane from both preserves folding while retiring eight hash
+    // corners per shell sample to fund W-MOTION pass 2's structured math.
+    return vec3<f32>(wx, wy, wx * 0.62 - wy * 0.38) * 0.020;
 }
 
 fn cloud_broad_morph(broad_p: vec3<f32>) -> f32 {
@@ -1449,12 +1576,29 @@ fn cloud_broad_morph(broad_p: vec3<f32>) -> f32 {
     );
 }
 
-fn cloud_layer_sample(sdir: vec3<f32>, view_dir: vec3<f32>, kind: u32) -> vec4<f32> {
-    let cover = globals.weather8.x;
-    let precip = globals.weather8.y;
+fn cloud_layer_sample_structured(
+    sdir: vec3<f32>,
+    view_dir: vec3<f32>,
+    kind: u32,
+    structure: CloudStructure,
+) -> vec4<f32> {
+    let cover = clamp(
+        globals.weather8.x
+            + globals.weather14.y * structure.cyclone_signed
+            + globals.weather14.w * structure.front,
+        0.0,
+        1.0,
+    );
+    let precip = clamp(
+        globals.weather8.y
+            + globals.weather14.z * structure.cyclone_positive
+            + globals.weather14.w * 0.75 * structure.front,
+        0.0,
+        1.0,
+    );
     let cold = 1.0 - smoothstep(-8.0, 12.0, globals.weather8.z);
     let warm = smoothstep(-2.0, 22.0, globals.weather8.z);
-    let sdir_w = sdir + cloud_warp(sdir);
+    let sdir_w = structure.domain + cloud_warp(structure.domain);
     if (kind == 2u) {
         let p0 = (sdir_w - globals.weather2.xyz * 0.72) * globals.weather6.z
             + cloud_seed_offset(2u);
@@ -1470,15 +1614,19 @@ fn cloud_layer_sample(sdir: vec3<f32>, view_dir: vec3<f32>, kind: u32) -> vec4<f
             + 0.32 * vnoise(p * 2.07 - shear + vec3<f32>(13.1, 7.7, 29.3));
         let wisps = smoothstep(0.57 - 0.035 * cold, 0.70 - 0.025 * cold, fabric);
         let presence = (0.16 + 0.62 * (1.0 - cover)) * (0.78 + 0.22 * cold);
-        let alpha = clamp(wisps * presence * globals.weather7.z, 0.0, 1.0);
-        return vec4<f32>(cloud_color(sdir, view_dir, kind, fabric), alpha);
+        let alpha = clamp(
+            wisps * presence * globals.weather7.z * (1.0 - 0.35 * structure.eye),
+            0.0,
+            1.0,
+        );
+        return vec4<f32>(cloud_color(sdir, view_dir, kind, fabric, cover, precip), alpha);
     }
 
     // Low and middle shells share a broad mask. Different hit directions and
     // detail scales avoid duplication while storm cells align vertically.
     let broad_p = (sdir_w - globals.weather2.xyz) * (globals.weather6.x * 0.62)
         + cloud_seed_offset(7u);
-    let broad = cloud_broad_morph(broad_p);
+    let broad = clamp(cloud_broad_morph(broad_p) + 0.18 * structure.front, 0.0, 1.0);
     if (kind == 1u) {
         let p = (sdir_w - globals.weather2.xyz) * globals.weather6.y
             + cloud_seed_offset(1u);
@@ -1490,8 +1638,12 @@ fn cloud_layer_sample(sdir: vec3<f32>, view_dir: vec3<f32>, kind: u32) -> vec4<f
         let threshold = 0.66 - 0.25 * cover - 0.05 * precip;
         let puffs = smoothstep(threshold, threshold + 0.12, fabric);
         let presence = smoothstep(0.10, 0.38, cover) * (0.86 + 0.14 * warm);
-        let alpha = clamp(puffs * presence * globals.weather7.y, 0.0, 1.0);
-        return vec4<f32>(cloud_color(sdir, view_dir, kind, fabric), alpha);
+        let alpha = clamp(
+            puffs * presence * globals.weather7.y * (1.0 - 0.92 * structure.eye),
+            0.0,
+            1.0,
+        );
+        return vec4<f32>(cloud_color(sdir, view_dir, kind, fabric, cover, precip), alpha);
     }
 
     let p = (sdir_w - globals.weather2.xyz * 1.16) * globals.weather6.x
@@ -1505,8 +1657,16 @@ fn cloud_layer_sample(sdir: vec3<f32>, view_dir: vec3<f32>, kind: u32) -> vec4<f
         smoothstep(0.12, 0.70, precip),
         0.38 * smoothstep(0.82, 0.98, cover),
     ) * (0.86 + 0.14 * warm);
-    let alpha = clamp(bases * storm_presence * globals.weather7.x, 0.0, 1.0);
-    return vec4<f32>(cloud_color(sdir, view_dir, kind, fabric), alpha);
+    let alpha = clamp(
+        bases * storm_presence * globals.weather7.x * (1.0 - 0.96 * structure.eye),
+        0.0,
+        1.0,
+    );
+    return vec4<f32>(cloud_color(sdir, view_dir, kind, fabric, cover, precip), alpha);
+}
+
+fn cloud_layer_sample(sdir: vec3<f32>, view_dir: vec3<f32>, kind: u32) -> vec4<f32> {
+    return cloud_layer_sample_structured(sdir, view_dir, kind, cloud_structure(sdir));
 }
 
 fn cloud_layer_on_ray(ray: vec3<f32>, altitude_km: f32, kind: u32) -> vec4<f32> {
@@ -1541,8 +1701,8 @@ fn cloud_layer_from_ground(
         return 0.0;
     }
     let sdir = normalize(wp + ray * t_hit);
-    // Calling cloud_layer_sample (rather than duplicating a threshold)
-    // guarantees the shadow fabric includes every W-MOTION term exactly.
+    // Calling the visible layer's exact planet-direction function guarantees
+    // shadows inherit every structured term without a camera/local proxy.
     return cloud_layer_sample(sdir, ray, kind).a;
 }
 
