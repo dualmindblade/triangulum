@@ -1380,6 +1380,10 @@ struct CloudStructure {
     cyclone_positive: f32,
     front: f32,
     eye: f32,
+    // Signed spiral-arm density wave, separate from the additive loads:
+    // cover saturates inside a storm, so arms only read as a post-clamp
+    // multiplier on the shell alpha (clear lanes between dense arms).
+    arm: f32,
 };
 
 fn cloud_rotate_axis(v: vec3<f32>, axis: vec3<f32>, angle: f32) -> vec3<f32> {
@@ -1411,6 +1415,7 @@ fn cloud_structure(sdir: vec3<f32>) -> CloudStructure {
     var cyclone_positive = 0.0;
     var front_load = 0.0;
     var eye_load = 0.0;
+    var arm_load = 0.0;
     let radius = max(globals.weather13.z, 1e-6);
     let radius2 = radius * radius;
     let count = u32(globals.weather13.w + 0.5);
@@ -1431,12 +1436,17 @@ fn cloud_structure(sdir: vec3<f32>) -> CloudStructure {
             let envelope = exp(-rn2);
             let eye = 1.0 - smoothstep(0.04, 0.18, rn);
             let eyewall = 1.0 - smoothstep(0.0, 0.16, abs(rn - 0.28));
-            var profile = intensity
+            let profile = intensity
                 * (0.75 * envelope + 0.75 * eyewall - 1.40 * eye);
+            cyclone_signed += profile;
+            cyclone_positive += max(profile, 0.0);
+            eye_load = max(eye_load, intensity * eye);
             // Spiral density wave (matches the CPU term in
             // structured_loads): the arm PATTERN rotates with storm age;
             // the fabric stays put, so cells seed and disperse as an arm
-            // sweeps over them. Rigid in angle-space - zero shear.
+            // sweeps over them. Rigid in angle-space - zero shear. Kept out
+            // of `profile`: additive cover saturates inside a storm; the
+            // lanes survive as a post-clamp alpha multiplier instead.
             if (globals.weather16.x > 0.5) {
                 let east = normalize(cross(vec3<f32>(0.0, 0.0, 1.0), center));
                 let north = cross(center, east);
@@ -1448,12 +1458,12 @@ fn cloud_structure(sdir: vec3<f32>) -> CloudStructure {
                     - globals.cyclone_arms[i].x);
                 // signed sharpening: narrower, more legible arm crests
                 let spiral = wave * abs(wave);
-                let arm_env = envelope * smoothstep(0.30, 0.55, rn);
-                profile += intensity * globals.weather15.w * spiral * arm_env;
+                // Wide radial window (not the storm envelope): rain bands
+                // live outside the core; exp(-rn^2) throttled them there.
+                let arm_env = smoothstep(0.30, 0.60, rn)
+                    * (1.0 - smoothstep(1.7, 2.7, rn));
+                arm_load += intensity * spiral * arm_env;
             }
-            cyclone_signed += profile;
-            cyclone_positive += max(profile, 0.0);
-            eye_load = max(eye_load, intensity * eye);
 
             let cyclone_frame = globals.cyclone_fronts[i];
             let falloff = envelope * intensity;
@@ -1503,6 +1513,7 @@ fn cloud_structure(sdir: vec3<f32>) -> CloudStructure {
         clamp(cyclone_positive, 0.0, 2.0),
         clamp(front_load, 0.0, 1.5),
         clamp(eye_load, 0.0, 1.0),
+        clamp(arm_load, -1.0, 1.0),
     );
 }
 
@@ -1667,6 +1678,13 @@ fn cloud_layer_sample_structured(
     // pin t=0). Deck evolution now comes from pass 2's structured motion
     // only; a pass-1 redo must gate on LOOK at t in {0, 1800, 3500}.
     let sdir_w = structure.domain;
+    // Spiral arms act AFTER cover saturation: a clamp-1.0 cover cannot show
+    // an additive term, so clear lanes carve the shell alpha directly and
+    // arm crests lower the fabric threshold (denser cloud ON the arm).
+    // Cirrus carves at half strength - an uncarved haze layer was filling
+    // the lanes back in.
+    let arm_carve = clamp(1.0 + globals.weather15.w * structure.arm, 0.0, 1.0);
+    let arm_fill = 0.10 * max(structure.arm, 0.0);
     if (kind == 2u) {
         let p0 = (sdir_w - globals.weather2.xyz * 0.72) * globals.weather6.z
             + cloud_seed_offset(2u);
@@ -1687,7 +1705,8 @@ fn cloud_layer_sample_structured(
         let live_presence = legacy_presence * smoothstep(0.035, 0.22, cover);
         let presence = select(live_presence, legacy_presence, globals.weather7.w > 0.5);
         let alpha = clamp(
-            wisps * presence * globals.weather7.z * (1.0 - 0.35 * structure.eye),
+            wisps * presence * globals.weather7.z * (1.0 - 0.35 * structure.eye)
+                * clamp(1.0 + 0.5 * globals.weather15.w * structure.arm, 0.0, 1.0),
             0.0,
             1.0,
         );
@@ -1705,11 +1724,12 @@ fn cloud_layer_sample_structured(
         let fabric = 0.52 * broad
             + 0.32 * vnoise(p)
             + 0.16 * vnoise(p * 2.03 + vec3<f32>(31.7, 17.3, 51.1));
-        let threshold = 0.66 - 0.25 * cover - 0.05 * precip;
+        let threshold = 0.66 - 0.25 * cover - 0.05 * precip - arm_fill;
         let puffs = smoothstep(threshold, threshold + 0.12, fabric);
         let presence = smoothstep(0.10, 0.38, cover) * (0.86 + 0.14 * warm);
         let alpha = clamp(
-            puffs * presence * globals.weather7.y * (1.0 - 0.92 * structure.eye),
+            puffs * presence * globals.weather7.y * (1.0 - 0.92 * structure.eye)
+                * arm_carve,
             0.0,
             1.0,
         );
@@ -1720,14 +1740,15 @@ fn cloud_layer_sample_structured(
         + cloud_seed_offset(0u);
     let fabric = 0.68 * broad
         + 0.32 * vnoise(p * 1.73 + vec3<f32>(9.3, 41.7, 5.9));
-    let threshold = 0.61 - 0.09 * cover - 0.13 * precip;
+    let threshold = 0.61 - 0.09 * cover - 0.13 * precip - arm_fill;
     let bases = smoothstep(threshold, threshold + 0.11, fabric);
     let storm_presence = max(
         smoothstep(0.12, 0.70, precip),
         0.38 * smoothstep(0.82, 0.98, cover),
     ) * (0.86 + 0.14 * warm);
     let alpha = clamp(
-        bases * storm_presence * globals.weather7.x * (1.0 - 0.96 * structure.eye),
+        bases * storm_presence * globals.weather7.x * (1.0 - 0.96 * structure.eye)
+            * arm_carve,
         0.0,
         1.0,
     );

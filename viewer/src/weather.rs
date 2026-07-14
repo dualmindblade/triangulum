@@ -1408,6 +1408,10 @@ struct StructuredLoads {
     cyclone_signed: f64,
     cyclone_positive: f64,
     front: f64,
+    /// Signed spiral-arm density wave, kept SEPARATE from the additive
+    /// cover loads: inside a storm cover saturates at 1.0, so arms only
+    /// read if they multiply the final cover/fabric after the clamp.
+    arm: f64,
 }
 
 /// Radial storm/eye profile plus an asymmetric finite front ridge. Chord and
@@ -1443,12 +1447,14 @@ fn structured_loads(
             let envelope = (-rn2).exp();
             let eye = 1.0 - smooth01((rn - 0.04) / 0.14);
             let eyewall = 1.0 - smooth01((rn - 0.28).abs() / 0.16);
-            let mut profile = system.intensity * (0.75 * envelope + 0.75 * eyewall - 1.40 * eye);
-            // Andrew's spiral density wave: cover is denser along rotating
-            // logarithmic arms (thinner between - signed cos). Only the
-            // PATTERN moves; the fabric does not, so cloud cells seed and
-            // disperse as an arm sweeps over them. Arms live outside the
-            // eyewall and fade with the storm envelope.
+            let profile = system.intensity * (0.75 * envelope + 0.75 * eyewall - 1.40 * eye);
+            out.cyclone_signed += profile;
+            out.cyclone_positive += profile.max(0.0);
+            // Andrew's spiral density wave: rotating logarithmic arms with
+            // clear lanes between. Only the PATTERN moves; the fabric does
+            // not, so cells seed and disperse as an arm sweeps over them.
+            // Kept out of `profile`: additive cover terms saturate inside a
+            // storm; the lanes must survive as a post-clamp multiplier.
             if tuning.cyclone_arm_count > 0 {
                 let offset = dir - system.center * dir.dot(system.center);
                 let azimuth = offset.dot(north).atan2(offset.dot(east));
@@ -1459,11 +1465,14 @@ fn structured_loads(
                     .cos();
                 // signed sharpening: narrower, more legible arm crests
                 let spiral = wave * wave.abs();
-                let arm_env = envelope * smooth01((rn - 0.30) / 0.25);
-                profile += system.intensity * tuning.cyclone_arm_strength * spiral * arm_env;
+                // The arms get their own wide radial window instead of the
+                // storm's exp(-rn^2) envelope - rain bands live OUTSIDE the
+                // core, and the tight envelope was throttling them to
+                // +/-0.37 right where they should dominate.
+                let arm_env =
+                    smooth01((rn - 0.30) / 0.30) * (1.0 - smooth01((rn - 1.7) / 1.0));
+                out.arm += system.intensity * spiral * arm_env;
             }
-            out.cyclone_signed += profile;
-            out.cyclone_positive += profile.max(0.0);
         }
 
         let normal = east * system.front_angle.cos() + north * system.front_angle.sin();
@@ -1480,6 +1489,7 @@ fn structured_loads(
     out.cyclone_signed = out.cyclone_signed.clamp(-1.0, 2.0);
     out.cyclone_positive = out.cyclone_positive.clamp(0.0, 2.0);
     out.front = out.front.clamp(0.0, 1.5);
+    out.arm = out.arm.clamp(-1.0, 1.0);
     out
 }
 
@@ -1654,7 +1664,13 @@ pub fn weather_at_with_cyclones(
         + 0.18 * meso
         + tuning.cyclone_cover_boost * structure.cyclone_signed
         + tuning.front_strength * structure.front;
-    let cover = smooth01((raw - tuning.cover_lo) / (tuning.cover_hi - tuning.cover_lo));
+    let cover0 = smooth01((raw - tuning.cover_lo) / (tuning.cover_hi - tuning.cover_lo));
+    // Arms carve/boost AFTER the cover curve. Inside a storm the raw sum
+    // saturates far past cover_hi, so an additive arm term is invisible
+    // exactly where the storm is (the 2026-07-14 "can't see the arms"
+    // report); a post-clamp multiplier keeps clear lanes legible at full
+    // cover, and rain bands follow since precip derives from cover.
+    let cover = (cover0 * (1.0 + tuning.cyclone_arm_strength * structure.arm)).clamp(0.0, 1.0);
 
     // precipitation: falls out of heavy cover, scaled by how wet this
     // climate is right now (a desert overcast passes dry)

@@ -3,8 +3,8 @@
 
   "_storms": "Rotating spiral-arm density wave + finite storm lives.",
   "cyclone_count": 2,
-  "cyclone_arm_count": 2,
-  "cyclone_arm_strength": 0.55,
+  "cyclone_arm_count": 3,
+  "cyclone_arm_strength": 0.88,
   "cyclone_arm_twist": 3.0,
   "cyclone_arm_spin_deg_s": 1.2,
   "cyclone_life_s": 6300.0,

@@ -1,0 +1,7 @@
+mode fly
+weather time 3500
+teleport -19.520 138.297 3346.976
+look 176 -86
+shot arms_a
+weather time 3650
+shot arms_b

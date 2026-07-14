@@ -337,14 +337,30 @@ with the life envelope. Same signed-sharpened cosine term on the
 CPU (structured_loads) and GPU (cloud_structure), arms gated
 outside the eyewall. Knobs: cyclone_arm_count (2; 0 disables),
 cyclone_arm_strength (0.55), cyclone_arm_twist (3.0),
-cyclone_arm_spin_deg_s (1.2). VISIBILITY LAW: the arms visibly
-revolve at spin/arm_count - the first default (0.35) meant one
-revolution per ~34 min of weather time, hour-hand territory, and
-Austin+Andrew correctly reported "no rotation" at 1x. At 1.2 a
-revolution takes 10 weather-minutes: majestic at 1x, a clear sweep
-at 10-60x. The knob panel now ships as
-viewer/assets/weather_tuning.json (tracked; overrides any subset,
-ignored by the multiplayer identity handshake). Perf note: the moon_orbit
+cyclone_arm_spin_deg_s (1.2). VISIBILITY LAWS (both learned from
+Austin+Andrew correctly reporting "we can't see them"):
+1. Arms visibly revolve at spin/arm_count - the first default
+   (0.35) meant one revolution per ~34 min of weather time,
+   hour-hand territory. At 1.2 a revolution takes 10
+   weather-minutes: majestic at 1x, a clear sweep at 10-60x.
+2. SATURATION: cover clamps to 1.0 inside a storm and the shell
+   presence smoothsteps saturate by cover 0.38, so ANY additive
+   pre-clamp term is invisible exactly where the storm is - raising
+   arm_strength 0.55 -> 0.88 changed literally nothing. Arms are
+   now a separate signed load applied POST-clamp: a multiplicative
+   carve on shell alpha (cirrus at half strength - an uncarved haze
+   layer refills the lanes) plus a fabric-threshold fill on crests;
+   the CPU multiplies cover after its smoothstep so map/raster
+   agree and rain bands follow. Arms also get their own wide radial
+   window (0.3..2.7 rn) instead of the storm's exp(-rn^2) envelope,
+   which throttled them right where rain bands live. The same
+   saturation law explains the "bar" (the storm-attached front
+   reading as a uniform slab): its additive boost pins cover at 1.0
+   along the ridge - front texture/geometry redesign is an open
+   Andrew decision.
+The knob panel ships as viewer/assets/weather_tuning.json (tracked;
+overrides any subset, ignored by the multiplayer identity
+handshake). Perf note: the moon_orbit
 perf-reel p95 rose 4.4 -> 6.1 ms because the harness bakes the
 synoptic raster synchronously on its settle path and the planetary
 wave added two octaves per texel; the live game bakes async on
