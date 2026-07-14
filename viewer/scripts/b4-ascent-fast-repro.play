@@ -1,0 +1,23 @@
+# B-4 fast-ascent scheduling probe at Austin's documented high-latitude pose.
+# Keep this in a separate process from b4-ascent-fast.play so the two nearby
+# polar sweeps cannot share already-built coarse ancestors.
+mode fly
+weather time 349
+teleport 80.909 -74.619 0.05
+bench 20
+teleport 80.909 -74.619 0.2
+bench 1
+teleport 80.909 -74.619 0.8
+bench 1
+teleport 80.909 -74.619 3.0
+bench 1
+teleport 80.909 -74.619 10.0
+bench 1
+teleport 80.909 -74.619 40.0
+bench 1
+teleport 80.909 -74.619 160.0
+bench 1
+teleport 80.909 -74.619 640.0
+bench 1
+teleport 80.909 -74.619 1229.0
+bench 1

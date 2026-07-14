@@ -1,0 +1,23 @@
+# B-4 cold-process ascent sweep through Austin's documented 1,229 km pose.
+# The broad 4x-ish steps exercise repeated coarsening beyond the old ascent
+# script's 10 km cut-line while keeping a bench block at every stage.
+mode fly
+weather time 349
+teleport 80.909 -74.619 0.05
+bench 20
+teleport 80.909 -74.619 0.2
+bench 20
+teleport 80.909 -74.619 0.8
+bench 20
+teleport 80.909 -74.619 3.0
+bench 20
+teleport 80.909 -74.619 10.0
+bench 20
+teleport 80.909 -74.619 40.0
+bench 20
+teleport 80.909 -74.619 160.0
+bench 20
+teleport 80.909 -74.619 640.0
+bench 20
+teleport 80.909 -74.619 1229.0
+bench 20

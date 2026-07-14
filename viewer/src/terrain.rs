@@ -14,6 +14,7 @@ use crate::planet::{
     vegetation_surface, ClimateSurface, MainBlock, Planet, BIOME_RANGE_FAMILIES,
     BIOME_RANGE_UNRESOLVED_MEAN, COLUMNS_PER_FACE, ECOTONE_BASE_PATCH_COLUMNS,
     ECOTONE_FIELD_OCTAVES, ECOTONE_LACUNARITY, ECOTONE_PERSISTENCE,
+    VEGETATION_UNCONDITIONAL_SNOW_C,
 };
 use crate::weather::StructuralSeason;
 use glam::DVec3;
@@ -1598,57 +1599,98 @@ pub fn build_tile_at_season(
         // LOD swap instead of re-rolling - the parent/child impostor-set
         // mismatch was the flashiest half of the motion flicker
         let snap = |x: u64| x.div_ceil(s) * s;
-        for ci in (snap(ci0)..=ci1).step_by(s as usize) {
-            for cj in (snap(cj0)..=cj1).step_by(s as usize) {
-                let lot = crate::voxel::tree_hash01(face as u8, ci, cj, seed);
-                if lot >= crate::voxel::MAX_TREE_DENSITY * comp {
-                    continue; // cheapest gate: above every biome's density
-                }
-                let u = -1.0 + 2.0 * (ci as f64 + 0.5) / nnf;
-                let v = -1.0 + 2.0 * (cj as f64 + 0.5) / nnf;
-                // A same-class interior with zero forest signal cannot grow a
-                // billboard when its established profile is barren or shrub.
-                // Snow can only suppress that result. Prove this before the
-                // temperature read and procedural biome field; boundaries and
-                // all tree-bearing interiors still take the exact path below.
-                if planet.vegetation_interior(face, u, v).is_some_and(
-                    |(koppen, forest)| {
-                        forest <= 1e-4
-                            && !matches!(
-                                crate::voxel::tree_kind_density(koppen),
-                                Some((kind, _)) if kind != crate::voxel::TreeKind::Shrub
-                            )
-                    },
-                ) {
-                    continue;
-                }
-                // Candidate enumeration uses the same warped climate and
-                // locally-dithered main block as voxel trees. The authoritative
-                // ColCtx pass below still owns water/beach/cave eligibility.
-                let (temp, precip) = planet.temp_precip(face, u, v);
-                let vegetation = vegetation_surface(
-                    planet,
-                    face,
-                    u,
-                    v,
-                    temp as f64,
-                    precip as f64,
-                );
-                let Some((kind, density)) = crate::voxel::tree_biome_profile(
-                    vegetation.koppen,
-                    vegetation.main_block,
-                    vegetation.forest,
-                    vegetation.temp_c,
-                    vegetation.precip_mm_yr,
+        let ci_start = snap(ci0);
+        let cj_start = snap(cj0);
+        let barren_interior = |koppen, forest| {
+            forest <= 1e-4
+                && !matches!(
+                    crate::voxel::tree_kind_density(koppen),
+                    Some((kind, _)) if kind != crate::voxel::TreeKind::Shrub
                 )
-                else {
-                    continue;
-                };
-                // shrubs are ground texture, not a silhouette at range
-                if kind == crate::voxel::TreeKind::Shrub || lot >= density * comp {
-                    continue;
+        };
+        // At the polar/detail-load repros every candidate in many tiles hits
+        // the same exact barren-interior or unconditional-snow rejection
+        // below. A level 11-14 tile still walked roughly 370k columns to
+        // rediscover that fact. Prove it once over the handful of baked raster
+        // cells touched by the actual candidate centers, then skip only when
+        // every old iteration was guaranteed to reject. Boundary and
+        // tree-bearing tiles retain the byte-for-byte original enumeration
+        // path.
+        let region_rejects_all = if ci_start <= ci1 && cj_start <= cj1 {
+            let ci_end = ci1 - (ci1 - ci_start) % s;
+            let cj_end = cj1 - (cj1 - cj_start) % s;
+            let col_uv = |column: u64| -1.0 + 2.0 * (column as f64 + 0.5) / nnf;
+            let (ua, ub) = (col_uv(ci_start), col_uv(ci_end));
+            let (va, vb) = (col_uv(cj_start), col_uv(cj_end));
+            planet.vegetation_region_all_interior(
+                face,
+                ua,
+                ub,
+                va,
+                vb,
+                barren_interior,
+            ) || planet.vegetation_region_always_snow(face, ua, ub, va, vb)
+        } else {
+            true
+        };
+        if !region_rejects_all {
+            for ci in (ci_start..=ci1).step_by(s as usize) {
+                for cj in (cj_start..=cj1).step_by(s as usize) {
+                    let lot = crate::voxel::tree_hash01(face as u8, ci, cj, seed);
+                    if lot >= crate::voxel::MAX_TREE_DENSITY * comp {
+                        continue; // cheapest gate: above every biome's density
+                    }
+                    let u = -1.0 + 2.0 * (ci as f64 + 0.5) / nnf;
+                    let v = -1.0 + 2.0 * (cj as f64 + 0.5) / nnf;
+                    // A same-class interior with zero forest signal cannot grow a
+                    // billboard when its established profile is barren or shrub.
+                    // Snow can only suppress that result. Prove this before the
+                    // temperature read and procedural biome field; boundaries and
+                    // all tree-bearing interiors still take the exact path below.
+                    let interior = planet.vegetation_interior(face, u, v);
+                    if interior
+                        .is_some_and(|(koppen, forest)| barren_interior(koppen, forest))
+                    {
+                        continue;
+                    }
+                    // Candidate enumeration uses the same warped climate and
+                    // locally-dithered main block as voxel trees. The authoritative
+                    // ColCtx pass below still owns water/beach/cave eligibility.
+                    let (temp, precip) = planet.temp_precip(face, u, v);
+                    // `vegetation_interior` proves the climate lookup will not
+                    // warp. Below the unconditional snowline the exact surface
+                    // path therefore returns Snow before consulting its dither,
+                    // and `tree_biome_profile` must reject. This is the same
+                    // predicate hoisted ahead of the expensive surface build.
+                    if interior.is_some()
+                        && (temp as f64) < VEGETATION_UNCONDITIONAL_SNOW_C
+                    {
+                        continue;
+                    }
+                    let vegetation = vegetation_surface(
+                        planet,
+                        face,
+                        u,
+                        v,
+                        temp as f64,
+                        precip as f64,
+                    );
+                    let Some((kind, density)) = crate::voxel::tree_biome_profile(
+                        vegetation.koppen,
+                        vegetation.main_block,
+                        vegetation.forest,
+                        vegetation.temp_c,
+                        vegetation.precip_mm_yr,
+                    )
+                    else {
+                        continue;
+                    };
+                    // shrubs are ground texture, not a silhouette at range
+                    if kind == crate::voxel::TreeKind::Shrub || lot >= density * comp {
+                        continue;
+                    }
+                    cands.push((ci, cj, kind, lot, density));
                 }
-                cands.push((ci, cj, kind, lot, density));
             }
         }
         let keep_every = cands.len().div_ceil(impostor_cap).max(1);

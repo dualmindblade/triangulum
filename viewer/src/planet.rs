@@ -176,6 +176,10 @@ const ECOTONE_FIELD_SEED_OFFSET: i64 = 0x0EC0_70AE;
 const SNOW_FIELD_SEED_OFFSET: i64 = 0x0000_5A0E;
 const SNOWLINE_CENTER_C: f64 = -9.0;
 const SNOWLINE_HALF_RANGE_C: f64 = 1.5;
+/// Below this annual temperature `apply_snow_override` unconditionally owns
+/// the vegetation material, before its transition-band comparator is needed.
+pub(crate) const VEGETATION_UNCONDITIONAL_SNOW_C: f64 =
+    SNOWLINE_CENTER_C - SNOWLINE_HALF_RANGE_C;
 
 /// The categories Koppen actually selects in today's surface material code.
 /// Rock and stone are local-slope overrides, not biome main blocks.
@@ -1030,6 +1034,107 @@ impl Planet {
         let (face, u, v) = canonical_face_uv(face, u, v);
         let source = self.raster_position(face, u, v);
         (!source.climate_edge).then(|| (source.here, koppen_forest(source.here)))
+    }
+
+    /// Prove a whole same-face rectangle has only categorical interiors whose
+    /// constant vegetation signatures satisfy `predicate`. The nearest-raster
+    /// bounds are conservative: every texel reachable by any point in the
+    /// rectangle is checked, and any climate-edge texel fails the proof.
+    ///
+    /// This is the region form of `vegetation_interior`; callers may hoist a
+    /// monotone rejection out of a dense column loop only when this returns
+    /// true. Inputs are expected to be canonical candidate centers strictly
+    /// inside one cube face, so no face-edge remapping is needed here.
+    #[inline]
+    pub(crate) fn vegetation_region_all_interior(
+        &self,
+        face: usize,
+        u0: f64,
+        u1: f64,
+        v0: f64,
+        v1: f64,
+        mut predicate: impl FnMut(u8, f32) -> bool,
+    ) -> bool {
+        debug_assert!(face < self.faces.len());
+        debug_assert!((-1.0..=1.0).contains(&u0) && (-1.0..=1.0).contains(&u1));
+        debug_assert!((-1.0..=1.0).contains(&v0) && (-1.0..=1.0).contains(&v1));
+        let raster = &self.faces[face];
+        let d = (raster.res - 1) as f64;
+        let nearest = |value: f64| {
+            ((value * 0.5 + 0.5) * d).clamp(0.0, d).round() as usize
+        };
+        let (x0, x1) = (nearest(u0.min(u1)), nearest(u0.max(u1)));
+        let (y0, y1) = (nearest(v0.min(v1)), nearest(v0.max(v1)));
+        for y in y0..=y1 {
+            for x in x0..=x1 {
+                let index = y * raster.res + x;
+                if (raster.climate_edge[index >> 6] >> (index & 63)) & 1 != 0 {
+                    return false;
+                }
+                let koppen = raster.koppen[index];
+                if !predicate(koppen, koppen_forest(koppen)) {
+                    return false;
+                }
+            }
+        }
+        true
+    }
+
+    /// Prove that every vegetation lookup in a same-face rectangle is colder
+    /// than the unconditional snowline. The checked climate rectangle expands
+    /// the input by the domain warp's strict raster-texel displacement bound,
+    /// covering both the source and every possible warped lookup. Near a cube
+    /// seam the proof declines instead of reasoning across faces. A small
+    /// temperature margin absorbs f32 bilinear rounding, so `true` guarantees
+    /// `apply_snow_override` selects snow and no tree candidate can survive.
+    #[inline]
+    pub(crate) fn vegetation_region_always_snow(
+        &self,
+        face: usize,
+        u0: f64,
+        u1: f64,
+        v0: f64,
+        v1: f64,
+    ) -> bool {
+        debug_assert!(face < self.faces.len());
+        debug_assert!((-1.0..=1.0).contains(&u0) && (-1.0..=1.0).contains(&u1));
+        debug_assert!((-1.0..=1.0).contains(&v0) && (-1.0..=1.0).contains(&v1));
+        let raster = &self.faces[face];
+        let d = (raster.res - 1) as f64;
+        let coordinate = |value: f64| ((value * 0.5 + 0.5) * d).clamp(0.0, d);
+        let (source_xa, source_xb) = (coordinate(u0.min(u1)), coordinate(u0.max(u1)));
+        let (source_ya, source_yb) = (coordinate(v0.min(v1)), coordinate(v0.max(v1)));
+        // `climate_position_with_sea` may switch cube faces inside this
+        // two-texel source margin. Keep this proof deliberately same-face.
+        let face_margin = 2.0;
+        if source_xa <= face_margin
+            || source_xb >= d - face_margin
+            || source_ya <= face_margin
+            || source_yb >= d - face_margin
+        {
+            return false;
+        }
+        let expand = BIOME_WARP_MAX_DISPLACEMENT_TEXELS + 1e-6;
+        let (xa, xb) = (source_xa - expand, source_xb + expand);
+        let (ya, yb) = (source_ya - expand, source_yb + expand);
+        let mut xs = vec![xa, xb];
+        xs.extend((xa.ceil() as usize..=xb.floor() as usize).map(|x| x as f64));
+        xs.sort_by(f64::total_cmp);
+        xs.dedup();
+        let mut ys = vec![ya, yb];
+        ys.extend((ya.ceil() as usize..=yb.floor() as usize).map(|y| y as f64));
+        ys.sort_by(f64::total_cmp);
+        ys.dedup();
+        let proof_limit = VEGETATION_UNCONDITIONAL_SNOW_C as f32 - 0.05;
+        for &y in &ys {
+            for &x in &xs {
+                let temp = Self::climate_bilinear_xy(raster, x, y)[0];
+                if !temp.is_finite() || temp >= proof_limit {
+                    return false;
+                }
+            }
+        }
+        true
     }
 
     /// The ONE position transform for every biome-class and biome-tint read.
@@ -1943,21 +2048,32 @@ fn apply_snow_override(
         return true;
     } else if basis.surface_temp_c < snow_high
         && blocks.iter().any(|&b| b != MainBlock::Snow)
+        && snow_transition_forces_snow(planet, basis)
     {
-        let snow_comparator = ecotone_comparator(
-            basis.world_face,
-            basis.world_u,
-            basis.world_v,
-            planet.seed.wrapping_add(SNOW_FIELD_SEED_OFFSET),
-        );
-        let snow_threshold = SNOWLINE_CENTER_C
-            + (snow_comparator - 0.5) * (SNOWLINE_HALF_RANGE_C * 2.0);
-        if basis.surface_temp_c < snow_threshold {
-            blocks.fill(MainBlock::Snow);
-            return true;
-        }
+        blocks.fill(MainBlock::Snow);
+        return true;
     }
     false
+}
+
+#[inline]
+fn snow_transition_forces_snow(planet: &Planet, basis: ClimateSurfaceBasis) -> bool {
+    let snow_comparator = ecotone_comparator(
+        basis.world_face,
+        basis.world_u,
+        basis.world_v,
+        planet.seed.wrapping_add(SNOW_FIELD_SEED_OFFSET),
+    );
+    let snow_threshold = SNOWLINE_CENTER_C
+        + (snow_comparator - 0.5) * (SNOWLINE_HALF_RANGE_C * 2.0);
+    basis.surface_temp_c < snow_threshold
+}
+
+#[inline]
+fn vegetation_forces_snow(planet: &Planet, basis: ClimateSurfaceBasis) -> bool {
+    basis.surface_temp_c < VEGETATION_UNCONDITIONAL_SNOW_C
+        || (basis.surface_temp_c < SNOWLINE_CENTER_C + SNOWLINE_HALF_RANGE_C
+            && snow_transition_forces_snow(planet, basis))
 }
 
 fn finish_climate_surface(
@@ -2054,10 +2170,17 @@ pub fn vegetation_surface(
             koppen_anchor: [0.0; 3],
             forest: planet.koppen_forest_signature(source),
         };
-        let mut blocks = [koppen_main_block(source.here)];
-        apply_snow_override(planet, basis, &mut blocks);
+        if vegetation_forces_snow(planet, basis) {
+            return VegetationSurface {
+                main_block: MainBlock::Snow,
+                forest: basis.forest,
+                koppen: source.here,
+                temp_c: unwarped_temp_c as f32,
+                precip_mm_yr: unwarped_precip_mm as f32,
+            };
+        }
         return VegetationSurface {
-            main_block: blocks[0],
+            main_block: koppen_main_block(source.here),
             forest: basis.forest,
             koppen: source.here,
             temp_c: unwarped_temp_c as f32,
@@ -2075,11 +2198,18 @@ pub fn vegetation_surface(
         unwarped_precip_mm,
         sea,
     );
-    let mut blocks = [climate_cross_block(planet, basis)];
-    apply_snow_override(planet, basis, &mut blocks);
+    if vegetation_forces_snow(planet, basis) {
+        return VegetationSurface {
+            main_block: MainBlock::Snow,
+            forest: basis.forest,
+            koppen: basis.p.here,
+            temp_c: basis.temp_c as f32,
+            precip_mm_yr: basis.precip_mm as f32,
+        };
+    }
     let biome = biome_climate_from_basis(basis, sea);
     VegetationSurface {
-        main_block: blocks[0],
+        main_block: climate_cross_block(planet, basis),
         forest: basis.forest,
         koppen: biome.koppen,
         temp_c: biome.temp_c,
@@ -2581,6 +2711,86 @@ mod tests {
                 assert_eq!(combined_biome.sea, biome.sea);
             }
         }
+    }
+
+    #[test]
+    fn vegetation_snow_hoist_matches_full_surface_across_thresholds() {
+        for temp in [-12.0, -10.4, -9.0, -7.6, -7.0] {
+            let mut planet = climate_test_planet_res(13, 64);
+            for face in &mut planet.faces {
+                face.climate.fill([temp, 500.0]);
+            }
+            for (face, u, v) in [
+                (0, -0.60, 0.20),
+                (0, -0.01, -0.17),
+                (0, 0.01, 0.17),
+                (3, 0.60, -0.20),
+            ] {
+                let (sample_temp, precip) = planet.temp_precip(face, u, v);
+                let biome = planet.biome_climate(face, u, v);
+                let full = climate_surface(
+                    &planet,
+                    face,
+                    u,
+                    v,
+                    sample_temp as f64,
+                    precip as f64,
+                    biome.sea,
+                );
+                let vegetation = vegetation_surface(
+                    &planet,
+                    face,
+                    u,
+                    v,
+                    sample_temp as f64,
+                    precip as f64,
+                );
+                assert_eq!(vegetation.main_block, full.main_block);
+                assert_eq!(vegetation.forest.to_bits(), full.forest.to_bits());
+                assert_eq!(vegetation.koppen, biome.koppen);
+                assert_eq!(vegetation.temp_c.to_bits(), biome.temp_c.to_bits());
+                assert_eq!(
+                    vegetation.precip_mm_yr.to_bits(),
+                    biome.precip_mm_yr.to_bits()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn vegetation_region_proof_is_conservative_at_climate_edges() {
+        let planet = climate_test_planet_res(13, 128);
+        let barren = |koppen, forest| {
+            forest <= 1e-4
+                && !matches!(
+                    crate::voxel::tree_kind_density(koppen),
+                    Some((kind, _)) if kind != crate::voxel::TreeKind::Shrub
+                )
+        };
+        assert!(planet.vegetation_region_all_interior(
+            0, -0.6, -0.4, -0.2, 0.2, barren
+        ));
+        assert!(planet.vegetation_region_all_interior(
+            0, -0.4, -0.6, 0.2, -0.2, barren
+        ));
+        assert!(!planet.vegetation_region_all_interior(
+            0, 0.4, 0.6, -0.2, 0.2, barren
+        ));
+        assert!(!planet.vegetation_region_all_interior(
+            0, -0.2, 0.2, -0.2, 0.2, barren
+        ));
+
+        let mut cold = climate_test_planet_res(13, 128);
+        for face in &mut cold.faces {
+            face.climate.fill([-20.0, 500.0]);
+        }
+        assert!(cold.vegetation_region_always_snow(0, 0.4, 0.6, -0.2, 0.2));
+        assert!(cold.vegetation_region_always_snow(0, -0.2, 0.2, -0.2, 0.2));
+        assert!(!cold.vegetation_region_always_snow(0, -0.999, -0.98, -0.2, 0.2));
+        for face in &mut cold.faces {
+            face.climate.fill([8.0, 500.0]);
+        }
+        assert!(!cold.vegetation_region_always_snow(0, 0.4, 0.6, -0.2, 0.2));
     }
 
     #[test]
