@@ -394,6 +394,36 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test(start_paused = true)]
+    async fn edit_limiter_enforces_burst_and_refill() {
+        let mut limiter = EditLimiter::new();
+        for _ in 0..EDIT_BURST as usize {
+            assert!(limiter.allow(), "burst edits must pass");
+        }
+        assert!(!limiter.allow(), "over-burst edit must be dropped");
+        tokio::time::advance(Duration::from_secs(1)).await;
+        let mut allowed = 0;
+        while limiter.allow() {
+            allowed += 1;
+            assert!(allowed <= 60, "refill exceeded the configured rate");
+        }
+        assert_eq!(allowed, EDIT_RATE_PER_S as usize, "one second refills rate*1s");
+    }
+
+    #[test]
+    fn token_comparison_matches_equality() {
+        assert!(tokens_match("abc123", "abc123"));
+        assert!(!tokens_match("abc123", "abc124"));
+        assert!(!tokens_match("abc123", "abc12"));
+        assert!(!tokens_match("", "x"));
+        assert!(tokens_match("", ""));
+    }
+}
+
 fn generate_token() -> String {
     let mut bytes = [0u8; 16];
     if !fill_random(&mut bytes) {
@@ -512,10 +542,32 @@ async fn operator_command(state: &Arc<ServerState>, raw: &str) -> Result<bool> {
             );
             flush_stdout();
         }
-        ["help"] => println!("operator commands: seek SECONDS | scale FACTOR | status | quit"),
+        ["players"] => {
+            let players = state.players.lock().await;
+            for player in players.values() {
+                println!("  id={} name={:?}", player.id, player.name);
+            }
+            println!("{} player(s) connected", players.len());
+            flush_stdout();
+        }
+        ["kick", id] => {
+            let id: u64 = id.parse().context("kick expects a player id")?;
+            if let Some(handle) = state.clients.lock().await.get(&id) {
+                handle.kick.notify_one();
+                println!("KICK id={id} signalled");
+            } else {
+                println!("no connected player with id {id}");
+            }
+            flush_stdout();
+        }
+        ["help"] => println!(
+            "operator commands: seek SECONDS | scale FACTOR | status | players | kick ID | quit"
+        ),
         ["quit"] => return Ok(true),
         _ => {
-            eprintln!("unknown operator command; use: seek SECONDS | scale FACTOR | status | quit")
+            eprintln!(
+                "unknown operator command; use: seek SECONDS | scale FACTOR | status | players | kick ID | quit"
+            )
         }
     }
     Ok(false)
@@ -657,7 +709,9 @@ async fn handle_connection(
                 }
             }
             _ = kick.notified() => {
-                break Err(anyhow::anyhow!("outbound queue overflow (client too slow)"));
+                break Err(anyhow::anyhow!(
+                    "kicked (outbound queue overflow or operator kick)"
+                ));
             }
             inbound = read_wire(&mut incoming) => {
                 match inbound {
