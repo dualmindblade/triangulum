@@ -1,0 +1,32 @@
+# B-4b fast-descent scheduling probe (Austin: consistent lag around
+# 2-3 km on every descent). Warm the orbital pose, then give the
+# renderer exactly one draw at each increasingly fine altitude, dense
+# through the reported band, so prefetch faces rapid-descent pressure.
+mode fly
+weather time 349
+teleport 64.120 -46.429 640.0
+bench 20
+teleport 64.120 -46.429 160.0
+bench 1
+teleport 64.120 -46.429 40.0
+bench 1
+teleport 64.120 -46.429 10.0
+bench 1
+teleport 64.120 -46.429 5.0
+bench 1
+teleport 64.120 -46.429 4.0
+bench 1
+teleport 64.120 -46.429 3.0
+bench 1
+teleport 64.120 -46.429 2.5
+bench 1
+teleport 64.120 -46.429 2.0
+bench 1
+teleport 64.120 -46.429 1.5
+bench 1
+teleport 64.120 -46.429 0.8
+bench 1
+teleport 64.120 -46.429 0.2
+bench 1
+teleport 64.120 -46.429 0.05
+bench 1

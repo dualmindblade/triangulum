@@ -365,6 +365,10 @@ pub struct Renderer {
     /// tiles draw a cached ancestor or their four cached children instead.
     tile_pending: HashMap<TileKey, u64>,
     tile_epoch: u64,
+    /// Previous live-frame altitude, used only to ORDER the vertical
+    /// prefetch forecasts (descent cover first when sinking). Scheduling
+    /// state, never rendering state: the settle path ignores it.
+    last_live_altitude_km: f64,
     tile_tx: mpsc::Sender<(TileKey, u64, u32, TileMesh)>,
     tile_rx: mpsc::Receiver<(TileKey, u64, u32, TileMesh)>,
     /// Immutable world-state snapshots shared by in-flight chunk builders.
@@ -1028,6 +1032,7 @@ impl Renderer {
             chunk_rx: rx,
             tile_pending: HashMap::new(),
             tile_epoch: 0,
+            last_live_altitude_km: 0.0,
             tile_tx: ttx,
             tile_rx: trx,
             edit_snapshot: Arc::new(Edits::default()),
@@ -1913,35 +1918,62 @@ impl Renderer {
                 .get(key)
                 .is_none_or(|tile| tile.season_bucket != structural_season.bucket)
         });
-        // ASCENT + parent PREFETCH: immediate parents cover slow coarsening,
-        // but fast ascents also reveal horizon/LOD nodes that are not parents
-        // of the current selected set. Select the deterministic future cover
-        // at a bounded altitude lookahead and spend the same four-tile live
-        // budget there first. This keeps the expensive level 11-14 impostor
-        // builds off the foreground frame when that future cover is selected.
+        // VERTICAL + parent PREFETCH: immediate parents cover slow
+        // coarsening, but fast vertical motion reveals horizon/LOD nodes
+        // that are not parents of the current selected set. Forecast the
+        // deterministic future cover at a bounded altitude lookahead in
+        // BOTH directions - the direction the camera is actually moving
+        // first - and spend the same four-tile live budget there. Ascent
+        // alone left descents hitting the fat fine-LOD ring synchronously
+        // (B-4b: a 2.2 s frame at exactly 2 km, Austin's consistent
+        // "2-3 km descent lag"). A hovering camera warms both covers once
+        // and then this is all cache hits.
         let mut prefetched = 0usize;
+        let mut live_budget = LIVE_TILE_PREFETCH_BUDGET;
         if !self.settle_visuals && camera.body == BodyId::Neisor {
-            let ascent_altitude = (camera.altitude_km + ASCENT_PREFETCH_MIN_LOOKAHEAD_KM)
-                .max(camera.altitude_km * ASCENT_PREFETCH_ALTITUDE_FACTOR);
-            let ascent_pos = camera.local_direction() * (planet.radius_km + ascent_altitude);
-            for key in select_tiles(ascent_pos, planet.radius_km, ERR_TARGET, None) {
-                if prefetched >= LIVE_TILE_PREFETCH_BUDGET {
-                    break;
+            let altitude = camera.altitude_km;
+            let vertical_delta = altitude - self.last_live_altitude_km;
+            self.last_live_altitude_km = altitude;
+            // Real vertical motion earns a doubled budget: the fine covers
+            // are many expensive tiles, and this is exactly the moment the
+            // background pool should saturate. Hovering keeps the steady
+            // budget (its forecasts are cache hits anyway).
+            if vertical_delta.abs() > 0.005 {
+                live_budget = LIVE_TILE_PREFETCH_BUDGET * 2;
+            }
+            let ascent_altitude = (altitude + ASCENT_PREFETCH_MIN_LOOKAHEAD_KM)
+                .max(altitude * ASCENT_PREFETCH_ALTITUDE_FACTOR);
+            // Descent forecasts two bands: alt/2 is imminent, alt/4 gives
+            // the slowest tiles (B-4a class, 300-900 ms builds) their lead
+            // time. Nearest-term first while sinking.
+            let descent_near = (altitude / 2.0).max(0.03);
+            let descent_far = (altitude / ASCENT_PREFETCH_ALTITUDE_FACTOR).max(0.03);
+            let forecasts = if vertical_delta < 0.0 {
+                [descent_near, descent_far, ascent_altitude]
+            } else {
+                [ascent_altitude, descent_near, descent_far]
+            };
+            'forecast: for target in forecasts {
+                let pos = camera.local_direction() * (planet.radius_km + target);
+                for key in select_tiles(pos, planet.radius_km, ERR_TARGET, None) {
+                    if prefetched >= live_budget {
+                        break 'forecast;
+                    }
+                    if self.cache.contains_key(&key) || self.tile_pending.contains_key(&key) {
+                        continue;
+                    }
+                    let epoch = self.tile_epoch;
+                    self.tile_epoch = self.tile_epoch.wrapping_add(1);
+                    self.tile_pending.insert(key, epoch);
+                    let tx = self.tile_tx.clone();
+                    let planet = Arc::clone(planet);
+                    let season = structural_season;
+                    rayon::spawn(move || {
+                        let mesh = build_tile_at_season(&planet, key, exagg, season);
+                        let _ = tx.send((key, epoch, season.bucket, mesh));
+                    });
+                    prefetched += 1;
                 }
-                if self.cache.contains_key(&key) || self.tile_pending.contains_key(&key) {
-                    continue;
-                }
-                let epoch = self.tile_epoch;
-                self.tile_epoch = self.tile_epoch.wrapping_add(1);
-                self.tile_pending.insert(key, epoch);
-                let tx = self.tile_tx.clone();
-                let planet = Arc::clone(planet);
-                let season = structural_season;
-                rayon::spawn(move || {
-                    let mesh = build_tile_at_season(&planet, key, exagg, season);
-                    let _ = tx.send((key, epoch, season.bucket, mesh));
-                });
-                prefetched += 1;
             }
         }
         // The original immediate-parent fallback remains useful once the
@@ -1951,7 +1983,7 @@ impl Renderer {
             if self.settle_visuals {
                 break;
             }
-            if prefetched >= LIVE_TILE_PREFETCH_BUDGET {
+            if prefetched >= live_budget {
                 break;
             }
             if k.level == 0 {
