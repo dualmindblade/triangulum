@@ -7,6 +7,14 @@
 
 use glam::{DMat4, DVec3};
 
+/// The pitch bound every input path enforces (mouse look, the play
+/// harness `look` command, CLI args all clamp to +-1.50 rad ~ 86 deg).
+/// Placement paths must respect it too: `set_world_orientation` could
+/// land at exactly -90 deg (focus() looks dead-radially at a body),
+/// where look is parallel to radial up, the view basis degenerates, and
+/// the camera spins violently under mouse input — B-5.
+pub const MAX_PITCH_RAD: f64 = 1.50;
+
 #[derive(Clone, Copy, Debug)]
 pub struct Camera {
     /// Body whose local spherical frame owns lat/lon/altitude.  Neisor keeps
@@ -163,7 +171,14 @@ impl Camera {
             return;
         }
         let (radial_up, north, east) = self.frame();
-        self.pitch = look.dot(radial_up).clamp(-1.0, 1.0).asin();
+        // B-5: never store a pole-degenerate pitch. Focus placements that
+        // request dead-radial looks settle at the same bound the mouse can
+        // reach, so the basis below stays well-conditioned.
+        self.pitch = look
+            .dot(radial_up)
+            .clamp(-1.0, 1.0)
+            .asin()
+            .clamp(-MAX_PITCH_RAD, MAX_PITCH_RAD);
         let horiz = (look - radial_up * look.dot(radial_up)).normalize_or_zero();
         if horiz.length_squared() > 0.5 {
             self.yaw = horiz.dot(east).atan2(horiz.dot(north));

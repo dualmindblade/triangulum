@@ -110,19 +110,20 @@ hold ctrl 1
 assert camera_x_km < 8810
 
 log Focused moon follows an absolute timeskip without changing standoff
+log (alignment pins sin(1.50 rad): B-5 keeps placement off the pitch pole)
 focus moon
 assert focus_id ~ 1 0.0001
 assert focus_distance_km ~ 7014.8058 0.1
-assert focus_alignment ~ 1 0.0001
+assert focus_alignment ~ 0.99749 0.001
 weather time 120000
 assert focus_distance_km ~ 7014.8058 0.1
-assert focus_alignment ~ 1 0.0001
+assert focus_alignment ~ 0.99749 0.001
 
 log Focused Sun uses the same state machine; returning to Neisor restores pose
 focus sun
 assert focus_id ~ 2 0.0001
 assert focus_distance_km ~ 2831903.075 1.0
-assert focus_alignment ~ 1 0.0001
+assert focus_alignment ~ 0.99749 0.001
 weather time 240000
 assert focus_distance_km ~ 2831903.075 1.0
 focus neisor

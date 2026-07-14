@@ -73,12 +73,6 @@ the ledgered lean-vertex/candidate-cache perf mission), prefetch not
 covering fast ascents, moon mesh LOD builds competing in the same
 rayon pool. Repro hint from the doc: 80.909 -74.619 1229.
 
-### B-5 Teleport-to-moon: violent rotation jitter at pitch -90
-"The camera starts by looking directly down at the planet, so that
-may be part of the issue" - looking straight down makes the view
-basis degenerate (look parallel to radial up); the near-body
-placement should nudge pitch off the pole or derive the basis from
-the travel direction. (Photo-map moon teleports default pitch -86.)
 
 ### B-6 Oblong craters cast circular halos/rays
 Side-impact (elongated) craters keep a CIRCULAR proximal halo and
@@ -482,6 +476,17 @@ texturing conversation with Andrew.
 
 
 ## FIXED
+
+### B-5 Teleport-to-moon: violent rotation jitter at pitch -90 (2026-07-14)
+Root cause exactly as ledgered: focus() placed the camera looking
+dead-radially at the body, storing pitch = exactly -90 where look is
+parallel to radial up and the view basis degenerates (the right-vector
+fallback flip-flops under mouse noise). Every INPUT path already
+clamped pitch to +-1.50 rad (~86 deg); the fix makes
+set_world_orientation enforce the same bound (camera::MAX_PITCH_RAD,
+now shared by all clamp sites), so the pole is unreachable from any
+path. Focus placements settle at the mouse-reachable bound;
+camera-controls.play alignment pins updated to sin(1.50) = 0.99749.
 
 ### R-1..R-4 + half of R-5: MP1 internet hardening (2026-07-14)
 All from the 2026-07-14 cross-review (fresh Claude context reviewing

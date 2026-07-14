@@ -1572,7 +1572,10 @@ impl App {
                 self.camera.yaw = y.to_radians();
             }
             if let Some(p) = act.pitch_deg.filter(|v| v.is_finite()) {
-                self.camera.pitch = p.to_radians().clamp(-1.50, 1.50);
+                self.camera.pitch = p.to_radians().clamp(
+                    -triangulum_viewer::camera::MAX_PITCH_RAD,
+                    triangulum_viewer::camera::MAX_PITCH_RAD,
+                );
             }
             if let Some(r) = act.roll_deg.filter(|v| v.is_finite()) {
                 self.camera.roll = r.to_radians().rem_euclid(std::f64::consts::TAU);
@@ -1945,7 +1948,10 @@ impl ApplicationHandler for App {
         if let winit::event::DeviceEvent::MouseMotion { delta: (dx, dy) } = event {
             if self.mouse_locked && !self.photo_map.open {
                 self.camera.yaw += dx * 0.0022;
-                self.camera.pitch = (self.camera.pitch - dy * 0.0022).clamp(-1.50, 1.50);
+                self.camera.pitch = (self.camera.pitch - dy * 0.0022).clamp(
+                    -triangulum_viewer::camera::MAX_PITCH_RAD,
+                    triangulum_viewer::camera::MAX_PITCH_RAD,
+                );
             }
         }
     }
@@ -2212,7 +2218,10 @@ impl ApplicationHandler for App {
                     // pitch stops short of vertical: at exactly nadir the
                     // view basis degenerates and the image flips
                     self.camera.yaw += dx * 0.0032;
-                    self.camera.pitch = (self.camera.pitch - dy * 0.0032).clamp(-1.50, 1.50);
+                    self.camera.pitch = (self.camera.pitch - dy * 0.0032).clamp(
+                        -triangulum_viewer::camera::MAX_PITCH_RAD,
+                        triangulum_viewer::camera::MAX_PITCH_RAD,
+                    );
                 }
             }
             WindowEvent::MouseWheel { delta, .. } => {
