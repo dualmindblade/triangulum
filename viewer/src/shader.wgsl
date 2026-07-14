@@ -1579,25 +1579,15 @@ fn cloud_color(
 }
 
 /// Project a planet direction into the viewer's edge-inclusive cube-face
-/// convention (planet.rs::FACES), then linearly sample the exact CPU-baked
-/// cover/precip bytes. A sub-tenth-texel, world-stable hash dither breaks up
-/// any residual 64x64 interpolation contour without changing regional shape.
+/// convention (planet.rs::FACES), then sample the exact CPU-baked
+/// cover/precip bytes through a smoothstep-warped bilinear lookup. The warp
+/// makes filtering C1: node values are exact and the interpolation contour
+/// creases vanish. Its predecessor - a cell-constant hash jitter on a
+/// floor(sdir*512) lattice - hid those creases but etched its own ~12 km
+/// grid of brightness steps into smooth overcast decks (Austin's grid
+/// report, 2026-07-14): a constant offset per cell jumps at cell borders.
 fn synoptic_deck_sample(sdir_in: vec3<f32>) -> vec2<f32> {
-    let sdir = normalize(sdir_in);
-    let hash_cell = floor(sdir * 512.0);
-    let jitter = vec2<f32>(
-        hash31(hash_cell + vec3<f32>(17.0, 41.0, 73.0)),
-        hash31(hash_cell + vec3<f32>(89.0, 13.0, 29.0)),
-    ) - vec2<f32>(0.5);
-    let helper = select(
-        vec3<f32>(0.0, 0.0, 1.0),
-        vec3<f32>(0.0, 1.0, 0.0),
-        abs(sdir.z) > 0.90,
-    );
-    let tangent = normalize(cross(helper, sdir));
-    let bitangent = cross(sdir, tangent);
-    let d = normalize(sdir + (tangent * jitter.x + bitangent * jitter.y) * 0.0015);
-
+    let d = normalize(sdir_in);
     let ad = abs(d);
     var face = 0i;
     var uv = vec2<f32>(0.0);
@@ -1625,10 +1615,15 @@ fn synoptic_deck_sample(sdir_in: vec3<f32>) -> vec2<f32> {
         face = 5i;
         uv = vec2<f32>(d.y, d.x) / ad.z;
     }
-    // Texel nodes include u/v = +/-1. Convert them to texel centers so
-    // hardware linear filtering is the exact twin of sample_face().
-    let tc = (uv * 0.5 + vec2<f32>(0.5)) * (63.0 / 64.0)
-        + vec2<f32>(0.5 / 64.0);
+    // Texel nodes include u/v = +/-1. Work in node space (integer = node),
+    // smoothstep the fractional part, and hand the warped coordinate to
+    // hardware linear filtering: node values match sample_face() exactly
+    // and the in-between interpolation becomes C1 (no crease lattice).
+    let node = (uv * 0.5 + vec2<f32>(0.5)) * 63.0;
+    let cell = floor(node);
+    let f = node - cell;
+    let fw = f * f * (3.0 - 2.0 * f);
+    let tc = (cell + fw + vec2<f32>(0.5)) / 64.0;
     return textureSampleLevel(synoptic_raster, synoptic_sampler, tc, face, 0.0).rg;
 }
 

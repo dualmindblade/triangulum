@@ -1,0 +1,13 @@
+# Austin's cloud-grid report: subtle grid in both cloud layers seen
+# from under an overcast deck. Cyclone deck at noon for guaranteed
+# bright overcast.
+mode fly
+weather time 3500
+teleport -21.5 139.5 0.849
+sun -20 140
+look -52 52
+shot grid_cyclone
+look 0 75
+shot grid_up
+look 90 40
+shot grid_east
