@@ -9,6 +9,55 @@ are `teleport LAT LON [ALT_KM]` viewer args at `--exagg 1` unless noted.
 
 ## OPEN
 
+### CROSS-REVIEW 2026-07-14 (Sol reviewed Claude 14aed27..999ed70; fresh
+### Claude context reviewed Sol's MP1/W2.5/W2/moon). Fixed same-day items
+### are in FIXED; these remain open:
+
+### R-1 MAJOR (MP1): unbounded per-client outbound queue = slow-client OOM
+server/src/main.rs ~136/549-551: each client's queue is an
+UnboundedSender drained by the same select loop that awaits the TCP
+write. A client that stops reading parks the loop in send_wire while
+every broadcast (~15 Hz presence per player) piles into its unbounded
+queue -> server RSS grows without bound. Keepalive only watches inbound
+and cannot fire while parked. Remedy: bounded channel +
+disconnect-on-lag. Family-scale OK; fix before wider exposure (MP3).
+
+### R-2 MAJOR (MP1): unlimited edit rate; O(n) snapshot rewrite per edit
+server/src/main.rs ~610-629 + persist_snapshots: every accepted edit
+appends+fsyncs the journal AND rewrites BOTH complete EDT1 snapshots
+(non-atomic std::fs::write) under the global journal mutex — no rate
+limit, no size cap. A flooding client is O(n^2) disk and stalls all
+other clients' edits. Remedy: per-connection edit rate limit +
+debounced/async snapshotting + atomic temp-file rename. MP3.
+
+### R-3 MINOR (MP1): no explicit inbound message size cap (tungstenite
+default ~64 MiB); serde_json parses untrusted input that large before
+validate_hello. Set a small WebSocketConfig cap (protocol messages are
+tiny). MP3.
+
+### R-4 MINOR (MP1): torn final journal record (crash mid-write) fails
+startup ((len-4)%42 != 0 hard error in journal.rs open) instead of
+truncating the incomplete tail and continuing. Loud and non-corrupting,
+but an always-on server should self-recover. MP2/MP3.
+
+### R-5 NOTES (MP1, low stakes, banked): token compared with != (timing);
+token travels in URL query (Cloudflare edge may log it — move to a
+header/subprotocol eventually); journal.rs import_legacy_if_empty is
+dead code (server has its own inline EDT1 import — remove one path).
+
+### R-6 MINOR (weather): lifecycle arithmetic degrades at absurd times
+At t ~ 1e20 s the epoch remainder cancels to the boundary and every
+cyclone intensity is exactly 0 (storms silently vanish; still finite
+and deterministic). Normal play/travel can't reach it (1e20 s ~ 1e13
+game years); the f64::MAX NaN half of this finding was fixed same-day
+(zonal_shear_phase op order). If the time-travel UI ever accepts freeform
+huge years, clamp there.
+
+### R-7 NOTE (weather perf): structured cyclone shading (arms + comma
+front: per-system frame build, atan2, log per sample) costs ~4.6% avg /
+~5.8% p95 on the cyclone orbit bench vs 14aed27 (Sol measured; ground
+view unaffected). Fold into the perf campaign's shader pass.
+
 ### B-8 High-orbit cloud deck reads as uniform fine speckle — RESOLVED W2.5 (uncommitted)
 W2.5 resolution (2026-07-13, `sol/w25-heterogeneous`): the deck no
 longer derives live shape from the camera-to-planet-mean scalar. A pure

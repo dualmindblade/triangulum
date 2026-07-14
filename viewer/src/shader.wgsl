@@ -1665,9 +1665,12 @@ fn cloud_layer_sample_structured(
         0.0,
         1.0,
     );
+    // Structured rain rides the arm density wave (matches the CPU term):
+    // lanes go dry with their cover, crests rain harder.
+    let arm_precip = clamp(1.0 + globals.weather15.w * structure.arm, 0.0, 1.5);
     let precip = clamp(
         base_weather.y
-            + globals.weather14.z * structure.cyclone_positive
+            + globals.weather14.z * structure.cyclone_positive * arm_precip
             + globals.weather14.w * 0.75 * structure.front,
         0.0,
         1.0,

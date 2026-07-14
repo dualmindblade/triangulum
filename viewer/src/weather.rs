@@ -1369,7 +1369,10 @@ pub fn zonal_shear_phase(t_s: f64, tuning: &WeatherTuning) -> f64 {
     let period = tuning.zonal_shear_period_s.max(1.0);
     let rate = tuning.differential_rotation_shear_deg_h.to_radians() / 3600.0;
     let amplitude = rate * period / std::f64::consts::TAU;
-    amplitude * (std::f64::consts::TAU * t_s / period).sin()
+    // Divide before scaling by TAU and reduce to one cycle: TAU*t overflows
+    // to inf at f64::MAX and the NaN reached the GPU via weather13.y
+    // (Sol review 2026-07-14). Identical in the operating range.
+    amplitude * (std::f64::consts::TAU * (t_s / period).fract()).sin()
 }
 
 /// Inverse-map the procedural cloud domain into the co-rotating frame of
@@ -1706,8 +1709,13 @@ pub fn weather_at_with_cyclones(
     // climate is right now (a desert overcast passes dry)
     let wetness = (prc / tuning.precip_wet_norm).clamp(0.0, 1.5);
     let over = ((cover - tuning.precip_threshold) / (1.0 - tuning.precip_threshold)).max(0.0);
+    // Structured rain rides the same arm density wave as the cover it
+    // falls from (Sol review 2026-07-14: storm-core rain persisted under
+    // carved-clear lanes). Crests may boost past 1 - rain bands - while
+    // lanes go dry with their cover.
+    let arm_factor = (1.0 + tuning.cyclone_arm_strength * structure.arm).clamp(0.0, 1.5);
     let structured_precip = wetness.min(1.0)
-        * (tuning.cyclone_precip_boost * structure.cyclone_positive
+        * (tuning.cyclone_precip_boost * structure.cyclone_positive * arm_factor
             + tuning.front_strength * 0.75 * structure.front);
     let precip = (over.powf(tuning.precip_gamma) * wetness + structured_precip).clamp(0.0, 1.0);
     let snow_frac =

@@ -105,8 +105,17 @@ impl Args {
             bail!("--token may contain only URL-safe letters, digits, '-', '_', '.', and '~'");
         }
         if let Some(url) = &out.public_url {
-            if !url.starts_with("ws://") && !url.starts_with("wss://") {
-                bail!("--public-url must start with ws:// or wss://");
+            let rest = url
+                .strip_prefix("wss://")
+                .or_else(|| url.strip_prefix("ws://"))
+                .ok_or_else(|| anyhow::anyhow!("--public-url must start with ws:// or wss://"))?;
+            // The invite appends /?token=..., so a query, fragment, or
+            // empty host here can only produce invites parse_invite
+            // rejects (Sol review 2026-07-14). Refuse at startup instead
+            // of failing at the first join attempt.
+            let host = rest.trim_end_matches('/');
+            if host.is_empty() || host.contains('?') || host.contains('#') {
+                bail!("--public-url must be ws[s]://host[:port] with no query or fragment");
             }
         }
         if !out.absolute_time_s.is_finite() || out.absolute_time_s < 0.0 {

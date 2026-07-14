@@ -33,7 +33,9 @@ $hDns = @{ Authorization = "Bearer $($creds.CLOUDFARE_API_TOKEN)"; 'Content-Type
 $zone = $creds.CLOUDFARE_ZONE_ID
 $api = 'https://api.cloudflare.com/client/v4'
 
-$acct = (Invoke-RestMethod -Uri "$api/zones/$zone" -Headers $h).result.account.id
+# Account discovery reads the zone, so it must use the ZONE token: a
+# strictly tunnel-scoped token 403s here (Sol review 2026-07-14).
+$acct = (Invoke-RestMethod -Uri "$api/zones/$zone" -Headers $hDns).result.account.id
 
 # 1. Named tunnel (reuse when it already exists).
 $found = (Invoke-RestMethod -Uri "$api/accounts/$acct/cfd_tunnel?name=triangulum&is_deleted=false" -Headers $h).result
