@@ -3,11 +3,12 @@ use futures_util::{SinkExt, StreamExt};
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::{Mutex, mpsc};
+use tokio::sync::{Mutex, Notify, mpsc};
 use tokio_tungstenite::tungstenite::Message as WsMessage;
+use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
 use triangulum_multiplayer::{
     AuthoritativeClock, BodyId, ClockCommand, EditRequest, Hello, JournalStore, Message,
     PROTOCOL_VERSION, PlayerId, PlayerInfo, Refusal, Welcome, WorldIdentity, clean_player_name,
@@ -86,7 +87,7 @@ impl Args {
                 "--no-console" => out.no_console = true,
                 "--help" | "-h" => {
                     println!(
-                        "triangulum-server [--bind HOST:PORT] [--public-host HOST] [--public-url wss://HOST] [--token TOKEN] [--assets DIR] [--journal FILE] [--build-hash HASH] [--time SECONDS] [--time-scale SCALE] [--no-console]"
+                        "triangulum-server [--bind HOST:PORT] [--public-host HOST] [--public-url wss://HOST] [--token TOKEN] [--assets DIR] [--journal FILE] [--build-hash HASH] [--time SECONDS] [--time-scale SCALE] [--no-console]\nHardening: outbound queues bounded (laggards kicked), edits rate-limited per connection, inbound messages capped, snapshots debounced+atomic, torn journal tails self-recover."
                     );
                     std::process::exit(0);
                 }
@@ -136,24 +137,78 @@ fn default_assets_dir() -> PathBuf {
     }
 }
 
+/// R-1 (cross-review 2026-07-14): outbound queues are BOUNDED and a client
+/// that stops draining is kicked instead of growing server memory without
+/// bound. The write itself carries a deadline so a stalled TCP peer cannot
+/// park the connection loop forever.
+const OUTBOUND_QUEUE: usize = 256;
+const WRITE_TIMEOUT: Duration = Duration::from_secs(20);
+/// R-2: per-connection edit token bucket. Generous for humans holding a
+/// mouse button (the client-sim ticks at ~15/s); a flooder's edits are
+/// dropped before they touch the journal or disk.
+const EDIT_RATE_PER_S: f64 = 30.0;
+const EDIT_BURST: f64 = 90.0;
+/// R-3: client->server protocol messages are tiny; cap what the server
+/// will buffer/parse from an untrusted peer (default was ~64 MiB).
+const MAX_INBOUND_MESSAGE: usize = 128 * 1024;
+
+struct ClientHandle {
+    tx: mpsc::Sender<Message>,
+    kick: Arc<Notify>,
+}
+
+struct EditLimiter {
+    budget: f64,
+    last: tokio::time::Instant,
+}
+
+impl EditLimiter {
+    fn new() -> Self {
+        Self {
+            budget: EDIT_BURST,
+            last: tokio::time::Instant::now(),
+        }
+    }
+    fn allow(&mut self) -> bool {
+        let now = tokio::time::Instant::now();
+        self.budget = (self.budget + now.duration_since(self.last).as_secs_f64() * EDIT_RATE_PER_S)
+            .min(EDIT_BURST);
+        self.last = now;
+        if self.budget >= 1.0 {
+            self.budget -= 1.0;
+            true
+        } else {
+            false
+        }
+    }
+}
+
 struct ServerState {
     identity: WorldIdentity,
     token: String,
     clock: Mutex<AuthoritativeClock>,
     journal: Mutex<JournalStore>,
     players: Mutex<BTreeMap<PlayerId, PlayerInfo>>,
-    clients: Mutex<HashMap<PlayerId, mpsc::UnboundedSender<Message>>>,
+    clients: Mutex<HashMap<PlayerId, ClientHandle>>,
     next_player_id: AtomicU64,
     neisor_snapshot: PathBuf,
     moon_snapshot: PathBuf,
+    /// R-2: snapshots are debounced (flusher task) instead of rewritten
+    /// per edit. The EDJ2 journal remains the fsynced source of truth;
+    /// EDT1 snapshots are derived caches.
+    snapshots_dirty: AtomicBool,
 }
 
 impl ServerState {
     async fn broadcast(&self, message: Message, except: Option<PlayerId>) {
         let mut dead = Vec::new();
         let clients = self.clients.lock().await;
-        for (&id, tx) in clients.iter() {
-            if Some(id) != except && tx.send(message.clone()).is_err() {
+        for (&id, handle) in clients.iter() {
+            if Some(id) != except && handle.tx.try_send(message.clone()).is_err() {
+                // Full or closed: either way the client is not draining its
+                // bounded queue. Kick it (its loop breaks) rather than let
+                // memory grow or messages silently gap (R-1).
+                handle.kick.notify_one();
                 dead.push(id);
             }
         }
@@ -256,8 +311,27 @@ async fn main() -> Result<()> {
         next_player_id: AtomicU64::new(1),
         neisor_snapshot,
         moon_snapshot,
+        snapshots_dirty: AtomicBool::new(false),
     });
     state.persist_snapshots().await?;
+    // R-2: debounced snapshot flusher. Edits mark dirty; disk sees at most
+    // one full EDT1 rewrite per interval regardless of edit rate.
+    {
+        let state = Arc::clone(&state);
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(Duration::from_secs(5));
+            tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            loop {
+                tick.tick().await;
+                if state.snapshots_dirty.swap(false, Ordering::Relaxed) {
+                    if let Err(error) = state.persist_snapshots().await {
+                        eprintln!("snapshot persist failed (will retry): {error:#}");
+                        state.snapshots_dirty.store(true, Ordering::Relaxed);
+                    }
+                }
+            }
+        });
+    }
 
     println!("TRIANGULUM SERVER READY");
     println!("  bind: {local}");
@@ -312,6 +386,10 @@ async fn main() -> Result<()> {
                 }
             }
         }
+    }
+    // Graceful quit: flush any snapshot the debounce window still owes.
+    if state.snapshots_dirty.swap(false, Ordering::Relaxed) {
+        state.persist_snapshots().await?;
     }
     Ok(())
 }
@@ -496,7 +574,12 @@ async fn handle_connection(
     stream: TcpStream,
     peer: std::net::SocketAddr,
 ) -> Result<()> {
-    let websocket = tokio_tungstenite::accept_async(stream).await?;
+    // R-3: protocol messages from clients are tiny; refuse to buffer or
+    // parse multi-megabyte frames from an untrusted peer.
+    let mut config = WebSocketConfig::default();
+    config.max_message_size = Some(MAX_INBOUND_MESSAGE);
+    config.max_frame_size = Some(MAX_INBOUND_MESSAGE);
+    let websocket = tokio_tungstenite::accept_async_with_config(stream, Some(config)).await?;
     let (mut sink, mut incoming) = websocket.split();
     let first = tokio::time::timeout(Duration::from_secs(10), read_wire(&mut incoming))
         .await
@@ -541,8 +624,15 @@ async fn handle_connection(
     send_wire(&mut sink, &Message::Welcome(welcome)).await?;
     // Do not publish the registry entry until the welcome is on the wire. A
     // peer that disappears during the handshake must not leave a ghost.
-    let (out_tx, mut out_rx) = mpsc::unbounded_channel();
-    state.clients.lock().await.insert(id, out_tx.clone());
+    let (out_tx, mut out_rx) = mpsc::channel(OUTBOUND_QUEUE);
+    let kick = Arc::new(Notify::new());
+    state.clients.lock().await.insert(
+        id,
+        ClientHandle {
+            tx: out_tx.clone(),
+            kick: Arc::clone(&kick),
+        },
+    );
     state.players.lock().await.insert(id, info.clone());
     state
         .broadcast(Message::PlayerJoined(info.clone()), Some(id))
@@ -553,18 +643,28 @@ async fn handle_connection(
     let mut keepalive = tokio::time::interval(Duration::from_secs(10));
     keepalive.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     let mut last_seen = tokio::time::Instant::now();
+    let mut edit_limiter = EditLimiter::new();
     let result: Result<()> = loop {
         tokio::select! {
             outbound = out_rx.recv() => {
                 let Some(outbound) = outbound else { break Ok(()); };
-                if let Err(error) = send_wire(&mut sink, &outbound).await { break Err(error); }
+                // R-1: a peer that stops reading cannot park this loop
+                // forever - the write carries a deadline.
+                match tokio::time::timeout(WRITE_TIMEOUT, send_wire(&mut sink, &outbound)).await {
+                    Ok(Ok(())) => {}
+                    Ok(Err(error)) => break Err(error),
+                    Err(_) => break Err(anyhow::anyhow!("outbound write timeout (client stalled)")),
+                }
+            }
+            _ = kick.notified() => {
+                break Err(anyhow::anyhow!("outbound queue overflow (client too slow)"));
             }
             inbound = read_wire(&mut incoming) => {
                 match inbound {
                     Ok(Some(message)) => {
                         last_seen = tokio::time::Instant::now();
-                        if let Err(error) = handle_client_message(&state, id, &out_tx, message).await {
-                            let _ = out_tx.send(Message::Error { code: "invalid_message".into(), message: error.to_string() });
+                        if let Err(error) = handle_client_message(&state, id, &out_tx, &mut edit_limiter, message).await {
+                            let _ = out_tx.try_send(Message::Error { code: "invalid_message".into(), message: error.to_string() });
                         }
                     }
                     Ok(None) => break Ok(()),
@@ -576,7 +676,13 @@ async fn handle_connection(
                     break Err(anyhow::anyhow!("keepalive timeout"));
                 }
                 let nonce = state.clock.lock().await.monotonic_ms();
-                if out_tx.send(Message::Ping { nonce }).is_err() { break Ok(()); }
+                match out_tx.try_send(Message::Ping { nonce }) {
+                    Ok(()) => {}
+                    Err(mpsc::error::TrySendError::Closed(_)) => break Ok(()),
+                    Err(mpsc::error::TrySendError::Full(_)) => {
+                        break Err(anyhow::anyhow!("outbound queue overflow (client too slow)"));
+                    }
+                }
             }
         }
     };
@@ -590,8 +696,21 @@ async fn handle_connection(
     result
 }
 
+/// Constant-time token comparison (R-5): the byte fold visits every
+/// position of the shared prefix regardless of where a mismatch occurs, so
+/// response timing does not narrow the token byte by byte. Length still
+/// leaks, which is not secret here.
+fn tokens_match(a: &str, b: &str) -> bool {
+    let (a, b) = (a.as_bytes(), b.as_bytes());
+    let mut diff = (a.len() != b.len()) as u8;
+    for (x, y) in a.iter().zip(b.iter()) {
+        diff |= x ^ y;
+    }
+    diff == 0
+}
+
 fn validate_hello(state: &ServerState, hello: &Hello) -> Option<(&'static str, String)> {
-    if hello.token != state.token {
+    if !tokens_match(&hello.token, &state.token) {
         return Some(("bad_token", "invite token was rejected".into()));
     }
     if hello.protocol_version != PROTOCOL_VERSION {
@@ -612,17 +731,28 @@ fn validate_hello(state: &ServerState, hello: &Hello) -> Option<(&'static str, S
 async fn handle_client_message(
     state: &Arc<ServerState>,
     player_id: PlayerId,
-    reply: &mpsc::UnboundedSender<Message>,
+    reply: &mpsc::Sender<Message>,
+    edit_limiter: &mut EditLimiter,
     message: Message,
 ) -> Result<()> {
     match message {
         Message::EditRequest(edit) => {
+            // R-2: over-budget edits are dropped BEFORE any disk work. The
+            // client is told, not disconnected - a family member painting
+            // fast should degrade, not lose their session.
+            if !edit_limiter.allow() {
+                let _ = reply.try_send(Message::Error {
+                    code: "edit_rate".into(),
+                    message: "edit rate limit exceeded; edit dropped".into(),
+                });
+                return Ok(());
+            }
             edit.validate().map_err(anyhow::Error::msg)?;
             let record = {
                 let mono = state.clock.lock().await.monotonic_ms();
                 state.journal.lock().await.append(mono, edit)?
             };
-            state.persist_snapshots().await?;
+            state.snapshots_dirty.store(true, Ordering::Relaxed);
             println!(
                 "EDIT PERSISTED seq={} player={} body={:?} face={} ci={} cj={} value={} journal={}",
                 record.sequence,
@@ -649,7 +779,7 @@ async fn handle_client_message(
                 .await;
         }
         Message::Ping { nonce } => {
-            let _ = reply.send(Message::Pong {
+            let _ = reply.try_send(Message::Pong {
                 nonce,
                 clock: state.clock_state().await,
             });
@@ -661,7 +791,7 @@ async fn handle_client_message(
                 ClockCommand::SetTimeScale { .. } => "time-scale change",
             };
             eprintln!("CLOCK REFUSED player={player_id}: D-17 server-operator-only {action}");
-            let _ = reply.send(Message::Error {
+            let _ = reply.try_send(Message::Error {
                 code: "time_authority".into(),
                 message: "D-17: only the server operator may seek or change time scale in MP1"
                     .into(),

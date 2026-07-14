@@ -13,37 +13,12 @@ are `teleport LAT LON [ALT_KM]` viewer args at `--exagg 1` unless noted.
 ### Claude context reviewed Sol's MP1/W2.5/W2/moon). Fixed same-day items
 ### are in FIXED; these remain open:
 
-### R-1 MAJOR (MP1): unbounded per-client outbound queue = slow-client OOM
-server/src/main.rs ~136/549-551: each client's queue is an
-UnboundedSender drained by the same select loop that awaits the TCP
-write. A client that stops reading parks the loop in send_wire while
-every broadcast (~15 Hz presence per player) piles into its unbounded
-queue -> server RSS grows without bound. Keepalive only watches inbound
-and cannot fire while parked. Remedy: bounded channel +
-disconnect-on-lag. Family-scale OK; fix before wider exposure (MP3).
-
-### R-2 MAJOR (MP1): unlimited edit rate; O(n) snapshot rewrite per edit
-server/src/main.rs ~610-629 + persist_snapshots: every accepted edit
-appends+fsyncs the journal AND rewrites BOTH complete EDT1 snapshots
-(non-atomic std::fs::write) under the global journal mutex — no rate
-limit, no size cap. A flooding client is O(n^2) disk and stalls all
-other clients' edits. Remedy: per-connection edit rate limit +
-debounced/async snapshotting + atomic temp-file rename. MP3.
-
-### R-3 MINOR (MP1): no explicit inbound message size cap (tungstenite
-default ~64 MiB); serde_json parses untrusted input that large before
-validate_hello. Set a small WebSocketConfig cap (protocol messages are
-tiny). MP3.
-
-### R-4 MINOR (MP1): torn final journal record (crash mid-write) fails
-startup ((len-4)%42 != 0 hard error in journal.rs open) instead of
-truncating the incomplete tail and continuing. Loud and non-corrupting,
-but an always-on server should self-recover. MP2/MP3.
-
-### R-5 NOTES (MP1, low stakes, banked): token compared with != (timing);
-token travels in URL query (Cloudflare edge may log it — move to a
-header/subprotocol eventually); journal.rs import_legacy_if_empty is
-dead code (server has its own inline EDT1 import — remove one path).
+### R-5 NOTE (MP1, remaining half): the game token travels in the URL
+query (/?token=...). Cloudflare's edge may log full request URLs, and
+the token is the sole credential. Move to a header or websocket
+subprotocol during MP2/MP3 (invite-format change; coordinate both
+sides). The other R-5 items (timing-unsafe compare, dead import path)
+were fixed 2026-07-14 with R-1..R-4.
 
 ### R-6 MINOR (weather): lifecycle arithmetic degrades at absurd times
 At t ~ 1e20 s the epoch remainder cancels to the boundary and every
@@ -507,6 +482,24 @@ texturing conversation with Andrew.
 
 
 ## FIXED
+
+### R-1..R-4 + half of R-5: MP1 internet hardening (2026-07-14)
+All from the 2026-07-14 cross-review (fresh Claude context reviewing
+Sol's MP1; reports in interchange/reviews/). Fixed same day:
+- R-1 slow-client OOM: outbound queues bounded (256) with kick-on-
+  overflow (Notify) and a 20 s write deadline so a stalled TCP peer
+  cannot park the connection loop.
+- R-2 edit flood: per-connection token bucket (30/s sustained, burst
+  90; over-budget edits dropped with an edit_rate Error, no disk work)
+  + snapshots debounced to a 5 s flusher task (journal stays fsynced
+  per edit; EDT1 snapshots are derived caches, final flush on quit).
+- R-3 inbound message cap 128 KiB via WebSocketConfig (was ~64 MiB).
+- R-4 torn journal tail self-recovers: open() truncates the incomplete
+  final record loudly and continues (regression test added).
+- R-5a constant-time token compare; R-5b dead import_legacy_if_empty
+  removed. R-5c (token in URL query) remains OPEN above.
+Verified: 12/12 multiplayer tests; scratch server on 7799 (join, edit
+persisted, snapshot flush); production join through the tunnel.
 
 ### F-23 River shoreline dead-band pits + the river bay/apron family
 Austin photographed dry blocks sunk below the water surface against a

@@ -96,12 +96,22 @@ impl JournalStore {
                 path.display()
             )));
         }
-        if (bytes.len() - 4) % RECORD_BYTES != 0 {
-            return Err(JournalError(format!(
-                "{} ends with a partial journal record ({} bytes)",
+        // A crash mid-append can leave a torn final record. Whole records
+        // are intact (append-only, fsynced), so recover by truncating the
+        // incomplete tail — loudly — instead of refusing to start (R-4).
+        // The file itself is truncated so the next append lands on a
+        // record boundary rather than after garbage.
+        let usable = MAGIC.len() + (bytes.len() - MAGIC.len()) / RECORD_BYTES * RECORD_BYTES;
+        if usable != bytes.len() {
+            eprintln!(
+                "WARNING: {} ends with a torn journal record ({} trailing bytes); truncating to the last whole record (crash recovery)",
                 path.display(),
-                bytes.len()
-            )));
+                bytes.len() - usable
+            );
+            let file = std::fs::OpenOptions::new().write(true).open(&path)?;
+            file.set_len(usable as u64)?;
+            file.sync_data()?;
+            bytes.truncate(usable);
         }
         let mut journal = EditJournal::default();
         for raw in bytes[4..].chunks_exact(RECORD_BYTES) {
@@ -136,33 +146,6 @@ impl JournalStore {
         Ok(record)
     }
 
-    /// Import an EDT1 materialized map into an empty EDJ2 history in sorted
-    /// order. Used only when a server first adopts an existing solo world.
-    pub fn import_legacy_if_empty(
-        &mut self,
-        body: BodyId,
-        path: &Path,
-    ) -> Result<usize, JournalError> {
-        if !self.journal.records.is_empty() || !path.exists() {
-            return Ok(0);
-        }
-        let edits = load_legacy_edits(path, body)?;
-        let mut count = 0;
-        for ((face, ci, cj), value) in edits {
-            self.append(
-                0,
-                EditRequest {
-                    body,
-                    face,
-                    ci,
-                    cj,
-                    value,
-                },
-            )?;
-            count += 1;
-        }
-        Ok(count)
-    }
 }
 
 fn encode_record(record: &EditRecord) -> [u8; RECORD_BYTES] {
@@ -247,7 +230,12 @@ pub fn write_legacy_edits(
         bytes.extend_from_slice(&cj.to_le_bytes());
         bytes.extend_from_slice(&value.to_le_bytes());
     }
-    std::fs::write(path, bytes)?;
+    // Atomic replace: a crash mid-write must never leave a truncated
+    // snapshot where a complete one used to be (std::fs::rename replaces
+    // on Windows via MOVEFILE_REPLACE_EXISTING).
+    let tmp = path.with_extension("edt1.tmp");
+    std::fs::write(&tmp, bytes)?;
+    std::fs::rename(&tmp, path)?;
     Ok(())
 }
 
@@ -313,6 +301,41 @@ mod tests {
         assert_eq!(reopened.journal().records()[2].sequence, 3);
         assert_eq!(reopened.journal().columns()[&(BodyId::Neisor, 1, 2, 3)], -2);
         assert_eq!(reopened.journal().columns()[&(BodyId::Moon, 4, 5, 6)], 8);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn torn_final_record_is_truncated_and_recovered() {
+        let path = unique_path("torn");
+        {
+            let mut store = JournalStore::open(&path).unwrap();
+            for value in 1..=2 {
+                store
+                    .append(
+                        value as u64 * 10,
+                        EditRequest {
+                            body: BodyId::Neisor,
+                            face: 0,
+                            ci: 1,
+                            cj: value as u64,
+                            value,
+                        },
+                    )
+                    .unwrap();
+            }
+        }
+        // Simulate a crash mid-append: garbage partial record at the tail.
+        {
+            use std::io::Write;
+            let mut file = std::fs::OpenOptions::new().append(true).open(&path).unwrap();
+            file.write_all(&[0xAB; 17]).unwrap();
+        }
+        let reopened = JournalStore::open(&path).unwrap();
+        assert_eq!(reopened.journal().records().len(), 2);
+        assert_eq!(reopened.journal().next_sequence(), 3);
+        // The file itself was truncated back to a record boundary.
+        let len = std::fs::metadata(&path).unwrap().len() as usize;
+        assert_eq!(len, 4 + 2 * RECORD_BYTES);
         let _ = std::fs::remove_file(path);
     }
 
