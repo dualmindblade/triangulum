@@ -63,15 +63,16 @@ same hunt exposed them as a regression zoo at high weather clock
 (paisley marbling, octave decorrelation, variance washout); the
 pass-1 redo requires visual gates at t in {0, 1800, 3500} minimum.
 
-### B-4 IMPORTANT: mesh-detail loading perf + ascent lagspikes (Andrew doc 2)
-"Major performance issues when loading mesh detail and lagspikes when
-ascending." The ascent class returned at a larger scale (the parent-
-prefetch fix of 96124d5 covered the earlier form). Needs live
-profiling with TRI_RAW_CAPTURE + the frame_ms sidecars; suspects:
-tile build cost at the fattest LODs (impostor candidate enumeration -
-the ledgered lean-vertex/candidate-cache perf mission), prefetch not
-covering fast ascents, moon mesh LOD builds competing in the same
-rayon pool. Repro hint from the doc: 80.909 -74.619 1229.
+### B-4a RESIDUAL: cold first-load max still ~2.6 s at dense poses
+Left open by the B-4 fix (Sol mission 2026-07-14, findings archived in
+interchange/reviews/sol-b4-findings-2026-07-14.md): dense or
+climate-boundary level-11 tiles that satisfy neither exact region
+proof still enumerate large candidate sets, so the very first cold
+teleport can spend ~2.6 s (down from 3.75 s). The structural fix is a
+reusable lean candidate stream/cache keyed independently of tile LOD -
+the perf campaign's next item. Also unattributed: the mixed cold
+upload maximum (~236 ms single upload) needs terrain-vs-voxel
+accounting before touching buffer batching.
 
 
 ### B-6 Oblong craters cast circular halos/rays
@@ -476,6 +477,21 @@ texturing conversation with Andrew.
 
 
 ## FIXED
+
+### B-4 IMPORTANT: mesh-detail loading perf + ascent lagspikes (2026-07-14)
+Fixed by Sol (merge d0fbcab; full measurements in interchange/reviews/
+sol-b4-findings-2026-07-14.md). Two causes: (1) fine-LOD impostor
+emission spent up to 98.6% of tile CPU enumerating candidates that all
+rejected (373k lattice visits to emit zero impostors on one level-11
+tile) - two conservative same-face region proofs (barren/shrub
+interior; unconditional snow over warp-bounded bilinear extrema) skip
+enumeration only when every candidate provably rejects; (2) the
+immediate-parent prefetch missed horizon/LOD nodes on fast ascents,
+turning them into synchronous urgent builds - the live budget now
+checks the deterministic future cover at max(alt+10km, alt*4) first.
+First frames 3 km 117.6 -> ~34 ms, 10 km 251.8 -> ~38 ms; tile-cost
+gate -38% with identical checksums; moon builds measured and ruled
+out. Repro scripts b4-ascent-*.play retained. Residual: B-4a above.
 
 ### B-5 Teleport-to-moon: violent rotation jitter at pitch -90 (2026-07-14)
 Root cause exactly as ledgered: focus() placed the camera looking
