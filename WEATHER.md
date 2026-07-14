@@ -347,11 +347,14 @@ Austin+Andrew correctly reporting "we can't see them"):
    presence smoothsteps saturate by cover 0.38, so ANY additive
    pre-clamp term is invisible exactly where the storm is - raising
    arm_strength 0.55 -> 0.88 changed literally nothing. Arms are
-   now a separate signed load applied POST-clamp: a multiplicative
-   carve on shell alpha (cirrus at half strength - an uncarved haze
-   layer refills the lanes) plus a fabric-threshold fill on crests;
-   the CPU multiplies cover after its smoothstep so map/raster
-   agree and rain bands follow. Arms also get their own wide radial
+   now a separate signed load applied POST-clamp. First cut was a
+   multiplicative alpha carve - Andrew's verdict: "cartoony", ghost
+   clouds. Final form: arms modulate the cell-FORMATION THRESHOLD
+   per shell (low 0.20, mid 0.24, cirrus 0.10 x arm_strength), so
+   lanes simply grow fewer cells and those cells form/dissolve by
+   the same fabric dynamics as anywhere else on the planet; the CPU
+   multiplies cover after its smoothstep so map/raster/rain bands
+   agree. Arms also get their own wide radial
    window (0.3..2.7 rn) instead of the storm's exp(-rn^2) envelope,
    which throttled them right where rain bands live. The same
    saturation law explains the "bar" (the storm-attached front

@@ -1678,13 +1678,13 @@ fn cloud_layer_sample_structured(
     // pin t=0). Deck evolution now comes from pass 2's structured motion
     // only; a pass-1 redo must gate on LOOK at t in {0, 1800, 3500}.
     let sdir_w = structure.domain;
-    // Spiral arms act AFTER cover saturation: a clamp-1.0 cover cannot show
-    // an additive term, so clear lanes carve the shell alpha directly and
-    // arm crests lower the fabric threshold (denser cloud ON the arm).
-    // Cirrus carves at half strength - an uncarved haze layer was filling
-    // the lanes back in.
-    let arm_carve = clamp(1.0 + globals.weather15.w * structure.arm, 0.0, 1.0);
-    let arm_fill = 0.10 * max(structure.arm, 0.0);
+    // Spiral arms modulate the cell-FORMATION threshold, not the alpha of
+    // formed cells (Andrew, 2026-07-14: an alpha carve reads as ghost
+    // clouds; lanes should simply have FEWER cells, forming and dissolving
+    // by the same fabric dynamics as everywhere else). Signed: crests
+    // lower the threshold (denser), lanes raise it (cells do not form).
+    // Post-saturation by construction - thresholds never clamp at cover 1.
+    let arm_shift = globals.weather15.w * structure.arm;
     if (kind == 2u) {
         let p0 = (sdir_w - globals.weather2.xyz * 0.72) * globals.weather6.z
             + cloud_seed_offset(2u);
@@ -1696,7 +1696,11 @@ fn cloud_layer_sample_structured(
         );
         let fabric = 0.68 * vnoise(p)
             + 0.32 * vnoise(p * 2.07 + vec3<f32>(13.1, 7.7, 29.3));
-        let wisps = smoothstep(0.57 - 0.035 * cold, 0.70 - 0.025 * cold, fabric);
+        let wisps = smoothstep(
+            0.57 - 0.035 * cold - 0.10 * arm_shift,
+            0.70 - 0.025 * cold - 0.10 * arm_shift,
+            fabric,
+        );
         let legacy_presence = (0.16 + 0.62 * (1.0 - cover)) * (0.78 + 0.22 * cold);
         // Low cover still favors cirrus, but a genuinely clear SYNOPTIC lane
         // must remain visibly clear from orbit. The old inverse-cover law
@@ -1705,8 +1709,7 @@ fn cloud_layer_sample_structured(
         let live_presence = legacy_presence * smoothstep(0.035, 0.22, cover);
         let presence = select(live_presence, legacy_presence, globals.weather7.w > 0.5);
         let alpha = clamp(
-            wisps * presence * globals.weather7.z * (1.0 - 0.35 * structure.eye)
-                * clamp(1.0 + 0.5 * globals.weather15.w * structure.arm, 0.0, 1.0),
+            wisps * presence * globals.weather7.z * (1.0 - 0.35 * structure.eye),
             0.0,
             1.0,
         );
@@ -1724,12 +1727,11 @@ fn cloud_layer_sample_structured(
         let fabric = 0.52 * broad
             + 0.32 * vnoise(p)
             + 0.16 * vnoise(p * 2.03 + vec3<f32>(31.7, 17.3, 51.1));
-        let threshold = 0.66 - 0.25 * cover - 0.05 * precip - arm_fill;
+        let threshold = 0.66 - 0.25 * cover - 0.05 * precip - 0.24 * arm_shift;
         let puffs = smoothstep(threshold, threshold + 0.12, fabric);
         let presence = smoothstep(0.10, 0.38, cover) * (0.86 + 0.14 * warm);
         let alpha = clamp(
-            puffs * presence * globals.weather7.y * (1.0 - 0.92 * structure.eye)
-                * arm_carve,
+            puffs * presence * globals.weather7.y * (1.0 - 0.92 * structure.eye),
             0.0,
             1.0,
         );
@@ -1740,15 +1742,14 @@ fn cloud_layer_sample_structured(
         + cloud_seed_offset(0u);
     let fabric = 0.68 * broad
         + 0.32 * vnoise(p * 1.73 + vec3<f32>(9.3, 41.7, 5.9));
-    let threshold = 0.61 - 0.09 * cover - 0.13 * precip - arm_fill;
+    let threshold = 0.61 - 0.09 * cover - 0.13 * precip - 0.20 * arm_shift;
     let bases = smoothstep(threshold, threshold + 0.11, fabric);
     let storm_presence = max(
         smoothstep(0.12, 0.70, precip),
         0.38 * smoothstep(0.82, 0.98, cover),
     ) * (0.86 + 0.14 * warm);
     let alpha = clamp(
-        bases * storm_presence * globals.weather7.x * (1.0 - 0.96 * structure.eye)
-            * arm_carve,
+        bases * storm_presence * globals.weather7.x * (1.0 - 0.96 * structure.eye),
         0.0,
         1.0,
     );
