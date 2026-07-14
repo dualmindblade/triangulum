@@ -40,6 +40,9 @@ pub struct SunState {
 /// at most 0.13 m in the hostile level-9 V-6 probes (well below its swap
 /// distance); an exact vec3 target was not worth widening every vertex.
 const ERR_TARGET: f64 = 0.35;
+const LIVE_TILE_PREFETCH_BUDGET: usize = 4;
+const ASCENT_PREFETCH_MIN_LOOKAHEAD_KM: f64 = 10.0;
+const ASCENT_PREFETCH_ALTITUDE_FACTOR: f64 = 4.0;
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 enum DrawKey {
@@ -1910,18 +1913,45 @@ impl Renderer {
                 .get(key)
                 .is_none_or(|tile| tile.season_bucket != structural_season.bucket)
         });
-        // parent PREFETCH: ascending selects coarser rings whose ancestors
-        // were often never built, and partially-cached children cannot
-        // stand in without holes - those tiles went urgent and spiked
-        // (Andrew: rare 1 s pauses, mostly while ascending). Speculatively
-        // build a few parents of the CURRENT rings per frame in the
-        // background so the coarser ring is ready before it is selected.
+        // ASCENT + parent PREFETCH: immediate parents cover slow coarsening,
+        // but fast ascents also reveal horizon/LOD nodes that are not parents
+        // of the current selected set. Select the deterministic future cover
+        // at a bounded altitude lookahead and spend the same four-tile live
+        // budget there first. This keeps the expensive level 11-14 impostor
+        // builds off the foreground frame when that future cover is selected.
         let mut prefetched = 0usize;
+        if !self.settle_visuals && camera.body == BodyId::Neisor {
+            let ascent_altitude = (camera.altitude_km + ASCENT_PREFETCH_MIN_LOOKAHEAD_KM)
+                .max(camera.altitude_km * ASCENT_PREFETCH_ALTITUDE_FACTOR);
+            let ascent_pos = camera.local_direction() * (planet.radius_km + ascent_altitude);
+            for key in select_tiles(ascent_pos, planet.radius_km, ERR_TARGET, None) {
+                if prefetched >= LIVE_TILE_PREFETCH_BUDGET {
+                    break;
+                }
+                if self.cache.contains_key(&key) || self.tile_pending.contains_key(&key) {
+                    continue;
+                }
+                let epoch = self.tile_epoch;
+                self.tile_epoch = self.tile_epoch.wrapping_add(1);
+                self.tile_pending.insert(key, epoch);
+                let tx = self.tile_tx.clone();
+                let planet = Arc::clone(planet);
+                let season = structural_season;
+                rayon::spawn(move || {
+                    let mesh = build_tile_at_season(&planet, key, exagg, season);
+                    let _ = tx.send((key, epoch, season.bucket, mesh));
+                });
+                prefetched += 1;
+            }
+        }
+        // The original immediate-parent fallback remains useful once the
+        // forecast set is warm, and for camera states where ascent lookahead
+        // is not applicable.
         for k in &keys {
             if self.settle_visuals {
                 break;
             }
-            if prefetched >= 4 {
+            if prefetched >= LIVE_TILE_PREFETCH_BUDGET {
                 break;
             }
             if k.level == 0 {

@@ -1,0 +1,23 @@
+# B-4 fast-ascent scheduling probe. Warm the low pose, then give the renderer
+# exactly one draw at each increasingly coarse altitude so parent prefetch has
+# the same frame-count pressure as a rapid live ascent.
+mode fly
+weather time 349
+teleport 64.120 -46.429 0.05
+bench 20
+teleport 64.120 -46.429 0.2
+bench 1
+teleport 64.120 -46.429 0.8
+bench 1
+teleport 64.120 -46.429 3.0
+bench 1
+teleport 64.120 -46.429 10.0
+bench 1
+teleport 64.120 -46.429 40.0
+bench 1
+teleport 64.120 -46.429 160.0
+bench 1
+teleport 64.120 -46.429 640.0
+bench 1
+teleport 64.120 -46.429 1229.0
+bench 1

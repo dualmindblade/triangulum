@@ -1,0 +1,15 @@
+# B-4 cold-process ascent sweep at the perf-reel location. Each 20-frame
+# block includes the first draw after the altitude jump; in the play harness
+# that makes p95 equal the slowest frame and preserves the hitch signal.
+mode fly
+weather time 349
+teleport 64.120 -46.429 0.05
+bench 20
+teleport 64.120 -46.429 0.2
+bench 20
+teleport 64.120 -46.429 0.8
+bench 20
+teleport 64.120 -46.429 3.0
+bench 20
+teleport 64.120 -46.429 10.0
+bench 20
