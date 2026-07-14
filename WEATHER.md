@@ -337,8 +337,14 @@ with the life envelope. Same signed-sharpened cosine term on the
 CPU (structured_loads) and GPU (cloud_structure), arms gated
 outside the eyewall. Knobs: cyclone_arm_count (2; 0 disables),
 cyclone_arm_strength (0.55), cyclone_arm_twist (3.0),
-cyclone_arm_spin_deg_s (0.35 - a full pattern turn every ~17 min of
-weather time, lively at fast-forward). Perf note: the moon_orbit
+cyclone_arm_spin_deg_s (1.2). VISIBILITY LAW: the arms visibly
+revolve at spin/arm_count - the first default (0.35) meant one
+revolution per ~34 min of weather time, hour-hand territory, and
+Austin+Andrew correctly reported "no rotation" at 1x. At 1.2 a
+revolution takes 10 weather-minutes: majestic at 1x, a clear sweep
+at 10-60x. The knob panel now ships as
+viewer/assets/weather_tuning.json (tracked; overrides any subset,
+ignored by the multiplayer identity handshake). Perf note: the moon_orbit
 perf-reel p95 rose 4.4 -> 6.1 ms because the harness bakes the
 synoptic raster synchronously on its settle path and the planetary
 wave added two octaves per texel; the live game bakes async on

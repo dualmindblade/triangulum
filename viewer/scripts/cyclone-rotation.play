@@ -1,0 +1,11 @@
+mode fly
+weather time 3500
+teleport -21.9 139.0 2200.0
+look 0 -88
+shot rot_0
+weather time 3560
+shot rot_1
+weather time 3620
+shot rot_2
+weather time 3680
+shot rot_3

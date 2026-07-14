@@ -1,0 +1,19 @@
+{
+  "_readme": "Optional art-direction overrides for the weather system (WEATHER.md). Defaults live in code; this file overrides any subset by field name - delete a line to fall back. Unknown keys like this one are ignored. If two multiplayer machines want identical skies, keep this file identical (it does NOT affect the join handshake).",
+
+  "_storms": "Rotating spiral-arm density wave + finite storm lives.",
+  "cyclone_count": 2,
+  "cyclone_arm_count": 2,
+  "cyclone_arm_strength": 0.55,
+  "cyclone_arm_twist": 3.0,
+  "cyclone_arm_spin_deg_s": 1.2,
+  "cyclone_life_s": 6300.0,
+  "cyclone_max_wrap_deg": 120.0,
+
+  "_cover": "Global cloud-cover variance (hemisphere-scale breaks and dense belts).",
+  "planetary_freq": 5.0,
+  "planetary_strength": 0.32,
+
+  "_motion": "Bounded zonal shear slosh; the base rotation is in code.",
+  "zonal_shear_period_s": 14400.0
+}

@@ -125,7 +125,10 @@ pub struct WeatherTuning {
     pub cyclone_arm_strength: f64,
     /// Logarithmic-spiral pitch (radians of azimuth per ln-radius unit).
     pub cyclone_arm_twist: f64,
-    /// Pattern angular speed (degrees/s of weather time).
+    /// Pattern PHASE speed (degrees/s of weather time). The arms visibly
+    /// revolve at this rate divided by cyclone_arm_count: at 1.2 with two
+    /// arms a full visible revolution takes 10 min of weather time - slow
+    /// and majestic at 1x, a clear sweep at 10-60x fast-forward.
     pub cyclone_arm_spin_deg_s: f64,
     /// Finite deterministic storm life (seconds of weather time). Each
     /// system index is reborn on a freshly seeded corridor every period with
@@ -221,7 +224,7 @@ impl Default for WeatherTuning {
             cyclone_arm_count: 2,
             cyclone_arm_strength: 0.55,
             cyclone_arm_twist: 3.0,
-            cyclone_arm_spin_deg_s: 0.35,
+            cyclone_arm_spin_deg_s: 1.2,
             cyclone_life_s: 6300.0,
             // ~2 radians of core twist is the most this fabric tolerates:
             // the tangential stretch peaks near 2*wrap*rn^2*exp(-rn^2), so
