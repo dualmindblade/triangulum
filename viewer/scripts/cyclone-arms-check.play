@@ -5,3 +5,7 @@ look 176 -86
 shot arms_a
 weather time 3650
 shot arms_b
+weather time 3500
+teleport -21.9 139.0 700.0
+look 0 -88
+shot eye_close

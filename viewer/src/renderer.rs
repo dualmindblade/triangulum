@@ -134,17 +134,17 @@ struct Globals {
     // x unused (core wrap now rides per-system in cyclone_fronts.w),
     // y/z cover/precip boosts, w front strength.
     weather14: [f32; 4],
-    // xyz asymmetric front leading/trailing/along scales in radians,
-    // w spiral-arm density-wave strength.
+    // xy comma-tail front leading/trailing cross widths and z its outer
+    // radial extent, all in cyclone-radius units; w spiral-arm strength.
     weather15: [f32; 4],
     // Spiral arms: x arm count, y log-spiral twist, z/w unused.
     weather16: [f32; 4],
-    // Planet-frame moving centers + lifecycle-scaled intensity, followed by
-    // the planet-frame front normal and the hemisphere-signed bounded core
-    // wrap angle (radians).
+    // Planet-frame moving centers + lifecycle-scaled intensity; fronts
+    // carry only the hemisphere-signed bounded core wrap angle in w.
     cyclone_centers: [[f32; 4]; crate::weather::MAX_CYCLONES],
     cyclone_fronts: [[f32; 4]; crate::weather::MAX_CYCLONES],
-    // x hemisphere-signed rotating arm-pattern phase (radians), yzw unused.
+    // x hemisphere-signed rotating arm-pattern phase (radians), y the
+    // comma-tail front's base azimuth in the storm's polar frame.
     cyclone_arms: [[f32; 4]; crate::weather::MAX_CYCLONES],
     // premultiplied procedural seeds. xyz are the karst breach hint (V-10):
     // low 32 bits of (seed+K).wrapping_mul(0x9E37_79B1) for K = 40961
@@ -2611,9 +2611,12 @@ impl Renderer {
                 self.weather_tuning.front_strength as f32,
             ],
             weather15: [
-                (self.weather_tuning.front_leading_km / planet.radius_km) as f32,
-                (self.weather_tuning.front_trailing_km / planet.radius_km) as f32,
-                (self.weather_tuning.front_length_km / planet.radius_km) as f32,
+                (self.weather_tuning.front_leading_km / self.weather_tuning.cyclone_radius_km)
+                    as f32,
+                (self.weather_tuning.front_trailing_km / self.weather_tuning.cyclone_radius_km)
+                    as f32,
+                (self.weather_tuning.front_length_km / self.weather_tuning.cyclone_radius_km)
+                    .clamp(1.2, 2.9) as f32,
                 self.weather_tuning.cyclone_arm_strength as f32,
             ],
             weather16: [
@@ -2632,22 +2635,13 @@ impl Renderer {
                 ]
             }),
             cyclone_fronts: std::array::from_fn(|index| {
-                if index >= cyclones.count as usize {
-                    return [0.0; 4];
-                }
-                let system = cyclones.systems[index];
-                let east = DVec3::Z.cross(system.center).normalize();
-                let north = system.center.cross(east);
-                let normal = east * system.front_angle.cos() + north * system.front_angle.sin();
-                [
-                    normal.x as f32,
-                    normal.y as f32,
-                    normal.z as f32,
-                    system.wrap_angle as f32,
-                ]
+                // xyz retired with the straight front (the comma tail works
+                // in the storm's polar frame); w carries the bounded wrap.
+                [0.0, 0.0, 0.0, cyclones.systems[index].wrap_angle as f32]
             }),
             cyclone_arms: std::array::from_fn(|index| {
-                [cyclones.systems[index].arm_phase as f32, 0.0, 0.0, 0.0]
+                let system = cyclones.systems[index];
+                [system.arm_phase as f32, system.front_angle as f32, 0.0, 0.0]
             }),
             karst: {
                 let kseed = |k: i64| {

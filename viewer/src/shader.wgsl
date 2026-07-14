@@ -73,16 +73,17 @@ struct Globals {
     // x unused (core wrap rides in cyclone_fronts.w), y/z cover/precip boosts, w front
     // strength.
     weather14: vec4<f32>,
-    // xyz front leading/trailing/along scales in radians, w spiral-arm
-    // density-wave strength.
+    // xy comma-tail front leading/trailing cross widths and z its outer
+    // radial extent, in cyclone-radius units; w spiral-arm strength.
     weather15: vec4<f32>,
     // Spiral arms: x arm count, y log-spiral twist, z/w unused.
     weather16: vec4<f32>,
-    // Planet-frame center.xyz + lifecycle-scaled intensity; front
-    // normal.xyz + hemisphere-signed bounded core wrap angle (radians).
+    // Planet-frame center.xyz + lifecycle-scaled intensity; fronts carry
+    // only the hemisphere-signed bounded core wrap angle in w.
     cyclone_centers: array<vec4<f32>, 4>,
     cyclone_fronts: array<vec4<f32>, 4>,
-    // x hemisphere-signed rotating arm-pattern phase (radians), yzw unused.
+    // x hemisphere-signed rotating arm-pattern phase (radians), y the
+    // comma-tail front's base azimuth in the storm's polar frame.
     cyclone_arms: array<vec4<f32>, 4>,
     // premultiplied cave-noise seeds (low 32 bits of
     // (seed+K).wrapping_mul(0x9E37_79B1)) for the karst breach hint:
@@ -1384,6 +1385,9 @@ struct CloudStructure {
     // cover saturates inside a storm, so arms only read as a post-clamp
     // multiplier on the shell alpha (clear lanes between dense arms).
     arm: f32,
+    // Eyewall ring, max-composed like `eye`; drives the cell-formation
+    // threshold toward a dense ring around the cleared eye.
+    wall: f32,
 };
 
 fn cloud_rotate_axis(v: vec3<f32>, axis: vec3<f32>, angle: f32) -> vec3<f32> {
@@ -1416,6 +1420,7 @@ fn cloud_structure(sdir: vec3<f32>) -> CloudStructure {
     var front_load = 0.0;
     var eye_load = 0.0;
     var arm_load = 0.0;
+    var wall_load = 0.0;
     let radius = max(globals.weather13.z, 1e-6);
     let radius2 = radius * radius;
     let count = u32(globals.weather13.w + 0.5);
@@ -1441,18 +1446,20 @@ fn cloud_structure(sdir: vec3<f32>) -> CloudStructure {
             cyclone_signed += profile;
             cyclone_positive += max(profile, 0.0);
             eye_load = max(eye_load, intensity * eye);
+            wall_load = max(wall_load, intensity * eyewall);
+
+            let east = normalize(cross(vec3<f32>(0.0, 0.0, 1.0), center));
+            let north = cross(center, east);
+            let offset = sdir - center * dot(sdir, center);
+            let azimuth = atan2(dot(offset, north), dot(offset, east));
+            let hemi = select(-1.0, 1.0, center.z >= 0.0);
             // Spiral density wave (matches the CPU term in
             // structured_loads): the arm PATTERN rotates with storm age;
             // the fabric stays put, so cells seed and disperse as an arm
             // sweeps over them. Rigid in angle-space - zero shear. Kept out
             // of `profile`: additive cover saturates inside a storm; the
-            // lanes survive as a post-clamp alpha multiplier instead.
+            // lanes survive as a formation-threshold shift instead.
             if (globals.weather16.x > 0.5) {
-                let east = normalize(cross(vec3<f32>(0.0, 0.0, 1.0), center));
-                let north = cross(center, east);
-                let offset = sdir - center * dot(sdir, center);
-                let azimuth = atan2(dot(offset, north), dot(offset, east));
-                let hemi = select(-1.0, 1.0, center.z >= 0.0);
                 let wave = cos(globals.weather16.x * azimuth
                     + hemi * globals.weather16.y * log(max(rn, 0.15))
                     - globals.cyclone_arms[i].x);
@@ -1465,43 +1472,38 @@ fn cloud_structure(sdir: vec3<f32>) -> CloudStructure {
                 arm_load += intensity * spiral * arm_env;
             }
 
+            // COMMA-TAIL FRONT (matches structured_loads): one curved band
+            // spiraling off the circulation, rotating at the arm pattern's
+            // visible rate. delta*rn is the azimuthal arc distance to the
+            // log-spiral centerline; weather15.xyz carry leading/trailing
+            // widths and the outer radial extent in cyclone-radius units.
+            if (rn > 0.05) {
+                let pattern = globals.cyclone_arms[i].x
+                    / max(globals.weather16.x, 1.0);
+                let center_phi = globals.cyclone_arms[i].y + pattern
+                    + hemi * globals.weather16.y * log(max(rn, 0.15));
+                let d = azimuth - center_phi;
+                let delta = d - 6.2831853 * floor(d / 6.2831853 + 0.5);
+                let cross_arc = delta * rn;
+                let width = select(
+                    globals.weather15.y,
+                    globals.weather15.x,
+                    cross_arc >= 0.0,
+                );
+                let cross_profile = 1.0
+                    - smoothstep(0.0, 1.5, abs(cross_arc) / width);
+                let radial = smoothstep(0.55, 0.85, rn)
+                    * (1.0 - smoothstep(globals.weather15.z - 0.5,
+                        globals.weather15.z, rn));
+                front_load += intensity * cross_profile * radial;
+            }
+
             let cyclone_frame = globals.cyclone_fronts[i];
             let falloff = envelope * intensity;
             // cyclone_fronts.w is the hemisphere-signed BOUNDED core wrap
             // (tanh-saturated on the CPU): long clocks tighten toward a
             // fixed spiral and unwind as the storm's life envelope dies.
             mapped = cloud_rotate_axis(mapped, center, cyclone_frame.w * falloff);
-        }
-
-        // A system on the far side of the planet owns neither this vortex
-        // neighborhood nor its finite front. Reject it before fetching the
-        // front frame and taking the two oriented distances.
-        let front_reach = globals.weather15.z * 1.8
-            + globals.weather15.y * 3.0 + radius * 0.58;
-        if (chord2 > front_reach * front_reach) {
-            continue;
-        }
-
-        // The planet-frame normal is precomputed once on the CPU. Positive
-        // cross-distance is the razor leading side; negative distance uses
-        // the wider trailing smear.
-        let cyclone_frame = globals.cyclone_fronts[i];
-        let normal = cyclone_frame.xyz;
-        let along_axis = cross(center, normal);
-        let cross_distance = dot(sdir, normal) - radius * 0.58;
-        let along = dot(sdir, along_axis);
-        if (abs(along) < globals.weather15.z * 1.8
-            && abs(cross_distance) < globals.weather15.y * 3.0) {
-            let width = select(
-                globals.weather15.y,
-                globals.weather15.x,
-                cross_distance >= 0.0,
-            );
-            let cross_q = abs(cross_distance) / width;
-            let along_q = abs(along) / globals.weather15.z;
-            let cross_profile = 1.0 - smoothstep(0.0, 1.5, cross_q);
-            let along_profile = 1.0 - smoothstep(0.65, 1.30, along_q);
-            front_load += intensity * cross_profile * along_profile;
         }
     }
     let cos2_lat = max(1.0 - sdir.z * sdir.z, 0.0);
@@ -1514,6 +1516,7 @@ fn cloud_structure(sdir: vec3<f32>) -> CloudStructure {
         clamp(front_load, 0.0, 1.5),
         clamp(eye_load, 0.0, 1.0),
         clamp(arm_load, -1.0, 1.0),
+        clamp(wall_load, 0.0, 1.0),
     );
 }
 
@@ -1678,13 +1681,16 @@ fn cloud_layer_sample_structured(
     // pin t=0). Deck evolution now comes from pass 2's structured motion
     // only; a pass-1 redo must gate on LOOK at t in {0, 1800, 3500}.
     let sdir_w = structure.domain;
-    // Spiral arms modulate the cell-FORMATION threshold, not the alpha of
-    // formed cells (Andrew, 2026-07-14: an alpha carve reads as ghost
-    // clouds; lanes should simply have FEWER cells, forming and dissolving
-    // by the same fabric dynamics as everywhere else). Signed: crests
-    // lower the threshold (denser), lanes raise it (cells do not form).
-    // Post-saturation by construction - thresholds never clamp at cover 1.
+    // The storm's whole anatomy modulates the cell-FORMATION threshold, not
+    // the alpha of formed cells (Andrew, 2026-07-14: alpha carves read as
+    // ghost clouds; sparse regions should simply grow FEWER cells, forming
+    // and dissolving by the same fabric dynamics as everywhere else).
+    // Signed arms: crests lower the threshold, lanes raise it. The eye
+    // raises it past the fabric ceiling (~zero cells); the eyewall and the
+    // comma-tail front lower it (dense ring / textured band). All are
+    // post-saturation by construction - thresholds never clamp at cover 1.
     let arm_shift = globals.weather15.w * structure.arm;
+    let front_t = min(structure.front, 1.0);
     if (kind == 2u) {
         let p0 = (sdir_w - globals.weather2.xyz * 0.72) * globals.weather6.z
             + cloud_seed_offset(2u);
@@ -1696,9 +1702,10 @@ fn cloud_layer_sample_structured(
         );
         let fabric = 0.68 * vnoise(p)
             + 0.32 * vnoise(p * 2.07 + vec3<f32>(13.1, 7.7, 29.3));
+        let cirrus_shift = 0.10 * arm_shift - 0.45 * structure.eye;
         let wisps = smoothstep(
-            0.57 - 0.035 * cold - 0.10 * arm_shift,
-            0.70 - 0.025 * cold - 0.10 * arm_shift,
+            0.57 - 0.035 * cold - cirrus_shift,
+            0.70 - 0.025 * cold - cirrus_shift,
             fabric,
         );
         let legacy_presence = (0.16 + 0.62 * (1.0 - cover)) * (0.78 + 0.22 * cold);
@@ -1708,11 +1715,7 @@ fn cloud_layer_sample_structured(
         // retain that exact law so established comparison reels do not move.
         let live_presence = legacy_presence * smoothstep(0.035, 0.22, cover);
         let presence = select(live_presence, legacy_presence, globals.weather7.w > 0.5);
-        let alpha = clamp(
-            wisps * presence * globals.weather7.z * (1.0 - 0.35 * structure.eye),
-            0.0,
-            1.0,
-        );
+        let alpha = clamp(wisps * presence * globals.weather7.z, 0.0, 1.0);
         return vec4<f32>(cloud_color(sdir, view_dir, kind, fabric, cover, precip), alpha);
     }
 
@@ -1720,21 +1723,21 @@ fn cloud_layer_sample_structured(
     // detail scales avoid duplication while storm cells align vertically.
     let broad_p = (sdir_w - globals.weather2.xyz) * (globals.weather6.x * 0.62)
         + cloud_seed_offset(7u);
-    let broad = clamp(vnoise(broad_p) + 0.18 * structure.front, 0.0, 1.0);
+    // The front no longer lifts the broad mask (that uniform fill was the
+    // "slab" read); it lowers the formation threshold below instead, so
+    // the band stays textured by real cells.
+    let broad = clamp(vnoise(broad_p), 0.0, 1.0);
     if (kind == 1u) {
         let p = (sdir_w - globals.weather2.xyz) * globals.weather6.y
             + cloud_seed_offset(1u);
         let fabric = 0.52 * broad
             + 0.32 * vnoise(p)
             + 0.16 * vnoise(p * 2.03 + vec3<f32>(31.7, 17.3, 51.1));
-        let threshold = 0.66 - 0.25 * cover - 0.05 * precip - 0.24 * arm_shift;
+        let threshold = 0.66 - 0.25 * cover - 0.05 * precip - 0.24 * arm_shift
+            - 0.30 * structure.wall - 0.15 * front_t + 0.85 * structure.eye;
         let puffs = smoothstep(threshold, threshold + 0.12, fabric);
         let presence = smoothstep(0.10, 0.38, cover) * (0.86 + 0.14 * warm);
-        let alpha = clamp(
-            puffs * presence * globals.weather7.y * (1.0 - 0.92 * structure.eye),
-            0.0,
-            1.0,
-        );
+        let alpha = clamp(puffs * presence * globals.weather7.y, 0.0, 1.0);
         return vec4<f32>(cloud_color(sdir, view_dir, kind, fabric, cover, precip), alpha);
     }
 
@@ -1742,17 +1745,14 @@ fn cloud_layer_sample_structured(
         + cloud_seed_offset(0u);
     let fabric = 0.68 * broad
         + 0.32 * vnoise(p * 1.73 + vec3<f32>(9.3, 41.7, 5.9));
-    let threshold = 0.61 - 0.09 * cover - 0.13 * precip - 0.20 * arm_shift;
+    let threshold = 0.61 - 0.09 * cover - 0.13 * precip - 0.20 * arm_shift
+        - 0.30 * structure.wall - 0.13 * front_t + 0.85 * structure.eye;
     let bases = smoothstep(threshold, threshold + 0.11, fabric);
     let storm_presence = max(
         smoothstep(0.12, 0.70, precip),
         0.38 * smoothstep(0.82, 0.98, cover),
     ) * (0.86 + 0.14 * warm);
-    let alpha = clamp(
-        bases * storm_presence * globals.weather7.x * (1.0 - 0.96 * structure.eye),
-        0.0,
-        1.0,
-    );
+    let alpha = clamp(bases * storm_presence * globals.weather7.x, 0.0, 1.0);
     return vec4<f32>(cloud_color(sdir, view_dir, kind, fabric, cover, precip), alpha);
 }
 

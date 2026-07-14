@@ -1342,9 +1342,11 @@ pub fn cyclone_systems(
         out.systems[index as usize] = CycloneSystem {
             center,
             intensity: storm_climatology(cloud, precip, tuning) * lifecycle,
+            // Base azimuth of the comma-tail front in the storm's polar
+            // frame; the tail rotates from here with the arm pattern.
             front_angle: (cyclone_hash01(seed, index, epoch_salt.wrapping_mul(64).wrapping_add(33))
                 - 0.5)
-                * 1.8,
+                * std::f64::consts::TAU,
             wrap_angle: -hemisphere * max_wrap * (raw_wrap / max_wrap).tanh(),
             arm_phase: -hemisphere * tuning.cyclone_arm_spin_deg_s.to_radians() * age_s,
         };
@@ -1412,11 +1414,17 @@ struct StructuredLoads {
     /// cover loads: inside a storm cover saturates at 1.0, so arms only
     /// read if they multiply the final cover/fabric after the clamp.
     arm: f64,
+    /// Eye clearing and eyewall ring, max-composed across systems. Like the
+    /// arms these drive the cell-FORMATION threshold, not cell alpha
+    /// (Andrew, 2026-07-14: the eye should have ~zero clouds, ringed by
+    /// dense cloud, with cells forming/dying like anywhere else).
+    eye: f64,
+    wall: f64,
 }
 
-/// Radial storm/eye profile plus an asymmetric finite front ridge. Chord and
-/// tangent coordinates avoid acos in the per-sample path and match the GPU
-/// approximation over the configured synoptic radii.
+/// Radial storm/eye profile, rotating spiral arms, and the comma-tail
+/// front. Chord and tangent coordinates avoid acos in the per-sample path
+/// and match the GPU approximation over the configured synoptic radii.
 fn structured_loads(
     dir: DVec3,
     radius_km: f64,
@@ -1426,9 +1434,11 @@ fn structured_loads(
     let mut out = StructuredLoads::default();
     let cyclone_radius = tuning.cyclone_radius_km / radius_km;
     let radius2 = cyclone_radius * cyclone_radius;
-    let leading = tuning.front_leading_km / radius_km;
-    let trailing = tuning.front_trailing_km / radius_km;
-    let length = tuning.front_length_km / radius_km;
+    // Front geometry lives in cyclone-radius units: cross widths from the
+    // leading/trailing knobs, outer radial extent from front_length_km.
+    let leading = tuning.front_leading_km / tuning.cyclone_radius_km;
+    let trailing = tuning.front_trailing_km / tuning.cyclone_radius_km;
+    let front_outer = (tuning.front_length_km / tuning.cyclone_radius_km).clamp(1.2, 2.9);
     for system in cyclones.systems.iter().take(cyclones.count as usize) {
         if system.intensity <= 1e-6 {
             continue;
@@ -1450,15 +1460,18 @@ fn structured_loads(
             let profile = system.intensity * (0.75 * envelope + 0.75 * eyewall - 1.40 * eye);
             out.cyclone_signed += profile;
             out.cyclone_positive += profile.max(0.0);
+            out.eye = out.eye.max(system.intensity * eye);
+            out.wall = out.wall.max(system.intensity * eyewall);
+
+            let offset = dir - system.center * dir.dot(system.center);
+            let azimuth = offset.dot(north).atan2(offset.dot(east));
+            let hemisphere = if system.center.z >= 0.0 { 1.0 } else { -1.0 };
             // Andrew's spiral density wave: rotating logarithmic arms with
             // clear lanes between. Only the PATTERN moves; the fabric does
             // not, so cells seed and disperse as an arm sweeps over them.
             // Kept out of `profile`: additive cover terms saturate inside a
-            // storm; the lanes must survive as a post-clamp multiplier.
+            // storm; the lanes must survive past the clamp.
             if tuning.cyclone_arm_count > 0 {
-                let offset = dir - system.center * dir.dot(system.center);
-                let azimuth = offset.dot(north).atan2(offset.dot(east));
-                let hemisphere = if system.center.z >= 0.0 { 1.0 } else { -1.0 };
                 let wave = (tuning.cyclone_arm_count as f64 * azimuth
                     + hemisphere * tuning.cyclone_arm_twist * rn.max(0.15).ln()
                     - system.arm_phase)
@@ -1473,23 +1486,37 @@ fn structured_loads(
                     smooth01((rn - 0.30) / 0.30) * (1.0 - smooth01((rn - 1.7) / 1.0));
                 out.arm += system.intensity * spiral * arm_env;
             }
-        }
 
-        let normal = east * system.front_angle.cos() + north * system.front_angle.sin();
-        let along_axis = system.center.cross(normal).normalize();
-        let cross = dir.dot(normal) - cyclone_radius * 0.58;
-        let along = dir.dot(along_axis);
-        if along.abs() < length * 1.8 && cross.abs() < trailing * 3.0 {
-            let width = if cross >= 0.0 { leading } else { trailing };
-            let cross_profile = 1.0 - smooth01(cross.abs() / (width * 1.5));
-            let along_profile = 1.0 - smooth01((along.abs() / length - 0.65) / 0.65);
-            out.front += system.intensity * cross_profile * along_profile;
+            // COMMA-TAIL FRONT (Andrew go-ahead 2026-07-14): one curved band
+            // spiraling off the circulation, replacing the straight offset
+            // ridge that read as an artificial slab. The centerline is a
+            // log-spiral in the storm's polar frame, rotating with the same
+            // visible rate as the arm pattern; the sharp/leading and
+            // smeared/trailing sides keep their knobs. `delta * rn` is the
+            // azimuthal arc distance to the centerline in radius units.
+            if rn > 0.05 {
+                let pattern = system.arm_phase / tuning.cyclone_arm_count.max(1) as f64;
+                let center_phi = system.front_angle
+                    + pattern
+                    + hemisphere * tuning.cyclone_arm_twist * rn.max(0.15).ln();
+                let delta = (azimuth - center_phi + std::f64::consts::PI)
+                    .rem_euclid(std::f64::consts::TAU)
+                    - std::f64::consts::PI;
+                let cross = delta * rn;
+                let width = if cross >= 0.0 { leading } else { trailing };
+                let cross_profile = 1.0 - smooth01(cross.abs() / (width * 1.5));
+                let radial = smooth01((rn - 0.55) / 0.30)
+                    * (1.0 - smooth01((rn - (front_outer - 0.5)) / 0.5));
+                out.front += system.intensity * cross_profile * radial;
+            }
         }
     }
     out.cyclone_signed = out.cyclone_signed.clamp(-1.0, 2.0);
     out.cyclone_positive = out.cyclone_positive.clamp(0.0, 2.0);
     out.front = out.front.clamp(0.0, 1.5);
     out.arm = out.arm.clamp(-1.0, 1.0);
+    out.eye = out.eye.clamp(0.0, 1.0);
+    out.wall = out.wall.clamp(0.0, 1.0);
     out
 }
 
@@ -1670,7 +1697,10 @@ pub fn weather_at_with_cyclones(
     // exactly where the storm is (the 2026-07-14 "can't see the arms"
     // report); a post-clamp multiplier keeps clear lanes legible at full
     // cover, and rain bands follow since precip derives from cover.
-    let cover = (cover0 * (1.0 + tuning.cyclone_arm_strength * structure.arm)).clamp(0.0, 1.0);
+    let cover = (cover0
+        * (1.0 + tuning.cyclone_arm_strength * structure.arm)
+        * (1.0 - 0.9 * structure.eye))
+        .clamp(0.0, 1.0);
 
     // precipitation: falls out of heavy cover, scaled by how wet this
     // climate is right now (a desert overcast passes dry)

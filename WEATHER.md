@@ -356,11 +356,20 @@ Austin+Andrew correctly reporting "we can't see them"):
    multiplies cover after its smoothstep so map/raster/rain bands
    agree. Arms also get their own wide radial
    window (0.3..2.7 rn) instead of the storm's exp(-rn^2) envelope,
-   which throttled them right where rain bands live. The same
-   saturation law explains the "bar" (the storm-attached front
-   reading as a uniform slab): its additive boost pins cover at 1.0
-   along the ridge - front texture/geometry redesign is an open
-   Andrew decision.
+   which throttled them right where rain bands live.
+3. The WHOLE storm anatomy now runs on formation thresholds
+   (2026-07-14, Andrew's refinements): the eye raises the threshold
+   past the fabric ceiling (~zero cells, organic ragged rim - the
+   old 0.92/0.96 alpha multipliers ghosted it), the eyewall lowers
+   it into a dense ring, and the front is redesigned as a
+   COMMA TAIL - a log-spiral band in the storm's polar frame,
+   rotating at the arm pattern's visible rate, whose load lowers
+   the threshold instead of lifting the broad mask (the old
+   straight offset ridge + uniform mask lift read as an artificial
+   slab - the "bar" in Austin's marked shots). front_leading/
+   trailing_km remain the sharp/smeared cross widths;
+   front_length_km now sets the tail's outer radial extent
+   (clamped 1.2..2.9 cyclone radii).
 The knob panel ships as viewer/assets/weather_tuning.json (tracked;
 overrides any subset, ignored by the multiplayer identity
 handshake). Perf note: the moon_orbit
