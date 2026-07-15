@@ -989,6 +989,10 @@ pub enum TreeKind {
 /// Densities are per-column; one canopy covers ~25 columns, so 0.010 is
 /// already a closed-canopy forest.
 pub const MAX_TREE_DENSITY: f64 = 0.011;
+/// Annual-mean treeline shared by voxel trees and mesh impostors. Candidate
+/// enumeration may hoist this exact gate because seasonal state never changes
+/// tree ownership or anchors.
+pub const TREE_MIN_TEMP_C: f64 = -6.0;
 
 pub fn tree_kind_density(koppen: u8) -> Option<(TreeKind, f64)> {
     match koppen {
@@ -1143,7 +1147,7 @@ pub fn tree_at_scaled(
         return None;
     };
     // treeline: shrubs shiver on, trees give up
-    if c.temp < -6.0 && kind != TreeKind::Shrub {
+    if c.temp < TREE_MIN_TEMP_C as f32 && kind != TreeKind::Shrub {
         return None;
     }
     if c.temp < -11.0 {
