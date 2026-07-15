@@ -1,0 +1,39 @@
+# B-4a regression hunt: Austin reports most descents now lag >1 s and
+# one crash (exit 101) after the candidate cache. His flights cross
+# FORESTED terrain - the probes that gated the merge ran barren/polar.
+mode fly
+weather time 349
+teleport -0.906 -67.804 640.0
+bench 10
+teleport -0.906 -67.804 40.0
+bench 6
+teleport -0.906 -67.804 10.0
+bench 6
+teleport -0.906 -67.804 4.9
+bench 6
+teleport -0.906 -67.804 3.1
+bench 6
+teleport -0.906 -67.804 2.0
+bench 6
+teleport -0.906 -67.804 1.3
+bench 6
+teleport -0.906 -67.804 0.8
+bench 6
+teleport -0.906 -67.804 0.4
+bench 6
+teleport -0.906 -67.804 0.1
+bench 6
+teleport 19.674 35.265 40.0
+bench 6
+teleport 19.674 35.265 5.0
+bench 6
+teleport 19.674 35.265 2.0
+bench 6
+teleport 19.674 35.265 0.5
+bench 6
+teleport 47.861 14.399 20.0
+bench 6
+teleport 47.861 14.399 3.0
+bench 6
+teleport 47.861 14.399 0.8
+bench 6

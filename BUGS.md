@@ -63,15 +63,19 @@ same hunt exposed them as a regression zoo at high weather clock
 (paisley marbling, octave decorrelation, variance washout); the
 pass-1 redo requires visual gates at t in {0, 1800, 3500} minimum.
 
-### B-4c RESIDUALS from the B-4a fix (PERF.md item 1, shipped 37b3e51)
-Remaining after the lean candidate cache: (1) one-frame TELEPORT
-probes can still bank a 200 ms urgent build at 1.5/0.8 km (real
-flying is bounded ~90 ms; the cure is the banked never-block
-ancestor-draw scheduling decision - Andrew call); (2) pose
-80.909 -74.619 keeps a ~220 ms continuous-descent step at 2 km that
-persists with TRI_NO_IMPOSTORS=1 - a NON-impostor scheduling floor,
-next attribution target; (3) cold first-ever load ~0.6 s at dense
-poses (was 2.7 s).
+### B-4c OPEN: forest cold builds are the REAL remaining B-4 class
+The B-4a cache was REVERTED (b372b70) after Austin field-caught a
+regression over productive forest (see PERF.md item 1 for the full
+post-mortem + re-mission requirements). Current truth at HEAD:
+(1) dense-forest cold tile builds still wall ~3.2 s at the 2 km
+descent step of b4a-forest-descent.play - triggered live by
+HORIZONTAL flight bringing new forest regions over the horizon;
+(2) pose 80.909 -74.619 keeps a ~220 ms non-impostor scheduling
+floor at 2 km (persists with TRI_NO_IMPOSTORS=1); (3) an exit-101
+crash Austin hit once during descents remains unreproduced (was
+possibly the reverted cache path - watch for recurrence); (4) the
+never-block ancestor-draw scheduling decision is banked for Andrew
+and would cure every urgent-build hitch class at once.
 Left open by the B-4 fix (Sol mission 2026-07-14, findings archived in
 interchange/reviews/sol-b4-findings-2026-07-14.md): dense or
 climate-boundary level-11 tiles that satisfy neither exact region

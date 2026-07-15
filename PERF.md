@@ -24,18 +24,26 @@ timestamp queries, item 2).
 
 ## Campaign (priority order)
 
-1. SHIPPED 2026-07-14 (37b3e51, Sol): THE LEAN CANDIDATE CACHE.
-   Per-Planet 16-shard LRU (64 MiB / 512 entries per shard) keyed by
-   (face, level-14 region), lean 16-byte candidates in four disjoint
-   stride tiers so every LOD/seasonal rebuild reuses one evaluation;
-   adaptive whole-tile union rejection proof. Cold load 2714 -> 608 ms;
-   the 2 km descent step 698 -> 86 ms (88 ms confirmed on main);
-   tile_cost -4% with identical checksums; four exactness tests lock
-   bit-for-bit stream equality including concurrent misses. Residuals
-   ledgered as B-4c in BUGS.md: teleport-probe urgent builds (cure =
-   the banked never-block ancestor-draw decision - Andrew), a
-   non-impostor ~220 ms scheduling floor at pose B 2 km, and ~0.6 s
-   dense cold loads.
+1. THE LEAN CANDIDATE CACHE - shipped 37b3e51, REVERTED b372b70 the
+   same day. Austin field-caught what every merge gate missed: over
+   PRODUCTIVE FOREST the cache made cold region builds WORSE (forest
+   2 km descent step 3,165 -> 4,663 ms; live descents >1 s "worse
+   than before", plus one exit-101 crash), and the trigger was
+   HORIZONTAL flight - new regions entering the horizon pay first-
+   touch cost that no vertical forecast covers. Why the gates were
+   blind: Sol's probes + tile_cost run barren/polar/lake poses, and
+   the perf reel warms before measuring. The design (region-keyed
+   tiers, union proofs, exactness tests) measured well where proofs
+   fire; the first-touch cost of productive regions was never
+   measured. RE-MISSION REQUIREMENTS: (a) cold-descent gate at the
+   forest pose -0.906 -67.804 (b4a-forest-descent.play - the 3.2 s
+   pre-cache wall at 2 km is the real B-4 target and still open);
+   (b) a HORIZONTAL-flight probe (fixed altitude, lateral teleport
+   steps across forest); (c) first-touch region build must be
+   measured and bounded, not just amortized; (d) find the exit-101
+   panic (unreproduced in probes; likely in the cache path).
+   The banked never-block ancestor-draw decision (Andrew) remains the
+   structural cure for ALL urgent-build hitches regardless.
 2. SHIPPED 2026-07-14 (7a8bbcb): GPU timestamp queries behind
    TRI_GPU_TIMERS=1 - six stamps bracket the render pass's pipeline
    groups; bench prints rolling per-segment averages
