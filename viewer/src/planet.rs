@@ -6,6 +6,10 @@
 use anyhow::{Context, Result};
 use glam::DVec3;
 
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
+
 use crate::noise::{gradient_noise, normal_value_noise};
 
 pub const FACES: [(DVec3, DVec3, DVec3); 6] = [
@@ -20,6 +24,34 @@ pub const FACES: [(DVec3, DVec3, DVec3); 6] = [
 /// The canonical one-metre-ish column lattice. Biome dithering snaps to this
 /// identity in both renderers; changing it would move every ecotone column.
 pub const COLUMNS_PER_FACE: u64 = 10_000_000;
+
+// Forest-impostor candidate enumeration is much finer than the baked climate
+// raster and used to repeat the expensive annual vegetation profile for every
+// level-11..14 tile. Partition only the sparse evaluated profiles into
+// level-14 regions (~800 m on Neisor). A request always walks its own exact
+// lattice and applies its own stride-scaled lottery gate first; it never
+// front-loads a whole region or evaluates the more-permissive gates of other
+// LODs. Profiles that survive that cheap gate are shared across LODs/rebuilds.
+const IMPOSTOR_CANDIDATE_REGION_LEVEL: u32 = 14;
+const IMPOSTOR_CANDIDATE_REGIONS_PER_FACE: u64 = 1 << IMPOSTOR_CANDIDATE_REGION_LEVEL;
+// First test a cheap level-16 grid. If none of those cells can be rejected,
+// the warm dense region falls straight through to enumeration. Only cells
+// beside a proven boundary recurse four more levels, to level 20 (~12 m).
+const IMPOSTOR_CANDIDATE_PROOF_INITIAL_DIVISIONS: u64 = 4;
+const IMPOSTOR_CANDIDATE_PROOF_REFINEMENT_DEPTH: u32 = 4;
+// A whole render tile may combine disjoint early and late rejections. Refine
+// that union before entering the cache; short-circuiting keeps productive
+// warm tiles cheap while cold climate boundaries can prove an empty output.
+const IMPOSTOR_CANDIDATE_TILE_PROOF_DEPTH: u32 = 8;
+const IMPOSTOR_CANDIDATE_CACHE_SHARDS: usize = 16;
+const IMPOSTOR_CANDIDATE_CACHE_BYTES: usize = 64 * 1024 * 1024;
+const IMPOSTOR_CANDIDATE_CACHE_BYTES_PER_SHARD: usize =
+    IMPOSTOR_CANDIDATE_CACHE_BYTES / IMPOSTOR_CANDIDATE_CACHE_SHARDS;
+// Empty and proof-only regions can stay far below the payload cap, so they
+// need a separate bound to prevent unbounded map growth.
+const IMPOSTOR_CANDIDATE_CACHE_ENTRIES_PER_SHARD: usize = 512;
+const IMPOSTOR_CANDIDATE_STRIDES: [u64; 4] = [1, 2, 4, 8];
+const _: () = assert!(IMPOSTOR_CANDIDATE_REGIONS_PER_FACE <= u16::MAX as u64);
 
 /// Total width of a cross-material ecotone (half on either side of the baked
 /// Koppen edge) at voxel/local scale. Same-material classes never consult this
@@ -595,6 +627,178 @@ pub struct FaceRaster {
     pub water: Vec<f32>,
 }
 
+/// The annual, edit-independent expensive half of one forest-impostor
+/// decision. `kind == None` caches an exact phase-one rejection. The lottery
+/// stays request-local so the requesting LOD's comp-scaled gate runs before
+/// this profile is ever evaluated.
+#[derive(Clone, Copy)]
+struct LeanImpostorProfile {
+    density: f64,
+    /// Two checked u16 region offsets packed without layout padding.
+    site: u32,
+    kind: Option<crate::voxel::TreeKind>,
+}
+
+const _: () = assert!(std::mem::size_of::<LeanImpostorProfile>() <= 16);
+
+pub(crate) type ImpostorCandidate = (u64, u64, crate::voxel::TreeKind, f64, f64);
+
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+struct ImpostorCandidateRegionKey {
+    face: u8,
+    ri: u16,
+    rj: u16,
+}
+
+struct ImpostorCandidateRegion {
+    /// Sorted sparse profiles. Misses are computed outside this lock and
+    /// merged afterward, so unrelated Rayon workers never wait behind a
+    /// monolithic region build. Concurrent duplicates are harmless pure work
+    /// and collapse to one byte-identical record at merge time.
+    profiles: Mutex<Vec<LeanImpostorProfile>>,
+    rejects_all: OnceLock<bool>,
+    /// Disjoint retained cells used only when the coarser region proof
+    /// declines. Rejected cells are omitted; immutable boundary leaves are
+    /// shared by every tier.
+    proof_cells: OnceLock<Arc<[ImpostorCandidateProofCell]>>,
+    last_use: AtomicU64,
+    resident_bytes: AtomicUsize,
+}
+
+impl ImpostorCandidateRegion {
+    fn new(last_use: u64) -> Self {
+        Self {
+            profiles: Mutex::new(Vec::new()),
+            rejects_all: OnceLock::new(),
+            proof_cells: OnceLock::new(),
+            last_use: AtomicU64::new(last_use),
+            resident_bytes: AtomicUsize::new(0),
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+struct ImpostorCandidateProofCell {
+    // Absolute columns remove every offset cast/index reconstruction from the
+    // proof path. There are normally one to a few cells, so the extra bytes
+    // are immaterial beside the cached profiles.
+    ci0: u64,
+    ci1: u64,
+    cj0: u64,
+    cj1: u64,
+}
+
+#[derive(Default)]
+struct ImpostorCandidateCacheShard {
+    entries: HashMap<ImpostorCandidateRegionKey, Arc<ImpostorCandidateRegion>>,
+    resident_bytes: usize,
+}
+
+struct ImpostorCandidateCache {
+    shards: [Mutex<ImpostorCandidateCacheShard>; IMPOSTOR_CANDIDATE_CACHE_SHARDS],
+    clock: AtomicU64,
+}
+
+impl Default for ImpostorCandidateCache {
+    fn default() -> Self {
+        Self {
+            shards: std::array::from_fn(|_| Mutex::new(ImpostorCandidateCacheShard::default())),
+            clock: AtomicU64::new(1),
+        }
+    }
+}
+
+impl ImpostorCandidateCache {
+    #[inline]
+    fn shard_index(key: ImpostorCandidateRegionKey) -> usize {
+        let mixed = u64::from(key.face).wrapping_mul(0x9E37_79B9)
+            ^ u64::from(key.ri).wrapping_mul(0x85EB_CA77)
+            ^ u64::from(key.rj).wrapping_mul(0xC2B2_AE3D);
+        mixed as usize & (IMPOSTOR_CANDIDATE_CACHE_SHARDS - 1)
+    }
+
+    fn lock_shard(&self, index: usize) -> std::sync::MutexGuard<'_, ImpostorCandidateCacheShard> {
+        self.shards[index]
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    fn enforce_bound(shard: &mut ImpostorCandidateCacheShard) {
+        while shard.entries.len() > IMPOSTOR_CANDIDATE_CACHE_ENTRIES_PER_SHARD
+            || shard.resident_bytes > IMPOSTOR_CANDIDATE_CACHE_BYTES_PER_SHARD
+        {
+            // An entry held by a worker is pinned. This permits only a
+            // transient in-flight overshoot; the next access trims it after
+            // workers release their Arcs.
+            let victim = shard
+                .entries
+                .iter()
+                .filter(|(_, entry)| Arc::strong_count(entry) == 1)
+                .min_by_key(|(key, entry)| (entry.last_use.load(Ordering::Relaxed), **key))
+                .map(|(key, _)| *key);
+            let Some(victim) = victim else {
+                break;
+            };
+            if let Some(entry) = shard.entries.remove(&victim) {
+                shard.resident_bytes = shard
+                    .resident_bytes
+                    .saturating_sub(entry.resident_bytes.load(Ordering::Relaxed));
+            }
+        }
+    }
+
+    fn entry(&self, key: ImpostorCandidateRegionKey) -> Arc<ImpostorCandidateRegion> {
+        let tick = self.clock.fetch_add(1, Ordering::Relaxed);
+        let index = Self::shard_index(key);
+        let mut shard = self.lock_shard(index);
+        if let Some(entry) = shard.entries.get(&key) {
+            entry.last_use.store(tick, Ordering::Relaxed);
+            return Arc::clone(entry);
+        }
+        let entry = Arc::new(ImpostorCandidateRegion::new(tick));
+        shard.entries.insert(key, Arc::clone(&entry));
+        Self::enforce_bound(&mut shard);
+        entry
+    }
+
+    fn record_bytes(
+        &self,
+        key: ImpostorCandidateRegionKey,
+        entry: &Arc<ImpostorCandidateRegion>,
+        bytes: usize,
+    ) {
+        let index = Self::shard_index(key);
+        let mut shard = self.lock_shard(index);
+        let still_resident = shard
+            .entries
+            .get(&key)
+            .is_some_and(|resident| Arc::ptr_eq(resident, entry));
+        if still_resident {
+            entry.resident_bytes.fetch_add(bytes, Ordering::Relaxed);
+            shard.resident_bytes = shard.resident_bytes.saturating_add(bytes);
+            Self::enforce_bound(&mut shard);
+        }
+    }
+
+    #[cfg(test)]
+    fn trim(&self) {
+        for index in 0..IMPOSTOR_CANDIDATE_CACHE_SHARDS {
+            let mut shard = self.lock_shard(index);
+            Self::enforce_bound(&mut shard);
+        }
+    }
+
+    fn trim_shards(&self, shard_mask: u16) {
+        for index in 0..IMPOSTOR_CANDIDATE_CACHE_SHARDS {
+            if shard_mask & (1u16 << index) == 0 {
+                continue;
+            }
+            let mut shard = self.lock_shard(index);
+            Self::enforce_bound(&mut shard);
+        }
+    }
+}
+
 pub struct Planet {
     pub radius_km: f64,
     pub seed: i64,
@@ -605,6 +809,10 @@ pub struct Planet {
     /// Shared baked climatology used by every W4 structural consumer. The
     /// renderer borrows this same Arc; there is no second seasonal field.
     pub weather: Option<std::sync::Arc<crate::weather::WeatherField>>,
+    /// Bounded annual forest-candidate stream shared by concurrent tile
+    /// builds. Seasonal color/temperature and authoritative column gates are
+    /// deliberately not retained here.
+    impostor_candidates: ImpostorCandidateCache,
 }
 
 /// Lightweight all-land fixture for sibling-module unit tests that exercise
@@ -633,6 +841,7 @@ pub(crate) fn weather_test_planet(seed: i64) -> Planet {
         faces: (0..6).map(|_| face()).collect(),
         rivers: crate::rivers::RiverIndex::empty(6371.0),
         weather: None,
+        impostor_candidates: ImpostorCandidateCache::default(),
     }
 }
 
@@ -729,7 +938,14 @@ impl Planet {
                 None
             }
         };
-        Ok(Self { radius_km, seed, faces, rivers, weather })
+        Ok(Self {
+            radius_km,
+            seed,
+            faces,
+            rivers,
+            weather,
+            impostor_candidates: ImpostorCandidateCache::default(),
+        })
     }
 
     /// Bilinear sample of a per-face f32 layer at (u, v) in [-1, 1].
@@ -1135,6 +1351,533 @@ impl Planet {
             }
         }
         true
+    }
+
+    /// Prove that the unwarped annual temperature at every point in a
+    /// same-face rectangle is below the authoritative non-shrub treeline.
+    /// Candidate enumeration has already rejected shrubs, so this is the
+    /// exact ColCtx/cheap-root rejection hoisted ahead of the dense lattice.
+    /// Bilinear extrema occur at the rectangle corners and crossed texel
+    /// boundaries; the small margin absorbs f32 interpolation rounding.
+    #[inline]
+    pub(crate) fn vegetation_region_below_treeline(
+        &self,
+        face: usize,
+        u0: f64,
+        u1: f64,
+        v0: f64,
+        v1: f64,
+    ) -> bool {
+        debug_assert!(face < self.faces.len());
+        let raster = &self.faces[face];
+        let d = (raster.res - 1) as f64;
+        let coordinate = |value: f64| ((value * 0.5 + 0.5) * d).clamp(0.0, d);
+        let (xa, xb) = (coordinate(u0.min(u1)), coordinate(u0.max(u1)));
+        let (ya, yb) = (coordinate(v0.min(v1)), coordinate(v0.max(v1)));
+        let mut xs = vec![xa, xb];
+        xs.extend((xa.ceil() as usize..=xb.floor() as usize).map(|x| x as f64));
+        xs.sort_by(f64::total_cmp);
+        xs.dedup();
+        let mut ys = vec![ya, yb];
+        ys.extend((ya.ceil() as usize..=yb.floor() as usize).map(|y| y as f64));
+        ys.sort_by(f64::total_cmp);
+        ys.dedup();
+        let proof_limit = crate::voxel::TREE_MIN_TEMP_C as f32 - 0.01;
+        for &y in &ys {
+            for &x in &xs {
+                let temp = Self::climate_bilinear_xy(raster, x, y)[0];
+                if !temp.is_finite() || temp >= proof_limit {
+                    return false;
+                }
+            }
+        }
+        true
+    }
+
+    #[inline]
+    fn impostor_candidate_partition_index(column: u64, partitions: u64) -> u16 {
+        debug_assert!(column < COLUMNS_PER_FACE);
+        debug_assert!(partitions > 0 && partitions <= u16::MAX as u64);
+        ((column * partitions) / COLUMNS_PER_FACE) as u16
+    }
+
+    #[inline]
+    fn impostor_candidate_partition_bounds(region: u16, partitions: u64) -> (u64, u64) {
+        debug_assert!(partitions > 0 && partitions <= u16::MAX as u64);
+        debug_assert!(u64::from(region) < partitions);
+        let region = u64::from(region);
+        let start = (region * COLUMNS_PER_FACE).div_ceil(partitions);
+        let end = ((region + 1) * COLUMNS_PER_FACE)
+            .div_ceil(partitions)
+            .saturating_sub(1);
+        debug_assert!(start <= end && end < COLUMNS_PER_FACE);
+        (start, end)
+    }
+
+    #[inline]
+    fn impostor_candidate_region_index(column: u64) -> u16 {
+        Self::impostor_candidate_partition_index(column, IMPOSTOR_CANDIDATE_REGIONS_PER_FACE)
+    }
+
+    #[inline]
+    fn impostor_candidate_region_bounds(region: u16) -> (u64, u64) {
+        Self::impostor_candidate_partition_bounds(region, IMPOSTOR_CANDIDATE_REGIONS_PER_FACE)
+    }
+
+    fn impostor_candidate_bounds_phase_reject_all(
+        &self,
+        face: u8,
+        ci0: u64,
+        ci1: u64,
+        cj0: u64,
+        cj1: u64,
+    ) -> bool {
+        let nnf = COLUMNS_PER_FACE as f64;
+        let col_uv = |column: u64| -1.0 + 2.0 * (column as f64 + 0.5) / nnf;
+        let barren_interior = |koppen, forest| {
+            forest <= 1e-4
+                && !matches!(
+                    crate::voxel::tree_kind_density(koppen),
+                    Some((kind, _)) if kind != crate::voxel::TreeKind::Shrub
+                )
+        };
+        self.vegetation_region_all_interior(
+            face as usize,
+            col_uv(ci0),
+            col_uv(ci1),
+            col_uv(cj0),
+            col_uv(cj1),
+            barren_interior,
+        ) || self.vegetation_region_always_snow(
+            face as usize,
+            col_uv(ci0),
+            col_uv(ci1),
+            col_uv(cj0),
+            col_uv(cj1),
+        )
+    }
+
+    fn impostor_candidate_bounds_emit_none(
+        &self,
+        face: u8,
+        ci0: u64,
+        ci1: u64,
+        cj0: u64,
+        cj1: u64,
+        depth: u32,
+    ) -> bool {
+        if self.impostor_candidate_bounds_phase_reject_all(face, ci0, ci1, cj0, cj1) {
+            return true;
+        }
+        let nnf = COLUMNS_PER_FACE as f64;
+        let col_uv = |column: u64| -1.0 + 2.0 * (column as f64 + 0.5) / nnf;
+        if self.vegetation_region_below_treeline(
+            face as usize,
+            col_uv(ci0),
+            col_uv(ci1),
+            col_uv(cj0),
+            col_uv(cj1),
+        ) {
+            return true;
+        }
+        if depth == 0 || (ci0 == ci1 && cj0 == cj1) {
+            return false;
+        }
+
+        let ci_width = ci1 - ci0 + 1;
+        let cj_width = cj1 - cj0 + 1;
+        let ci_parts = if ci_width > 1 { 2 } else { 1 };
+        let cj_parts = if cj_width > 1 { 2 } else { 1 };
+        for pi in 0..ci_parts {
+            let child_ci0 = ci0 + (pi * ci_width).div_ceil(ci_parts);
+            let child_ci1 = ci0 + ((pi + 1) * ci_width).div_ceil(ci_parts) - 1;
+            for pj in 0..cj_parts {
+                let child_cj0 = cj0 + (pj * cj_width).div_ceil(cj_parts);
+                let child_cj1 = cj0 + ((pj + 1) * cj_width).div_ceil(cj_parts) - 1;
+                if !self.impostor_candidate_bounds_emit_none(
+                    face,
+                    child_ci0,
+                    child_ci1,
+                    child_cj0,
+                    child_cj1,
+                    depth - 1,
+                ) {
+                    return false;
+                }
+            }
+        }
+        true
+    }
+
+    /// Prove that every old phase-one candidate in this exact tile lattice is
+    /// rejected either by phase one itself or by the authoritative annual
+    /// treeline. This proof is legal only for the whole tile: partially
+    /// removing late-rejected candidates would change cap/boost accounting.
+    pub(crate) fn impostor_tile_emits_none(
+        &self,
+        face: u8,
+        ci0: u64,
+        ci1: u64,
+        cj0: u64,
+        cj1: u64,
+    ) -> bool {
+        // This is a conservative proof API: malformed bounds prove nothing.
+        // Reject them before any face slice access or recursive arithmetic.
+        if usize::from(face) >= self.faces.len()
+            || ci0 > ci1
+            || cj0 > cj1
+            || ci1 >= COLUMNS_PER_FACE
+            || cj1 >= COLUMNS_PER_FACE
+        {
+            return false;
+        }
+        self.impostor_candidate_bounds_emit_none(
+            face,
+            ci0,
+            ci1,
+            cj0,
+            cj1,
+            IMPOSTOR_CANDIDATE_TILE_PROOF_DEPTH,
+        )
+    }
+
+    fn impostor_candidate_region_rejects_all(&self, key: ImpostorCandidateRegionKey) -> bool {
+        let (ci0, ci1) = Self::impostor_candidate_region_bounds(key.ri);
+        let (cj0, cj1) = Self::impostor_candidate_region_bounds(key.rj);
+        self.impostor_candidate_bounds_phase_reject_all(key.face, ci0, ci1, cj0, cj1)
+    }
+
+    fn retain_impostor_candidate_proof_cell(
+        &self,
+        key: ImpostorCandidateRegionKey,
+        ci0: u64,
+        ci1: u64,
+        cj0: u64,
+        cj1: u64,
+        depth: u32,
+        cells: &mut Vec<ImpostorCandidateProofCell>,
+    ) {
+        if depth == 0 {
+            cells.push(ImpostorCandidateProofCell { ci0, ci1, cj0, cj1 });
+            return;
+        }
+
+        let ci_width = ci1 - ci0 + 1;
+        let cj_width = cj1 - cj0 + 1;
+        let ci_parts = if ci_width > 1 { 2 } else { 1 };
+        let cj_parts = if cj_width > 1 { 2 } else { 1 };
+        let mut children = Vec::with_capacity((ci_parts * cj_parts) as usize);
+        let mut rejected_any = false;
+        for pi in 0..ci_parts {
+            let child_ci0 = ci0 + (pi * ci_width).div_ceil(ci_parts);
+            let child_ci1 = ci0 + ((pi + 1) * ci_width).div_ceil(ci_parts) - 1;
+            for pj in 0..cj_parts {
+                let child_cj0 = cj0 + (pj * cj_width).div_ceil(cj_parts);
+                let child_cj1 = cj0 + ((pj + 1) * cj_width).div_ceil(cj_parts) - 1;
+                let rejects = self.impostor_candidate_bounds_phase_reject_all(
+                    key.face, child_ci0, child_ci1, child_cj0, child_cj1,
+                );
+                rejected_any |= rejects;
+                children.push((child_ci0, child_ci1, child_cj0, child_cj1, rejects));
+            }
+        }
+        // If this subdivision proved nothing, deeper checks are optional for
+        // correctness and would only tax an ordinary warm dense region.
+        if !rejected_any {
+            cells.push(ImpostorCandidateProofCell { ci0, ci1, cj0, cj1 });
+            return;
+        }
+        for (child_ci0, child_ci1, child_cj0, child_cj1, rejects) in children {
+            if !rejects {
+                self.retain_impostor_candidate_proof_cell(
+                    key,
+                    child_ci0,
+                    child_ci1,
+                    child_cj0,
+                    child_cj1,
+                    depth - 1,
+                    cells,
+                );
+            }
+        }
+    }
+
+    fn build_impostor_candidate_proof_cells(
+        &self,
+        key: ImpostorCandidateRegionKey,
+    ) -> Arc<[ImpostorCandidateProofCell]> {
+        let (region_ci0, region_ci1) = Self::impostor_candidate_region_bounds(key.ri);
+        let (region_cj0, region_cj1) = Self::impostor_candidate_region_bounds(key.rj);
+        let ci_width = region_ci1 - region_ci0 + 1;
+        let cj_width = region_cj1 - region_cj0 + 1;
+        let divisions = IMPOSTOR_CANDIDATE_PROOF_INITIAL_DIVISIONS;
+        let mut tested = Vec::with_capacity((divisions * divisions) as usize);
+        let mut rejected_any = false;
+        for pi in 0..divisions {
+            let ci0 = region_ci0 + (pi * ci_width).div_ceil(divisions);
+            let ci1 = region_ci0 + ((pi + 1) * ci_width).div_ceil(divisions) - 1;
+            for pj in 0..divisions {
+                let cj0 = region_cj0 + (pj * cj_width).div_ceil(divisions);
+                let cj1 = region_cj0 + ((pj + 1) * cj_width).div_ceil(divisions) - 1;
+                let rejects =
+                    self.impostor_candidate_bounds_phase_reject_all(key.face, ci0, ci1, cj0, cj1);
+                rejected_any |= rejects;
+                tested.push((ci0, ci1, cj0, cj1, rejects));
+            }
+        }
+
+        let mut cells = Vec::new();
+        if !rejected_any {
+            cells.push(ImpostorCandidateProofCell {
+                ci0: region_ci0,
+                ci1: region_ci1,
+                cj0: region_cj0,
+                cj1: region_cj1,
+            });
+        } else {
+            for (ci0, ci1, cj0, cj1, rejects) in tested {
+                if !rejects {
+                    self.retain_impostor_candidate_proof_cell(
+                        key,
+                        ci0,
+                        ci1,
+                        cj0,
+                        cj1,
+                        IMPOSTOR_CANDIDATE_PROOF_REFINEMENT_DEPTH,
+                        &mut cells,
+                    );
+                }
+            }
+        }
+        Arc::from(cells.into_boxed_slice())
+    }
+
+    #[inline]
+    fn impostor_candidate_site(region_ci0: u64, region_cj0: u64, ci: u64, cj: u64) -> Option<u32> {
+        let ci = u16::try_from(ci.checked_sub(region_ci0)?).ok()?;
+        let cj = u16::try_from(cj.checked_sub(region_cj0)?).ok()?;
+        Some((u32::from(ci) << 16) | u32::from(cj))
+    }
+
+    /// Evaluate the exact old phase-one profile after the caller has applied
+    /// its own comp-scaled lottery gate. Negative results are retained too;
+    /// they are just as expensive and just as annual as positive profiles.
+    fn evaluate_impostor_candidate_profile(
+        &self,
+        face: u8,
+        ci: u64,
+        cj: u64,
+        site: u32,
+    ) -> LeanImpostorProfile {
+        let face_index = usize::from(face);
+        let nnf = COLUMNS_PER_FACE as f64;
+        let u = -1.0 + 2.0 * (ci as f64 + 0.5) / nnf;
+        let v = -1.0 + 2.0 * (cj as f64 + 0.5) / nnf;
+        let barren_interior = |koppen, forest| {
+            forest <= 1e-4
+                && !matches!(
+                    crate::voxel::tree_kind_density(koppen),
+                    Some((kind, _)) if kind != crate::voxel::TreeKind::Shrub
+                )
+        };
+        let interior = self.vegetation_interior(face_index, u, v);
+        if interior.is_some_and(|(koppen, forest)| barren_interior(koppen, forest)) {
+            return LeanImpostorProfile {
+                density: 0.0,
+                site,
+                kind: None,
+            };
+        }
+        let (temp, precip) = self.temp_precip(face_index, u, v);
+        // This was the direct loop's second exact cheap gate. The v1 cache
+        // accidentally dropped it along with the request-scaled lot gate.
+        if interior.is_some() && (temp as f64) < VEGETATION_UNCONDITIONAL_SNOW_C {
+            return LeanImpostorProfile {
+                density: 0.0,
+                site,
+                kind: None,
+            };
+        }
+        let vegetation = vegetation_surface(self, face_index, u, v, temp as f64, precip as f64);
+        let profile = crate::voxel::tree_biome_profile(
+            vegetation.koppen,
+            vegetation.main_block,
+            vegetation.forest,
+            vegetation.temp_c,
+            vegetation.precip_mm_yr,
+        )
+        .filter(|(kind, _)| *kind != crate::voxel::TreeKind::Shrub);
+        match profile {
+            Some((kind, density)) => LeanImpostorProfile {
+                density,
+                site,
+                kind: Some(kind),
+            },
+            None => LeanImpostorProfile {
+                density: 0.0,
+                site,
+                kind: None,
+            },
+        }
+    }
+
+    /// Return the exact annual candidate stream for one render-tile lattice.
+    /// Every miss is incremental and request-bounded: enumerate only the
+    /// requested intersection, apply this LOD's cheap lottery first, reuse or
+    /// compute the sparse expensive profiles, then merge misses without
+    /// holding a region lock during climate work. The final sort restores the
+    /// direct loop's ci-major/cj-minor order, making cache state unobservable.
+    pub(crate) fn impostor_candidates(
+        &self,
+        face: u8,
+        ci_start: u64,
+        ci_end: u64,
+        cj_start: u64,
+        cj_end: u64,
+        stride: u64,
+    ) -> Vec<ImpostorCandidate> {
+        if ci_start > ci_end || cj_start > cj_end {
+            return Vec::new();
+        }
+        if usize::from(face) >= self.faces.len()
+            || ci_end >= COLUMNS_PER_FACE
+            || cj_end >= COLUMNS_PER_FACE
+            || !IMPOSTOR_CANDIDATE_STRIDES.contains(&stride)
+        {
+            return Vec::new();
+        }
+        let ri0 = Self::impostor_candidate_region_index(ci_start);
+        let ri1 = Self::impostor_candidate_region_index(ci_end);
+        let rj0 = Self::impostor_candidate_region_index(cj_start);
+        let rj1 = Self::impostor_candidate_region_index(cj_end);
+        let ri_count = usize::from(ri1) - usize::from(ri0) + 1;
+        let rj_count = usize::from(rj1) - usize::from(rj0) + 1;
+        let mut keys = Vec::with_capacity(ri_count * rj_count);
+        let mut touched_shards = 0u16;
+        for ri in ri0..=ri1 {
+            for rj in rj0..=rj1 {
+                let key = ImpostorCandidateRegionKey { face, ri, rj };
+                touched_shards |= 1u16 << ImpostorCandidateCache::shard_index(key);
+                keys.push(key);
+            }
+        }
+
+        let comp = (stride * stride) as f64;
+        let mut candidates: Vec<ImpostorCandidate> = Vec::new();
+        for key in keys {
+            let entry = self.impostor_candidates.entry(key);
+            if *entry
+                .rejects_all
+                .get_or_init(|| self.impostor_candidate_region_rejects_all(key))
+            {
+                continue;
+            }
+            let proof_cells = entry.proof_cells.get_or_init(|| {
+                let cells = self.build_impostor_candidate_proof_cells(key);
+                self.impostor_candidates.record_bytes(
+                    key,
+                    &entry,
+                    cells.len() * std::mem::size_of::<ImpostorCandidateProofCell>(),
+                );
+                cells
+            });
+            let (region_ci0, _) = Self::impostor_candidate_region_bounds(key.ri);
+            let (region_cj0, _) = Self::impostor_candidate_region_bounds(key.rj);
+            let mut gated = Vec::new();
+            for cell in proof_cells.iter() {
+                let cell_ci0 = cell.ci0.max(ci_start);
+                let cell_ci1 = cell.ci1.min(ci_end);
+                let cell_cj0 = cell.cj0.max(cj_start);
+                let cell_cj1 = cell.cj1.min(cj_end);
+                if cell_ci0 > cell_ci1 || cell_cj0 > cell_cj1 {
+                    continue;
+                }
+                let first_ci = cell_ci0.div_ceil(stride) * stride;
+                let first_cj = cell_cj0.div_ceil(stride) * stride;
+                if first_ci > cell_ci1 || first_cj > cell_cj1 {
+                    continue;
+                }
+                for ci in (first_ci..=cell_ci1).step_by(stride as usize) {
+                    for cj in (first_cj..=cell_cj1).step_by(stride as usize) {
+                        let lot = crate::voxel::tree_hash01(face, ci, cj, self.seed);
+                        if lot >= crate::voxel::MAX_TREE_DENSITY * comp {
+                            continue;
+                        }
+                        // Region widths are ~611 columns, but keep this fully
+                        // checked: a malformed partition can fall back to an
+                        // uncached exact profile instead of panicking.
+                        let site = Self::impostor_candidate_site(region_ci0, region_cj0, ci, cj);
+                        gated.push((ci, cj, site, lot));
+                    }
+                }
+            }
+
+            let cached: Vec<Option<LeanImpostorProfile>> = {
+                let profiles = entry
+                    .profiles
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                gated
+                    .iter()
+                    .map(|&(_, _, site, _)| {
+                        let site = site?;
+                        profiles
+                            .binary_search_by_key(&site, |profile| profile.site)
+                            .ok()
+                            .and_then(|index| profiles.get(index).copied())
+                    })
+                    .collect()
+            };
+            let mut computed = Vec::new();
+            let resolved: Vec<LeanImpostorProfile> = gated
+                .iter()
+                .zip(cached)
+                .map(|(&(ci, cj, site, _), cached)| {
+                    cached.unwrap_or_else(|| {
+                        let site = site.unwrap_or(u32::MAX);
+                        let profile = self.evaluate_impostor_candidate_profile(face, ci, cj, site);
+                        if site != u32::MAX {
+                            computed.push(profile);
+                        }
+                        profile
+                    })
+                })
+                .collect();
+
+            if !computed.is_empty() {
+                let added_capacity = {
+                    let mut profiles = entry
+                        .profiles
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    let old_capacity = profiles.capacity();
+                    profiles.extend(computed);
+                    profiles.sort_unstable_by_key(|profile| profile.site);
+                    profiles.dedup_by_key(|profile| profile.site);
+                    profiles.capacity().saturating_sub(old_capacity)
+                };
+                self.impostor_candidates.record_bytes(
+                    key,
+                    &entry,
+                    added_capacity * std::mem::size_of::<LeanImpostorProfile>(),
+                );
+            }
+
+            for ((ci, cj, _, lot), profile) in gated.into_iter().zip(resolved) {
+                let Some(kind) = profile.kind else {
+                    continue;
+                };
+                if lot < profile.density * comp {
+                    candidates.push((ci, cj, kind, lot, profile.density));
+                }
+            }
+        }
+        // All per-region entry Arcs from this request are gone here. Trim
+        // after the request so concurrent builds may overshoot only while
+        // their workers are actively consuming entries.
+        self.impostor_candidates.trim_shards(touched_shards);
+        candidates.sort_unstable_by_key(|&(ci, cj, _, _, _)| (ci, cj));
+        candidates
     }
 
     /// The ONE position transform for every biome-class and biome-tint read.
@@ -2551,11 +3294,79 @@ mod tests {
             faces: (0..6).map(|_| face()).collect(),
             rivers: crate::rivers::RiverIndex::empty(1.0),
             weather: None,
+            impostor_candidates: ImpostorCandidateCache::default(),
         }
     }
 
     fn climate_test_planet(right_class: u8) -> Planet {
         climate_test_planet_res(right_class, 4)
+    }
+
+    fn uncached_impostor_candidates(
+        planet: &Planet,
+        face: u8,
+        ci_start: u64,
+        ci_end: u64,
+        cj_start: u64,
+        cj_end: u64,
+        stride: u64,
+    ) -> Vec<ImpostorCandidate> {
+        let nnf = COLUMNS_PER_FACE as f64;
+        let comp = (stride * stride) as f64;
+        let barren_interior = |koppen, forest| {
+            forest <= 1e-4
+                && !matches!(
+                    crate::voxel::tree_kind_density(koppen),
+                    Some((kind, _)) if kind != crate::voxel::TreeKind::Shrub
+                )
+        };
+        let mut candidates = Vec::new();
+        for ci in (ci_start..=ci_end).step_by(stride as usize) {
+            for cj in (cj_start..=cj_end).step_by(stride as usize) {
+                let lot = crate::voxel::tree_hash01(face, ci, cj, planet.seed);
+                if lot >= crate::voxel::MAX_TREE_DENSITY * comp {
+                    continue;
+                }
+                let u = -1.0 + 2.0 * (ci as f64 + 0.5) / nnf;
+                let v = -1.0 + 2.0 * (cj as f64 + 0.5) / nnf;
+                let interior = planet.vegetation_interior(face as usize, u, v);
+                if interior.is_some_and(|(koppen, forest)| barren_interior(koppen, forest)) {
+                    continue;
+                }
+                let (temp, precip) = planet.temp_precip(face as usize, u, v);
+                let vegetation =
+                    vegetation_surface(planet, face as usize, u, v, temp as f64, precip as f64);
+                let Some((kind, density)) = crate::voxel::tree_biome_profile(
+                    vegetation.koppen,
+                    vegetation.main_block,
+                    vegetation.forest,
+                    vegetation.temp_c,
+                    vegetation.precip_mm_yr,
+                ) else {
+                    continue;
+                };
+                if kind == crate::voxel::TreeKind::Shrub || lot >= density * comp {
+                    continue;
+                }
+                candidates.push((ci, cj, kind, lot, density));
+            }
+        }
+        candidates
+    }
+
+    fn assert_impostor_candidates_bits_eq(
+        actual: &[ImpostorCandidate],
+        expected: &[ImpostorCandidate],
+    ) {
+        assert_eq!(actual.len(), expected.len());
+        for (actual, expected) in actual.iter().zip(expected) {
+            assert_eq!(
+                (actual.0, actual.1, actual.2),
+                (expected.0, expected.1, expected.2)
+            );
+            assert_eq!(actual.3.to_bits(), expected.3.to_bits());
+            assert_eq!(actual.4.to_bits(), expected.4.to_bits());
+        }
     }
 
     fn assert_surface_bits_eq(left: ClimateSurface, right: ClimateSurface) {
@@ -2791,6 +3602,214 @@ mod tests {
             face.climate.fill([8.0, 500.0]);
         }
         assert!(!cold.vegetation_region_always_snow(0, 0.4, 0.6, -0.2, 0.2));
+    }
+
+    #[test]
+    fn impostor_candidate_cache_matches_uncached_stream_across_strides() {
+        let planet = climate_test_planet_res(13, 128);
+        let (ci0, ci1) = (4_999_680, 5_000_191);
+        let (cj0, cj1) = (5_123_200, 5_123_711);
+        let strides = [8, 4, 2, 1];
+        let expected: Vec<Vec<ImpostorCandidate>> = strides
+            .iter()
+            .map(|&stride| uncached_impostor_candidates(&planet, 0, ci0, ci1, cj0, cj1, stride))
+            .collect();
+        for (&stride, expected) in strides.iter().zip(&expected) {
+            let miss = planet.impostor_candidates(0, ci0, ci1, cj0, cj1, stride);
+            assert_impostor_candidates_bits_eq(&miss, expected);
+            let hit = planet.impostor_candidates(0, ci0, ci1, cj0, cj1, stride);
+            assert_impostor_candidates_bits_eq(&hit, expected);
+        }
+
+        // A fresh cache may receive overlapping sparse misses from different
+        // Rayon workers. Climate work happens outside the profile lock and
+        // duplicate pure results collapse during merge; every caller still
+        // observes the same ordered stream.
+        use rayon::prelude::*;
+        let concurrent = climate_test_planet_res(13, 128);
+        let actual: Vec<Vec<ImpostorCandidate>> = strides
+            .par_iter()
+            .map(|&stride| concurrent.impostor_candidates(0, ci0, ci1, cj0, cj1, stride))
+            .collect();
+        for (actual, expected) in actual.iter().zip(&expected) {
+            assert_impostor_candidates_bits_eq(actual, expected);
+        }
+    }
+
+    #[test]
+    fn impostor_cache_preserves_pre_decimation_treeline_candidates() {
+        let (ci0, ci1) = (5_200_000, 5_200_255);
+        let (cj0, cj1) = (5_300_000, 5_300_255);
+        let stride = 4;
+        for temp in [-6.1_f32, -6.0, -5.9] {
+            let mut planet = climate_test_planet_res(13, 128);
+            for face in &mut planet.faces {
+                face.climate.fill([temp, 500.0]);
+            }
+            let old_phase = uncached_impostor_candidates(&planet, 0, ci0, ci1, cj0, cj1, stride);
+            let cached = planet.impostor_candidates(0, ci0, ci1, cj0, cj1, stride);
+            assert_impostor_candidates_bits_eq(&cached, &old_phase);
+            if temp < crate::voxel::TREE_MIN_TEMP_C as f32 {
+                assert!(!old_phase.is_empty());
+                assert!(planet.vegetation_region_below_treeline(
+                    0,
+                    -1.0 + 2.0 * (ci0 as f64 + 0.5) / COLUMNS_PER_FACE as f64,
+                    -1.0 + 2.0 * (ci1 as f64 + 0.5) / COLUMNS_PER_FACE as f64,
+                    -1.0 + 2.0 * (cj0 as f64 + 0.5) / COLUMNS_PER_FACE as f64,
+                    -1.0 + 2.0 * (cj1 as f64 + 0.5) / COLUMNS_PER_FACE as f64,
+                ));
+            } else {
+                assert!(!cached.is_empty());
+            }
+        }
+    }
+
+    #[test]
+    fn impostor_whole_tile_proof_combines_phase_and_late_rejections() {
+        let res = 128;
+        let mut planet = climate_test_planet_res(13, res);
+        for face in &mut planet.faces {
+            for y in 0..res {
+                for x in 0..res {
+                    // The warm left side is shrub-only. Make the climate cold
+                    // well before the forest/class edge so every ambiguous
+                    // edge lookup is below the late non-shrub treeline.
+                    face.climate[y * res + x][0] = if x < res / 2 - 12 { 8.0 } else { -20.0 };
+                }
+            }
+        }
+        let to_col = |uv: f64| {
+            (((uv + 1.0) * 0.5 * COLUMNS_PER_FACE as f64)
+                .floor()
+                .clamp(0.0, COLUMNS_PER_FACE as f64 - 1.0)) as u64
+        };
+        let (ci0, ci1) = (to_col(-0.8), to_col(0.8));
+        let (cj0, cj1) = (to_col(-0.4), to_col(0.4));
+        assert!(!planet.impostor_candidate_bounds_phase_reject_all(0, ci0, ci1, cj0, cj1,));
+        assert!(!planet.vegetation_region_below_treeline(0, -0.8, 0.8, -0.4, 0.4));
+        assert!(planet.impostor_tile_emits_none(0, ci0, ci1, cj0, cj1));
+
+        for face in &mut planet.faces {
+            face.climate.fill([8.0, 500.0]);
+        }
+        assert!(!planet.impostor_tile_emits_none(0, ci0, ci1, cj0, cj1));
+    }
+
+    #[test]
+    fn impostor_candidate_cache_enforces_entry_and_byte_bounds() {
+        let cache = ImpostorCandidateCache::default();
+        let target_shard = 0;
+        let mut inserted = 0;
+        'keys: for ri in 0..u16::MAX {
+            for rj in 0..u16::MAX {
+                let key = ImpostorCandidateRegionKey { face: 0, ri, rj };
+                if ImpostorCandidateCache::shard_index(key) != target_shard {
+                    continue;
+                }
+                drop(cache.entry(key));
+                inserted += 1;
+                if inserted > IMPOSTOR_CANDIDATE_CACHE_ENTRIES_PER_SHARD + 32 {
+                    break 'keys;
+                }
+            }
+        }
+        cache.trim();
+        assert!(
+            cache.lock_shard(target_shard).entries.len()
+                <= IMPOSTOR_CANDIDATE_CACHE_ENTRIES_PER_SHARD
+        );
+
+        let heavy_key = (0..u16::MAX)
+            .flat_map(|ri| (0..32).map(move |rj| ImpostorCandidateRegionKey { face: 1, ri, rj }))
+            .find(|&key| ImpostorCandidateCache::shard_index(key) == target_shard)
+            .unwrap();
+        let heavy = cache.entry(heavy_key);
+        cache.record_bytes(
+            heavy_key,
+            &heavy,
+            IMPOSTOR_CANDIDATE_CACHE_BYTES_PER_SHARD + 1,
+        );
+        drop(heavy);
+        cache.trim();
+        let shard = cache.lock_shard(target_shard);
+        assert!(shard.resident_bytes <= IMPOSTOR_CANDIDATE_CACHE_BYTES_PER_SHARD);
+        assert!(!shard.entries.contains_key(&heavy_key));
+    }
+
+    #[test]
+    fn impostor_candidate_partitions_and_sites_are_exact_at_both_face_edges() {
+        let partitions = IMPOSTOR_CANDIDATE_REGIONS_PER_FACE;
+        let mut next = 0u64;
+        for region in 0..partitions {
+            let region = u16::try_from(region).unwrap();
+            let (start, end) = Planet::impostor_candidate_region_bounds(region);
+            assert_eq!(start, next);
+            assert!(start <= end && end < COLUMNS_PER_FACE);
+            assert_eq!(Planet::impostor_candidate_region_index(start), region);
+            assert_eq!(Planet::impostor_candidate_region_index(end), region);
+
+            let first = Planet::impostor_candidate_site(start, start, start, start).unwrap();
+            assert_eq!(first, 0);
+            let last = Planet::impostor_candidate_site(start, start, end, end).unwrap();
+            assert_eq!(u64::from(last >> 16), end - start);
+            assert_eq!(u64::from(last & 0xffff), end - start);
+            next = end + 1;
+        }
+        assert_eq!(next, COLUMNS_PER_FACE);
+        assert_eq!(Planet::impostor_candidate_region_index(0), 0);
+        assert_eq!(
+            Planet::impostor_candidate_region_index(COLUMNS_PER_FACE - 1),
+            u16::try_from(partitions - 1).unwrap()
+        );
+
+        // Checked packing refuses an invalid offset instead of truncating it.
+        assert!(Planet::impostor_candidate_site(0, 0, u64::from(u16::MAX) + 1, 0).is_none());
+        assert!(Planet::impostor_candidate_site(0, 0, 0, u64::from(u16::MAX) + 1).is_none());
+    }
+
+    #[test]
+    fn impostor_candidate_cache_matches_direct_stream_at_every_face_edge() {
+        let planet = climate_test_planet_res(13, 128);
+        let edge = COLUMNS_PER_FACE - 128;
+        let ranges = [
+            (0, 127, 0, 127),
+            (0, 127, edge, COLUMNS_PER_FACE - 1),
+            (edge, COLUMNS_PER_FACE - 1, 0, 127),
+            (edge, COLUMNS_PER_FACE - 1, edge, COLUMNS_PER_FACE - 1),
+        ];
+        for face in 0..6 {
+            for &(ci0, ci1, cj0, cj1) in &ranges {
+                for stride in IMPOSTOR_CANDIDATE_STRIDES {
+                    let expected =
+                        uncached_impostor_candidates(&planet, face, ci0, ci1, cj0, cj1, stride);
+                    let actual = planet.impostor_candidates(face, ci0, ci1, cj0, cj1, stride);
+                    assert_impostor_candidates_bits_eq(&actual, &expected);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn impostor_candidate_entry_points_reject_malformed_bounds_without_panicking() {
+        let planet = climate_test_planet_res(13, 128);
+        for args in [
+            (6, 0, 0, 0, 0, 1),
+            (0, 2, 1, 0, 0, 1),
+            (0, 0, 0, 2, 1, 1),
+            (0, 0, COLUMNS_PER_FACE, 0, 0, 1),
+            (0, 0, 0, 0, COLUMNS_PER_FACE, 1),
+            (0, 0, 0, 0, 0, 0),
+            (0, 0, 0, 0, 0, 3),
+        ] {
+            assert!(
+                planet
+                    .impostor_candidates(args.0, args.1, args.2, args.3, args.4, args.5)
+                    .is_empty()
+            );
+        }
+        assert!(!planet.impostor_tile_emits_none(6, 0, 0, 0, 0));
+        assert!(!planet.impostor_tile_emits_none(0, 1, 0, 0, 0));
+        assert!(!planet.impostor_tile_emits_none(0, 0, COLUMNS_PER_FACE, 0, 0));
     }
 
     #[test]
@@ -3389,4 +4408,5 @@ mod tests {
         assert!(checked > 0, "no seam pairs sampled");
         eprintln!("ocean_mask_seam_exact: {checked} seam pairs verified");
     }
+
 }

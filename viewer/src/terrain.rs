@@ -11,10 +11,9 @@
 use crate::noise::{fbm_band, gradient_noise, ridged_band};
 use crate::planet::{
     climate_surface_pair, climate_surface_pair_at_season, face_dir, sea_from_fields,
-    vegetation_surface, ClimateSurface, MainBlock, Planet, BIOME_RANGE_FAMILIES,
+    ClimateSurface, MainBlock, Planet, BIOME_RANGE_FAMILIES,
     BIOME_RANGE_UNRESOLVED_MEAN, COLUMNS_PER_FACE, ECOTONE_BASE_PATCH_COLUMNS,
     ECOTONE_FIELD_OCTAVES, ECOTONE_LACUNARITY, ECOTONE_PERSISTENCE,
-    VEGETATION_UNCONDITIONAL_SNOW_C,
 };
 use crate::weather::StructuralSeason;
 use glam::DVec3;
@@ -1357,6 +1356,56 @@ pub fn build_tile(planet: &Planet, key: TileKey, exaggeration: f64) -> TileMesh 
     )
 }
 
+fn impostor_stride_for_level(level: u8) -> u64 {
+    match level {
+        14 => 1,
+        13 => 2,
+        12 => 4,
+        11 => 8,
+        _ => 0,
+    }
+}
+
+fn impostor_lattice_bounds(key: TileKey) -> Option<(u64, u64, u64, u64, u64)> {
+    let stride = impostor_stride_for_level(key.level);
+    if stride == 0 {
+        return None;
+    }
+    let (u0, v0, size) = key.uv_range();
+    let columns = crate::voxel::COLUMNS_PER_FACE;
+    let columns_f = columns as f64;
+    let to_column = |x: f64| {
+        (((x + 1.0) * 0.5 * columns_f)
+            .floor()
+            .clamp(0.0, columns_f - 1.0)) as u64
+    };
+    let (ci0, ci1) = (to_column(u0), to_column(u0 + size));
+    let (cj0, cj1) = (to_column(v0), to_column(v0 + size));
+    let snap = |x: u64| x.div_ceil(stride) * stride;
+    Some((snap(ci0), ci1, snap(cj0), cj1, stride))
+}
+
+/// Populate the exact annual candidate stream for a future tile without
+/// terrain sampling or mesh/GPU allocation. The count lets the live scheduler
+/// distinguish a genuinely productive exact-replacement slice from barren
+/// work using the same authoritative stream the tile will consume.
+pub(crate) fn warm_impostor_candidates(planet: &Planet, key: TileKey) -> usize {
+    let Some((ci_start, ci1, cj_start, cj1, stride)) = impostor_lattice_bounds(key) else {
+        return 0;
+    };
+    if ci_start > ci1 || cj_start > cj1 {
+        return 0;
+    }
+    let ci_end = ci1 - (ci1 - ci_start) % stride;
+    let cj_end = cj1 - (cj1 - cj_start) % stride;
+    if planet.impostor_tile_emits_none(key.face, ci_start, ci_end, cj_start, cj_end) {
+        return 0;
+    }
+    planet
+        .impostor_candidates(key.face, ci_start, ci1, cj_start, cj1, stride)
+        .len()
+}
+
 pub fn build_tile_at_season(
     planet: &Planet,
     key: TileKey,
@@ -1572,24 +1621,16 @@ pub fn build_tile_at_season(
     // forest at a mesh vertex budget; per-tree identity only matters where
     // blocks take over, and there the hole owns the view). Two phases so
     // the expensive terrain sample runs only on budget survivors.
-    let impostor_stride: u64 = match key.level {
-        14 => 1,
-        13 => 2,
-        12 => 4,
-        11 => 8,
-        _ => 0,
-    };
+    let impostor_stride = impostor_stride_for_level(key.level);
     if impostor_stride > 0 && std::env::var_os("TRI_NO_IMPOSTORS").is_none() {
         // trees per tile: the vertex/fill budget knob. Austin measured the
         // frame rate sagging at mid distance on the RTX 2060 at 4000/4000;
         // level 11 (whose trees are 1-3 px) carries a lighter load
         let impostor_cap: usize = if key.level == 12 { 2600 } else { 1400 };
         let s = impostor_stride;
-        let nn = crate::voxel::COLUMNS_PER_FACE;
-        let nnf = nn as f64;
-        let to_col = |x: f64| (((x + 1.0) * 0.5 * nnf).floor().clamp(0.0, nnf - 1.0)) as u64;
-        let (ci0, ci1) = (to_col(u0), to_col(u0 + size));
-        let (cj0, cj1) = (to_col(v0), to_col(v0 + size));
+        let nnf = crate::voxel::COLUMNS_PER_FACE as f64;
+        let (ci_start, ci1, cj_start, cj1, _) =
+            impostor_lattice_bounds(key).expect("impostor level has lattice bounds");
         let seed = planet.seed;
         let comp = (s * s) as f64; // stride density compensation
         let mut cands: Vec<(u64, u64, crate::voxel::TreeKind, f64, f64)> = Vec::new();
@@ -1598,100 +1639,20 @@ pub fn build_tile_at_season(
         // the lot-ranked cap below) most trees KEEP THEIR PLACES across a
         // LOD swap instead of re-rolling - the parent/child impostor-set
         // mismatch was the flashiest half of the motion flicker
-        let snap = |x: u64| x.div_ceil(s) * s;
-        let ci_start = snap(ci0);
-        let cj_start = snap(cj0);
-        let barren_interior = |koppen, forest| {
-            forest <= 1e-4
-                && !matches!(
-                    crate::voxel::tree_kind_density(koppen),
-                    Some((kind, _)) if kind != crate::voxel::TreeKind::Shrub
-                )
-        };
-        // At the polar/detail-load repros every candidate in many tiles hits
-        // the same exact barren-interior or unconditional-snow rejection
-        // below. A level 11-14 tile still walked roughly 370k columns to
-        // rediscover that fact. Prove it once over the handful of baked raster
-        // cells touched by the actual candidate centers, then skip only when
-        // every old iteration was guaranteed to reject. Boundary and
-        // tree-bearing tiles retain the byte-for-byte original enumeration
-        // path.
+        // Prove whole-tile rejections before touching the dense lattice.
+        // The adaptive proof may combine old phase-one rejections with the
+        // authoritative late treeline, but only when their union covers this
+        // entire tile. Partially dropping late-rejected candidates would
+        // change the established cap/boost accounting.
         let region_rejects_all = if ci_start <= ci1 && cj_start <= cj1 {
             let ci_end = ci1 - (ci1 - ci_start) % s;
             let cj_end = cj1 - (cj1 - cj_start) % s;
-            let col_uv = |column: u64| -1.0 + 2.0 * (column as f64 + 0.5) / nnf;
-            let (ua, ub) = (col_uv(ci_start), col_uv(ci_end));
-            let (va, vb) = (col_uv(cj_start), col_uv(cj_end));
-            planet.vegetation_region_all_interior(
-                face,
-                ua,
-                ub,
-                va,
-                vb,
-                barren_interior,
-            ) || planet.vegetation_region_always_snow(face, ua, ub, va, vb)
+            planet.impostor_tile_emits_none(face as u8, ci_start, ci_end, cj_start, cj_end)
         } else {
             true
         };
         if !region_rejects_all {
-            for ci in (ci_start..=ci1).step_by(s as usize) {
-                for cj in (cj_start..=cj1).step_by(s as usize) {
-                    let lot = crate::voxel::tree_hash01(face as u8, ci, cj, seed);
-                    if lot >= crate::voxel::MAX_TREE_DENSITY * comp {
-                        continue; // cheapest gate: above every biome's density
-                    }
-                    let u = -1.0 + 2.0 * (ci as f64 + 0.5) / nnf;
-                    let v = -1.0 + 2.0 * (cj as f64 + 0.5) / nnf;
-                    // A same-class interior with zero forest signal cannot grow a
-                    // billboard when its established profile is barren or shrub.
-                    // Snow can only suppress that result. Prove this before the
-                    // temperature read and procedural biome field; boundaries and
-                    // all tree-bearing interiors still take the exact path below.
-                    let interior = planet.vegetation_interior(face, u, v);
-                    if interior
-                        .is_some_and(|(koppen, forest)| barren_interior(koppen, forest))
-                    {
-                        continue;
-                    }
-                    // Candidate enumeration uses the same warped climate and
-                    // locally-dithered main block as voxel trees. The authoritative
-                    // ColCtx pass below still owns water/beach/cave eligibility.
-                    let (temp, precip) = planet.temp_precip(face, u, v);
-                    // `vegetation_interior` proves the climate lookup will not
-                    // warp. Below the unconditional snowline the exact surface
-                    // path therefore returns Snow before consulting its dither,
-                    // and `tree_biome_profile` must reject. This is the same
-                    // predicate hoisted ahead of the expensive surface build.
-                    if interior.is_some()
-                        && (temp as f64) < VEGETATION_UNCONDITIONAL_SNOW_C
-                    {
-                        continue;
-                    }
-                    let vegetation = vegetation_surface(
-                        planet,
-                        face,
-                        u,
-                        v,
-                        temp as f64,
-                        precip as f64,
-                    );
-                    let Some((kind, density)) = crate::voxel::tree_biome_profile(
-                        vegetation.koppen,
-                        vegetation.main_block,
-                        vegetation.forest,
-                        vegetation.temp_c,
-                        vegetation.precip_mm_yr,
-                    )
-                    else {
-                        continue;
-                    };
-                    // shrubs are ground texture, not a silhouette at range
-                    if kind == crate::voxel::TreeKind::Shrub || lot >= density * comp {
-                        continue;
-                    }
-                    cands.push((ci, cj, kind, lot, density));
-                }
-            }
+            cands = planet.impostor_candidates(face as u8, ci_start, ci1, cj_start, cj1, s);
         }
         let keep_every = cands.len().div_ceil(impostor_cap).max(1);
         // decimation past the cap keeps visual mass by growing the kept
@@ -1742,7 +1703,7 @@ pub fn build_tile_at_season(
                     continue;
                 }
                 // same treeline the exact path enforces
-                if smp.temp_c < -6.0 {
+                if smp.temp_c < crate::voxel::TREE_MIN_TEMP_C {
                     continue;
                 }
                 // tree_trunk is a pure function of (kind, column) - the
