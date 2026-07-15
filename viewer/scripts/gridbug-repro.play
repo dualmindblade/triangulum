@@ -1,0 +1,20 @@
+# B-10 repro per Austin's recipe: fresh session, warm a DISTANT start
+# pose (its horizon fills the cache with planet-scale coarse ancestors),
+# then teleport straight to the site and raw-shot the first frames.
+# Run with TRI_RAW_CAPTURE=1.
+mode fly
+weather time 322
+teleport 0.0 0.0 0.5
+look 0 -30
+bench 20
+teleport -38.516 -104.457 0.33
+look -168 -58
+shot gb_frame1
+bench 1
+shot gb_frame2
+bench 2
+shot gb_frame4
+bench 4
+shot gb_frame8
+bench 30
+shot gb_settled

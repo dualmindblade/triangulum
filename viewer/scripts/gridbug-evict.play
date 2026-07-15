@@ -1,0 +1,24 @@
+# B-10 eviction hypothesis: fill the tile cache from several sites
+# (a long session), then teleport to the report site and take
+# consecutive RAW shots at capture resolution - watching for the drawn
+# set to collapse between shots the way Austin's raw -> raw_2 did.
+mode fly
+weather time 322
+teleport 0.0 0.0 0.5
+look 0 -30
+bench 15
+teleport 30.0 60.0 1.0
+bench 15
+teleport -20.0 140.0 0.5
+bench 15
+teleport 54.576 130.059 0.15
+bench 15
+teleport -0.906 -67.804 0.094
+bench 15
+teleport -38.516 -104.457 0.33
+look -168 -58
+shot ev_1
+shot ev_2
+shot ev_3
+bench 2
+shot ev_4

@@ -3687,7 +3687,21 @@ impl Renderer {
                 keep.insert(k);
             }
         }
+        let before = self.cache.len();
         self.cache.retain(|k, _| keep.contains(k));
+        let evicted = before - self.cache.len();
+        // B-10 tripwire: a mass eviction is the prime suspect for tiles
+        // vanishing mid-session (Austin's raw -> raw_2 staircase). Unreprod-
+        // ucible in harness recipes so far, so real occurrences must
+        // identify themselves in the console Austin already watches.
+        if evicted >= 24 {
+            eprintln!(
+                "TILE EVICTION STORM: {evicted} tiles dropped at frame {} (cache was {:.0} MB, settle={})",
+                self.frame_counter,
+                total as f64 / 1.0e6,
+                self.settle_visuals,
+            );
+        }
         // dropped tiles may have in-flight builds pending; those results
         // re-insert on arrival and age out normally, so no epoch fixup needed
     }
@@ -3722,7 +3736,17 @@ impl Renderer {
                 keep.insert(k);
             }
         }
+        let before = self.chunk_cache.len();
         self.chunk_cache.retain(|k, _| keep.contains(k));
+        let evicted = before - self.chunk_cache.len();
+        if evicted >= 16 {
+            eprintln!(
+                "CHUNK EVICTION STORM: {evicted} chunks dropped at frame {} (cache was {:.0} MB, settle={})",
+                self.frame_counter,
+                total as f64 / 1.0e6,
+                self.settle_visuals,
+            );
+        }
     }
 
     fn enforce_moon_budget(&mut self) {
