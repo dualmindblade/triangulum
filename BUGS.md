@@ -63,7 +63,10 @@ same hunt exposed them as a regression zoo at high weather clock
 (paisley marbling, octave decorrelation, variance washout); the
 pass-1 redo requires visual gates at t in {0, 1800, 3500} minimum.
 
-### B-4a RESIDUAL: cold first-load max still ~2.6 s at dense poses
+### B-4a RESIDUAL: transition hitches ~1/4 of flights + cold loads ~2.6 s
+(Campaign home: PERF.md item 1.) Austin 2026-07-14: hitches down from
+~9/10 transitions to ~1/4, descent-skewed - matching the measured
+monster-tile residual below.
 Left open by the B-4 fix (Sol mission 2026-07-14, findings archived in
 interchange/reviews/sol-b4-findings-2026-07-14.md): dense or
 climate-boundary level-11 tiles that satisfy neither exact region
