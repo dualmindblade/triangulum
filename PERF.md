@@ -24,8 +24,28 @@ timestamp queries, item 2).
 
 ## Campaign (priority order)
 
-1. THE LEAN CANDIDATE CACHE - shipped 37b3e51, REVERTED b372b70 the
-   same day. Austin field-caught what every merge gate missed: over
+1. RESOLVED by v2 (merge 1b13151, Sol; findings in interchange/
+   reviews/sol-b4a2-findings-2026-07-14.md). Root cause of the v1
+   regression quantified: it forfeited the per-LOD lottery gate
+   (13.18x more expensive profiles) and front-loaded 3.98x sites
+   behind an 83 ms OnceLock monolith. v2: request-scaled sparse
+   profile cache (misses computed outside locks, negatives cached,
+   16-shard 64 MiB LRU) + bounded live scheduling (cache-only
+   forecast prewarm, synchronous geomorphed PARENT per fresh horizon
+   family with background child refinement, voxel chunks capped at 2
+   in flight). Forest 2 km descent 2978 -> 55 ms; lateral first move
+   731 -> 19 ms; every standing probe improved; checksums identical;
+   settled captures byte-identical. USER-VERIFICATION TRADE TO WATCH
+   (Austin is the gate): live frames now converge to full detail
+   over ~5-10 s at a new pose instead of hitching to instant
+   sharpness - steady-state GPU cost at the forest pose climbs
+   9 -> ~25 ms as refinement completes (b4a2-converge.play measures
+   this). If the sharpening reads badly in play, the dials are
+   LIVE_CHUNK_PENDING_MAX and the quiet-frame productive cap in
+   renderer.rs - raising them trades convergence speed against the
+   convoy spill Sol measured (188 ms class). Historical note kept
+   below for the v1 lesson:
+   v1 was shipped 37b3e51, REVERTED b372b70 the same day. Austin field-caught what every merge gate missed: over
    PRODUCTIVE FOREST the cache made cold region builds WORSE (forest
    2 km descent step 3,165 -> 4,663 ms; live descents >1 s "worse
    than before", plus one exit-101 crash), and the trigger was
