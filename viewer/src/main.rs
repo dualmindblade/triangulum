@@ -1325,8 +1325,13 @@ impl App {
     fn save_screenshot(&mut self) {
         let dir = interchange_dir();
         let _ = std::fs::create_dir_all(dir);
+        let raw_suffix = if std::env::var_os("TRI_RAW_CAPTURE").is_some() {
+            "_raw"
+        } else {
+            ""
+        };
         let base = format!(
-            "shot_lat{:.3}_lon{:.3}_alt{:.3}km_yaw{:.0}_pitch{:.0}",
+            "shot_lat{:.3}_lon{:.3}_alt{:.3}km_yaw{:.0}_pitch{:.0}{raw_suffix}",
             self.camera.lat.to_degrees(),
             self.camera.lon.to_degrees(),
             self.camera.altitude_km,
@@ -2173,7 +2178,26 @@ impl ApplicationHandler for App {
                                         self.keys.clear();
                                         self.photo_map.toggle();
                                     }
-                                    K::KeyP => self.save_screenshot(),
+                                    // P settles the world first (byte-stable
+                                    // evidence). SHIFT+P captures the RAW live
+                                    // frame - the only lens that shows what
+                                    // you actually saw mid-flight (stand-ins,
+                                    // missing detail, transient seams).
+                                    K::KeyP => {
+                                        let raw = self.keys.contains(&K::ShiftLeft)
+                                            || self.keys.contains(&K::ShiftRight);
+                                        if raw {
+                                            unsafe {
+                                                std::env::set_var("TRI_RAW_CAPTURE", "1")
+                                            };
+                                            self.save_screenshot();
+                                            unsafe {
+                                                std::env::remove_var("TRI_RAW_CAPTURE")
+                                            };
+                                        } else {
+                                            self.save_screenshot();
+                                        }
+                                    }
                                     K::KeyV => self.save_sync_delta(),
                                     _ => {}
                                 }

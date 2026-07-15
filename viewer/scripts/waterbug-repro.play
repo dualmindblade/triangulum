@@ -1,0 +1,9 @@
+# Austin's water-at-LOD-boundary report (settled in-game photo showed
+# lakes ending along a razor tile boundary at 3.19 km altitude).
+teleport 52.121544 108.232651 3.189768
+look -37.128249 -34.388927
+mode fly
+sun 10.156558 6.338151
+weather live
+weather time 322.126785
+shot waterbug

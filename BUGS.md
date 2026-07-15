@@ -9,6 +9,34 @@ are `teleport LAT LON [ALT_KM]` viewer args at `--exagg 1` unless noted.
 
 ## OPEN
 
+### B-9 Lakes end at a razor tile boundary at range (PRE-EXISTING)
+Austin's settled photo (shot_lat52.122_lon108.233_alt3.190km) shows a
+lake field cut off along a mesh-level boundary. Reproduced settled at
+HEAD and at pre-v2 c2bf501: BYTE-IDENTICAL PNGs (waterbug-repro.play,
+sha e75340cc...) - not a scheduling regression, it is the established
+lake LOD threshold (coarser tiles drop sub-resolution water planes) at
+its most visible. Candidate fix belongs to the LANDSCAPE.md rivers
+pass: carry water planes one-two levels coarser, or feather the
+water/no-water handoff. Charming-discontinuity vs bug = Andrew call.
+
+### B-10 Terrain ends in giant squares against sky during fast flight
+Austin's OS screenshot (grid-bug.png, near -38.5 -104.5, high stream
+speed): the drawn cover ends in a stair-step of missing tiles with
+sky beyond, pale/snow biome. Fresh-cover coverage failure under fast
+lateral flight - the synchronous parent-per-family fallback should
+make this impossible, so either a face-boundary case, a level-0
+family case, or eviction outrunning selection. Needs live repro
+(SHIFT+P raw photos now exist for evidence). NOT yet reproduced in
+probes.
+
+### B-11 At altitude, motion reads flat; refinement catch-up is slow
+Austin field note at stream=1/2: coarse parent stand-ins linger during
+high-altitude motion and full detail takes a long time to arrive
+(also part-answer to "is this fog?" - parents read hazy/flat).
+Tuning item: altitude-scaled budgets (coarse tiles are cheap; the
+productive cap only guards level>=11), possibly parent-free covers
+above the fine-LOD band. PERF.md live-flow section owns this.
+
 ### CROSS-REVIEW 2026-07-14 (Sol reviewed Claude 14aed27..999ed70; fresh
 ### Claude context reviewed Sol's MP1/W2.5/W2/moon). Fixed same-day items
 ### are in FIXED; these remain open:
