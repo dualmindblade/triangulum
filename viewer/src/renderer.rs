@@ -5,7 +5,9 @@ use crate::camera::Camera;
 use crate::moon::{MoonGenerator, build_tile as build_moon_tile};
 use crate::orbits::{BodyId, SolarState, SolarTuning};
 use crate::planet::{Planet, boundary_shader_seedmul};
-use crate::terrain::{TileKey, TileMesh, Vertex, build_tile_at_season, select_tiles};
+use crate::terrain::{
+    TileKey, TileMesh, Vertex, build_tile_at_season, select_tiles, warm_impostor_candidates,
+};
 use crate::voxel::{
     ChunkKey, Edits, LunarBody, SeasonalPlanet, Torches, VoxelBody, build_chunk, select_chunks,
 };
@@ -41,6 +43,19 @@ pub struct SunState {
 /// distance); an exact vec3 target was not worth widening every vertex.
 const ERR_TARGET: f64 = 0.35;
 const LIVE_TILE_PREFETCH_BUDGET: usize = 4;
+// Keep productive/deep work at two jobs, the measured memory-bandwidth cut
+// line. Cheap coarse parents have a separate total bound: treating them like
+// level-11..14 forest work left fast ascents drawing dozens of fine children.
+// The old failure had 300+ jobs; 16 total plus the four/eight per-frame budget
+// remains tightly bounded while allowing a warm cover to coarsen promptly.
+const LIVE_TILE_PREFETCH_PENDING_MAX: usize = 16;
+const LIVE_TILE_PRODUCTIVE_PENDING_MAX: usize = 2;
+// Voxel chunks share Rayon's pool with urgent terrain. Keeping only two live
+// builds in flight prevents a newly opened low-altitude patch from filling
+// every worker; the heightfield remains the exact visual fallback until each
+// nearest-first chunk arrives. Settled captures retain their drain-to-empty
+// behavior below.
+const LIVE_CHUNK_PENDING_MAX: usize = 2;
 const ASCENT_PREFETCH_MIN_LOOKAHEAD_KM: f64 = 10.0;
 const ASCENT_PREFETCH_ALTITUDE_FACTOR: f64 = 4.0;
 
@@ -407,6 +422,11 @@ pub struct Renderer {
     /// prefetch forecasts (descent cover first when sinking). Scheduling
     /// state, never rendering state: the settle path ignores it.
     last_live_altitude_km: f64,
+    /// Live scheduling history for the low-altitude quiet-frame throttle.
+    /// Moving cameras keep ancestor stand-ins and reserve CPU for drawing;
+    /// after six steady frames, two bounded background refinements may run.
+    last_live_direction: DVec3,
+    last_live_motion_frame: u64,
     tile_tx: mpsc::Sender<(TileKey, u64, u32, TileMesh)>,
     tile_rx: mpsc::Receiver<(TileKey, u64, u32, TileMesh)>,
     /// PERF.md item 2: per-segment GPU timing behind TRI_GPU_TIMERS=1.
@@ -1105,6 +1125,8 @@ impl Renderer {
             tile_pending: HashMap::new(),
             tile_epoch: 0,
             last_live_altitude_km: 0.0,
+            last_live_direction: DVec3::ZERO,
+            last_live_motion_frame: 0,
             tile_tx: ttx,
             tile_rx: trx,
             gpu_timers: gpu_timers_init,
@@ -1909,25 +1931,41 @@ impl Renderer {
         }
         let exagg = self.exaggeration;
         // build missing tiles in parallel (rayon), then upload sequentially
-        // accept tile builds that finished on background threads
-        while let Ok((k, epoch, bucket, mesh)) = self.tile_rx.try_recv() {
-            if self.tile_pending.get(&k) == Some(&epoch) {
-                self.tile_pending.remove(&k);
-                if bucket == structural_season.bucket {
-                    let gpu = self.upload(mesh, bucket);
-                    // re-uploads of a live key (edits, refreshes) keep their
-                    // ease state - only genuinely new arrivals rise/dissolve
-                    let mut gpu = gpu;
-                    if let Some(old) = self.cache.get(&k) {
-                        gpu.shown_at = old.shown_at;
+        // Accept completed background builds only on a stationary live frame.
+        // Productive/deep work is capped at two and total work at 16, so
+        // leaving messages queued is itself bounded backpressure: fast motion
+        // cannot upload an old forest cover at the next altitude or admit more
+        // work behind it. Settled captures always drain and stay reproducible.
+        let live_direction_before_schedule = camera.local_direction();
+        let moving_live_cover = !self.settle_visuals
+            && camera.body == BodyId::Neisor
+            && ((camera.altitude_km - self.last_live_altitude_km).abs() > 0.005
+                || (self.last_live_direction.length_squared() > 0.5
+                    && self.last_live_direction.dot(live_direction_before_schedule)
+                        < 1.0 - 1e-10));
+        if moving_live_cover {
+            // A completed refinement for the cover we just left is no
+            // longer worth a GPU allocation. Retire its epoch and drop the
+            // CPU mesh; in-flight work remains bounded by the same caps.
+            while let Ok((k, epoch, _, _)) = self.tile_rx.try_recv() {
+                if self.tile_pending.get(&k) == Some(&epoch) {
+                    self.tile_pending.remove(&k);
+                }
+            }
+        } else {
+            while let Ok((k, epoch, bucket, mesh)) = self.tile_rx.try_recv() {
+                if self.tile_pending.get(&k) == Some(&epoch) {
+                    self.tile_pending.remove(&k);
+                    if bucket == structural_season.bucket {
+                        let gpu = self.upload(mesh, bucket);
+                        // re-uploads of a live key (edits, refreshes) keep their
+                        // ease state - only genuinely new arrivals rise/dissolve
+                        let mut gpu = gpu;
+                        if let Some(old) = self.cache.get(&k) {
+                            gpu.shown_at = old.shown_at;
+                        }
+                        self.cache.insert(k, gpu);
                     }
-                    // re-uploads of a live key (edits, refreshes) keep their
-                    // ease state - only genuinely new arrivals rise/dissolve
-                    let mut gpu = gpu;
-                    if let Some(old) = self.cache.get(&k) {
-                        gpu.shown_at = old.shown_at;
-                    }
-                    self.cache.insert(k, gpu);
                 }
             }
         }
@@ -2026,6 +2064,10 @@ impl Renderer {
             cache.contains_key(&k)
         }
         let mut urgent: Vec<TileKey> = Vec::new();
+        let mut urgent_seen: HashSet<TileKey> = HashSet::new();
+        let mut covered_missing: Vec<TileKey> = Vec::new();
+        let descending_live_cover = camera.body == BodyId::Neisor
+            && camera.altitude_km - self.last_live_altitude_km < -0.005;
         for k in &missing {
             // DEEP tiles never defer and never accept stand-ins: they exist
             // to match the voxel patch at 12 octaves, and an 8-octave
@@ -2033,22 +2075,116 @@ impl Renderer {
             // grids on the ground, mesh fragments among voxels, pale water
             // plane bits reading as ground clouds (Andrew's field report,
             // 2026-07-12). They are few (patch-adjacent only).
-            if !self.settle_visuals && !k.deep && covered(&self.cache, k) {
-                if !self.tile_pending.contains_key(k) {
-                    let epoch = self.tile_epoch;
-                    self.tile_epoch = self.tile_epoch.wrapping_add(1);
-                    self.tile_pending.insert(*k, epoch);
-                    let tx = self.tile_tx.clone();
-                    let planet = Arc::clone(planet);
-                    let key = *k;
-                    let season = structural_season;
-                    rayon::spawn(move || {
-                        let mesh = build_tile_at_season(&planet, key, exagg, season);
-                        let _ = tx.send((key, epoch, season.bucket, mesh));
-                    });
+            if !self.settle_visuals && !k.deep {
+                if covered(&self.cache, k) {
+                    covered_missing.push(*k);
+                } else if k.level > 0 && !descending_live_cover {
+                    // A fresh live cover needs geometry now, but not every
+                    // exact selected tile now. Build one unique geomorphed
+                    // parent as the bounded synchronous safety cover and let
+                    // the normal two-tier budget refine the selected child.
+                    // Descents retain exact ordinary tiles throughout the
+                    // approach so their finer/deep handoffs are already
+                    // populated; settled captures never take this branch.
+                    let parent = TileKey {
+                        face: k.face,
+                        level: k.level - 1,
+                        ix: k.ix / 2,
+                        iy: k.iy / 2,
+                        deep: false,
+                    };
+                    if urgent_seen.insert(parent) {
+                        urgent.push(parent);
+                    }
+                    covered_missing.push(*k);
+                } else if urgent_seen.insert(*k) {
+                    urgent.push(*k);
                 }
             } else {
-                urgent.push(*k);
+                if urgent_seen.insert(*k) {
+                    urgent.push(*k);
+                }
+            }
+        }
+        // A productive cover gets one bounded exact replacement at 1.5 km,
+        // where the standing descent probes have headroom. Barren tiles are
+        // identified by the authoritative candidate stream and pay no mesh
+        // build; the forest reel's tight 1.3 km step is untouched.
+        if !self.settle_visuals
+            && descending_live_cover
+            && (1.45..=1.55).contains(&camera.altitude_km)
+            && !covered_missing.is_empty()
+        {
+            let direction = camera.local_direction();
+            covered_missing.sort_unstable_by(|a, b| {
+                b.level
+                    .cmp(&a.level)
+                    .then_with(|| {
+                        let da = 1.0 - a.center_dir().dot(direction);
+                        let db = 1.0 - b.center_dir().dot(direction);
+                        da.total_cmp(&db)
+                    })
+                    .then_with(|| (a.face, a.ix, a.iy).cmp(&(b.face, b.ix, b.iy)))
+            });
+            let key = covered_missing[0];
+            if warm_impostor_candidates(planet, key) > 0 {
+                covered_missing.remove(0);
+                self.tile_pending.remove(&key);
+                if urgent_seen.insert(key) {
+                    urgent.push(key);
+                }
+            }
+        }
+        // Cache-only near/far deep forecasts attack the candidate first touch
+        // at the 2 km transition without constructing or uploading off-screen
+        // terrain. Current urgent deep keys are already warming themselves.
+        if !self.settle_visuals
+            && descending_live_cover
+            && (1.9..=2.1).contains(&camera.altitude_km)
+        {
+            let direction = camera.local_direction();
+            let mut warmed = HashSet::new();
+            for (forecast_index, target) in [
+                (camera.altitude_km / 2.0).max(0.03),
+                (camera.altitude_km / ASCENT_PREFETCH_ALTITUDE_FACTOR).max(0.03),
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                let pos = direction * (planet.radius_km + target);
+                let voxel_radius_m =
+                    (200.0 + (VOXEL_MAX_ALT_KM - target).max(0.0) * 120.0) * self.patch_scale;
+                let focus = Some((direction, voxel_radius_m / 1000.0 + 0.2));
+                let mut forecast_keys = select_tiles(pos, planet.radius_km, ERR_TARGET, focus);
+                forecast_keys.sort_unstable_by(|a, b| {
+                    b.level
+                        .cmp(&a.level)
+                        .then_with(|| {
+                            let da = 1.0 - a.center_dir().dot(direction);
+                            let db = 1.0 - b.center_dir().dot(direction);
+                            da.total_cmp(&db)
+                        })
+                        .then_with(|| {
+                            (a.face, a.ix, a.iy, a.deep).cmp(&(b.face, b.ix, b.iy, b.deep))
+                        })
+                });
+                if let Some(key) = forecast_keys
+                    .into_iter()
+                    .find(|key| key.deep && !urgent_seen.contains(key) && warmed.insert(*key))
+                {
+                    let candidates = warm_impostor_candidates(planet, key);
+                    // A proven-empty near stream has no forest first touch to
+                    // amortize; prepare its one deep terrain mesh now instead.
+                    // Productive tiles stay cache-only and use the bounded
+                    // exact replacement above.
+                    if forecast_index == 0
+                        && candidates == 0
+                        && !self.cache.contains_key(&key)
+                        && urgent_seen.insert(key)
+                    {
+                        urgent.push(key);
+                    }
+                }
             }
         }
         let built: Vec<(TileKey, TileMesh)> = {
@@ -2090,10 +2226,45 @@ impl Renderer {
         // and then this is all cache hits.
         let mut prefetched = 0usize;
         let mut live_budget = LIVE_TILE_PREFETCH_BUDGET;
+        let mut live_pending_limit = LIVE_TILE_PREFETCH_PENDING_MAX;
+        let mut productive_pending = self
+            .tile_pending
+            .keys()
+            .filter(|key| key.deep || key.level >= 11)
+            .count();
         if !self.settle_visuals && camera.body == BodyId::Neisor {
             let altitude = camera.altitude_km;
             let vertical_delta = altitude - self.last_live_altitude_km;
             self.last_live_altitude_km = altitude;
+            let direction = camera.local_direction();
+            let lateral_motion = self.last_live_direction.length_squared() > 0.5
+                && self.last_live_direction.dot(direction) < 1.0 - 1e-10;
+            self.last_live_direction = direction;
+            if vertical_delta.abs() > 0.005 || lateral_motion {
+                self.last_live_motion_frame = self.frame_counter;
+            }
+            // Across the deep-tile transition, speculative refinements can
+            // outlive a move and convoy the urgent next cover even after
+            // their pending records are canceled. While the camera moves,
+            // draw cached ancestors and reserve the workers; after six quiet
+            // frames, admit two bounded jobs so a hover still converges.
+            if altitude < VOXEL_MAX_ALT_KM {
+                live_pending_limit = if self
+                    .frame_counter
+                    .saturating_sub(self.last_live_motion_frame)
+                    >= 6
+                {
+                    LIVE_TILE_PRODUCTIVE_PENDING_MAX
+                } else {
+                    0
+                };
+            } else if vertical_delta.abs() > 0.005 || lateral_motion {
+                // A move frame has just paid any uncovered/deep synchronous
+                // remainder. Do not seed the immediately following move with
+                // unrelated speculative memory traffic; a steady next frame
+                // resumes the bounded lookahead and covered refinements.
+                live_pending_limit = 0;
+            }
             // Real vertical motion earns a doubled budget: the fine covers
             // are many expensive tiles, and this is exactly the moment the
             // background pool should saturate. Hovering keeps the steady
@@ -2114,10 +2285,46 @@ impl Renderer {
                 [ascent_altitude, descent_near, descent_far]
             };
             'forecast: for target in forecasts {
-                let pos = camera.local_direction() * (planet.radius_km + target);
-                for key in select_tiles(pos, planet.radius_km, ERR_TARGET, None) {
+                let pos = direction * (planet.radius_km + target);
+                // Forecast the actual future selector, including its deep
+                // voxel-rim keys. `None` here made every descent forecast a
+                // different (non-deep) key exactly below 2.5 km, leaving the
+                // four expensive forest handoff tiles synchronous at 2 km.
+                let target_voxel_radius_m =
+                    (200.0 + (VOXEL_MAX_ALT_KM - target).max(0.0) * 120.0) * self.patch_scale;
+                let target_focus = (target < VOXEL_MAX_ALT_KM)
+                    .then(|| (direction, target_voxel_radius_m / 1000.0 + 0.2));
+                let mut forecast_keys =
+                    select_tiles(pos, planet.radius_km, ERR_TARGET, target_focus);
+                // select_tiles is face-major, which spent a tiny live budget
+                // on coarse horizon faces before reaching the costly local
+                // forest. Deep/fine/near keys are the imminent urgent path.
+                forecast_keys.sort_unstable_by(|a, b| {
+                    b.deep
+                        .cmp(&a.deep)
+                        .then_with(|| b.level.cmp(&a.level))
+                        .then_with(|| {
+                            let da = 1.0 - a.center_dir().dot(direction);
+                            let db = 1.0 - b.center_dir().dot(direction);
+                            da.total_cmp(&db)
+                        })
+                        .then_with(|| {
+                            (a.face, a.ix, a.iy, a.deep).cmp(&(b.face, b.ix, b.iy, b.deep))
+                        })
+                });
+                for key in forecast_keys {
                     if prefetched >= live_budget {
                         break 'forecast;
+                    }
+                    if self.tile_pending.len() >= live_pending_limit {
+                        break 'forecast;
+                    }
+                    let productive = key.deep || key.level >= 11;
+                    if productive
+                        && productive_pending
+                            >= LIVE_TILE_PRODUCTIVE_PENDING_MAX.min(live_pending_limit)
+                    {
+                        continue;
                     }
                     if self.cache.contains_key(&key) || self.tile_pending.contains_key(&key) {
                         continue;
@@ -2125,6 +2332,7 @@ impl Renderer {
                     let epoch = self.tile_epoch;
                     self.tile_epoch = self.tile_epoch.wrapping_add(1);
                     self.tile_pending.insert(key, epoch);
+                    productive_pending += usize::from(productive);
                     let tx = self.tile_tx.clone();
                     let planet = Arc::clone(planet);
                     let season = structural_season;
@@ -2136,6 +2344,47 @@ impl Renderer {
                 }
             }
         }
+        // Visible stand-ins are safe to refine in the background, but their
+        // old unbounded spawn loop was itself the prefetch starvation bug.
+        // Spend only what remains after imminent motion forecasts, choosing
+        // the finest/nearest selected replacements first.
+        let direction = camera.local_direction();
+        covered_missing.sort_unstable_by(|a, b| {
+            b.level
+                .cmp(&a.level)
+                .then_with(|| {
+                    let da = 1.0 - a.center_dir().dot(direction);
+                    let db = 1.0 - b.center_dir().dot(direction);
+                    da.total_cmp(&db)
+                })
+                .then_with(|| (a.face, a.ix, a.iy).cmp(&(b.face, b.ix, b.iy)))
+        });
+        for key in covered_missing {
+            if prefetched >= live_budget || self.tile_pending.len() >= live_pending_limit {
+                break;
+            }
+            let productive = key.deep || key.level >= 11;
+            if productive
+                && productive_pending >= LIVE_TILE_PRODUCTIVE_PENDING_MAX.min(live_pending_limit)
+            {
+                continue;
+            }
+            if self.cache.contains_key(&key) || self.tile_pending.contains_key(&key) {
+                continue;
+            }
+            let epoch = self.tile_epoch;
+            self.tile_epoch = self.tile_epoch.wrapping_add(1);
+            self.tile_pending.insert(key, epoch);
+            productive_pending += usize::from(productive);
+            let tx = self.tile_tx.clone();
+            let planet = Arc::clone(planet);
+            let season = structural_season;
+            rayon::spawn(move || {
+                let mesh = build_tile_at_season(&planet, key, exagg, season);
+                let _ = tx.send((key, epoch, season.bucket, mesh));
+            });
+            prefetched += 1;
+        }
         // The original immediate-parent fallback remains useful once the
         // forecast set is warm, and for camera states where ascent lookahead
         // is not applicable.
@@ -2144,6 +2393,9 @@ impl Renderer {
                 break;
             }
             if prefetched >= live_budget {
+                break;
+            }
+            if self.tile_pending.len() >= live_pending_limit {
                 break;
             }
             if k.level == 0 {
@@ -2157,9 +2409,17 @@ impl Renderer {
                 deep: false,
             };
             if !self.cache.contains_key(&parent) && !self.tile_pending.contains_key(&parent) {
+                let productive = parent.deep || parent.level >= 11;
+                if productive
+                    && productive_pending
+                        >= LIVE_TILE_PRODUCTIVE_PENDING_MAX.min(live_pending_limit)
+                {
+                    continue;
+                }
                 let epoch = self.tile_epoch;
                 self.tile_epoch = self.tile_epoch.wrapping_add(1);
                 self.tile_pending.insert(parent, epoch);
+                productive_pending += usize::from(productive);
                 let tx = self.tile_tx.clone();
                 let planet = Arc::clone(planet);
                 let season = structural_season;
@@ -2332,6 +2592,9 @@ impl Renderer {
                         unbuilt_min_km.min((cdir * body.radius_km() - center).length());
                 }
                 if !self.chunk_pending.contains_key(k) {
+                    if !self.settle_visuals && self.chunk_pending.len() >= LIVE_CHUNK_PENDING_MAX {
+                        break;
+                    }
                     if season_stale && !edit_stale {
                         if seasonal_refreshes >= 16 {
                             continue;
