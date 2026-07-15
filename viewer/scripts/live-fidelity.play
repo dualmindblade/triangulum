@@ -1,0 +1,30 @@
+# Live-fidelity probe: fast low-altitude lateral flight with RAW shots
+# (run with TRI_RAW_CAPTURE=1 so captures do NOT settle - they show the
+# real transient state Austin sees: featureless stretches, square-by-
+# square voxel fill, blend seams, and any voxel/mesh sky gaps).
+mode fly
+weather time 349
+teleport 54.576 130.059 0.15
+look -101 -31
+bench 4
+shot lf_00
+teleport 54.576 129.85 0.15
+bench 2
+shot lf_01
+teleport 54.576 129.64 0.15
+bench 2
+shot lf_02
+teleport 54.576 129.43 0.15
+bench 2
+shot lf_03
+teleport 54.576 129.22 0.15
+bench 2
+shot lf_04
+teleport 54.576 129.01 0.15
+bench 2
+shot lf_05
+teleport 54.576 128.80 0.15
+bench 2
+shot lf_06
+bench 30
+shot lf_06_settled_60

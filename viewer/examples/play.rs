@@ -899,6 +899,13 @@ fn main() -> anyhow::Result<()> {
                     trace!("[{}] {summary}", ln + 1);
                 }
             }
+            // stream N - live detail-streaming calibration (0 strict,
+            // 1 balanced, 2 eager); mirrors the window app's F9 cycle.
+            "stream" => {
+                let level = f(1)? as u8;
+                renderer.stream_level = level.min(2);
+                trace!("[{}] stream level {}", ln + 1, renderer.stream_level);
+            }
             "probe" => {
                 let (pla, plo) = (f(1)?.to_radians(), f(2)?.to_radians());
                 let pdir =

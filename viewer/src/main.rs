@@ -2121,6 +2121,25 @@ impl ApplicationHandler for App {
                                         self.player.set_fly(&mut self.camera);
                                     }
                                     K::KeyC => self.cycle_camera_focus(),
+                                    // F9 cycles live detail streaming so the
+                                    // fidelity-vs-frame-cost trade can be
+                                    // FELT mid-flight: 0 strict (silkiest,
+                                    // barren flight), 1 balanced, 2 eager
+                                    // (continuous detail, pre-v2 frame cost)
+                                    K::F9 => {
+                                        if let Some(gfx) = self.gfx.as_mut() {
+                                            gfx.renderer.stream_level =
+                                                (gfx.renderer.stream_level + 1) % 3;
+                                            println!(
+                                                "detail streaming: {}",
+                                                match gfx.renderer.stream_level {
+                                                    0 => "0 STRICT (silkiest frames)",
+                                                    1 => "1 BALANCED",
+                                                    _ => "2 EAGER (max detail flow)",
+                                                }
+                                            );
+                                        }
+                                    }
                                     // time fast-forward ladder (Austin):
                                     // [ slower, ] faster - the ONE clock
                                     // (sun, seasons, weather, orbits)

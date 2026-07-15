@@ -1,5 +1,5 @@
-//! wgpu renderer: pipeline setup, per-tile GPU buffers, frame drawing, and an
-//! offscreen capture path (renders to a texture and saves a PNG — no window).
+﻿//! wgpu renderer: pipeline setup, per-tile GPU buffers, frame drawing, and an
+//! offscreen capture path (renders to a texture and saves a PNG â€” no window).
 
 use crate::camera::Camera;
 use crate::moon::{MoonGenerator, build_tile as build_moon_tile};
@@ -35,27 +35,63 @@ pub struct SunState {
 ///   - a tile must still be UNmorphed where its children hand off: farthest
 ///     vertex at own-center dist S/tau is at S/tau + 0.71*S
 ///     ->  morph_start >= (1/tau + 0.71)*S
-/// With tau = 0.35 that window is [3.57, 4.30]*S — we use [3.61, 4.26]*S.
+/// With tau = 0.35 that window is [3.57, 4.30]*S â€” we use [3.61, 4.26]*S.
 /// Cross-level tile edges agree for free: the finer neighbor is fully
 /// morphed to the same parent-triangle height exactly where the coarser one
 /// is unmorphed. The radial-only slide differs from the parent's 3-D chord by
 /// at most 0.13 m in the hostile level-9 V-6 probes (well below its swap
 /// distance); an exact vec3 target was not worth widening every vertex.
 const ERR_TARGET: f64 = 0.35;
-const LIVE_TILE_PREFETCH_BUDGET: usize = 4;
-// Keep productive/deep work at two jobs, the measured memory-bandwidth cut
-// line. Cheap coarse parents have a separate total bound: treating them like
-// level-11..14 forest work left fast ascents drawing dozens of fine children.
-// The old failure had 300+ jobs; 16 total plus the four/eight per-frame budget
-// remains tightly bounded while allowing a warm cover to coarsen promptly.
-const LIVE_TILE_PREFETCH_PENDING_MAX: usize = 16;
-const LIVE_TILE_PRODUCTIVE_PENDING_MAX: usize = 2;
-// Voxel chunks share Rayon's pool with urgent terrain. Keeping only two live
-// builds in flight prevents a newly opened low-altitude patch from filling
-// every worker; the heightfield remains the exact visual fallback until each
-// nearest-first chunk arrives. Settled captures retain their drain-to-empty
-// behavior below.
-const LIVE_CHUNK_PENDING_MAX: usize = 2;
+// LIVE FLOW RETUNE (Austin's field verdict on the first v2 calibration,
+// 2026-07-15): the original caps traded so hard for frame smoothness that
+// flight went visually barren - zero productive work during motion and two
+// chunks in flight meant "featureless until you stop, then square-by-square"
+// (reproduced in live-fidelity.play raw captures). The requirement now is
+// CONTINUOUS FLOW, VIEW-CENTER FIRST: motion keeps a bounded but real
+// stream of detail arriving (every admission path sorts by view-center
+// angle), stillness converges fast, and no path ever builds a synchronous
+// monolith (the actual B-4 hitch cure, which stays).
+/// One dial, three calibrations, switchable at runtime (F9 in game, the
+/// `stream N` play command, TRI_STREAM env for the initial value):
+/// 0 STRICT = the original v2 caps (silkiest frames, barren flight),
+/// 2 EAGER = continuous detail flow (old-look liveliness, ~pre-v2 flight
+/// frame cost), 1 BALANCED between them. Austin judges the vibe by
+/// cycling live; every level keeps the monolith-free build path that
+/// actually cures the B-4 hitches, and none affect settled captures.
+#[derive(Clone, Copy)]
+pub struct StreamCaps {
+    pub budget: usize,
+    pub pending: usize,
+    pub motion_pending: usize,
+    pub productive: usize,
+    pub chunks: usize,
+}
+
+pub fn stream_caps(level: u8) -> StreamCaps {
+    match level {
+        0 => StreamCaps {
+            budget: 4,
+            pending: 16,
+            motion_pending: 0,
+            productive: 2,
+            chunks: 2,
+        },
+        2 => StreamCaps {
+            budget: 8,
+            pending: 32,
+            motion_pending: 8,
+            productive: 4,
+            chunks: 12,
+        },
+        _ => StreamCaps {
+            budget: 6,
+            pending: 24,
+            motion_pending: 6,
+            productive: 3,
+            chunks: 8,
+        },
+    }
+}
 const ASCENT_PREFETCH_MIN_LOOKAHEAD_KM: f64 = 10.0;
 const ASCENT_PREFETCH_ALTITUDE_FACTOR: f64 = 4.0;
 
@@ -138,9 +174,9 @@ struct Globals {
     // unit radial at the disc center (w = underwater flag)
     hole_up: [f32; 4],
     // xyz = camera radial up, w = camera height above the nominal sphere
-    // (km) — drives the sky gradient and how the atmosphere thins to space
+    // (km) â€” drives the sky gradient and how the atmosphere thins to space
     sky: [f32; 4],
-    // xyz = planet center relative to the camera (km) — the geomorph slide
+    // xyz = planet center relative to the camera (km) â€” the geomorph slide
     // direction is radial, and camera-relative space has no planet center
     // otherwise. w = the voxel patch lift (km) for the block rim-sink.
     center: [f32; 4],
@@ -342,7 +378,7 @@ pub struct Renderer {
     frame_counter: u64,
     /// Frame cadence instrumentation: wall-clock intervals between draw()
     /// calls and the CPU cost of each draw body (encode+submit), last ~4 s.
-    /// The title-bar HUD and shot sidecars read frame_stats() from these —
+    /// The title-bar HUD and shot sidecars read frame_stats() from these â€”
     /// an objective framerate record instead of "feels smooth".
     /// True when this frame deferred tile builds under the per-frame
     /// budget - captures loop draw until it clears so screenshots stay
@@ -360,11 +396,11 @@ pub struct Renderer {
     pub sun_dir: Option<DVec3>,
     /// Eye below a water surface: the shader tints the whole view.
     pub underwater: bool,
-    /// Player-placed torches — meshed into their chunks, and the nearest
+    /// Player-placed torches â€” meshed into their chunks, and the nearest
     /// few become real point lights each frame. Kept in sync by the app.
     pub torches: Torches,
     /// Day/night cycle: seconds per full day. 0 disables the cycle (the
-    /// sun follows the camera — always noon where you are). A pinned
+    /// sun follows the camera â€” always noon where you are). A pinned
     /// `sun_dir` always wins. The sun stands still in space while the
     /// planet turns, so local time depends on longitude and the
     /// terminator is visible from orbit.
@@ -384,13 +420,13 @@ pub struct Renderer {
     weather_time_offset_s: f64,
     day_time_offset_s: f64,
     /// Voxel patch radius multiplier (--patch): 1.0 = the classic
-    /// 200–500 m disc, 2.0 = twice the radius (4x the chunks — streaming
+    /// 200â€“500 m disc, 2.0 = twice the radius (4x the chunks â€” streaming
     /// makes that affordable).
     pub patch_scale: f64,
     /// Master switch for the voxel near-field (`voxels off` in scripts,
     /// --no-voxels). False = pure heightfield-mesh render: no chunk
     /// streaming, no hole cut, no rim sink. The mesh keeps its focus
-    /// refinement so this shows the BEST mesh-only frame — the sync-diff
+    /// refinement so this shows the BEST mesh-only frame â€” the sync-diff
     /// harness diffs it against the normal render to measure exactly what
     /// appearance the voxel patch changes.
     pub voxels_on: bool,
@@ -399,11 +435,11 @@ pub struct Renderer {
     /// only if its epoch still matches (see `chunk_epoch`): invalidation
     /// removes the key, a fresh request re-inserts it with a NEW epoch, so a
     /// stale in-flight build (older epoch) is dropped on arrival instead of
-    /// racing the fresh one and winning — which left edited blocks/torches
+    /// racing the fresh one and winning â€” which left edited blocks/torches
     /// visually stale.
     chunk_pending: HashMap<ChunkKey, u64>,
     /// Edited chunks whose cached mesh is now out of date but is kept on
-    /// screen until the rebuild lands — so a place/break never flashes the
+    /// screen until the rebuild lands â€” so a place/break never flashes the
     /// heightfield (or a hole to the sky) where the block just changed. Draw
     /// re-queues these; drain swaps the mesh in place and clears the flag.
     chunk_stale: HashSet<ChunkKey>,
@@ -432,6 +468,9 @@ pub struct Renderer {
     /// PERF.md item 2: per-segment GPU timing behind TRI_GPU_TIMERS=1.
     /// None when the env flag or device feature is absent - zero cost.
     gpu_timers: Option<GpuTimers>,
+    /// Live detail-streaming calibration (see stream_caps): 0 strict,
+    /// 1 balanced, 2 eager. Runtime-switchable; settled paths ignore it.
+    pub stream_level: u8,
     /// Immutable world-state snapshots shared by in-flight chunk builders.
     /// Refreshed only when edits/torches change, so queuing many chunks does
     /// not clone the whole edited world per request.
@@ -462,7 +501,7 @@ pub struct Renderer {
     /// Some((cover, precip)) pins the sky for art shots and regression
     /// scripts, overriding the live field (like `sun` pins the sun).
     pub weather_pin: Option<(f32, f32)>,
-    /// Last frame's camera weather sample — photo sidecars record it so a
+    /// Last frame's camera weather sample â€” photo sidecars record it so a
     /// storm shot is a coordinate you can teleport back into.
     pub last_weather: crate::weather::Weather,
     /// Last frame's geometric eclipse factors, exposed to numeric play
@@ -827,7 +866,7 @@ impl Renderer {
         });
 
         // sky: a fullscreen triangle drawn at infinity (reversed-Z depth 0)
-        // after the terrain, in the same pass — it only wins where nothing
+        // after the terrain, in the same pass â€” it only wins where nothing
         // else drew
         let sky_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("sky"),
@@ -1130,6 +1169,10 @@ impl Renderer {
             tile_tx: ttx,
             tile_rx: trx,
             gpu_timers: gpu_timers_init,
+            stream_level: std::env::var("TRI_STREAM")
+                .ok()
+                .and_then(|v| v.trim().parse::<u8>().ok())
+                .map_or(1, |v| v.min(2)),
             edit_snapshot: Arc::new(Edits::default()),
             torch_snapshot: Arc::new(Torches::default()),
             weather_field: None,
@@ -1564,7 +1607,7 @@ impl Renderer {
     }
 
     /// Jump the day/night cycle so the CURRENT moment sits `t_s` seconds
-    /// into the day — the photo map's optional "restore time of day".
+    /// into the day â€” the photo map's optional "restore time of day".
     /// No-op when the sun is pinned or the cycle is off. Absolute weather and
     /// orbit time are preserved; only the daily body rotation gets an offset.
     pub fn set_day_time_s(&mut self, t_s: f64) {
@@ -1601,7 +1644,7 @@ impl Renderer {
         for k in keys {
             // cancel any in-flight build (its result is rejected by epoch),
             // then either mark the cached mesh stale (keep drawing it until the
-            // rebuild lands — no flash) or, if we never had it, drop it so draw
+            // rebuild lands â€” no flash) or, if we never had it, drop it so draw
             // builds it fresh
             self.chunk_pending.remove(k);
             if self.chunk_cache.contains_key(k) {
@@ -2225,8 +2268,9 @@ impl Renderer {
         // "2-3 km descent lag"). A hovering camera warms both covers once
         // and then this is all cache hits.
         let mut prefetched = 0usize;
-        let mut live_budget = LIVE_TILE_PREFETCH_BUDGET;
-        let mut live_pending_limit = LIVE_TILE_PREFETCH_PENDING_MAX;
+        let caps = stream_caps(self.stream_level);
+        let mut live_budget = caps.budget;
+        let mut live_pending_limit = caps.pending;
         let mut productive_pending = self
             .tile_pending
             .keys()
@@ -2243,34 +2287,31 @@ impl Renderer {
             if vertical_delta.abs() > 0.005 || lateral_motion {
                 self.last_live_motion_frame = self.frame_counter;
             }
-            // Across the deep-tile transition, speculative refinements can
-            // outlive a move and convoy the urgent next cover even after
-            // their pending records are canceled. While the camera moves,
-            // draw cached ancestors and reserve the workers; after six quiet
-            // frames, admit two bounded jobs so a hover still converges.
-            if altitude < VOXEL_MAX_ALT_KM {
-                live_pending_limit = if self
-                    .frame_counter
-                    .saturating_sub(self.last_live_motion_frame)
-                    >= 6
-                {
-                    LIVE_TILE_PRODUCTIVE_PENDING_MAX
+            // Flow, not famine: motion keeps a bounded stream of background
+            // work (view-center-sorted below), stillness opens the full
+            // pending limit. The zero-during-motion rule this replaces made
+            // flight visually barren (live-fidelity.play, 2026-07-15); the
+            // monolith-free build path is what actually cures hitches.
+            let moving = vertical_delta.abs() > 0.005 || lateral_motion;
+            let quiet = self
+                .frame_counter
+                .saturating_sub(self.last_live_motion_frame)
+                >= 6;
+            if moving || (altitude < VOXEL_MAX_ALT_KM && !quiet) {
+                live_pending_limit = if self.stream_level == 0 && !moving {
+                    // STRICT recreates original v2: a quiet low pose still
+                    // converges (slowly), a moving one admits nothing.
+                    caps.productive
                 } else {
-                    0
+                    caps.motion_pending
                 };
-            } else if vertical_delta.abs() > 0.005 || lateral_motion {
-                // A move frame has just paid any uncovered/deep synchronous
-                // remainder. Do not seed the immediately following move with
-                // unrelated speculative memory traffic; a steady next frame
-                // resumes the bounded lookahead and covered refinements.
-                live_pending_limit = 0;
             }
             // Real vertical motion earns a doubled budget: the fine covers
             // are many expensive tiles, and this is exactly the moment the
             // background pool should saturate. Hovering keeps the steady
             // budget (its forecasts are cache hits anyway).
             if vertical_delta.abs() > 0.005 {
-                live_budget = LIVE_TILE_PREFETCH_BUDGET * 2;
+                live_budget = caps.budget * 2;
             }
             let ascent_altitude = (altitude + ASCENT_PREFETCH_MIN_LOOKAHEAD_KM)
                 .max(altitude * ASCENT_PREFETCH_ALTITUDE_FACTOR);
@@ -2322,7 +2363,7 @@ impl Renderer {
                     let productive = key.deep || key.level >= 11;
                     if productive
                         && productive_pending
-                            >= LIVE_TILE_PRODUCTIVE_PENDING_MAX.min(live_pending_limit)
+                            >= caps.productive.min(live_pending_limit)
                     {
                         continue;
                     }
@@ -2365,7 +2406,7 @@ impl Renderer {
             }
             let productive = key.deep || key.level >= 11;
             if productive
-                && productive_pending >= LIVE_TILE_PRODUCTIVE_PENDING_MAX.min(live_pending_limit)
+                && productive_pending >= caps.productive.min(live_pending_limit)
             {
                 continue;
             }
@@ -2412,7 +2453,7 @@ impl Renderer {
                 let productive = parent.deep || parent.level >= 11;
                 if productive
                     && productive_pending
-                        >= LIVE_TILE_PRODUCTIVE_PENDING_MAX.min(live_pending_limit)
+                        >= caps.productive.min(live_pending_limit)
                 {
                     continue;
                 }
@@ -2554,7 +2595,7 @@ impl Renderer {
 
         // near the ground, stream voxel chunks around the camera footprint:
         // finished background builds land this frame, missing chunks are
-        // queued (nearest first — select_chunks sorts by distance), and the
+        // queued (nearest first â€” select_chunks sorts by distance), and the
         // frame renders whatever is built RIGHT NOW. The heightfield hole
         // below only opens over guaranteed coverage, so an unbuilt chunk
         // shows mesh terrain, never a hole to the sky.
@@ -2582,7 +2623,7 @@ impl Renderer {
                 }
                 // a chunk with no built mesh yet: its area must stay heightfield
                 // (the hole is clamped to unbuilt_min_km). A stale chunk still
-                // has its old mesh drawn, so it does NOT count as unbuilt —
+                // has its old mesh drawn, so it does NOT count as unbuilt â€”
                 // coverage holds and there is no hole/flash while it rebuilds.
                 if !cached {
                     let u = -1.0 + 2.0 * ((k.cx * crate::voxel::CHUNK + 16) as f64 + 0.5) / nn;
@@ -2592,7 +2633,7 @@ impl Renderer {
                         unbuilt_min_km.min((cdir * body.radius_km() - center).length());
                 }
                 if !self.chunk_pending.contains_key(k) {
-                    if !self.settle_visuals && self.chunk_pending.len() >= LIVE_CHUNK_PENDING_MAX {
+                    if !self.settle_visuals && self.chunk_pending.len() >= stream_caps(self.stream_level).chunks {
                         break;
                     }
                     if season_stale && !edit_stale {
@@ -2680,7 +2721,7 @@ impl Renderer {
 
         // living weather: ONE field sample per frame, at the camera. The
         // shaders add per-pixel detail from the same uniforms, so weather
-        // stays a pure function of (seed, position, weather time) — the
+        // stays a pure function of (seed, position, weather time) â€” the
         // determinism contract in WEATHER.md.
         let wx = if camera.body == BodyId::Neisor
             && self.weather_on
@@ -3214,7 +3255,7 @@ impl Renderer {
                 DrawKey::Tile(k) if k.deep => 2.0,
                 DrawKey::Tile(_) => 1.0,
             };
-            // geomorph band (see ERR_TARGET) — zero for chunks (no morph).
+            // geomorph band (see ERR_TARGET) â€” zero for chunks (no morph).
             // Dev switches for verification/tuning: TRI_NO_MORPH renders raw
             // levels (pops back), TRI_FORCE_MORPH renders every tile as its
             // parent's geometry (a sign/scale bug shows as spikes at once).
@@ -3544,7 +3585,7 @@ impl Renderer {
 
     /// (avg frame ms, p95 frame ms, avg draw-body CPU ms) over the last
     /// ~240 frames, or None until enough frames exist to mean anything.
-    /// Frame times include vsync waits — steady 16.7 = a locked 60 Hz,
+    /// Frame times include vsync waits â€” steady 16.7 = a locked 60 Hz,
     /// and the p95 is where hitches (chunk builds, tile uploads) show.
     pub fn frame_stats(&self) -> Option<(f32, f32, f32)> {
         if self.frame_intervals_ms.len() < 30 {
@@ -3597,7 +3638,7 @@ impl Renderer {
         if self.chunk_cache.len() > 4000 {
             self.chunk_cache.retain(|_, t| t.last_used >= cutoff);
         }
-        // hard VRAM budget: newest chunks win, the LRU tail is dropped —
+        // hard VRAM budget: newest chunks win, the LRU tail is dropped â€”
         // without this, fast flight at big patch sizes accumulates buffers
         // faster than the age-based eviction can retire them (OOM)
         self.enforce_chunk_budget();
@@ -3719,7 +3760,7 @@ impl Renderer {
         Ok(n_tiles)
     }
 
-    /// Encode RGBA pixels as a PNG — shared by capture() and the in-game
+    /// Encode RGBA pixels as a PNG â€” shared by capture() and the in-game
     /// sync-delta pair (which diffs pixel buffers before ever touching disk).
     pub fn write_png(path: &str, w: u32, h: u32, pixels: &[u8]) -> Result<()> {
         let file = std::fs::File::create(path)?;
