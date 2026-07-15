@@ -1,0 +1,12 @@
+# Does live refinement converge? Five consecutive bench blocks at one
+# pose; gpu terrain ms should climb back to the settled cost (~25 ms
+# at this pose) if refinement completes, or plateau if it stalls.
+mode fly
+weather time 349
+teleport -0.906 -67.804 0.094
+look -210 -17
+bench 20
+bench 20
+bench 20
+bench 20
+bench 20
