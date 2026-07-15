@@ -29,13 +29,6 @@ family case, or eviction outrunning selection. Needs live repro
 (SHIFT+P raw photos now exist for evidence). NOT yet reproduced in
 probes.
 
-### B-11 At altitude, motion reads flat; refinement catch-up is slow
-Austin field note at stream=1/2: coarse parent stand-ins linger during
-high-altitude motion and full detail takes a long time to arrive
-(also part-answer to "is this fog?" - parents read hazy/flat).
-Tuning item: altitude-scaled budgets (coarse tiles are cheap; the
-productive cap only guards level>=11), possibly parent-free covers
-above the fine-LOD band. PERF.md live-flow section owns this.
 
 ### CROSS-REVIEW 2026-07-14 (Sol reviewed Claude 14aed27..999ed70; fresh
 ### Claude context reviewed Sol's MP1/W2.5/W2/moon). Fixed same-day items
@@ -517,6 +510,16 @@ texturing conversation with Andrew.
 
 
 ## FIXED
+
+### B-11 Altitude motion read flat; catch-up was slow (2026-07-15, b64b5f4)
+Two causes, both scheduling: parent stand-ins were used for ALL fresh
+uncovered tiles (cheap coarse ones included), and motion throttled
+total pending. At balanced/eager the parent dodge now applies only to
+the expensive class (level >= 11) and motion bounds only that class.
+40 km lateral probe: mid-flight draws 121/109/86/72 -> 508/482/397/376;
+strict never converged even at rest (72 vs 538 settled). STRICT (F9
+level 0) deliberately preserves old v2 behavior as a comparison
+reference. Probe: b11-altitude.play.
 
 ### B-4 IMPORTANT: mesh-detail loading perf + ascent lagspikes (2026-07-14)
 Fixed by Sol (merge d0fbcab; full measurements in interchange/reviews/
