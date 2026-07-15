@@ -1,0 +1,23 @@
+# B-11 probe: high-altitude lateral flight. Before the fix, motion
+# throttled all refinement and fresh horizon families stayed as coarse
+# parents - terrain read flat and detail lagged far behind the camera.
+# Run with TRI_RAW_CAPTURE=1; draws per shot are the objective signal.
+mode fly
+weather time 349
+teleport 20.0 30.0 40.0
+look 90 -35
+bench 10
+teleport 20.0 32.0 40.0
+bench 3
+shot b11_a
+teleport 20.0 34.0 40.0
+bench 3
+shot b11_b
+teleport 20.0 36.0 40.0
+bench 3
+shot b11_c
+teleport 20.0 38.0 40.0
+bench 3
+shot b11_d
+bench 30
+shot b11_settled

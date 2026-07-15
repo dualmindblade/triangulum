@@ -2121,14 +2121,20 @@ impl Renderer {
             if !self.settle_visuals && !k.deep {
                 if covered(&self.cache, k) {
                     covered_missing.push(*k);
-                } else if k.level > 0 && !descending_live_cover {
-                    // A fresh live cover needs geometry now, but not every
-                    // exact selected tile now. Build one unique geomorphed
-                    // parent as the bounded synchronous safety cover and let
-                    // the normal two-tier budget refine the selected child.
-                    // Descents retain exact ordinary tiles throughout the
-                    // approach so their finer/deep handoffs are already
-                    // populated; settled captures never take this branch.
+                } else if !descending_live_cover
+                    && if self.stream_level == 0 {
+                        k.level > 0
+                    } else {
+                        k.level >= 11
+                    }
+                {
+                    // B-11: the parent stand-in exists to dodge EXPENSIVE
+                    // synchronous builds - and expense lives in the fine
+                    // forest levels (11-14). At balanced/eager, cheap coarse
+                    // tiles skip this branch and build exact below, which is
+                    // what keeps high-altitude motion from reading flat.
+                    // STRICT keeps the original v2 behavior everywhere as
+                    // the F9 comparison reference.
                     let parent = TileKey {
                         face: k.face,
                         level: k.level - 1,
@@ -2289,7 +2295,7 @@ impl Renderer {
             }
             // Flow, not famine: motion keeps a bounded stream of background
             // work (view-center-sorted below), stillness opens the full
-            // pending limit. The zero-during-motion rule this replaces made
+            // pending limit. The zero-during-motion rule this replaced made
             // flight visually barren (live-fidelity.play, 2026-07-15); the
             // monolith-free build path is what actually cures hitches.
             let moving = vertical_delta.abs() > 0.005 || lateral_motion;
@@ -2297,15 +2303,17 @@ impl Renderer {
                 .frame_counter
                 .saturating_sub(self.last_live_motion_frame)
                 >= 6;
-            if moving || (altitude < VOXEL_MAX_ALT_KM && !quiet) {
-                live_pending_limit = if self.stream_level == 0 && !moving {
-                    // STRICT recreates original v2: a quiet low pose still
-                    // converges (slowly), a moving one admits nothing.
-                    caps.productive
-                } else {
-                    caps.motion_pending
-                };
+            if self.stream_level == 0 {
+                // STRICT recreates original v2 for F9 comparison: a quiet
+                // low pose converges slowly, a moving one admits nothing.
+                if moving || (altitude < VOXEL_MAX_ALT_KM && !quiet) {
+                    live_pending_limit = if moving { 0 } else { caps.productive };
+                }
             }
+            // B-11 (balanced/eager): motion no longer throttles TOTAL
+            // pending - cheap coarse tiles flow at the full limit so high
+            // altitudes refine while flying; the expensive forest class
+            // stays bounded by caps.productive below regardless of motion.
             // Real vertical motion earns a doubled budget: the fine covers
             // are many expensive tiles, and this is exactly the moment the
             // background pool should saturate. Hovering keeps the steady
