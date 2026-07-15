@@ -1,0 +1,31 @@
+# B-4a lateral gate: horizontal flight at fixed altitude across forest.
+# Austin's field diagnostic - hitches trigger when MAP-DIRECTION motion
+# brings unseen productive regions over the horizon; pure vertical
+# flight is covered by the vertical forecast and stays smooth. Steps of
+# ~0.35 degrees (~39 km) with a few frames each emulate fast lateral
+# flight over the forest belt.
+mode fly
+weather time 349
+teleport -0.906 -67.804 2.5
+look 90 -30
+bench 20
+teleport -0.906 -67.454 2.5
+bench 6
+teleport -0.906 -67.104 2.5
+bench 6
+teleport -0.906 -66.754 2.5
+bench 6
+teleport -0.906 -66.404 2.5
+bench 6
+teleport -0.906 -66.054 2.5
+bench 6
+teleport -0.906 -65.704 2.5
+bench 6
+teleport -0.906 -65.354 2.5
+bench 6
+teleport -0.906 -65.004 2.5
+bench 6
+teleport -0.906 -64.654 2.5
+bench 6
+teleport -0.906 -64.304 2.5
+bench 6

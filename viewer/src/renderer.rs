@@ -1713,9 +1713,13 @@ impl Renderer {
         let draw_start = std::time::Instant::now();
         if let Some(prev) = self.frame_mark.replace(draw_start) {
             let dt_ms = draw_start.duration_since(prev).as_secs_f32() * 1000.0;
-            // a pause (alt-tab, teleport prompt, capture wait) is not a
-            // frame-time signal — drop outliers past half a second
-            if dt_ms < 500.0 {
+            // A pause (alt-tab, teleport prompt, capture wait) is not a
+            // frame-time signal - but a HITCH is. A long gap counts as a
+            // frame when the previous draw's own wall time explains it;
+            // the blanket <500 ms cut made the FPS meter hold steady
+            // through 1 s hitch frames (Austin, 2026-07-14).
+            let prev_cost = self.draw_cost_ms.back().copied().unwrap_or(0.0);
+            if dt_ms < 500.0 || prev_cost >= dt_ms * 0.5 {
                 self.frame_intervals_ms.push_back(dt_ms);
                 if self.frame_intervals_ms.len() > 240 {
                     self.frame_intervals_ms.pop_front();
