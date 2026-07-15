@@ -316,8 +316,9 @@ fn capture(planet: Arc<Planet>, camera: Camera, args: Args, path: &str) -> Resul
         force_fallback_adapter: false,
         apply_limit_buckets: false,
     }))?;
-    let (device, queue) =
-        pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default()))?;
+    let (device, queue) = pollster::block_on(
+        adapter.request_device(&triangulum_viewer::renderer::viewer_device_descriptor(&adapter)),
+    )?;
     let mut renderer = Renderer::new(
         device,
         queue,
@@ -487,7 +488,9 @@ fn capture_multiplayer(planet: Arc<Planet>, camera: Camera, args: Args, path: &s
         force_fallback_adapter: false,
         apply_limit_buckets: false,
     }))?;
-    let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default()))?;
+    let (device, queue) = pollster::block_on(
+        adapter.request_device(&triangulum_viewer::renderer::viewer_device_descriptor(&adapter)),
+    )?;
     let mut renderer = Renderer::new(device, queue, wgpu::TextureFormat::Rgba8UnormSrgb, args.size, args.exaggeration);
     renderer.sun_dir = args.sun.map(|(la, lo)| {
         let (la, lo) = (la.to_radians(), lo.to_radians());
@@ -1977,9 +1980,10 @@ impl ApplicationHandler for App {
             apply_limit_buckets: false,
         }))
         .expect("adapter");
-        let (device, queue) =
-            pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default()))
-                .expect("device");
+        let (device, queue) = pollster::block_on(adapter.request_device(
+            &triangulum_viewer::renderer::viewer_device_descriptor(&adapter),
+        ))
+        .expect("device");
         let size = window.inner_size();
         let mut config = surface
             .get_default_config(&adapter, size.width.max(1), size.height.max(1))

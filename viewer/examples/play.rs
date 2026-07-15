@@ -168,8 +168,9 @@ fn main() -> anyhow::Result<()> {
         force_fallback_adapter: false,
         apply_limit_buckets: false,
     }))?;
-    let (device, queue) =
-        pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default()))?;
+    let (device, queue) = pollster::block_on(
+        adapter.request_device(&triangulum_viewer::renderer::viewer_device_descriptor(&adapter)),
+    )?;
     let mut renderer = Renderer::new(
         device,
         queue,
@@ -878,6 +879,7 @@ fn main() -> anyhow::Result<()> {
                 let view = tex.create_view(&Default::default());
                 let active_edits = focused_edits(&camera, &edits, &moon_edits);
                 renderer.refresh_edits_snapshot(active_edits);
+                renderer.gpu_timer_reset();
                 for _ in 0..n {
                     let t0 = std::time::Instant::now();
                     renderer.draw(&view, &planet, &camera, active_edits);
@@ -893,6 +895,9 @@ fn main() -> anyhow::Result<()> {
                     times[0],
                     times[times.len() - 1]
                 );
+                if let Some(summary) = renderer.gpu_timer_summary() {
+                    trace!("[{}] {summary}", ln + 1);
+                }
             }
             "probe" => {
                 let (pla, plo) = (f(1)?.to_radians(), f(2)?.to_radians());

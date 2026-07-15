@@ -44,6 +44,44 @@ const LIVE_TILE_PREFETCH_BUDGET: usize = 4;
 const ASCENT_PREFETCH_MIN_LOOKAHEAD_KM: f64 = 10.0;
 const ASCENT_PREFETCH_ALTITUDE_FACTOR: f64 = 4.0;
 
+/// GPU timestamp instrumentation (PERF.md item 2), active only with
+/// TRI_GPU_TIMERS=1 and adapter support. Six stamps bracket the single
+/// render pass's pipeline groups; without TIMESTAMP_QUERY_INSIDE_PASSES
+/// only the whole-pass pair is written. Readback is a one-slot staging
+/// buffer polled non-blockingly, so live frames never stall on it.
+const GPU_TIMER_STAMPS: usize = 6;
+pub const GPU_TIMER_SEGMENTS: [&str; 5] = ["terrain", "sky", "bodies", "moon", "overlay"];
+
+struct GpuTimers {
+    query_set: wgpu::QuerySet,
+    resolve_buf: wgpu::Buffer,
+    staging: wgpu::Buffer,
+    inside_passes: bool,
+    period_ns: f32,
+    map_ready: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    map_pending: bool,
+    /// Rolling per-segment milliseconds: [terrain, sky, bodies, moon,
+    /// overlay] plus total in the last slot.
+    samples: std::collections::VecDeque<[f32; 6]>,
+}
+
+/// Device descriptor for every viewer entry point: requests the timestamp
+/// features when TRI_GPU_TIMERS=1 and the adapter has them; identical to
+/// the default descriptor otherwise.
+pub fn viewer_device_descriptor(adapter: &wgpu::Adapter) -> wgpu::DeviceDescriptor<'static> {
+    let mut desc = wgpu::DeviceDescriptor::default();
+    if std::env::var("TRI_GPU_TIMERS").is_ok() {
+        let have = adapter.features();
+        if have.contains(wgpu::Features::TIMESTAMP_QUERY) {
+            desc.required_features |= wgpu::Features::TIMESTAMP_QUERY;
+            if have.contains(wgpu::Features::TIMESTAMP_QUERY_INSIDE_PASSES) {
+                desc.required_features |= wgpu::Features::TIMESTAMP_QUERY_INSIDE_PASSES;
+            }
+        }
+    }
+    desc
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 enum DrawKey {
     Tile(TileKey),
@@ -371,6 +409,9 @@ pub struct Renderer {
     last_live_altitude_km: f64,
     tile_tx: mpsc::Sender<(TileKey, u64, u32, TileMesh)>,
     tile_rx: mpsc::Receiver<(TileKey, u64, u32, TileMesh)>,
+    /// PERF.md item 2: per-segment GPU timing behind TRI_GPU_TIMERS=1.
+    /// None when the env flag or device feature is absent - zero cost.
+    gpu_timers: Option<GpuTimers>,
     /// Immutable world-state snapshots shared by in-flight chunk builders.
     /// Refreshed only when edits/torches change, so queuing many chunks does
     /// not clone the whole edited world per request.
@@ -979,6 +1020,37 @@ impl Renderer {
             cache: None,
         });
 
+        let gpu_timers_init = if device.features().contains(wgpu::Features::TIMESTAMP_QUERY) {
+            Some(GpuTimers {
+                query_set: device.create_query_set(&wgpu::QuerySetDescriptor {
+                    label: Some("gpu timers"),
+                    ty: wgpu::QueryType::Timestamp,
+                    count: GPU_TIMER_STAMPS as u32,
+                }),
+                resolve_buf: device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some("gpu timer resolve"),
+                    size: (GPU_TIMER_STAMPS * 8) as u64,
+                    usage: wgpu::BufferUsages::QUERY_RESOLVE | wgpu::BufferUsages::COPY_SRC,
+                    mapped_at_creation: false,
+                }),
+                staging: device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some("gpu timer staging"),
+                    size: (GPU_TIMER_STAMPS * 8) as u64,
+                    usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+                    mapped_at_creation: false,
+                }),
+                inside_passes: device
+                    .features()
+                    .contains(wgpu::Features::TIMESTAMP_QUERY_INSIDE_PASSES),
+                period_ns: queue.get_timestamp_period(),
+                map_ready: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                map_pending: false,
+                samples: std::collections::VecDeque::new(),
+            })
+        } else {
+            None
+        };
+
         Self {
             device,
             queue,
@@ -1035,6 +1107,7 @@ impl Renderer {
             last_live_altitude_km: 0.0,
             tile_tx: ttx,
             tile_rx: trx,
+            gpu_timers: gpu_timers_init,
             edit_snapshot: Arc::new(Edits::default()),
             torch_snapshot: Arc::new(Torches::default()),
             weather_field: None,
@@ -1545,6 +1618,88 @@ impl Renderer {
         }
     }
 
+    /// Non-blocking GPU-timer readback: if last frame's staging map has
+    /// completed, convert ticks to per-segment milliseconds and free the
+    /// buffer for the next resolve. Called at the top of every draw.
+    fn gpu_timers_collect(&mut self) {
+        let Some(t) = &mut self.gpu_timers else {
+            return;
+        };
+        if !t.map_pending {
+            return;
+        }
+        let _ = self.device.poll(wgpu::PollType::Poll);
+        if !t.map_ready.swap(false, std::sync::atomic::Ordering::Acquire) {
+            return;
+        }
+        {
+            let Ok(view) = t.staging.slice(..).get_mapped_range() else {
+                t.staging.unmap();
+                t.map_pending = false;
+                return;
+            };
+            let ticks: &[u64] = bytemuck::cast_slice(&view);
+            let ms = |a: usize, b: usize| {
+                (ticks[b].saturating_sub(ticks[a])) as f64 * t.period_ns as f64 / 1.0e6
+            };
+            let last = GPU_TIMER_STAMPS - 1;
+            let sample = if t.inside_passes {
+                [
+                    ms(0, 1) as f32,
+                    ms(1, 2) as f32,
+                    ms(2, 3) as f32,
+                    ms(3, 4) as f32,
+                    ms(4, last) as f32,
+                    ms(0, last) as f32,
+                ]
+            } else {
+                [0.0, 0.0, 0.0, 0.0, 0.0, ms(0, last) as f32]
+            };
+            t.samples.push_back(sample);
+            if t.samples.len() > 240 {
+                t.samples.pop_front();
+            }
+        }
+        t.staging.unmap();
+        t.map_pending = false;
+    }
+
+    pub fn gpu_timer_reset(&mut self) {
+        if let Some(t) = &mut self.gpu_timers {
+            t.samples.clear();
+        }
+    }
+
+    /// Rolling per-segment GPU averages for the play harness / bench. None
+    /// when TRI_GPU_TIMERS is off or the adapter lacks timestamp queries.
+    pub fn gpu_timer_summary(&self) -> Option<String> {
+        let t = self.gpu_timers.as_ref()?;
+        if t.samples.is_empty() {
+            return Some("gpu timers: no samples yet".into());
+        }
+        let n = t.samples.len();
+        let mut avg = [0f32; 6];
+        for s in &t.samples {
+            for (acc, v) in avg.iter_mut().zip(s.iter()) {
+                *acc += v;
+            }
+        }
+        for v in &mut avg {
+            *v /= n as f32;
+        }
+        Some(if t.inside_passes {
+            format!(
+                "gpu avg ms: terrain {:.2} | sky {:.2} | bodies {:.2} | moon {:.2} | overlay {:.2} | total {:.2} (n={n})",
+                avg[0], avg[1], avg[2], avg[3], avg[4], avg[5]
+            )
+        } else {
+            format!(
+                "gpu avg ms: total {:.2} (whole-pass only; TIMESTAMP_QUERY_INSIDE_PASSES unsupported) (n={n})",
+                avg[5]
+            )
+        })
+    }
+
     /// Draw one frame into `target`. Returns the number of tiles drawn.
     pub fn draw(
         &mut self,
@@ -1554,6 +1709,7 @@ impl Renderer {
         edits: &Edits,
     ) -> usize {
         self.frame_counter += 1;
+        self.gpu_timers_collect();
         let draw_start = std::time::Instant::now();
         if let Some(prev) = self.frame_mark.replace(draw_start) {
             let dt_ms = draw_start.duration_since(prev).as_secs_f32() * 1000.0;
@@ -2983,6 +3139,11 @@ impl Renderer {
         }
 
         let mut encoder = self.device.create_command_encoder(&Default::default());
+        let timer_writes = self.gpu_timers.as_ref().map(|t| wgpu::RenderPassTimestampWrites {
+            query_set: &t.query_set,
+            beginning_of_pass_write_index: Some(0),
+            end_of_pass_write_index: Some((GPU_TIMER_STAMPS - 1) as u32),
+        });
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("terrain pass"),
@@ -3009,10 +3170,17 @@ impl Renderer {
                     }),
                     stencil_ops: None,
                 }),
-                timestamp_writes: None,
+                timestamp_writes: timer_writes,
                 occlusion_query_set: None,
                 multiview_mask: None,
             });
+            let group_stamp = |pass: &mut wgpu::RenderPass, index: u32| {
+                if let Some(t) = &self.gpu_timers {
+                    if t.inside_passes {
+                        pass.write_timestamp(&t.query_set, index);
+                    }
+                }
+            };
             pass.set_pipeline(&self.pipeline);
             for (key, slot) in &draws {
                 let tile = match key {
@@ -3024,10 +3192,12 @@ impl Renderer {
                 pass.set_index_buffer(tile.index_buf.slice(..), wgpu::IndexFormat::Uint32);
                 pass.draw_indexed(0..tile.index_count, 0, 0..1);
             }
+            group_stamp(&mut pass, 1);
             // sky fills whatever the terrain left at the far plane
             pass.set_pipeline(&self.sky_pipeline);
             pass.set_bind_group(0, &self.bind_group, &[0]);
             pass.draw(0..3, 0..1);
+            group_stamp(&mut pass, 2);
             // Bodies draw over the non-depth-writing sky but remain behind
             // Neisor terrain. Sun first, adaptive moon second: reversed-Z
             // makes the foreground moon physically cover the Sun at contact.
@@ -3038,6 +3208,7 @@ impl Renderer {
                 pass.set_bind_group(0, &self.bind_group, &[*slot * TILE_UNIFORM_STRIDE as u32]);
                 pass.draw_indexed(0..self.body_index_count, 0, 0..1);
             }
+            group_stamp(&mut pass, 3);
             pass.set_pipeline(&self.moon_pipeline);
             for (key, slot) in &moon_draws {
                 let tile = &self.moon_cache[key];
@@ -3053,6 +3224,7 @@ impl Renderer {
                 pass.set_index_buffer(tile.index_buf.slice(..), wgpu::IndexFormat::Uint32);
                 pass.draw_indexed(0..tile.index_count, 0, 0..1);
             }
+            group_stamp(&mut pass, 4);
             if !avatar_vertices.is_empty() {
                 pass.set_pipeline(&self.avatar_pipeline);
                 pass.set_bind_group(0, &self.bind_group, &[0]);
@@ -3067,7 +3239,34 @@ impl Renderer {
                 pass.draw(0..6, 0..n_precip);
             }
         }
+        let timers_free = self.gpu_timers.as_ref().is_some_and(|t| !t.map_pending);
+        if timers_free {
+            let t = self.gpu_timers.as_ref().unwrap();
+            encoder.resolve_query_set(
+                &t.query_set,
+                0..GPU_TIMER_STAMPS as u32,
+                &t.resolve_buf,
+                0,
+            );
+            encoder.copy_buffer_to_buffer(
+                &t.resolve_buf,
+                0,
+                &t.staging,
+                0,
+                (GPU_TIMER_STAMPS * 8) as u64,
+            );
+        }
         self.queue.submit([encoder.finish()]);
+        if timers_free {
+            let t = self.gpu_timers.as_mut().unwrap();
+            let ready = std::sync::Arc::clone(&t.map_ready);
+            t.staging.slice(..).map_async(wgpu::MapMode::Read, move |result| {
+                if result.is_ok() {
+                    ready.store(true, std::sync::atomic::Ordering::Release);
+                }
+            });
+            t.map_pending = true;
+        }
         let cost = draw_start.elapsed().as_secs_f32() * 1000.0;
         self.draw_cost_ms.push_back(cost);
         if self.draw_cost_ms.len() > 240 {

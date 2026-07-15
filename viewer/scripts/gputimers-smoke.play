@@ -1,0 +1,11 @@
+# GPU timer smoke: fragment-heavy forest ground vs orbit vs moon.
+mode fly
+weather time 349
+teleport -0.906 -67.804 0.094
+look -210 -17
+bench 30
+teleport 30.0 40.0 250.0
+look 0 -80
+bench 30
+moonpose -12.0 40.0 0.002 30 -10
+bench 30
