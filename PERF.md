@@ -37,14 +37,22 @@ timestamp queries, item 2).
    option (needs Andrew): never-block scheduling - draw the cached
    ancestor instead of any synchronous urgent build; trades a moment of
    coarser terrain for zero hitches.
-2. GPU TIMESTAMP QUERIES - steady-state attribution. We only measure
-   CPU frame time; the 2060's budget needs a per-pass GPU breakdown
-   (terrain / impostors / deck+sky / post) via wgpu timestamp queries
-   behind a diagnostic flag, reported in the play harness sidecars.
-   Suspect: fragment-heavy weather/deck shading. This feeds the shader
-   work list; it does NOT help the hitches (already CPU-attributed).
-3. MOON PASS - crater-fold sampling has never been profiled; moon
-   remains clearly costlier than Neisor at parity poses.
+2. SHIPPED 2026-07-14 (7a8bbcb): GPU timestamp queries behind
+   TRI_GPU_TIMERS=1 - six stamps bracket the render pass's pipeline
+   groups; bench prints rolling per-segment averages
+   (gputimers-smoke.play). FIRST ATTRIBUTION on the dev GPU: forest
+   ground = 25.5 of 25.65 GPU ms in the TERRAIN group (the mega
+   fragment shader: weather/biome/shadow work) - that is the
+   steady-state budget and the next shader-pass target; orbit = 11.9;
+   moon surface = 2.9 ms GPU TOTAL. Moon "lag" is therefore CPU build
+   cost, not shading.
+2b. NEXT: the mega-shader pass. With attribution in hand, hunt the
+   terrain fragment cost (suspects: per-pixel weather deck taps,
+   biome comparator stack, karst probes at ground poses). Every
+   change gates on the sky/world reels.
+3. MOON PASS - now known to be CPU: profile crater-fold sampling in
+   tile/chunk BUILDS (the 1.8 s first-visit spikes in the smoke run),
+   not the shader.
 4. Smaller banked items: R-7 structured cyclone shading (+4.6% avg on
    the cyclone orbit bench - fold into the shader pass); cold-load
    upload batching (needs terrain-vs-voxel accounting first, per Sol);
