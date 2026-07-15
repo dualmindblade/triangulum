@@ -24,19 +24,18 @@ timestamp queries, item 2).
 
 ## Campaign (priority order)
 
-1. B-4a THE LEAN CANDIDATE CACHE - the remaining hitch. Austin
-   (2026-07-14): hitches now ~1/4 of transitions, was ~9/10, descent-
-   skewed (95% credence) - matches the measured residual: dense or
-   climate-boundary level 11-14 tiles defeat both region proofs and
-   enumerate 300k+ candidates (~300-900 ms builds); descents need the
-   FAT fine-LOD ring, ascents only cheap coarse tiles, hence the skew.
-   Whether a hitch fires = whether the flight path crosses such a tile
-   before its background build lands. Direct attack: a reusable
-   candidate stream/cache keyed independently of tile LOD (enumerate a
-   region once, serve every LOD/rebuild from it). Complementary design
-   option (needs Andrew): never-block scheduling - draw the cached
-   ancestor instead of any synchronous urgent build; trades a moment of
-   coarser terrain for zero hitches.
+1. SHIPPED 2026-07-14 (37b3e51, Sol): THE LEAN CANDIDATE CACHE.
+   Per-Planet 16-shard LRU (64 MiB / 512 entries per shard) keyed by
+   (face, level-14 region), lean 16-byte candidates in four disjoint
+   stride tiers so every LOD/seasonal rebuild reuses one evaluation;
+   adaptive whole-tile union rejection proof. Cold load 2714 -> 608 ms;
+   the 2 km descent step 698 -> 86 ms (88 ms confirmed on main);
+   tile_cost -4% with identical checksums; four exactness tests lock
+   bit-for-bit stream equality including concurrent misses. Residuals
+   ledgered as B-4c in BUGS.md: teleport-probe urgent builds (cure =
+   the banked never-block ancestor-draw decision - Andrew), a
+   non-impostor ~220 ms scheduling floor at pose B 2 km, and ~0.6 s
+   dense cold loads.
 2. SHIPPED 2026-07-14 (7a8bbcb): GPU timestamp queries behind
    TRI_GPU_TIMERS=1 - six stamps bracket the render pass's pipeline
    groups; bench prints rolling per-segment averages
