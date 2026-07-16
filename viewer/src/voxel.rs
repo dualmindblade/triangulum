@@ -39,9 +39,9 @@ pub const VOXEL_KM: f64 = 0.001;
 pub const LUNAR_COLUMNS_PER_FACE: u64 = COLUMNS_PER_FACE * 27 / 100;
 /// How far below the nominal surface cave carving is evaluated (blocks).
 const CAVE_DEPTH: i64 = 26;
-/// Tree canopies reach 2 columns from the trunk, and each anchor checks
-/// relief 2 columns around itself — the context grid carries 4 extra
-/// columns so cross-chunk canopies mesh identically on both sides.
+/// Tree canopies and rock outcrops reach 2 columns from their anchor, and
+/// tree relief checks reach 2 columns farther — the context grid carries 4
+/// extra columns so cross-chunk surface features mesh identically.
 const TREE_MARGIN: i64 = 4;
 
 /// Player edits: per-column height delta in blocks (break top = -1 each,
@@ -244,6 +244,9 @@ pub struct LunarColumn {
     pub albedo: f32,
     pub smoothness: f32,
     pub ray: f32,
+    /// Crater-rim/ejecta context from the same crater fold that produced the
+    /// surface. Rock placement consumes this; it is not another noise field.
+    pub debris: f32,
 }
 
 /// The shared contract used by streaming, meshing, collision, edits, and
@@ -743,6 +746,7 @@ fn lunar_col_ctx_from_sample(
             albedo: sample.albedo as f32,
             smoothness: sample.smoothness as f32,
             ray: sample.ray as f32,
+            debris: sample.debris as f32,
         }),
         koppen: 255,
         biome_temp: 0.0,
@@ -1255,6 +1259,320 @@ pub fn tree_here(
         return None;
     }
     tree_at(&c, face as u8, ci, cj, planet.seed)
+}
+
+// ---------------------------------------------------------------- rocks
+
+/// Andrew-facing geology knobs. Densities are anchor probabilities per
+/// canonical surface column (approximately per square metre at face center).
+/// A winning anchor expands into the block counts below; changing a knob
+/// therefore changes placement intentionally but never renderer agreement.
+pub mod rock_tuning {
+    pub const DENSITY_FOREST: f64 = 0.000_18;
+    pub const DENSITY_PLAINS: f64 = 0.000_25;
+    pub const DENSITY_ARID: f64 = 0.000_42;
+    pub const DENSITY_COAST: f64 = 0.000_32;
+    pub const DENSITY_UPLAND: f64 = 0.000_50;
+    pub const DENSITY_ALPINE: f64 = 0.000_72;
+
+    pub const MOON_BACKGROUND_HIGHLAND: f64 = 0.000_04;
+    pub const MOON_BACKGROUND_MARIA: f64 = 0.000_015;
+    pub const MOON_CRATER_RUBBLE_GAIN: f64 = 0.000_50;
+    pub const MOON_MAX_DENSITY: f64 =
+        MOON_BACKGROUND_HIGHLAND + MOON_CRATER_RUBBLE_GAIN;
+
+    /// Continuous baked roughness can lift the exposed-rock families by this
+    /// factor. The cache's cheap request gate uses the resulting hard bound.
+    pub const GEOLOGY_EXPOSURE_GAIN: f64 = 0.55;
+    pub const MAX_DENSITY: f64 = 0.001_12;
+
+    /// Shape CDFs. Ordinary ground is mostly single stones; exposed alpine
+    /// and crater ejecta trade some singles for block-cluster outcrops.
+    pub const ORDINARY_SINGLE_CDF: f64 = 0.60;
+    pub const ORDINARY_BOULDER_CDF: f64 = 0.94;
+    pub const ORDINARY_OUTCROP_CDF: f64 = 0.995;
+    pub const EXPOSED_SINGLE_CDF: f64 = 0.43;
+    pub const EXPOSED_BOULDER_CDF: f64 = 0.90;
+    pub const EXPOSED_OUTCROP_CDF: f64 = 0.992;
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum RockFamily {
+    Forest,
+    Plains,
+    Arid,
+    Coast,
+    Upland,
+    Alpine,
+    Lunar,
+    LunarEjecta,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum RockKind {
+    /// One loose surface block.
+    Single,
+    /// A compact 3-6 block boulder.
+    Boulder,
+    /// An elongated 7-11 block exposure.
+    Outcrop,
+    /// Rare 12-17 block erratic.
+    Erratic,
+}
+
+/// Biome/geology half of Neisor rock placement. Only fields already carried
+/// by `ColCtx` are used, so cached far candidates and near columns can call
+/// this exact function without reconstructing a second geology map.
+pub fn neisor_rock_profile(
+    main_block: MainBlock,
+    forest: f32,
+    elevation_km: f32,
+    rough_km: f32,
+) -> (RockFamily, f64) {
+    let rough = f64::from(rough_km.max(0.0));
+    let elevation = f64::from(elevation_km);
+    let family = if main_block == MainBlock::Snow || elevation > 1.45 {
+        RockFamily::Alpine
+    } else if rough > 0.32 {
+        RockFamily::Upland
+    } else if main_block == MainBlock::Sand && elevation.abs() < 0.080 {
+        RockFamily::Coast
+    } else if main_block == MainBlock::Sand {
+        RockFamily::Arid
+    } else if forest > 0.42 {
+        RockFamily::Forest
+    } else {
+        RockFamily::Plains
+    };
+    let base = match family {
+        RockFamily::Forest => rock_tuning::DENSITY_FOREST,
+        RockFamily::Plains => rock_tuning::DENSITY_PLAINS,
+        RockFamily::Arid => rock_tuning::DENSITY_ARID,
+        RockFamily::Coast => rock_tuning::DENSITY_COAST,
+        RockFamily::Upland => rock_tuning::DENSITY_UPLAND,
+        RockFamily::Alpine => rock_tuning::DENSITY_ALPINE,
+        RockFamily::Lunar | RockFamily::LunarEjecta => unreachable!(),
+    };
+    let exposure = (rough / 0.36).clamp(0.0, 1.0);
+    let density = base * (1.0 + rock_tuning::GEOLOGY_EXPOSURE_GAIN * exposure);
+    (family, density.min(rock_tuning::MAX_DENSITY))
+}
+
+/// Lunar density is the crater fold's ejecta/rim signal plus a very sparse
+/// background. Smooth maria retain fewer loose stones than highlands.
+pub fn lunar_rock_profile(debris: f32, smoothness: f32) -> (RockFamily, f64) {
+    let debris = f64::from(debris.clamp(0.0, 1.0));
+    let smooth = f64::from(smoothness.clamp(0.0, 1.0));
+    let background = rock_tuning::MOON_BACKGROUND_HIGHLAND
+        + (rock_tuning::MOON_BACKGROUND_MARIA - rock_tuning::MOON_BACKGROUND_HIGHLAND)
+            * smooth;
+    let density = background + rock_tuning::MOON_CRATER_RUBBLE_GAIN * debris.powf(0.78);
+    let family = if debris >= 0.30 {
+        RockFamily::LunarEjecta
+    } else {
+        RockFamily::Lunar
+    };
+    (family, density.min(rock_tuning::MOON_MAX_DENSITY))
+}
+
+#[inline]
+pub fn rock_hash01(face: u8, ci: u64, cj: u64, seed: i64) -> f64 {
+    hash01(face, ci, cj, seed as u64 ^ 0x524F_434B_4C4F_5454)
+}
+
+#[inline]
+pub fn rock_kind(
+    family: RockFamily,
+    face: u8,
+    ci: u64,
+    cj: u64,
+    seed: i64,
+) -> RockKind {
+    let q = hash01(face, ci, cj, seed as u64 ^ 0x524F_434B_5348_4150);
+    let exposed = matches!(
+        family,
+        RockFamily::Upland | RockFamily::Alpine | RockFamily::LunarEjecta
+    );
+    let (single, boulder, outcrop) = if exposed {
+        (
+            rock_tuning::EXPOSED_SINGLE_CDF,
+            rock_tuning::EXPOSED_BOULDER_CDF,
+            rock_tuning::EXPOSED_OUTCROP_CDF,
+        )
+    } else {
+        (
+            rock_tuning::ORDINARY_SINGLE_CDF,
+            rock_tuning::ORDINARY_BOULDER_CDF,
+            rock_tuning::ORDINARY_OUTCROP_CDF,
+        )
+    };
+    if q < single {
+        RockKind::Single
+    } else if q < boulder {
+        RockKind::Boulder
+    } else if q < outcrop {
+        RockKind::Outcrop
+    } else {
+        RockKind::Erratic
+    }
+}
+
+pub(crate) fn rock_material(
+    family: RockFamily,
+    kind: RockKind,
+    face: u8,
+    ci: u64,
+    cj: u64,
+    seed: i64,
+) -> Mat {
+    if matches!(family, RockFamily::Lunar | RockFamily::LunarEjecta) {
+        // Deep LunarRock is intentionally coal-dark inside excavations. Loose
+        // surface rubble stays dust-coated and therefore uses the existing
+        // regolith palette; its geometry/lighting, not black paint, models it.
+        return Mat::RegolithHighland;
+    }
+    let dark = hash01(face, ci, cj, seed as u64 ^ 0x524F_434B_4D41_544C) < 0.46;
+    match family {
+        RockFamily::Coast => {
+            if dark { Mat::Stone } else { Mat::Gravel }
+        }
+        RockFamily::Arid | RockFamily::Plains => {
+            if dark || kind == RockKind::Erratic { Mat::Rock } else { Mat::Stone }
+        }
+        RockFamily::Forest | RockFamily::Upland | RockFamily::Alpine => {
+            if dark { Mat::Rock } else { Mat::Stone }
+        }
+        RockFamily::Lunar | RockFamily::LunarEjecta => unreachable!(),
+    }
+}
+
+/// Full-block geometry relative to the anchor. Templates never reach beyond
+/// two columns, preserving the established four-column chunk ghost margin.
+pub fn rock_cells(
+    kind: RockKind,
+    family: RockFamily,
+    face: u8,
+    ci: u64,
+    cj: u64,
+    seed: i64,
+) -> Vec<(i64, i64, i64, Mat)> {
+    const SINGLE: &[(i64, i64, i64)] = &[(0, 0, 1)];
+    const BOULDER: &[(i64, i64, i64)] = &[
+        (0, 0, 1),
+        (1, 0, 1),
+        (0, 1, 1),
+        (1, 1, 1),
+        (0, 0, 2),
+        (-1, 0, 1),
+    ];
+    const OUTCROP: &[(i64, i64, i64)] = &[
+        (-2, 0, 1),
+        (-1, 0, 1),
+        (0, 0, 1),
+        (1, 0, 1),
+        (2, 0, 1),
+        (-1, 1, 1),
+        (0, 1, 1),
+        (1, 1, 1),
+        (0, -1, 1),
+        (-1, 0, 2),
+        (0, 0, 2),
+    ];
+    const ERRATIC: &[(i64, i64, i64)] = &[
+        (-1, -1, 1),
+        (0, -1, 1),
+        (1, -1, 1),
+        (-1, 0, 1),
+        (0, 0, 1),
+        (1, 0, 1),
+        (-1, 1, 1),
+        (0, 1, 1),
+        (1, 1, 1),
+        (2, 0, 1),
+        (0, 0, 2),
+        (1, 0, 2),
+        (0, 1, 2),
+        (-1, 0, 2),
+        (0, -1, 2),
+        (0, 0, 3),
+        (1, 1, 2),
+    ];
+    let rnd = hash_u64(face, ci, cj, seed as u64 ^ 0x524F_434B_4345_4C4C);
+    let (template, count) = match kind {
+        RockKind::Single => (SINGLE, 1),
+        RockKind::Boulder => (BOULDER, 3 + (rnd as usize % 4)),
+        RockKind::Outcrop => (OUTCROP, 7 + (rnd as usize % 5)),
+        RockKind::Erratic => (ERRATIC, 12 + (rnd as usize % 6)),
+    };
+    let rotation = ((rnd >> 17) & 3) as u8;
+    let material = rock_material(family, kind, face, ci, cj, seed);
+    template
+        .iter()
+        .take(count)
+        .map(|&(x, y, z)| {
+            let (x, y) = match rotation {
+                0 => (x, y),
+                1 => (-y, x),
+                2 => (-x, -y),
+                _ => (y, -x),
+            };
+            (x, y, z, material)
+        })
+        .collect()
+}
+
+fn rock_profile(c: &ColCtx) -> Option<(RockFamily, f64)> {
+    if let Some(lunar) = c.lunar {
+        return Some(lunar_rock_profile(lunar.debris, lunar.smoothness));
+    }
+    c.climate?;
+    Some(neisor_rock_profile(
+        c.tree_main_block,
+        c.tree_forest,
+        c.e_raw,
+        c.rough,
+    ))
+}
+
+/// Exact placement decision shared by voxel clusters and mesh impostors.
+pub fn rock_at_scaled(
+    c: &ColCtx,
+    face: u8,
+    ci: u64,
+    cj: u64,
+    seed: i64,
+    density_scale: f64,
+) -> Option<(RockKind, RockFamily)> {
+    if !rock_surface_eligible(c) {
+        return None;
+    }
+    let (family, density) = rock_profile(c)?;
+    if rock_hash01(face, ci, cj, seed) >= density * density_scale {
+        return None;
+    }
+    Some((rock_kind(family, face, ci, cj, seed), family))
+}
+
+/// Annual, edit-aware late gate cached for far candidates after their density
+/// lottery. It is independent of LOD stride, so one result serves every tier.
+pub(crate) fn rock_surface_eligible(c: &ColCtx) -> bool {
+    !(c.sea
+        || c.has_water()
+        || c.water != i64::MIN
+        || c.lake_level_band
+        || c.carved
+        || c.ground != c.ground0
+        || c.top_solid() != c.ground)
+}
+
+pub fn rock_at(
+    c: &ColCtx,
+    face: u8,
+    ci: u64,
+    cj: u64,
+    seed: i64,
+) -> Option<(RockKind, RockFamily)> {
+    rock_at_scaled(c, face, ci, cj, seed, 1.0)
 }
 
 // ---------------------------------------------------------------- queries
@@ -2153,8 +2471,43 @@ pub fn build_chunk(
         }
     }
 
-    // ---- trees: gather anchors in the margin, mesh cells inside the chunk
+    // ---- deterministic surface features: gather anchors in the margin,
+    // mesh cells inside the chunk. Rocks are decorative/non-collidable in
+    // Pass 1; physics continues to consume terrain + solid tree trunks only.
     let mut occ: HashMap<(i64, i64, i64), Mat> = HashMap::new();
+    if std::env::var_os("TRI_NO_ROCKS").is_none() {
+        for aj in (-m + 2)..(n + m - 2) {
+            for ai in (-m + 2)..(n + m - 2) {
+                let c = at(ai, aj);
+                let (aface, aci, acj) =
+                    canonical_column_body(body, face, base_i + ai, base_j + aj);
+                let Some((kind, family)) = rock_at(c, aface, aci, acj, body.seed()) else {
+                    continue;
+                };
+                for (dx, dy, dz, mat) in rock_cells(kind, family, aface, aci, acj, body.seed()) {
+                    let target = at(ai + dx, aj + dy);
+                    // Let each block rest on its own terrain column so an
+                    // outcrop follows modest relief instead of floating from
+                    // one anchor datum. Wet/edited/cave-mouth target cells
+                    // trim the cluster; anchor identity remains unchanged.
+                    if target.sea
+                        || target.has_water()
+                        || target.water != i64::MIN
+                        || target.carved
+                        || target.ground != target.ground0
+                        || target.top_solid() != target.ground
+                    {
+                        continue;
+                    }
+                    occ.entry((ai + dx, aj + dy, target.ground + dz))
+                        .or_insert(mat);
+                }
+            }
+        }
+    }
+
+    // Trees retain priority at the rare overlap: inserting them second keeps
+    // every pre-existing canopy/trunk silhouette bit-for-bit unchanged.
     // anchors that can reach visible cells sit within canopy radius (2) of
     // the chunk; their relief probes reach 2 further — all inside the grid,
     // so every chunk makes identical decisions about shared trees
@@ -2195,13 +2548,30 @@ pub fn build_chunk(
         let ci = (base_i + ti) as u64;
         let cj = (base_j + tj) as u64;
         let rain_c = at(ti, tj);
-        quad_rain_concavity.set(crate::terrain::rain_concavity_proxy(
-            rain_c.e_raw as f64,
-            rain_c.h_km as f64,
-        ));
-        // Tree cells never use a ground-tinted material; keep their established
-        // species palette without another climate raster pass per leaf block.
-        let tint = [0.0; 3];
+        quad_rain_concavity.set(if rain_c.lunar.is_some() {
+            0.0
+        } else {
+            crate::terrain::rain_concavity_proxy(rain_c.e_raw as f64, rain_c.h_km as f64)
+        });
+        // Lunar rocks consume the exact local sample albedo. Neisor stone and
+        // all tree materials retain their established fixed palettes.
+        let tint = rain_c
+            .lunar
+            .map(|lunar| [lunar.albedo; 3])
+            .unwrap_or([0.0; 3]);
+        quad_lunar_surface.set(rain_c.lunar.map(|mut lunar| {
+            if matches!(
+                mat,
+                Mat::LunarRock
+                    | Mat::RegolithSubsurface
+                    | Mat::RegolithHighland
+                    | Mat::RegolithMaria
+                    | Mat::RegolithRay
+            ) {
+                lunar.smoothness = 0.05;
+            }
+            lunar
+        }));
         let h = hash_u64(face as u8, ci, cj, tz as u64);
         let bright = 0.88 + 0.24 * ((h >> 13 & 0xFF) as f32 / 255.0);
         let base = mat.color(tint);
@@ -2236,7 +2606,7 @@ pub fn build_chunk(
             quad([d00 * r, d01 * r, d11 * r, d10 * r], -up, [vary(col, 0.6); 4], 1.0, 0.0);
         }
         // true face directions (not position-derived — see the terrain
-        // sides): tree faces were erratically lit by where the tree stood
+        // sides): feature faces were erratically lit by where they stood
         // in its chunk, which is what made twin shrubs read bright vs black
         let ei_dir = {
             let d = d10 - d00;
@@ -2535,5 +2905,63 @@ mod tests {
             tree_biome_profile(6, MainBlock::Grass, 0.0, 2.0, 300.0),
             Some((TreeKind::Shrub, 0.0015))
         );
+    }
+
+    #[test]
+    fn rock_tuning_orders_biomes_and_crater_rubble() {
+        let forest = neisor_rock_profile(MainBlock::Grass, 0.8, 0.2, 0.0);
+        let plains = neisor_rock_profile(MainBlock::Grass, 0.1, 0.2, 0.0);
+        let arid = neisor_rock_profile(MainBlock::Sand, 0.0, 0.4, 0.0);
+        let alpine = neisor_rock_profile(MainBlock::Snow, 0.0, 2.0, 0.36);
+        assert_eq!(forest.0, RockFamily::Forest);
+        assert_eq!(plains.0, RockFamily::Plains);
+        assert_eq!(arid.0, RockFamily::Arid);
+        assert_eq!(alpine.0, RockFamily::Alpine);
+        assert!(forest.1 < plains.1 && plains.1 < arid.1 && arid.1 < alpine.1);
+        assert!(alpine.1 <= rock_tuning::MAX_DENSITY);
+
+        let maria = lunar_rock_profile(0.0, 1.0);
+        let highland = lunar_rock_profile(0.0, 0.0);
+        let ejecta = lunar_rock_profile(1.0, 0.0);
+        assert!(maria.1 < highland.1 && highland.1 < ejecta.1);
+        assert_eq!(ejecta.0, RockFamily::LunarEjecta);
+        assert!(ejecta.1 <= rock_tuning::MOON_MAX_DENSITY);
+    }
+
+    #[test]
+    fn rock_shapes_are_deterministic_bounded_block_clusters() {
+        let expected_ranges = [
+            (RockKind::Single, 1usize, 1usize),
+            (RockKind::Boulder, 3, 6),
+            (RockKind::Outcrop, 7, 11),
+            (RockKind::Erratic, 12, 17),
+        ];
+        for (kind, lo, hi) in expected_ranges {
+            let a = rock_cells(kind, RockFamily::Alpine, 2, 1_234, 5_678, 42);
+            let b = rock_cells(kind, RockFamily::Alpine, 2, 1_234, 5_678, 42);
+            assert_eq!(a, b);
+            assert!((lo..=hi).contains(&a.len()), "{kind:?} has {} cells", a.len());
+            assert!(a.iter().all(|&(x, y, z, _)| x.abs() <= 2 && y.abs() <= 2 && z <= 3));
+        }
+    }
+
+    #[test]
+    fn rock_hash_stream_is_seeded_and_stride_aligned() {
+        let a: Vec<_> = (0..256u64)
+            .filter(|&i| rock_hash01(0, i * 8, 4_096, 42) < 0.25)
+            .collect();
+        let b: Vec<_> = (0..256u64)
+            .filter(|&i| rock_hash01(0, i * 8, 4_096, 43) < 0.25)
+            .collect();
+        assert_ne!(a, b);
+        for i in a {
+            let column = i * 8;
+            assert!(column.is_multiple_of(8));
+            let family = RockFamily::Upland;
+            assert_eq!(
+                rock_kind(family, 0, column, 4_096, 42),
+                rock_kind(family, 0, column, 4_096, 42)
+            );
+        }
     }
 }

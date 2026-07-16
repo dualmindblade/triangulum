@@ -16,6 +16,7 @@
 
 use glam::DVec3;
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 
 use crate::noise::{fbm, gradient_noise, ridged_band};
 use crate::planet::{FACES, face_dir, face_from_dir};
@@ -76,6 +77,10 @@ pub struct MoonSample {
     pub smoothness: f64,
     /// Surviving bright ray material (0..1).
     pub ray: f64,
+    /// Loose rim/ejecta context (0..1) produced while applying the exact same
+    /// crater candidates. Lunar rocks consume this instead of an unrelated
+    /// vegetation-style scatter field.
+    pub debris: f64,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -198,6 +203,7 @@ struct SurfaceState {
     albedo: f64,
     smoothness: f64,
     ray: f64,
+    debris: f64,
 }
 
 #[derive(Clone)]
@@ -207,6 +213,9 @@ pub struct MoonGenerator {
     maria: Vec<Mare>,
     crater_cache: Vec<Vec<Option<Crater>>>,
     ray_cache: Vec<Option<Crater>>,
+    /// Same B-4a v2 request-scaled sparse cache type used by Neisor rocks.
+    /// Clones share it, matching the renderer/voxel generator Arc topology.
+    rock_candidates: Arc<crate::planet::ImpostorCandidateCache>,
     legacy_floors: bool,
 }
 
@@ -642,6 +651,7 @@ impl MoonGenerator {
             maria,
             crater_cache: Vec::with_capacity(tuning::CACHED_CRATER_OCTAVES),
             ray_cache: Vec::new(),
+            rock_candidates: Arc::new(crate::planet::ImpostorCandidateCache::default()),
             legacy_floors: std::env::var_os("TRI_MOON_LEGACY_FLOORS").is_some(),
         };
         for octave in 0..tuning::CACHED_CRATER_OCTAVES {
@@ -677,6 +687,172 @@ impl MoonGenerator {
 
     pub fn seed(&self) -> i64 {
         self.seed
+    }
+
+    /// Lunar rocks use the B-4a v2 sparse-profile machinery too, but their
+    /// profile is crater context rather than climate. Misses are sampled as a
+    /// compact batch so the existing crater prefetch amortizes first touch.
+    pub(crate) fn rock_impostor_candidates(
+        &self,
+        face: u8,
+        ci_start: u64,
+        ci_end: u64,
+        cj_start: u64,
+        cj_end: u64,
+        stride: u64,
+    ) -> Vec<crate::planet::RockImpostorCandidate> {
+        let columns = crate::voxel::LUNAR_COLUMNS_PER_FACE;
+        if ci_start > ci_end
+            || cj_start > cj_end
+            || face >= 6
+            || ci_end >= columns
+            || cj_end >= columns
+            || ![1, 2, 4, 8].contains(&stride)
+        {
+            return Vec::new();
+        }
+        let ri0 = crate::planet::Planet::impostor_candidate_region_index_on_lattice(
+            ci_start, columns,
+        );
+        let ri1 = crate::planet::Planet::impostor_candidate_region_index_on_lattice(
+            ci_end, columns,
+        );
+        let rj0 = crate::planet::Planet::impostor_candidate_region_index_on_lattice(
+            cj_start, columns,
+        );
+        let rj1 = crate::planet::Planet::impostor_candidate_region_index_on_lattice(
+            cj_end, columns,
+        );
+        let comp = (stride * stride) as f64;
+        let mut touched_shards = 0u16;
+        let mut candidates = Vec::new();
+        for ri in ri0..=ri1 {
+            for rj in rj0..=rj1 {
+                let key = crate::planet::ImpostorCandidateRegionKey { face, ri, rj };
+                touched_shards |=
+                    1u16 << crate::planet::ImpostorCandidateCache::shard_index(key);
+                let (region_ci0, region_ci1) =
+                    crate::planet::Planet::impostor_candidate_region_bounds_on_lattice(
+                        ri, columns,
+                    );
+                let (region_cj0, region_cj1) =
+                    crate::planet::Planet::impostor_candidate_region_bounds_on_lattice(
+                        rj, columns,
+                    );
+                let cell_ci0 = region_ci0.max(ci_start);
+                let cell_ci1 = region_ci1.min(ci_end);
+                let cell_cj0 = region_cj0.max(cj_start);
+                let cell_cj1 = region_cj1.min(cj_end);
+                if cell_ci0 > cell_ci1 || cell_cj0 > cell_cj1 {
+                    continue;
+                }
+                let first_ci = cell_ci0.div_ceil(stride) * stride;
+                let first_cj = cell_cj0.div_ceil(stride) * stride;
+                if first_ci > cell_ci1 || first_cj > cell_cj1 {
+                    continue;
+                }
+                let mut gated = Vec::new();
+                for ci in (first_ci..=cell_ci1).step_by(stride as usize) {
+                    for cj in (first_cj..=cell_cj1).step_by(stride as usize) {
+                        let lot = crate::voxel::rock_hash01(face, ci, cj, self.seed);
+                        if lot >= crate::voxel::rock_tuning::MOON_MAX_DENSITY * comp {
+                            continue;
+                        }
+                        let site = crate::planet::Planet::impostor_candidate_site(
+                            region_ci0,
+                            region_cj0,
+                            ci,
+                            cj,
+                        );
+                        gated.push((ci, cj, site, lot));
+                    }
+                }
+                let resolved = self.rock_candidates.resolve_rock_profiles(
+                    key,
+                    &gated,
+                    |requests| {
+                        let directions: Vec<DVec3> = requests
+                            .iter()
+                            .map(|&(ci, cj, _)| {
+                                let n = columns as f64;
+                                let u = -1.0 + 2.0 * (ci as f64 + 0.5) / n;
+                                let v = -1.0 + 2.0 * (cj as f64 + 0.5) / n;
+                                face_dir(face as usize, u, v)
+                            })
+                            .collect();
+                        self.sample_batch(&directions)
+                            .into_iter()
+                            .zip(requests.iter())
+                            .map(|(sample, &(_, _, site))| {
+                                let (family, density) = crate::voxel::lunar_rock_profile(
+                                    sample.debris as f32,
+                                    sample.smoothness as f32,
+                                );
+                                crate::planet::LeanRockProfile {
+                                    density,
+                                    site,
+                                    family: Some(family),
+                                }
+                            })
+                            .collect()
+                    },
+                );
+                let mut winners = Vec::new();
+                for ((ci, cj, site, lot), profile) in gated.into_iter().zip(resolved) {
+                    let Some(family) = profile.family else {
+                        continue;
+                    };
+                    if lot >= profile.density * comp {
+                        continue;
+                    }
+                    winners.push((ci, cj, site, lot, profile.density, family));
+                }
+                let placement_requests: Vec<_> = winners
+                    .iter()
+                    .map(|&(ci, cj, site, _, _, _)| (ci, cj, site))
+                    .collect();
+                let placements = self.rock_candidates.resolve_rock_placements(
+                    key,
+                    &placement_requests,
+                    |requests| {
+                        let directions: Vec<DVec3> = requests
+                            .iter()
+                            .map(|&(ci, cj, _)| {
+                                let n = columns as f64;
+                                let u = -1.0 + 2.0 * (ci as f64 + 0.5) / n;
+                                let v = -1.0 + 2.0 * (cj as f64 + 0.5) / n;
+                                face_dir(face as usize, u, v)
+                            })
+                            .collect();
+                        self.sample_batch(&directions)
+                            .into_iter()
+                            .zip(requests.iter())
+                            .map(|(sample, &(_, _, site))| crate::planet::LeanRockPlacement {
+                                height: sample.height_ratio,
+                                site,
+                                albedo: sample.albedo as f32,
+                            })
+                            .collect()
+                    },
+                );
+                for ((ci, cj, _, lot, density, family), placement) in
+                    winners.into_iter().zip(placements)
+                {
+                    candidates.push((
+                        ci,
+                        cj,
+                        crate::voxel::rock_kind(family, face, ci, cj, self.seed),
+                        family,
+                        lot,
+                        density,
+                        placement,
+                    ));
+                }
+            }
+        }
+        self.rock_candidates.trim_shards(touched_shards);
+        candidates.sort_unstable_by_key(|&(ci, cj, _, _, _, _, _)| (ci, cj));
+        candidates
     }
 
     pub fn mare_counts(&self) -> (usize, usize) {
@@ -934,6 +1110,7 @@ impl MoonGenerator {
             albedo: base.albedo,
             smoothness: base.smoothness,
             ray: 0.0,
+            debris: 0.0,
         };
         let locator = face_from_dir(direction);
         let mut keys = [CellKey::ZERO; tuning::RAY_CELL_VISITS];
@@ -1273,6 +1450,13 @@ impl MoonGenerator {
         let disturbed = outer_falloff
             * (0.48 + 0.52 * (17.0 * q + crater.rim_phase + 3.0 * bearing).sin().abs());
         state.height += crater.depth_ratio * 0.014 * disturbed;
+        // The placement context for lunar rubble is born here, from the
+        // actual rim/ejecta law. Fine fresh impacts are the strongest debris
+        // producers; broad ancient basins retain only a sparse apron.
+        let debris_scale = 0.30 + 0.70 * scale.sqrt();
+        state.debris = state
+            .debris
+            .max((rim_core * 0.62 + disturbed * debris_scale).clamp(0.0, 1.0));
 
         // Universal bright rims read cartoonish (Andrew: "significantly
         // curb this effect") - only genuinely FRESH craters flash their
@@ -1312,6 +1496,7 @@ impl MoonGenerator {
             state.albedo = mix(state.albedo, dark_target, halo * 0.88);
             state.smoothness = state.smoothness.max(halo * 0.86);
             state.ray *= 1.0 - halo * 0.94;
+            state.debris = state.debris.max(halo * 0.48);
         }
         if radial < 1.24 {
             return;
@@ -1390,6 +1575,7 @@ impl MoonGenerator {
                 albedo: 0.5,
                 smoothness: 0.0,
                 ray: 0.0,
+                debris: 0.0,
             };
         }
 
@@ -1399,6 +1585,7 @@ impl MoonGenerator {
             albedo: base.albedo,
             smoothness: base.smoothness,
             ray: 0.0,
+            debris: 0.0,
         };
         let mut keys = [CellKey::ZERO; tuning::RAY_CELL_VISITS];
         let mut craters = [Crater::EMPTY; tuning::RAY_CELL_VISITS];
@@ -1457,6 +1644,7 @@ impl MoonGenerator {
             albedo: state.albedo.clamp(0.15, 0.96),
             smoothness: state.smoothness.clamp(0.0, 1.0),
             ray: state.ray.clamp(0.0, 1.0),
+            debris: state.debris.clamp(0.0, 1.0),
         }
     }
 
@@ -1576,6 +1764,7 @@ impl MoonGenerator {
                 albedo: 0.5,
                 smoothness: 0.0,
                 ray: 0.0,
+                debris: 0.0,
             };
         }
         let base = self.base_surface(direction);
@@ -1584,6 +1773,7 @@ impl MoonGenerator {
             albedo: base.albedo,
             smoothness: base.smoothness,
             ray: 0.0,
+            debris: 0.0,
         };
         let sample = &prefetch.samples[sample_index];
         for (octave, crater_cache) in prefetch.octaves.iter().enumerate() {
@@ -1617,6 +1807,7 @@ impl MoonGenerator {
             albedo: state.albedo.clamp(0.15, 0.96),
             smoothness: state.smoothness.clamp(0.0, 1.0),
             ray: state.ray.clamp(0.0, 1.0),
+            debris: state.debris.clamp(0.0, 1.0),
         }
     }
 
@@ -1794,6 +1985,108 @@ pub fn build_tile(generator: &MoonGenerator, key: TileKey, radius_km: f64) -> Ti
         }
     }
 
+    let rock_stride = match key.level {
+        14 => 1,
+        13 => 2,
+        12 => 4,
+        11 => 8,
+        _ => 0,
+    };
+    if rock_stride > 0
+        && std::env::var_os("TRI_NO_IMPOSTORS").is_none()
+        && std::env::var_os("TRI_NO_ROCKS").is_none()
+    {
+        let columns = crate::voxel::LUNAR_COLUMNS_PER_FACE;
+        let columns_f = columns as f64;
+        let to_column = |x: f64| {
+            (((x + 1.0) * 0.5 * columns_f)
+                .floor()
+                .clamp(0.0, columns_f - 1.0)) as u64
+        };
+        let (ci0, ci1) = (to_column(u0), to_column(u0 + size));
+        let (cj0, cj1) = (to_column(v0), to_column(v0 + size));
+        let ci_start = ci0.div_ceil(rock_stride) * rock_stride;
+        let cj_start = cj0.div_ceil(rock_stride) * rock_stride;
+        if ci_start <= ci1 && cj_start <= cj1 {
+            let candidates = generator.rock_impostor_candidates(
+                key.face,
+                ci_start,
+                ci1,
+                cj_start,
+                cj1,
+                rock_stride,
+            );
+            // Match Neisor's nested rock budget: exact-looking handoff near
+            // the voxel patch, sparse area-conserving rubble at 1-3 px.
+            let cap = if key.level >= 13 { 900usize } else { 320usize };
+            let keep_every = candidates.len().div_ceil(cap).max(1);
+            let keep_ratio = (cap as f64 / candidates.len().max(1) as f64).min(1.0);
+            let boost = (keep_every as f64).sqrt().min(1.8);
+            let comp = (rock_stride * rock_stride) as f64;
+            let parent_stride = match key.level.saturating_sub(1) {
+                14 => 1,
+                13 => 2,
+                12 => 4,
+                11 => 8,
+                _ => 0,
+            };
+            let kept: Vec<_> = candidates
+                .into_iter()
+                .filter(|&(_, _, _, _, lot, density, _)| {
+                    lot < density * comp * keep_ratio
+                })
+                .collect();
+            for (ci, cj, kind, family, _, _, placement) in kept {
+                let Some(placement) = placement else {
+                    continue;
+                };
+                let u = -1.0 + 2.0 * (ci as f64 + 0.5) / columns_f;
+                let v = -1.0 + 2.0 * (cj as f64 + 0.5) / columns_f;
+                let dir = face_dir(face, u, v);
+                let shade = 0.88
+                    + 0.22
+                        * crate::planet::hash01(
+                            key.face,
+                            ci,
+                            cj,
+                            generator.seed as u64 ^ 0x524F_434B_5449_4E54,
+                        ) as f32;
+                let material = crate::voxel::rock_material(
+                    family,
+                    kind,
+                    key.face,
+                    ci,
+                    cj,
+                    generator.seed,
+                );
+                let mut color = material.color([placement.albedo; 3]);
+                color.iter_mut().for_each(|channel| *channel *= shade);
+                let root = dir * (radius_km * (1.0 + placement.height) - 0.00035) - origin;
+                let spin = crate::planet::hash01(
+                    key.face,
+                    ci,
+                    cj,
+                    generator.seed as u64 ^ 0x524F_434B_5350_494E,
+                ) * std::f64::consts::TAU;
+                let parent_member = parent_stride > 0
+                    && ci.is_multiple_of(parent_stride)
+                    && cj.is_multiple_of(parent_stride);
+                crate::terrain::append_rock_impostor_geometry(
+                    &mut vertices,
+                    &mut indices,
+                    root,
+                    dir,
+                    kind,
+                    color,
+                    boost,
+                    spin,
+                    parent_member,
+                    Some(0.05),
+                );
+            }
+        }
+    }
+
     TileMesh {
         origin_km: origin,
         vertices,
@@ -1825,11 +2118,51 @@ mod tests {
             assert_eq!(sa.albedo.to_bits(), sb.albedo.to_bits());
             assert_eq!(sa.smoothness.to_bits(), sb.smoothness.to_bits());
             assert_eq!(sa.ray.to_bits(), sb.ray.to_bits());
+            assert_eq!(sa.debris.to_bits(), sb.debris.to_bits());
         }
         assert_ne!(
             a.sample(dir(23.5, -71.25)),
             MoonGenerator::new(43).sample(dir(23.5, -71.25))
         );
+    }
+
+    #[test]
+    fn lunar_debris_context_is_crater_rim_owned() {
+        let moon = MoonGenerator::new(42);
+        let octave = 5;
+        let grid = 1u16 << octave;
+        let crater = (0..6u8)
+            .flat_map(|face| {
+                (0..grid).flat_map(move |j| (0..grid).map(move |i| CellKey { face, i, j }))
+            })
+            .find_map(|key| moon.crater_from_cell(octave, key, None))
+            .expect("seed 42 has an octave-5 crater");
+        let rim_angle = crater.radius * 1.12;
+        let rim_point = crater.center * rim_angle.cos() + crater.major * rim_angle.sin();
+        let state = || SurfaceState {
+            height: 0.0,
+            albedo: 0.7,
+            smoothness: 0.1,
+            ray: 0.0,
+            debris: 0.0,
+        };
+        let mut floor = state();
+        let mut rim = state();
+        moon.apply_crater(crater, crater.center, &mut floor);
+        moon.apply_crater(crater, rim_point, &mut rim);
+        assert!(rim.debris > 0.25, "rim debris={}", rim.debris);
+        assert!(rim.debris > floor.debris);
+        let floor_density = crate::voxel::lunar_rock_profile(
+            floor.debris as f32,
+            floor.smoothness as f32,
+        )
+        .1;
+        let rim_density = crate::voxel::lunar_rock_profile(
+            rim.debris as f32,
+            rim.smoothness as f32,
+        )
+        .1;
+        assert!(rim_density > floor_density * 3.0);
     }
 
     #[test]
@@ -1865,6 +2198,131 @@ mod tests {
             assert_eq!(prefetched.albedo.to_bits(), scalar.albedo.to_bits());
             assert_eq!(prefetched.smoothness.to_bits(), scalar.smoothness.to_bits());
             assert_eq!(prefetched.ray.to_bits(), scalar.ray.to_bits());
+            assert_eq!(prefetched.debris.to_bits(), scalar.debris.to_bits());
+        }
+    }
+
+    fn uncached_lunar_rock_candidates(
+        moon: &MoonGenerator,
+        face: u8,
+        ci0: u64,
+        ci1: u64,
+        cj0: u64,
+        cj1: u64,
+        stride: u64,
+    ) -> Vec<crate::planet::RockImpostorCandidate> {
+        let columns = crate::voxel::LUNAR_COLUMNS_PER_FACE;
+        let n = columns as f64;
+        let comp = (stride * stride) as f64;
+        let mut out = Vec::new();
+        for ci in (ci0..=ci1).step_by(stride as usize) {
+            for cj in (cj0..=cj1).step_by(stride as usize) {
+                let lot = crate::voxel::rock_hash01(face, ci, cj, moon.seed);
+                if lot >= crate::voxel::rock_tuning::MOON_MAX_DENSITY * comp {
+                    continue;
+                }
+                let u = -1.0 + 2.0 * (ci as f64 + 0.5) / n;
+                let v = -1.0 + 2.0 * (cj as f64 + 0.5) / n;
+                let sample = moon.sample(face_dir(face as usize, u, v));
+                let (family, density) = crate::voxel::lunar_rock_profile(
+                    sample.debris as f32,
+                    sample.smoothness as f32,
+                );
+                if lot < density * comp {
+                    out.push((
+                        ci,
+                        cj,
+                        crate::voxel::rock_kind(family, face, ci, cj, moon.seed),
+                        family,
+                        lot,
+                        density,
+                        Some(crate::planet::RockPlacement {
+                            height: sample.height_ratio,
+                            albedo: sample.albedo as f32,
+                        }),
+                    ));
+                }
+            }
+        }
+        out
+    }
+
+    fn assert_lunar_rock_candidates_bits_eq(
+        actual: &[crate::planet::RockImpostorCandidate],
+        expected: &[crate::planet::RockImpostorCandidate],
+    ) {
+        assert_eq!(actual.len(), expected.len());
+        for (actual, expected) in actual.iter().zip(expected) {
+            assert_eq!(
+                (actual.0, actual.1, actual.2, actual.3),
+                (expected.0, expected.1, expected.2, expected.3)
+            );
+            assert_eq!(actual.4.to_bits(), expected.4.to_bits());
+            assert_eq!(actual.5.to_bits(), expected.5.to_bits());
+            match (actual.6, expected.6) {
+                (Some(actual), Some(expected)) => {
+                    assert_eq!(actual.height.to_bits(), expected.height.to_bits());
+                    assert_eq!(actual.albedo.to_bits(), expected.albedo.to_bits());
+                }
+                (None, None) => {}
+                _ => panic!("lunar rock placement differs"),
+            }
+        }
+    }
+
+    #[test]
+    fn lunar_rock_cache_matches_direct_stream_across_strides() {
+        let moon = MoonGenerator::new(42);
+        let (ci0, ci1) = (1_349_888, 1_350_143);
+        let (cj0, cj1) = (1_410_048, 1_410_303);
+        let strides = [8, 4, 2, 1];
+        let expected: Vec<Vec<crate::planet::RockImpostorCandidate>> = strides
+            .iter()
+            .map(|&stride| {
+                uncached_lunar_rock_candidates(&moon, 0, ci0, ci1, cj0, cj1, stride)
+            })
+            .collect();
+        for (&stride, expected) in strides.iter().zip(&expected) {
+            let miss = moon.rock_impostor_candidates(0, ci0, ci1, cj0, cj1, stride);
+            assert_lunar_rock_candidates_bits_eq(&miss, expected);
+            let hit = moon.rock_impostor_candidates(0, ci0, ci1, cj0, cj1, stride);
+            assert_lunar_rock_candidates_bits_eq(&hit, expected);
+        }
+
+        use rayon::prelude::*;
+        let concurrent = MoonGenerator::new(42);
+        let actual: Vec<Vec<crate::planet::RockImpostorCandidate>> = strides
+            .par_iter()
+            .map(|&stride| {
+                concurrent.rock_impostor_candidates(0, ci0, ci1, cj0, cj1, stride)
+            })
+            .collect();
+        for (actual, expected) in actual.iter().zip(&expected) {
+            assert_lunar_rock_candidates_bits_eq(actual, expected);
+        }
+    }
+
+    #[test]
+    fn lunar_rock_cache_is_exact_at_cube_face_edges() {
+        let moon = MoonGenerator::new(42);
+        let columns = crate::voxel::LUNAR_COLUMNS_PER_FACE;
+        let edge = columns - 128;
+        for face in 0..6u8 {
+            for &(ci0, ci1, cj0, cj1) in &[
+                (0, 127, 0, 127),
+                (0, 127, edge, columns - 1),
+                (edge, columns - 1, 0, 127),
+                (edge, columns - 1, edge, columns - 1),
+            ] {
+                for stride in [8, 4, 2, 1] {
+                    let expected = uncached_lunar_rock_candidates(
+                        &moon, face, ci0, ci1, cj0, cj1, stride,
+                    );
+                    let actual =
+                        moon.rock_impostor_candidates(face, ci0, ci1, cj0, cj1, stride);
+                    assert_lunar_rock_candidates_bits_eq(&actual, &expected);
+                }
+            }
         }
     }
 
@@ -2091,6 +2549,7 @@ mod tests {
                                         albedo: base.albedo,
                                         smoothness: base.smoothness,
                                         ray: 0.0,
+                                        debris: 0.0,
                                     };
                                     moon.apply_crater_with_impact(
                                         child,
@@ -2291,12 +2750,14 @@ mod tests {
             albedo: 0.28,
             smoothness: 0.88,
             ray: 0.7,
+            debris: 0.0,
         };
         let mut b = SurfaceState {
             height: 0.002,
             albedo: 0.82,
             smoothness: 0.02,
             ray: 0.1,
+            debris: 0.0,
         };
         moon.apply_crater(crater, p0, &mut a);
         moon.apply_crater(crater, p1, &mut b);
@@ -2326,6 +2787,7 @@ mod tests {
             albedo: 0.70,
             smoothness: 0.05,
             ray: 0.0,
+            debris: 0.0,
         };
         moon.apply_ray_field(carrier, point, &mut halo);
         assert!(

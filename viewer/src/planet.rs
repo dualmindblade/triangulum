@@ -643,11 +643,53 @@ const _: () = assert!(std::mem::size_of::<LeanImpostorProfile>() <= 16);
 
 pub(crate) type ImpostorCandidate = (u64, u64, crate::voxel::TreeKind, f64, f64);
 
+/// Sparse expensive half of one rock decision. It deliberately mirrors the
+/// tree profile's 16-byte layout and lives in the same bounded region entry;
+/// the requesting LOD still applies its own stride-scaled lottery first.
+#[derive(Clone, Copy)]
+pub(crate) struct LeanRockProfile {
+    pub(crate) density: f64,
+    pub(crate) site: u32,
+    pub(crate) family: Option<crate::voxel::RockFamily>,
+}
+
+const _: () = assert!(std::mem::size_of::<LeanRockProfile>() <= 16);
+
+#[derive(Clone, Copy)]
+pub(crate) struct RockPlacement {
+    /// Neisor: kilometres above datum. Moon: height/radius ratio.
+    pub(crate) height: f64,
+    /// Moon surface payload; zero on Neisor.
+    pub(crate) albedo: f32,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct LeanRockPlacement {
+    pub(crate) height: f64,
+    pub(crate) site: u32,
+    /// Moon albedo, zero on Neisor, negative for an exact late rejection.
+    /// The sentinel keeps this second sparse record at the tree profile's
+    /// 16-byte size without losing the moon root's f64 precision.
+    pub(crate) albedo: f32,
+}
+
+const _: () = assert!(std::mem::size_of::<LeanRockPlacement>() <= 16);
+
+pub(crate) type RockImpostorCandidate = (
+    u64,
+    u64,
+    crate::voxel::RockKind,
+    crate::voxel::RockFamily,
+    f64,
+    f64,
+    Option<RockPlacement>,
+);
+
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-struct ImpostorCandidateRegionKey {
-    face: u8,
-    ri: u16,
-    rj: u16,
+pub(crate) struct ImpostorCandidateRegionKey {
+    pub(crate) face: u8,
+    pub(crate) ri: u16,
+    pub(crate) rj: u16,
 }
 
 struct ImpostorCandidateRegion {
@@ -656,6 +698,13 @@ struct ImpostorCandidateRegion {
     /// monolithic region build. Concurrent duplicates are harmless pure work
     /// and collapse to one byte-identical record at merge time.
     profiles: Mutex<Vec<LeanImpostorProfile>>,
+    /// Second species stream through the same region/LRU. Tree records stay
+    /// untouched and therefore retain their original bit-for-bit behavior.
+    rock_profiles: Mutex<Vec<LeanRockProfile>>,
+    /// Exact annual surface eligibility/root payload, populated only after a
+    /// site's density gate wins. This removes repeated ColCtx/crater samples
+    /// from tile rebuilds without front-loading the permissive max-density set.
+    rock_placements: Mutex<Vec<LeanRockPlacement>>,
     rejects_all: OnceLock<bool>,
     /// Disjoint retained cells used only when the coarser region proof
     /// declines. Rejected cells are omitted; immutable boundary leaves are
@@ -669,6 +718,8 @@ impl ImpostorCandidateRegion {
     fn new(last_use: u64) -> Self {
         Self {
             profiles: Mutex::new(Vec::new()),
+            rock_profiles: Mutex::new(Vec::new()),
+            rock_placements: Mutex::new(Vec::new()),
             rejects_all: OnceLock::new(),
             proof_cells: OnceLock::new(),
             last_use: AtomicU64::new(last_use),
@@ -694,7 +745,7 @@ struct ImpostorCandidateCacheShard {
     resident_bytes: usize,
 }
 
-struct ImpostorCandidateCache {
+pub(crate) struct ImpostorCandidateCache {
     shards: [Mutex<ImpostorCandidateCacheShard>; IMPOSTOR_CANDIDATE_CACHE_SHARDS],
     clock: AtomicU64,
 }
@@ -710,7 +761,7 @@ impl Default for ImpostorCandidateCache {
 
 impl ImpostorCandidateCache {
     #[inline]
-    fn shard_index(key: ImpostorCandidateRegionKey) -> usize {
+    pub(crate) fn shard_index(key: ImpostorCandidateRegionKey) -> usize {
         let mixed = u64::from(key.face).wrapping_mul(0x9E37_79B9)
             ^ u64::from(key.ri).wrapping_mul(0x85EB_CA77)
             ^ u64::from(key.rj).wrapping_mul(0xC2B2_AE3D);
@@ -788,7 +839,7 @@ impl ImpostorCandidateCache {
         }
     }
 
-    fn trim_shards(&self, shard_mask: u16) {
+    pub(crate) fn trim_shards(&self, shard_mask: u16) {
         for index in 0..IMPOSTOR_CANDIDATE_CACHE_SHARDS {
             if shard_mask & (1u16 << index) == 0 {
                 continue;
@@ -796,6 +847,183 @@ impl ImpostorCandidateCache {
             let mut shard = self.lock_shard(index);
             Self::enforce_bound(&mut shard);
         }
+    }
+
+    /// Resolve one request-gated rock slice. Cached lookups happen under the
+    /// short region lock, misses are evaluated as one caller-controlled batch
+    /// outside it (the moon amortizes crater prefetch here), and the sorted
+    /// merge makes cache state unobservable just like the tree stream.
+    pub(crate) fn resolve_rock_profiles<F>(
+        &self,
+        key: ImpostorCandidateRegionKey,
+        gated: &[(u64, u64, Option<u32>, f64)],
+        evaluate_batch: F,
+    ) -> Vec<LeanRockProfile>
+    where
+        F: FnOnce(&[(u64, u64, u32)]) -> Vec<LeanRockProfile>,
+    {
+        let entry = self.entry(key);
+        let cached: Vec<Option<LeanRockProfile>> = {
+            let profiles = entry
+                .rock_profiles
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            gated
+                .iter()
+                .map(|&(_, _, site, _)| {
+                    let site = site?;
+                    profiles
+                        .binary_search_by_key(&site, |profile| profile.site)
+                        .ok()
+                        .and_then(|index| profiles.get(index).copied())
+                })
+                .collect()
+        };
+        let missing: Vec<(usize, u64, u64, u32)> = cached
+            .iter()
+            .enumerate()
+            .filter_map(|(index, profile)| {
+                profile.is_none().then(|| {
+                    let (ci, cj, site, _) = gated[index];
+                    (index, ci, cj, site.unwrap_or(u32::MAX))
+                })
+            })
+            .collect();
+        let requests: Vec<(u64, u64, u32)> = missing
+            .iter()
+            .map(|&(_, ci, cj, site)| (ci, cj, site))
+            .collect();
+        let evaluated = evaluate_batch(&requests);
+        assert_eq!(
+            evaluated.len(),
+            requests.len(),
+            "rock profile evaluator changed request cardinality"
+        );
+
+        let mut fresh = vec![None; gated.len()];
+        let mut computed = Vec::new();
+        for ((index, _, _, site), profile) in missing.into_iter().zip(evaluated) {
+            fresh[index] = Some(profile);
+            if site != u32::MAX {
+                computed.push(profile);
+            }
+        }
+        if !computed.is_empty() {
+            let added_capacity = {
+                let mut profiles = entry
+                    .rock_profiles
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                let old_capacity = profiles.capacity();
+                profiles.extend(computed);
+                profiles.sort_unstable_by_key(|profile| profile.site);
+                profiles.dedup_by_key(|profile| profile.site);
+                profiles.capacity().saturating_sub(old_capacity)
+            };
+            self.record_bytes(
+                key,
+                &entry,
+                added_capacity * std::mem::size_of::<LeanRockProfile>(),
+            );
+        }
+        cached
+            .into_iter()
+            .zip(fresh)
+            .map(|(cached, fresh)| cached.or(fresh).expect("every rock profile resolved"))
+            .collect()
+    }
+
+    /// Resolve the exact surface/root half for density winners only. An
+    /// ineligible record is retained just like an eligible one, so repeated
+    /// tile builds cannot turn a wet/cave rejection into repeated terrain
+    /// work. Sites that cannot be represented in a region are still evaluated
+    /// exactly but deliberately remain uncached.
+    pub(crate) fn resolve_rock_placements<F>(
+        &self,
+        key: ImpostorCandidateRegionKey,
+        gated: &[(u64, u64, Option<u32>)],
+        evaluate_batch: F,
+    ) -> Vec<Option<RockPlacement>>
+    where
+        F: FnOnce(&[(u64, u64, u32)]) -> Vec<LeanRockPlacement>,
+    {
+        let entry = self.entry(key);
+        let cached: Vec<Option<LeanRockPlacement>> = {
+            let placements = entry
+                .rock_placements
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            gated
+                .iter()
+                .map(|&(_, _, site)| {
+                    let site = site?;
+                    placements
+                        .binary_search_by_key(&site, |placement| placement.site)
+                        .ok()
+                        .and_then(|index| placements.get(index).copied())
+                })
+                .collect()
+        };
+        let missing: Vec<(usize, u64, u64, u32)> = cached
+            .iter()
+            .enumerate()
+            .filter_map(|(index, placement)| {
+                placement.is_none().then(|| {
+                    let (ci, cj, site) = gated[index];
+                    (index, ci, cj, site.unwrap_or(u32::MAX))
+                })
+            })
+            .collect();
+        let requests: Vec<(u64, u64, u32)> = missing
+            .iter()
+            .map(|&(_, ci, cj, site)| (ci, cj, site))
+            .collect();
+        let evaluated = evaluate_batch(&requests);
+        assert_eq!(
+            evaluated.len(),
+            requests.len(),
+            "rock placement evaluator changed request cardinality"
+        );
+
+        let mut fresh = vec![None; gated.len()];
+        let mut computed = Vec::new();
+        for ((index, _, _, site), placement) in missing.into_iter().zip(evaluated) {
+            fresh[index] = Some(placement);
+            if site != u32::MAX {
+                computed.push(placement);
+            }
+        }
+        if !computed.is_empty() {
+            let added_capacity = {
+                let mut placements = entry
+                    .rock_placements
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                let old_capacity = placements.capacity();
+                placements.extend(computed);
+                placements.sort_unstable_by_key(|placement| placement.site);
+                placements.dedup_by_key(|placement| placement.site);
+                placements.capacity().saturating_sub(old_capacity)
+            };
+            self.record_bytes(
+                key,
+                &entry,
+                added_capacity * std::mem::size_of::<LeanRockPlacement>(),
+            );
+        }
+        cached
+            .into_iter()
+            .zip(fresh)
+            .map(|(cached, fresh)| {
+                let placement = cached
+                    .or(fresh)
+                    .expect("every rock placement resolved");
+                (placement.albedo >= 0.0).then_some(RockPlacement {
+                    height: placement.height,
+                    albedo: placement.albedo,
+                })
+            })
+            .collect()
     }
 }
 
@@ -1395,14 +1623,17 @@ impl Planet {
     }
 
     #[inline]
-    fn impostor_candidate_partition_index(column: u64, partitions: u64) -> u16 {
+    pub(crate) fn impostor_candidate_partition_index(column: u64, partitions: u64) -> u16 {
         debug_assert!(column < COLUMNS_PER_FACE);
         debug_assert!(partitions > 0 && partitions <= u16::MAX as u64);
         ((column * partitions) / COLUMNS_PER_FACE) as u16
     }
 
     #[inline]
-    fn impostor_candidate_partition_bounds(region: u16, partitions: u64) -> (u64, u64) {
+    pub(crate) fn impostor_candidate_partition_bounds(
+        region: u16,
+        partitions: u64,
+    ) -> (u64, u64) {
         debug_assert!(partitions > 0 && partitions <= u16::MAX as u64);
         debug_assert!(u64::from(region) < partitions);
         let region = u64::from(region);
@@ -1422,6 +1653,29 @@ impl Planet {
     #[inline]
     fn impostor_candidate_region_bounds(region: u16) -> (u64, u64) {
         Self::impostor_candidate_partition_bounds(region, IMPOSTOR_CANDIDATE_REGIONS_PER_FACE)
+    }
+
+    #[inline]
+    pub(crate) fn impostor_candidate_region_index_on_lattice(
+        column: u64,
+        columns_per_face: u64,
+    ) -> u16 {
+        debug_assert!(column < columns_per_face);
+        ((column * IMPOSTOR_CANDIDATE_REGIONS_PER_FACE) / columns_per_face) as u16
+    }
+
+    #[inline]
+    pub(crate) fn impostor_candidate_region_bounds_on_lattice(
+        region: u16,
+        columns_per_face: u64,
+    ) -> (u64, u64) {
+        let region = u64::from(region);
+        let start = (region * columns_per_face).div_ceil(IMPOSTOR_CANDIDATE_REGIONS_PER_FACE);
+        let end = ((region + 1) * columns_per_face)
+            .div_ceil(IMPOSTOR_CANDIDATE_REGIONS_PER_FACE)
+            .saturating_sub(1);
+        debug_assert!(start <= end && end < columns_per_face);
+        (start, end)
     }
 
     fn impostor_candidate_bounds_phase_reject_all(
@@ -1653,7 +1907,12 @@ impl Planet {
     }
 
     #[inline]
-    fn impostor_candidate_site(region_ci0: u64, region_cj0: u64, ci: u64, cj: u64) -> Option<u32> {
+    pub(crate) fn impostor_candidate_site(
+        region_ci0: u64,
+        region_cj0: u64,
+        ci: u64,
+        cj: u64,
+    ) -> Option<u32> {
         let ci = u16::try_from(ci.checked_sub(region_ci0)?).ok()?;
         let cj = u16::try_from(cj.checked_sub(region_cj0)?).ok()?;
         Some((u32::from(ci) << 16) | u32::from(cj))
@@ -1877,6 +2136,185 @@ impl Planet {
         // their workers are actively consuming entries.
         self.impostor_candidates.trim_shards(touched_shards);
         candidates.sort_unstable_by_key(|&(ci, cj, _, _, _)| (ci, cj));
+        candidates
+    }
+
+    fn evaluate_rock_candidate_profile(
+        &self,
+        face: u8,
+        ci: u64,
+        cj: u64,
+        site: u32,
+    ) -> LeanRockProfile {
+        let face_index = usize::from(face);
+        let nnf = COLUMNS_PER_FACE as f64;
+        let u = -1.0 + 2.0 * (ci as f64 + 0.5) / nnf;
+        let v = -1.0 + 2.0 * (cj as f64 + 0.5) / nnf;
+        let elevation = self.elevation(face_index, u, v);
+        if sea_from_fields(
+            f64::from(elevation),
+            f64::from(self.water_frac(face_index, u, v)),
+            f64::from(self.ocean(face_index, u, v)),
+        ) {
+            return LeanRockProfile {
+                density: 0.0,
+                site,
+                family: None,
+            };
+        }
+        let (temp, precip) = self.temp_precip(face_index, u, v);
+        let geology = vegetation_surface(
+            self,
+            face_index,
+            u,
+            v,
+            f64::from(temp),
+            f64::from(precip),
+        );
+        let (family, density) = crate::voxel::neisor_rock_profile(
+            geology.main_block,
+            geology.forest,
+            elevation,
+            self.rough(face_index, u, v),
+        );
+        LeanRockProfile {
+            density,
+            site,
+            family: Some(family),
+        }
+    }
+
+    /// The second B-4a species stream. It shares the tree cache's regions,
+    /// sharding, request-first lottery, miss-outside-lock merge, byte bound,
+    /// and deterministic final order. Tree profiles and proofs are separate,
+    /// so no rock request can alter a tree decision.
+    pub(crate) fn rock_impostor_candidates(
+        &self,
+        face: u8,
+        ci_start: u64,
+        ci_end: u64,
+        cj_start: u64,
+        cj_end: u64,
+        stride: u64,
+    ) -> Vec<RockImpostorCandidate> {
+        if ci_start > ci_end || cj_start > cj_end {
+            return Vec::new();
+        }
+        if usize::from(face) >= self.faces.len()
+            || ci_end >= COLUMNS_PER_FACE
+            || cj_end >= COLUMNS_PER_FACE
+            || !IMPOSTOR_CANDIDATE_STRIDES.contains(&stride)
+        {
+            return Vec::new();
+        }
+        let ri0 = Self::impostor_candidate_region_index(ci_start);
+        let ri1 = Self::impostor_candidate_region_index(ci_end);
+        let rj0 = Self::impostor_candidate_region_index(cj_start);
+        let rj1 = Self::impostor_candidate_region_index(cj_end);
+        let comp = (stride * stride) as f64;
+        let mut touched_shards = 0u16;
+        let mut candidates = Vec::new();
+        let no_edits = crate::voxel::Edits::default();
+
+        for ri in ri0..=ri1 {
+            for rj in rj0..=rj1 {
+                let key = ImpostorCandidateRegionKey { face, ri, rj };
+                touched_shards |= 1u16 << ImpostorCandidateCache::shard_index(key);
+                let (region_ci0, region_ci1) = Self::impostor_candidate_region_bounds(ri);
+                let (region_cj0, region_cj1) = Self::impostor_candidate_region_bounds(rj);
+                let cell_ci0 = region_ci0.max(ci_start);
+                let cell_ci1 = region_ci1.min(ci_end);
+                let cell_cj0 = region_cj0.max(cj_start);
+                let cell_cj1 = region_cj1.min(cj_end);
+                if cell_ci0 > cell_ci1 || cell_cj0 > cell_cj1 {
+                    continue;
+                }
+                let first_ci = cell_ci0.div_ceil(stride) * stride;
+                let first_cj = cell_cj0.div_ceil(stride) * stride;
+                if first_ci > cell_ci1 || first_cj > cell_cj1 {
+                    continue;
+                }
+                let mut gated = Vec::new();
+                for ci in (first_ci..=cell_ci1).step_by(stride as usize) {
+                    for cj in (first_cj..=cell_cj1).step_by(stride as usize) {
+                        let lot = crate::voxel::rock_hash01(face, ci, cj, self.seed);
+                        if lot >= crate::voxel::rock_tuning::MAX_DENSITY * comp {
+                            continue;
+                        }
+                        let site = Self::impostor_candidate_site(region_ci0, region_cj0, ci, cj);
+                        gated.push((ci, cj, site, lot));
+                    }
+                }
+                let resolved = self.impostor_candidates.resolve_rock_profiles(
+                    key,
+                    &gated,
+                    |requests| {
+                        requests
+                            .iter()
+                            .map(|&(ci, cj, site)| {
+                                self.evaluate_rock_candidate_profile(face, ci, cj, site)
+                            })
+                            .collect()
+                    },
+                );
+                let mut winners = Vec::new();
+                for ((ci, cj, site, lot), profile) in gated.into_iter().zip(resolved) {
+                    let Some(family) = profile.family else {
+                        continue;
+                    };
+                    if lot >= profile.density * comp {
+                        continue;
+                    }
+                    winners.push((ci, cj, site, lot, profile.density, family));
+                }
+                let placement_requests: Vec<_> = winners
+                    .iter()
+                    .map(|&(ci, cj, site, _, _, _)| (ci, cj, site))
+                    .collect();
+                let placements = self.impostor_candidates.resolve_rock_placements(
+                    key,
+                    &placement_requests,
+                    |requests| {
+                        requests
+                            .iter()
+                            .map(|&(ci, cj, site)| {
+                                let column = crate::voxel::col_ctx(
+                                    self,
+                                    &no_edits,
+                                    usize::from(face),
+                                    ci,
+                                    cj,
+                                );
+                                LeanRockPlacement {
+                                    height: f64::from(column.h_km),
+                                    site,
+                                    albedo: if crate::voxel::rock_surface_eligible(&column) {
+                                        0.0
+                                    } else {
+                                        -1.0
+                                    },
+                                }
+                            })
+                            .collect()
+                    },
+                );
+                for ((ci, cj, _, lot, density, family), placement) in
+                    winners.into_iter().zip(placements)
+                {
+                    candidates.push((
+                        ci,
+                        cj,
+                        crate::voxel::rock_kind(family, face, ci, cj, self.seed),
+                        family,
+                        lot,
+                        density,
+                        placement,
+                    ));
+                }
+            }
+        }
+        self.impostor_candidates.trim_shards(touched_shards);
+        candidates.sort_unstable_by_key(|&(ci, cj, _, _, _, _, _)| (ci, cj));
         candidates
     }
 
@@ -3369,6 +3807,103 @@ mod tests {
         }
     }
 
+    fn uncached_rock_impostor_candidates(
+        planet: &Planet,
+        face: u8,
+        ci_start: u64,
+        ci_end: u64,
+        cj_start: u64,
+        cj_end: u64,
+        stride: u64,
+    ) -> Vec<RockImpostorCandidate> {
+        let nnf = COLUMNS_PER_FACE as f64;
+        let comp = (stride * stride) as f64;
+        let mut candidates = Vec::new();
+        let no_edits = crate::voxel::Edits::default();
+        for ci in (ci_start..=ci_end).step_by(stride as usize) {
+            for cj in (cj_start..=cj_end).step_by(stride as usize) {
+                let lot = crate::voxel::rock_hash01(face, ci, cj, planet.seed);
+                if lot >= crate::voxel::rock_tuning::MAX_DENSITY * comp {
+                    continue;
+                }
+                let u = -1.0 + 2.0 * (ci as f64 + 0.5) / nnf;
+                let v = -1.0 + 2.0 * (cj as f64 + 0.5) / nnf;
+                let elevation = planet.elevation(face as usize, u, v);
+                if sea_from_fields(
+                    f64::from(elevation),
+                    f64::from(planet.water_frac(face as usize, u, v)),
+                    f64::from(planet.ocean(face as usize, u, v)),
+                ) {
+                    continue;
+                }
+                let (temp, precip) = planet.temp_precip(face as usize, u, v);
+                let geology = vegetation_surface(
+                    planet,
+                    face as usize,
+                    u,
+                    v,
+                    f64::from(temp),
+                    f64::from(precip),
+                );
+                let (family, density) = crate::voxel::neisor_rock_profile(
+                    geology.main_block,
+                    geology.forest,
+                    elevation,
+                    planet.rough(face as usize, u, v),
+                );
+                if lot >= density * comp {
+                    continue;
+                }
+                let column = crate::voxel::col_ctx(
+                    planet,
+                    &no_edits,
+                    usize::from(face),
+                    ci,
+                    cj,
+                );
+                let placement = crate::voxel::rock_surface_eligible(&column).then_some(
+                    RockPlacement {
+                        height: f64::from(column.h_km),
+                        albedo: 0.0,
+                    },
+                );
+                candidates.push((
+                    ci,
+                    cj,
+                    crate::voxel::rock_kind(family, face, ci, cj, planet.seed),
+                    family,
+                    lot,
+                    density,
+                    placement,
+                ));
+            }
+        }
+        candidates
+    }
+
+    fn assert_rock_candidates_bits_eq(
+        actual: &[RockImpostorCandidate],
+        expected: &[RockImpostorCandidate],
+    ) {
+        assert_eq!(actual.len(), expected.len());
+        for (actual, expected) in actual.iter().zip(expected) {
+            assert_eq!(
+                (actual.0, actual.1, actual.2, actual.3),
+                (expected.0, expected.1, expected.2, expected.3)
+            );
+            assert_eq!(actual.4.to_bits(), expected.4.to_bits());
+            assert_eq!(actual.5.to_bits(), expected.5.to_bits());
+            match (actual.6, expected.6) {
+                (Some(actual), Some(expected)) => {
+                    assert_eq!(actual.height.to_bits(), expected.height.to_bits());
+                    assert_eq!(actual.albedo.to_bits(), expected.albedo.to_bits());
+                }
+                (None, None) => {}
+                _ => panic!("rock placement eligibility differs"),
+            }
+        }
+    }
+
     fn assert_surface_bits_eq(left: ClimateSurface, right: ClimateSurface) {
         assert_eq!(left.main_block, right.main_block);
         for (label, left, right) in [
@@ -3637,6 +4172,74 @@ mod tests {
     }
 
     #[test]
+    fn rock_candidate_cache_matches_uncached_stream_across_strides() {
+        let planet = climate_test_planet_res(13, 128);
+        let (ci0, ci1) = (4_999_680, 5_000_191);
+        let (cj0, cj1) = (5_123_200, 5_123_711);
+        let strides = [8, 4, 2, 1];
+        let expected: Vec<Vec<RockImpostorCandidate>> = strides
+            .iter()
+            .map(|&stride| {
+                uncached_rock_impostor_candidates(
+                    &planet, 0, ci0, ci1, cj0, cj1, stride,
+                )
+            })
+            .collect();
+        for (&stride, expected) in strides.iter().zip(&expected) {
+            let miss = planet.rock_impostor_candidates(0, ci0, ci1, cj0, cj1, stride);
+            assert_rock_candidates_bits_eq(&miss, expected);
+            let hit = planet.rock_impostor_candidates(0, ci0, ci1, cj0, cj1, stride);
+            assert_rock_candidates_bits_eq(&hit, expected);
+        }
+
+        use rayon::prelude::*;
+        let concurrent = climate_test_planet_res(13, 128);
+        let actual: Vec<Vec<RockImpostorCandidate>> = strides
+            .par_iter()
+            .map(|&stride| {
+                concurrent.rock_impostor_candidates(0, ci0, ci1, cj0, cj1, stride)
+            })
+            .collect();
+        for (actual, expected) in actual.iter().zip(&expected) {
+            assert_rock_candidates_bits_eq(actual, expected);
+        }
+    }
+
+    #[test]
+    fn rock_cache_requests_cannot_change_tree_candidate_bits() {
+        let planet = climate_test_planet_res(13, 128);
+        let (ci0, ci1) = (4_999_680, 5_000_191);
+        let (cj0, cj1) = (5_123_200, 5_123_711);
+        let expected = uncached_impostor_candidates(&planet, 0, ci0, ci1, cj0, cj1, 2);
+        let _ = planet.rock_impostor_candidates(0, ci0, ci1, cj0, cj1, 8);
+        let _ = planet.rock_impostor_candidates(0, ci0, ci1, cj0, cj1, 1);
+        let actual = planet.impostor_candidates(0, ci0, ci1, cj0, cj1, 2);
+        assert_impostor_candidates_bits_eq(&actual, &expected);
+    }
+
+    #[test]
+    fn rock_candidates_keep_exact_kind_through_voxel_late_gates() {
+        let planet = climate_test_planet_res(13, 128);
+        let (ci0, ci1) = (4_999_680, 5_000_191);
+        let (cj0, cj1) = (5_123_200, 5_123_711);
+        let candidates = planet.rock_impostor_candidates(0, ci0, ci1, cj0, cj1, 1);
+        assert!(!candidates.is_empty());
+        let edits = crate::voxel::Edits::default();
+        let mut survived = 0usize;
+        for (ci, cj, kind, family, _, _, placement) in candidates {
+            let column = crate::voxel::col_ctx(&planet, &edits, 0, ci, cj);
+            if let Some(exact) = crate::voxel::rock_at(&column, 0, ci, cj, planet.seed) {
+                assert_eq!(exact, (kind, family));
+                assert!(placement.is_some());
+                survived += 1;
+            } else {
+                assert!(placement.is_none());
+            }
+        }
+        assert!(survived > 0, "fixture stopped exercising exact rock survivors");
+    }
+
+    #[test]
     fn impostor_cache_preserves_pre_decimation_treeline_candidates() {
         let (ci0, ci1) = (5_200_000, 5_200_255);
         let (cj0, cj1) = (5_300_000, 5_300_255);
@@ -3790,6 +4393,30 @@ mod tests {
     }
 
     #[test]
+    fn rock_candidate_cache_matches_direct_stream_at_every_face_edge() {
+        let planet = climate_test_planet_res(13, 128);
+        let edge = COLUMNS_PER_FACE - 128;
+        let ranges = [
+            (0, 127, 0, 127),
+            (0, 127, edge, COLUMNS_PER_FACE - 1),
+            (edge, COLUMNS_PER_FACE - 1, 0, 127),
+            (edge, COLUMNS_PER_FACE - 1, edge, COLUMNS_PER_FACE - 1),
+        ];
+        for face in 0..6 {
+            for &(ci0, ci1, cj0, cj1) in &ranges {
+                for stride in IMPOSTOR_CANDIDATE_STRIDES {
+                    let expected = uncached_rock_impostor_candidates(
+                        &planet, face, ci0, ci1, cj0, cj1, stride,
+                    );
+                    let actual =
+                        planet.rock_impostor_candidates(face, ci0, ci1, cj0, cj1, stride);
+                    assert_rock_candidates_bits_eq(&actual, &expected);
+                }
+            }
+        }
+    }
+
+    #[test]
     fn impostor_candidate_entry_points_reject_malformed_bounds_without_panicking() {
         let planet = climate_test_planet_res(13, 128);
         for args in [
@@ -3810,6 +4437,28 @@ mod tests {
         assert!(!planet.impostor_tile_emits_none(6, 0, 0, 0, 0));
         assert!(!planet.impostor_tile_emits_none(0, 1, 0, 0, 0));
         assert!(!planet.impostor_tile_emits_none(0, 0, COLUMNS_PER_FACE, 0, 0));
+    }
+
+    #[test]
+    fn rock_candidate_entry_points_reject_malformed_bounds_without_panicking() {
+        let planet = climate_test_planet_res(13, 128);
+        for args in [
+            (6, 0, 0, 0, 0, 1),
+            (0, 2, 1, 0, 0, 1),
+            (0, 0, 0, 2, 1, 1),
+            (0, 0, COLUMNS_PER_FACE, 0, 0, 1),
+            (0, 0, 0, 0, COLUMNS_PER_FACE, 1),
+            (0, 0, 0, 0, 0, 0),
+            (0, 0, 0, 0, 0, 3),
+        ] {
+            assert!(
+                planet
+                    .rock_impostor_candidates(
+                        args.0, args.1, args.2, args.3, args.4, args.5,
+                    )
+                    .is_empty()
+            );
+        }
     }
 
     #[test]

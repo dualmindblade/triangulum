@@ -671,6 +671,15 @@ fn vs_moon(in: VsIn) -> VsOut {
 
 @fragment
 fn fs_moon(in: VsOut) -> @location(0) vec4<f32> {
+    // Lunar rock stand-ins reuse the tree landing contract: beach.y marks
+    // impostor geometry, beach.x marks members already present on the parent
+    // stride. Only the density delta dithers in as a finer tile settles.
+    if (in.beach.y > 0.5 && tile.morph.z > 0.0) {
+        let n = hash31(vec3<f32>(floor(in.clip.xy), 11.0));
+        if (n < tile.morph.z * (1.0 - in.beach.x)) {
+            discard;
+        }
+    }
     let n = normalize(in.normal);
     // Cube-sphere selection is conservative at the horizon and skirts are
     // two-sided; retain only the camera-facing physical surface.
