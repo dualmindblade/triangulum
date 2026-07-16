@@ -178,6 +178,36 @@ const BIOME_ORBIT_CONTRAST_FADE_START_KM = 120.0;
 const BIOME_ORBIT_CONTRAST_FADE_END_KM = 240.0;
 const BIOME_ORBIT_CATEGORICAL_CONTRAST = 0.45;
 
+// ---- Track C landscape color knobs ----------------------------------------
+// Strata are a modulation of the approved material color, never a replacement.
+// Thickness is a scale so art direction can move the complete bed sequence
+// without changing its 9 m physical reference. Tilt is the vertical fold
+// displacement in metres; its noise wavelength is about 175 km on Neisor.
+const STRATA_BAND_STRENGTH: f32 = 0.28;
+const STRATA_BAND_THICKNESS_SCALE: f32 = 1.0;
+const STRATA_TILT_AMPLITUDE_M: f32 = 260.0;
+const STRATA_REFERENCE_THICKNESS_M: f32 = 9.0;
+const STRATA_FOLD_FREQUENCY: f32 = 96.0;
+// (85021 - karst.w's 70001) * 0x9E37_79B1, modulo 2^32. Adding this to
+// karst.w preserves the established premultiplied-seed pattern while giving
+// the fold and bed palette an independent deterministic stream.
+const STRATA_SEED_DELTA: u32 = 0xDED7DCECu;
+const STRATA_PALETTE = array<vec3<f32>, 5>(
+    vec3<f32>(0.72, 0.80, 0.88), // cool shale
+    vec3<f32>(1.18, 1.09, 0.91), // pale ochre
+    vec3<f32>(0.82, 0.77, 0.72), // umber
+    vec3<f32>(1.10, 0.98, 0.82), // warm sandstone
+    vec3<f32>(0.91, 0.97, 1.05), // pale mineral bed
+);
+
+// The existing true-ocean depth ramp carries a sea-only 0..20 m teal
+// residual in RGB. The fragment has no scalar depth/class payload, so the
+// helper below recovers that carrier without touching the vertex contract.
+// A larger falloff scale holds the shallow tint farther through that carrier.
+const BATHYMETRY_SHALLOW_TINT: vec3<f32> = vec3<f32>(0.035, 0.42, 0.36);
+const BATHYMETRY_DEPTH_FALLOFF_SCALE: f32 = 1.0;
+const BATHYMETRY_SHALLOW_MIX: f32 = 0.55;
+
 // Karst twin of noise.rs GRAD (generated from noise_grad.rs - the
 // planetgen parity table; do not hand-edit).
 const KGRAD = array<vec3<f32>, 256>(
@@ -474,6 +504,113 @@ fn kgnoise(p: vec3<f32>, seedmul: u32) -> f32 {
         }
     }
     return total * 1.9;
+}
+
+// Rock/stone/gravel are low-chroma mid-value materials. Dirt and sedimentary
+// sand are ordered warm earth colors. Expressing both tests as ratios keeps
+// the classification stable through the blocks' baked brightness/AO, while
+// the value floor excludes tree trunks and the high-value ceiling excludes
+// snow/ice. Vivid grass and leaves fail both chroma families.
+fn strata_material_family(color: vec3<f32>) -> f32 {
+    let hi = max(max(color.r, color.g), color.b);
+    let lo = min(min(color.r, color.g), color.b);
+    let inv_hi = 1.0 / max(hi, 1e-4);
+    let chroma = (hi - lo) * inv_hi;
+    let neutral = (1.0 - smoothstep(0.10, 0.22, chroma))
+        * smoothstep(0.12, 0.18, hi)
+        * (1.0 - smoothstep(0.43, 0.52, hi));
+    let red_over_green = (color.r - color.g) * inv_hi;
+    let green_over_blue = (color.g - color.b) * inv_hi;
+    let earth = smoothstep(0.07, 0.14, red_over_green)
+        * smoothstep(0.10, 0.22, green_over_blue)
+        * smoothstep(0.27, 0.34, hi)
+        * (1.0 - smoothstep(0.70, 0.78, hi));
+    return clamp(max(neutral, earth), 0.0, 1.0);
+}
+
+fn strata_multiplier(
+    rel: vec3<f32>,
+    normal: vec3<f32>,
+    material_color: vec3<f32>,
+    dist_km: f32,
+) -> vec3<f32> {
+    if (dist_km >= 80.0 || STRATA_BAND_STRENGTH <= 0.0) {
+        return vec3<f32>(1.0);
+    }
+    // Camera up differs from local radial up by <1.7 degrees inside the
+    // 80 km effect horizon. It is a deliberately cheap conservative reject:
+    // interpolated normals can only admit extra candidates, never hide a real
+    // cliff. Exact local steepness follows only for those candidates.
+    let coarse_steepness = 1.0 - clamp(abs(dot(normal, globals.sky.xyz)), 0.0, 1.0);
+    if (coarse_steepness <= 0.075) {
+        return vec3<f32>(1.0);
+    }
+    let family = strata_material_family(material_color);
+    if (family <= 0.001) {
+        return vec3<f32>(1.0);
+    }
+    let wp = rel - globals.center.xyz;
+    let surface_dir = normalize(wp);
+    let steepness = 1.0 - abs(dot(normalize(normal), surface_dir));
+    let exposed = smoothstep(0.08, 0.28, steepness)
+        * family
+        * (1.0 - smoothstep(25.0, 80.0, dist_km));
+    if (exposed <= 0.001) {
+        return vec3<f32>(1.0);
+    }
+
+    // Camera-relative radial expansion, shared with the karst depth path:
+    // raw length(wp) at planet magnitude quantizes by ~1 m and makes thin beds
+    // crawl. Every varying term here stays local/f32-precise; the quadratic
+    // term restores planetary curvature across the visible ground patch.
+    let camera_up = normalize(-globals.center.xyz);
+    let eye_radius = max(length(globals.center.xyz), 1.0);
+    let radial = dot(rel, camera_up);
+    let d2 = dot(rel, rel);
+    let elevation_m = (globals.weather8.w + radial
+        + (d2 - radial * radial) / (2.0 * eye_radius)) * 1000.0;
+
+    let seedmul = globals.karst.w + STRATA_SEED_DELTA;
+    let folded_m = elevation_m + STRATA_TILT_AMPLITUDE_M
+        * kgnoise(surface_dir * STRATA_FOLD_FREQUENCY, seedmul);
+    let thickness_m = STRATA_REFERENCE_THICKNESS_M
+        * max(STRATA_BAND_THICKNESS_SCALE, 0.05);
+    let bed = folded_m / thickness_m;
+    let bed_base = i32(floor(bed));
+    let phase = fract(bed);
+    let footprint = fwidth(bed);
+    // Retire beds once a pixel spans more than one layer; this is both the
+    // medium-altitude anti-alias and the orbital cost/moire cut-line.
+    let resolved = 1.0 - smoothstep(0.55, 1.15, footprint);
+    let aa = clamp(footprint * 0.5, 0.015, 0.35);
+    let palette0 = khash(bed_base, 17, -31, seedmul) % 5u;
+    let palette1 = khash(bed_base + 1, 17, -31, seedmul) % 5u;
+    let band_color = mix(
+        STRATA_PALETTE[palette0],
+        STRATA_PALETTE[palette1],
+        smoothstep(1.0 - aa, 1.0, phase),
+    );
+    return mix(
+        vec3<f32>(1.0),
+        band_color,
+        exposed * resolved * STRATA_BAND_STRENGTH,
+    );
+}
+
+fn coastal_bathymetry_color(water_color: vec3<f32>) -> vec3<f32> {
+    // The untinted fresh/deep ramp is affine: g = 0.6408163*b - 0.0222449.
+    // Only true sea inside the established 20 m shoal carrier rises above
+    // that line. Interpolation preserves the residual exactly; fresh rivers
+    // and lakes remain zero. Mineral-pale salt water is rejected by red.
+    let base_green = 0.6408163 * water_color.b - 0.0222449;
+    let carrier = clamp((water_color.g - base_green) / 0.0825510, 0.0, 1.0)
+        * (1.0 - smoothstep(0.12, 0.20, water_color.r));
+    let shallow = clamp(carrier * BATHYMETRY_DEPTH_FALLOFF_SCALE, 0.0, 1.0);
+    return mix(
+        water_color,
+        BATHYMETRY_SHALLOW_TINT,
+        shallow * BATHYMETRY_SHALLOW_MIX,
+    );
 }
 
 // The categorical boundary field's three range-safe rotated domains. This is
@@ -929,6 +1066,16 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     }
     ground = mix(in.color, range_ground, biome_range);
     }
+    // One fragment-owned field serves heightfield tiles and voxel chunks.
+    // Material classification reads the original approved albedo so the
+    // medium-range biome reconstruction cannot turn grass/snow into strata;
+    // the returned multiplier then preserves whichever ground color won.
+    ground *= strata_multiplier(
+        in.rel_flag.xyz,
+        in.normal,
+        in.color,
+        in.dist_km,
+    );
     // Planet lighting belongs to THIS pixel, not the camera. The vector is
     // reconstructed from camera-relative inputs, so orbital f32 precision
     // never enters through a raw world coordinate. At ground range pixel_up
@@ -1104,7 +1251,18 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         let rain = rain_local * (1.0 - globals.weather.z) * wcam * dry_px;
         ground = ground * (1.0 - globals.weather3.x * rain);
     }
-    let base = mix(ground, in.water.rgb, clamp(wet, 0.0, 1.0));
+    // Mesh liquid carries its color in water.rgb; block liquid carries the
+    // same terrain::water_surface_color result as color with wflag marking the
+    // open top/side. Run both through one sea-carrier decoder. Fresh rivers,
+    // lakes, salt water, and ice return bit-identically from the helper.
+    if (in.rel_flag.w < 0.5 && in.wflag > 0.98) {
+        ground = coastal_bathymetry_color(ground);
+    }
+    var water_color = in.water.rgb;
+    if (wet > 0.001) {
+        water_color = coastal_bathymetry_color(water_color);
+    }
+    let base = mix(ground, water_color, clamp(wet, 0.0, 1.0));
     var n = normalize(in.normal);
     // ---- per-pixel normal detail (TRANSITIONS.md: mesh reads flat) ----
     // The voxel patch gets surface relief for free — stepped 1 m column
