@@ -3672,6 +3672,43 @@ impl Renderer {
         if total <= TILE_VRAM_BUDGET {
             return;
         }
+        // GENTLE PATH (B-10): in live frames, shed only a few of the oldest
+        // unprotected tiles per call. The old behavior purged from BUDGET
+        // all the way down to RETAIN in one frame - a 128 MB mass-vanish
+        // that Austin's tripwires caught firing constantly in real
+        // sessions (bald mid-distance patches, the staircase raws). The
+        // full sweep below remains for captures and the HARD emergency.
+        if !self.settle_visuals && total <= TILE_VRAM_HARD {
+            let protected = self.frame_counter.saturating_sub(180);
+            let mut old: Vec<(u64, TileKey)> = self
+                .cache
+                .iter()
+                .filter(|(_, t)| t.last_used < protected)
+                .map(|(k, t)| (t.last_used, *k))
+                .collect();
+            if old.is_empty() {
+                // A fast multi-area burst builds everything "recently" and
+                // the window would force growth straight to the HARD storm.
+                // Pressure valve: oldest tiles not drawn in the last two
+                // frames shed instead - bounded, off-screen-biased by age.
+                old = self
+                    .cache
+                    .iter()
+                    .filter(|(_, t)| t.last_used + 2 < self.frame_counter)
+                    .map(|(k, t)| (t.last_used, *k))
+                    .collect();
+            }
+            old.sort_unstable_by_key(|(used, _)| *used);
+            // Shed proportionally to the overshoot (recovering over ~10-15
+            // frames) so teleport bursts cannot outrun enforcement to the
+            // HARD ceiling, but never fewer than a trickle.
+            let over = total - TILE_VRAM_BUDGET;
+            let shed = ((over / (48 << 20)) as usize + 1) * 8;
+            for (_, k) in old.into_iter().take(shed.min(64)) {
+                self.cache.remove(&k);
+            }
+            return;
+        }
         // Captures drain to completion and cannot flicker - during them the
         // strict budget rules (teleport-heavy instruments like the 26-pose
         // reel would otherwise hold every prior pose alive and OOM small
@@ -3685,7 +3722,19 @@ impl Renderer {
             .iter()
             .map(|(k, t)| (t.last_used, *k, t.bytes))
             .collect();
-        by_age.sort_unstable_by(|a, b| b.0.cmp(&a.0)); // newest first
+        // Newest first; among EQUAL recency (the whole drawn set shares a
+        // frame stamp) keep view-center tiles first, so if the recent set
+        // alone brushes the HARD ceiling the drop lands at the screen edge
+        // and behind the camera - not as random holes mid-view (Austin's
+        // raw_2 staircase, B-10).
+        let view = self.last_live_direction;
+        by_age.sort_unstable_by(|a, b| {
+            b.0.cmp(&a.0).then_with(|| {
+                let da = 1.0 - a.1.center_dir().dot(view);
+                let db = 1.0 - b.1.center_dir().dot(view);
+                da.total_cmp(&db)
+            })
+        });
         let mut acc = 0u64;
         let mut keep = HashSet::new();
         for (used, k, b) in by_age {
@@ -3719,6 +3768,33 @@ impl Renderer {
     fn enforce_chunk_budget(&mut self) {
         let total: u64 = self.chunk_cache.values().map(|t| t.bytes).sum();
         if total <= CHUNK_VRAM_BUDGET {
+            return;
+        }
+        // GENTLE PATH (B-10): same continuous shedding as tiles - the
+        // sawtooth purge to RETAIN was the "CHUNK EVICTION STORM" Austin's
+        // console filled with. Full sweep stays for captures/HARD.
+        if !self.settle_visuals && total <= CHUNK_VRAM_HARD {
+            let protected = self.frame_counter.saturating_sub(180);
+            let mut old: Vec<(u64, ChunkKey)> = self
+                .chunk_cache
+                .iter()
+                .filter(|(_, t)| t.last_used < protected)
+                .map(|(k, t)| (t.last_used, *k))
+                .collect();
+            if old.is_empty() {
+                old = self
+                    .chunk_cache
+                    .iter()
+                    .filter(|(_, t)| t.last_used + 2 < self.frame_counter)
+                    .map(|(k, t)| (t.last_used, *k))
+                    .collect();
+            }
+            old.sort_unstable_by_key(|(used, _)| *used);
+            let over = total - CHUNK_VRAM_BUDGET;
+            let shed = ((over / (48 << 20)) as usize + 1) * 8;
+            for (_, k) in old.into_iter().take(shed.min(64)) {
+                self.chunk_cache.remove(&k);
+            }
             return;
         }
         let mut by_age: Vec<(u64, ChunkKey, u64)> = self
