@@ -19,15 +19,6 @@ its most visible. Candidate fix belongs to the LANDSCAPE.md rivers
 pass: carry water planes one-two levels coarser, or feather the
 water/no-water handoff. Charming-discontinuity vs bug = Andrew call.
 
-### B-10 Terrain ends in giant squares against sky during fast flight
-Austin's OS screenshot (grid-bug.png, near -38.5 -104.5, high stream
-speed): the drawn cover ends in a stair-step of missing tiles with
-sky beyond, pale/snow biome. Fresh-cover coverage failure under fast
-lateral flight - the synchronous parent-per-family fallback should
-make this impossible, so either a face-boundary case, a level-0
-family case, or eviction outrunning selection. Needs live repro
-(SHIFT+P raw photos now exist for evidence). NOT yet reproduced in
-probes.
 
 
 ### CROSS-REVIEW 2026-07-14 (Sol reviewed Claude 14aed27..999ed70; fresh
@@ -510,6 +501,17 @@ texturing conversation with Andrew.
 
 
 ## FIXED
+
+### B-10 Eviction storms: vanishing tiles/staircases/bald patches (3cc26ec)
+Austin's tripwire console lines + the soak probe convicted the VRAM
+budget enforcer: crossing BUDGET purged down to RETAIN in ONE frame
+(128 MB mass-vanish), fast multi-area sessions blew past HARD (675
+tiles at 1178 MB in the probe), and when the recent set alone brushed
+HARD, equal-recency ties dropped RANDOM VISIBLE tiles (the raw_2
+staircase). Fixed: proportional continuous shedding in live frames, a
+pressure valve when the 180-frame window would force a HARD storm,
+and view-angle tie-breaking so forced drops land off-view. The soak
+runs storm-free with identical coverage; tripwires stay armed.
 
 ### B-11 Altitude motion read flat; catch-up was slow (2026-07-15, b64b5f4)
 Two causes, both scheduling: parent stand-ins were used for ALL fresh
