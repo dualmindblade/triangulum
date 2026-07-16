@@ -1398,12 +1398,21 @@ pub(crate) fn warm_impostor_candidates(planet: &Planet, key: TileKey) -> usize {
     }
     let ci_end = ci1 - (ci1 - ci_start) % stride;
     let cj_end = cj1 - (cj1 - cj_start) % stride;
-    if planet.impostor_tile_emits_none(key.face, ci_start, ci_end, cj_start, cj_end) {
-        return 0;
-    }
-    planet
-        .impostor_candidates(key.face, ci_start, ci1, cj_start, cj1, stride)
-        .len()
+    let trees = if planet.impostor_tile_emits_none(key.face, ci_start, ci_end, cj_start, cj_end) {
+        0
+    } else {
+        planet
+            .impostor_candidates(key.face, ci_start, ci1, cj_start, cj1, stride)
+            .len()
+    };
+    let rocks = if std::env::var_os("TRI_NO_ROCKS").is_none() {
+        planet
+            .rock_impostor_candidates(key.face, ci_start, ci1, cj_start, cj1, stride)
+            .len()
+    } else {
+        0
+    };
+    trees + rocks
 }
 
 pub fn build_tile_at_season(
@@ -1815,7 +1824,166 @@ pub fn build_tile_at_season(
         }
     }
 
+    if impostor_stride > 0
+        && std::env::var_os("TRI_NO_IMPOSTORS").is_none()
+        && std::env::var_os("TRI_NO_ROCKS").is_none()
+    {
+        append_neisor_rock_impostors(
+            planet,
+            key,
+            exaggeration,
+            origin,
+            &mut vertices,
+            &mut indices,
+        );
+    }
+
     TileMesh { origin_km: origin, vertices, indices }
+}
+
+/// Shared block-cluster stand-in used by both bodies. Geometry is deliberately
+/// faceted and crossed, not a camera-facing sprite, so silhouettes remain
+/// stable while the existing tile dissolve owns LOD arrivals.
+pub(crate) fn append_rock_impostor_geometry(
+    vertices: &mut Vec<Vertex>,
+    indices: &mut Vec<u32>,
+    root: DVec3,
+    dir: DVec3,
+    kind: crate::voxel::RockKind,
+    color: [f32; 3],
+    boost: f64,
+    spin: f64,
+    parent_member: bool,
+    lunar_smoothness: Option<f32>,
+) {
+    use crate::voxel::RockKind;
+    let (height, half_width, top_scale, aspect) = match kind {
+        RockKind::Single => (0.0010, 0.00052, 0.56, 1.0),
+        RockKind::Boulder => (0.0018, 0.00125, 0.48, 1.0),
+        RockKind::Outcrop => (0.0021, 0.00245, 0.42, 0.54),
+        RockKind::Erratic => (0.0034, 0.00215, 0.36, 0.88),
+    };
+    let ref_axis = if dir.z.abs() < 0.9 { DVec3::Z } else { DVec3::Y };
+    let a = (ref_axis - dir * ref_axis.dot(dir)).normalize();
+    let b = dir.cross(a);
+    let e1 = a * spin.cos() + b * spin.sin();
+    let e2 = dir.cross(e1);
+    let h = height * boost.powf(0.20);
+    let w = half_width * boost;
+    let under = [color[0] * 0.58, color[1] * 0.58, color[2] * 0.58];
+    let top = [color[0] * 1.06, color[1] * 1.06, color[2] * 1.06];
+    let normal = dir.to_array().map(|x| x as f32);
+    for (axis, axis_width) in [(e1, w), (e2, w * aspect)] {
+        let base = vertices.len() as u32;
+        let cap = axis_width * top_scale;
+        let quad = [
+            (root - axis * axis_width, under),
+            (root + axis * axis_width, under),
+            (root + axis * cap + dir * h, top),
+            (root - axis * cap + dir * h, top),
+        ];
+        for (position, color) in quad {
+            vertices.push(Vertex {
+                pos: position.to_array().map(|x| x as f32),
+                normal,
+                color,
+                water: [0.0, 0.0, 0.0, lunar_smoothness.unwrap_or(0.0)],
+                morph_dh: 0.0,
+                morph_wet: 0.0,
+                wflag: 0.0,
+                shore: -1.0,
+                biome: NO_BIOME_PAYLOAD,
+                // y = 255 is a lunar-rock marker for fs_moon's reuse of the
+                // established landing dissolve; Neisor impostors keep y=0.
+                beach: [
+                    if parent_member { 255 } else { 0 },
+                    if lunar_smoothness.is_some() { 255 } else { 0 },
+                    0,
+                    127,
+                ],
+            });
+        }
+        indices.extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
+    }
+}
+
+fn append_neisor_rock_impostors(
+    planet: &Planet,
+    key: TileKey,
+    exaggeration: f64,
+    origin: DVec3,
+    vertices: &mut Vec<Vertex>,
+    indices: &mut Vec<u32>,
+) {
+    let Some((ci_start, ci1, cj_start, cj1, stride)) = impostor_lattice_bounds(key) else {
+        return;
+    };
+    if ci_start > ci1 || cj_start > cj1 {
+        return;
+    }
+    let candidates = planet.rock_impostor_candidates(
+        key.face,
+        ci_start,
+        ci1,
+        cj_start,
+        cj1,
+        stride,
+    );
+    // Pebbles do not need the canopy-sized budget trees receive. Keep the
+    // two handoff levels generous, but thin the 1-3 px distance field with
+    // the same lot-ranked, area-conserving rule as tree impostors.
+    let cap = if key.level >= 13 { 900usize } else { 320usize };
+    let keep_every = candidates.len().div_ceil(cap).max(1);
+    let keep_ratio = (cap as f64 / candidates.len().max(1) as f64).min(1.0);
+    let boost = (keep_every as f64).sqrt().min(1.8);
+    let comp = (stride * stride) as f64;
+    let parent_stride = impostor_stride_for_level(key.level.saturating_sub(1));
+    let face = key.face as usize;
+    let nnf = crate::voxel::COLUMNS_PER_FACE as f64;
+    for (ci, cj, kind, family, lot, density, placement) in candidates {
+        if lot >= density * comp * keep_ratio {
+            continue;
+        }
+        let Some(placement) = placement else {
+            continue;
+        };
+        let u = -1.0 + 2.0 * (ci as f64 + 0.5) / nnf;
+        let v = -1.0 + 2.0 * (cj as f64 + 0.5) / nnf;
+        let material = crate::voxel::rock_material(family, kind, key.face, ci, cj, planet.seed);
+        let shade = 0.88 + 0.22 * crate::planet::hash01(
+            key.face,
+            ci,
+            cj,
+            planet.seed as u64 ^ 0x524F_434B_5449_4E54,
+        ) as f32;
+        let mut color = material.color([0.0; 3]);
+        color.iter_mut().for_each(|channel| *channel *= shade);
+        let dir = face_dir(face, u, v);
+        let root = dir
+            * (planet.radius_km + placement.height * exaggeration - 0.00035)
+            - origin;
+        let spin = crate::planet::hash01(
+            key.face,
+            ci,
+            cj,
+            planet.seed as u64 ^ 0x524F_434B_5350_494E,
+        ) * std::f64::consts::TAU;
+        let parent_member = parent_stride > 0
+            && ci.is_multiple_of(parent_stride)
+            && cj.is_multiple_of(parent_stride);
+        append_rock_impostor_geometry(
+            vertices,
+            indices,
+            root,
+            dir,
+            kind,
+            color,
+            boost,
+            spin,
+            parent_member,
+            None,
+        );
+    }
 }
 
 fn mix3(a: [f32; 3], b: [f32; 3], t: f32) -> [f32; 3] {
