@@ -9,6 +9,28 @@ are `teleport LAT LON [ALT_KM]` viewer args at `--exagg 1` unless noted.
 
 ## OPEN
 
+### B-12 Long settle: blurry landscape takes 3+ s to sharpen (BOTH versions)
+Austin+Andrew, confirmed 2026-07-16 ("long settle" photo): after
+arriving somewhere, terrain reads blurry and takes 3+ seconds to reach
+final sharpness. Present in the OLD version too - there it appeared
+PERMANENT because the old quiet path never converged (B-11 finding);
+the new convergence makes it end, which made it visible as a
+transition. Suspects: the refinement ladder climbing multiple LOD
+levels sequentially with an 18-frame temporal ease per swap (eases
+stack into seconds), plus geomorph blur at coarse parents. Content-
+independent - fix in parallel with the landscape campaign.
+
+### L-1 LOD-BOUNDARY PASS (banked for after Track A geology): Austin+
+Andrew 2026-07-16, three related observations that should be tuned
+against REAL campaign content, not today's sparse world: (a) medium-
+high altitude renders wavy smooth borders where the next LOD in is
+rougher and better ("smooth"/"not so smooth" photos) - the coarse
+levels lack a boundary-detail octave; (b) some biome borders are
+visible at range and vanish on zoom ("here we see a border"/"here we
+don't"); (c) flat-color landscapes at medium altitude - needs
+mid-scale ground texture, which Track C strata banding + geology
+directly provide. Schedule: after geology lands, one focused pass.
+
 ### B-9 Lakes end at a razor tile boundary at range (PRE-EXISTING)
 Austin's settled photo (shot_lat52.122_lon108.233_alt3.190km) shows a
 lake field cut off along a mesh-level boundary. Reproduced settled at
