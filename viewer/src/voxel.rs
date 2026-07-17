@@ -1294,6 +1294,12 @@ pub mod rock_tuning {
     pub const EXPOSED_SINGLE_CDF: f64 = 0.43;
     pub const EXPOSED_BOULDER_CDF: f64 = 0.90;
     pub const EXPOSED_OUTCROP_CDF: f64 = 0.992;
+
+    /// Alpine trades part of its outcrop band for erratics, and its erratics
+    /// use the larger MEGA_ERRATIC template (16-26 blocks, 4 tall): mountain
+    /// slopes read as big-boulder country. Other families keep the shared
+    /// exposed CDFs and the 12-17 block erratic bit-for-bit.
+    pub const ALPINE_OUTCROP_CDF: f64 = 0.975;
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -1393,7 +1399,7 @@ pub fn rock_kind(
         family,
         RockFamily::Upland | RockFamily::Alpine | RockFamily::LunarEjecta
     );
-    let (single, boulder, outcrop) = if exposed {
+    let (single, boulder, mut outcrop) = if exposed {
         (
             rock_tuning::EXPOSED_SINGLE_CDF,
             rock_tuning::EXPOSED_BOULDER_CDF,
@@ -1406,6 +1412,9 @@ pub fn rock_kind(
             rock_tuning::ORDINARY_OUTCROP_CDF,
         )
     };
+    if family == RockFamily::Alpine {
+        outcrop = rock_tuning::ALPINE_OUTCROP_CDF;
+    }
     if q < single {
         RockKind::Single
     } else if q < boulder {
@@ -1497,11 +1506,45 @@ pub fn rock_cells(
         (0, 0, 3),
         (1, 1, 2),
     ];
+    // Alpine erratics only: a full 3x3 base with shoulder stones, a cross
+    // second course, and a two-block crown — reads as a house-sized glacial
+    // block. Footprint stays within the established two-column reach.
+    const MEGA_ERRATIC: &[(i64, i64, i64)] = &[
+        (-1, -1, 1),
+        (0, -1, 1),
+        (1, -1, 1),
+        (-1, 0, 1),
+        (0, 0, 1),
+        (1, 0, 1),
+        (-1, 1, 1),
+        (0, 1, 1),
+        (1, 1, 1),
+        (2, 0, 1),
+        (-2, 0, 1),
+        (0, 2, 1),
+        (0, 0, 2),
+        (1, 0, 2),
+        (-1, 0, 2),
+        (0, 1, 2),
+        (0, -1, 2),
+        (1, 1, 2),
+        (-1, -1, 2),
+        (1, -1, 2),
+        (0, 0, 3),
+        (1, 0, 3),
+        (0, 1, 3),
+        (-1, 0, 3),
+        (0, 0, 4),
+        (0, 1, 4),
+    ];
     let rnd = hash_u64(face, ci, cj, seed as u64 ^ 0x524F_434B_4345_4C4C);
     let (template, count) = match kind {
         RockKind::Single => (SINGLE, 1),
         RockKind::Boulder => (BOULDER, 3 + (rnd as usize % 4)),
         RockKind::Outcrop => (OUTCROP, 7 + (rnd as usize % 5)),
+        RockKind::Erratic if family == RockFamily::Alpine => {
+            (MEGA_ERRATIC, 16 + (rnd as usize % 11))
+        }
         RockKind::Erratic => (ERRATIC, 12 + (rnd as usize % 6)),
     };
     let rotation = ((rnd >> 17) & 3) as u8;
@@ -1637,6 +1680,73 @@ pub fn surface_height_km(body: &dyn VoxelBody, edits: &Edits, dir: DVec3, exagge
 /// (same exaggerated+lift height units as surface_height_km). Cave-aware:
 /// standing over a pit this is the pit floor, inside a tunnel the tunnel
 /// floor — the physics query for gravity, landing, and step-up.
+/// Bitmask of solid ROCK cells in the column: bit b set means block
+/// `c.ground + b + 1` is a rock-cluster block. Mirrors the chunk mesher's
+/// stamping rules exactly — same anchor window, same trim predicate, same
+/// per-target ground datum — so collision and visuals cannot disagree.
+/// Singles stay decorative (a future non-cube pebble block owns that case);
+/// boulders, outcrops and erratics collide.
+pub fn rock_solid_mask(
+    body: &dyn VoxelBody,
+    edits: &Edits,
+    face: usize,
+    ci: u64,
+    cj: u64,
+    c: &ColCtx,
+) -> u8 {
+    if std::env::var_os("TRI_NO_ROCKS").is_some() {
+        return 0;
+    }
+    // the mesher trims cluster cells at wet/edited/carved/cave-mouth targets;
+    // a rock block that isn't drawn must not collide
+    if c.sea
+        || c.has_water()
+        || c.water != i64::MIN
+        || c.carved
+        || c.ground != c.ground0
+        || c.top_solid() != c.ground
+    {
+        return 0;
+    }
+    let bound = rock_tuning::MAX_DENSITY.max(rock_tuning::MOON_MAX_DENSITY);
+    let seed = body.seed();
+    let mut mask = 0u8;
+    for dj in -2i64..=2 {
+        for di in -2i64..=2 {
+            let (aface, aci, acj) =
+                canonical_column_body(body, face, ci as i64 + di, cj as i64 + dj);
+            // density-lottery upper bound rejects ~99.9% of anchors before
+            // any column context is built (the tree-cache gate trick)
+            if rock_hash01(aface, aci, acj, seed) >= bound {
+                continue;
+            }
+            let actx = col_ctx_body(body, edits, usize::from(aface), aci, acj);
+            let Some((kind, family)) = rock_at(&actx, aface, aci, acj, seed) else {
+                continue;
+            };
+            if kind == RockKind::Single {
+                continue;
+            }
+            for (dx, dy, dz, _) in rock_cells(kind, family, aface, aci, acj, seed) {
+                if dx == -di && dy == -dj && (1..=8).contains(&dz) {
+                    mask |= 1 << (dz - 1);
+                }
+            }
+        }
+    }
+    mask
+}
+
+/// Top rock block of a mask, as an absolute z — or i64::MIN when empty.
+#[inline]
+fn rock_top_z(ground: i64, mask: u8) -> i64 {
+    if mask == 0 {
+        i64::MIN
+    } else {
+        ground + 8 - i64::from(mask.leading_zeros() as u8)
+    }
+}
+
 pub fn support_below_km(
     body: &dyn VoxelBody,
     edits: &Edits,
@@ -1654,10 +1764,16 @@ pub fn support_below_km(
         .map(|(_, t)| c.ground + t);
     // frozen water is a solid ice sheet you stand ON (at the water surface)
     let ice = c.frozen_ice().or_else(|| c.frozen_cave_ice());
+    // rock clusters (boulder and larger) are solid, like trunks
+    let rock_mask = rock_solid_mask(body, edits, face, ci, cj, &c);
+    let rock_top = rock_top_z(c.ground, rock_mask);
     let solid = |z: i64| {
         c.filled(z)
             || trunk_top.is_some_and(|t| z > c.ground && z <= t)
             || ice == Some(z)
+            || (z > c.ground
+                && z <= c.ground + 8
+                && (rock_mask >> (z - c.ground - 1)) & 1 != 0)
     };
     let scale = VOXEL_KM * exaggeration;
     let lift = lift_km(exaggeration);
@@ -1666,7 +1782,8 @@ pub fn support_below_km(
         trunk_top
             .unwrap_or(c.ground)
             .max(c.ground)
-            .max(ice.unwrap_or(i64::MIN)),
+            .max(ice.unwrap_or(i64::MIN))
+            .max(rock_top),
     );
     let z_min = c.ground - CAVE_DEPTH - 1;
     while z >= z_min {
@@ -1696,15 +1813,28 @@ pub fn ceiling_above_km(
     // frozen ice is a ceiling too: swimming up under a frozen sheet must
     // collide with it, not pass through into the "solid" ice
     let ice = c.frozen_ice().or_else(|| c.frozen_cave_ice());
+    // a rock overhang is a ceiling: jumping under an erratic's crown must
+    // bump, exactly as the drawn blocks suggest
+    let rock_mask = rock_solid_mask(body, edits, face, ci, cj, &c);
+    let rock_top = rock_top_z(c.ground, rock_mask);
     let solid = |z: i64| {
-        c.filled(z) || trunk_top.is_some_and(|t| z > c.ground && z <= t) || ice == Some(z)
+        c.filled(z)
+            || trunk_top.is_some_and(|t| z > c.ground && z <= t)
+            || ice == Some(z)
+            || (z > c.ground
+                && z <= c.ground + 8
+                && (rock_mask >> (z - c.ground - 1)) & 1 != 0)
     };
     let scale = VOXEL_KM * exaggeration;
     let lift = lift_km(exaggeration);
     // first block whose span could sit above at_km
     let mut z = (((at_km - lift) / scale) - 1e-7).floor() as i64 + 1;
     z = z.max(c.ground - CAVE_DEPTH);
-    let z_top = trunk_top.unwrap_or(c.ground).max(c.ground).max(ice.unwrap_or(i64::MIN));
+    let z_top = trunk_top
+        .unwrap_or(c.ground)
+        .max(c.ground)
+        .max(ice.unwrap_or(i64::MIN))
+        .max(rock_top);
     while z <= z_top {
         if solid(z) {
             return (z - 1) as f64 * scale + lift;
@@ -2930,19 +3060,93 @@ mod tests {
 
     #[test]
     fn rock_shapes_are_deterministic_bounded_block_clusters() {
+        // Upland keeps the shared templates; Alpine erratics use the larger
+        // MEGA_ERRATIC (16-26 cells, 4 tall) but stay inside the two-column
+        // reach that the chunk ghost margin guarantees.
         let expected_ranges = [
-            (RockKind::Single, 1usize, 1usize),
-            (RockKind::Boulder, 3, 6),
-            (RockKind::Outcrop, 7, 11),
-            (RockKind::Erratic, 12, 17),
+            (RockFamily::Upland, RockKind::Single, 1usize, 1usize, 3i64),
+            (RockFamily::Upland, RockKind::Boulder, 3, 6, 3),
+            (RockFamily::Upland, RockKind::Outcrop, 7, 11, 3),
+            (RockFamily::Upland, RockKind::Erratic, 12, 17, 3),
+            (RockFamily::Alpine, RockKind::Erratic, 16, 26, 4),
         ];
-        for (kind, lo, hi) in expected_ranges {
-            let a = rock_cells(kind, RockFamily::Alpine, 2, 1_234, 5_678, 42);
-            let b = rock_cells(kind, RockFamily::Alpine, 2, 1_234, 5_678, 42);
+        for (family, kind, lo, hi, z_max) in expected_ranges {
+            let a = rock_cells(kind, family, 2, 1_234, 5_678, 42);
+            let b = rock_cells(kind, family, 2, 1_234, 5_678, 42);
             assert_eq!(a, b);
             assert!((lo..=hi).contains(&a.len()), "{kind:?} has {} cells", a.len());
-            assert!(a.iter().all(|&(x, y, z, _)| x.abs() <= 2 && y.abs() <= 2 && z <= 3));
+            assert!(a
+                .iter()
+                .all(|&(x, y, z, _)| x.abs() <= 2 && y.abs() <= 2 && z <= z_max));
         }
+        // Non-alpine erratics must be bit-for-bit what they were before the
+        // mega template existed: same cells, same count, same materials.
+        let upland = rock_cells(RockKind::Erratic, RockFamily::Upland, 2, 1_234, 5_678, 42);
+        assert!(upland.len() <= 17 && upland.iter().all(|&(_, _, z, _)| z <= 3));
+    }
+
+    #[test]
+    fn boulders_collide_exactly_where_they_are_drawn() {
+        let planet = test_planet();
+        let edits = Edits::default();
+        let bound = rock_tuning::MAX_DENSITY.max(rock_tuning::MOON_MAX_DENSITY);
+        let mut checked = 0u32;
+        let mut standable = None;
+        // Real anchors from the shipped planet: every untrimmed cell the
+        // mesher would stamp must appear in the physics mask (singles never
+        // do), and standing on a stamped cell must land on its exact top.
+        'scan: for cj in (1_000_000..COLUMNS_PER_FACE - 1_000_000).step_by(1_003_331) {
+            for ci in 1_000_000..2_500_000u64 {
+                if rock_hash01(0, ci, cj, planet.seed) >= bound {
+                    continue;
+                }
+                let actx = col_ctx(&planet, &edits, 0, ci, cj);
+                let Some((kind, family)) = rock_at(&actx, 0, ci, cj, planet.seed) else {
+                    continue;
+                };
+                if kind == RockKind::Single {
+                    continue;
+                }
+                for (dx, dy, dz, _) in rock_cells(kind, family, 0, ci, cj, planet.seed) {
+                    let (tf, tci, tcj) =
+                        canonical_column_body(&planet, 0, ci as i64 + dx, cj as i64 + dy);
+                    let t = col_ctx(&planet, &edits, usize::from(tf), tci, tcj);
+                    let trimmed = t.sea
+                        || t.has_water()
+                        || t.water != i64::MIN
+                        || t.carved
+                        || t.ground != t.ground0
+                        || t.top_solid() != t.ground;
+                    let mask =
+                        rock_solid_mask(&planet, &edits, usize::from(tf), tci, tcj, &t);
+                    let hit = (mask >> (dz - 1)) & 1 != 0;
+                    // another cluster may overlap a trimmed cell, so trim only
+                    // implies "this anchor contributes nothing", never mask==0
+                    assert!(
+                        hit || trimmed,
+                        "{kind:?} cell dz={dz} at {tci},{tcj} drawn but not solid"
+                    );
+                    if hit && standable.is_none() {
+                        standable = Some((tf, tci, tcj, t.ground, rock_top_z(t.ground, mask)));
+                    }
+                    checked += 1;
+                }
+                if checked >= 120 {
+                    break 'scan;
+                }
+            }
+        }
+        assert!(checked >= 40, "planet scan found too few cluster cells ({checked})");
+        let (tf, tci, tcj, _, rock_top) =
+            standable.expect("no standable rock cell found in scan");
+        let dir = dir_of_column_body(&planet, usize::from(tf), tci, tcj);
+        let from = (rock_top + 20) as f64 * VOXEL_KM;
+        let support = support_below_km(&planet, &edits, dir, from, 1.0);
+        assert_eq!(
+            support,
+            rock_top as f64 * VOXEL_KM + lift_km(1.0),
+            "support must land on the drawn rock top"
+        );
     }
 
     #[test]

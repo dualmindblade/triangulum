@@ -1855,12 +1855,16 @@ pub(crate) fn append_rock_impostor_geometry(
     spin: f64,
     parent_member: bool,
     lunar_smoothness: Option<f32>,
+    mega: bool,
 ) {
     use crate::voxel::RockKind;
     let (height, half_width, top_scale, aspect) = match kind {
         RockKind::Single => (0.0010, 0.00052, 0.56, 1.0),
         RockKind::Boulder => (0.0018, 0.00125, 0.48, 1.0),
         RockKind::Outcrop => (0.0021, 0.00245, 0.42, 0.54),
+        // alpine mega erratic: carries the voxel MEGA_ERRATIC's extra
+        // course and footprint out to the stand-in distance
+        RockKind::Erratic if mega => (0.0046, 0.00285, 0.38, 0.88),
         RockKind::Erratic => (0.0034, 0.00215, 0.36, 0.88),
     };
     let ref_axis = if dir.z.abs() < 0.9 { DVec3::Z } else { DVec3::Y };
@@ -1982,6 +1986,8 @@ fn append_neisor_rock_impostors(
             spin,
             parent_member,
             None,
+            family == crate::voxel::RockFamily::Alpine
+                && kind == crate::voxel::RockKind::Erratic,
         );
     }
 }

@@ -2082,6 +2082,7 @@ pub fn build_tile(generator: &MoonGenerator, key: TileKey, radius_km: f64) -> Ti
                     spin,
                     parent_member,
                     Some(0.05),
+                    false,
                 );
             }
         }
