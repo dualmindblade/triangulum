@@ -18,7 +18,7 @@ use egui::epaint::{ImageDelta, Primitive};
 use egui::{ClippedPrimitive, Color32, TextureId, TexturesDelta};
 use glam::DVec3;
 
-use crate::planet::{Planet, face_from_dir, ground_tint};
+use crate::planet::{Planet, face_from_dir, ground_tint, sea_from_fields};
 
 /// Deepest zoom the pan/zoom view allows (1 = whole planet). At 180x the map
 /// frames ~2 deg of longitude (~300 km on Neisor) across the widget — fine
@@ -277,6 +277,9 @@ pub enum BaseLayer {
     Biomes,
     Temperature,
     Precipitation,
+    /// Hypsometric tint + contour isolines (Neisor only): terrain structure
+    /// for locating alpine ranges, river valleys, and cliff bands.
+    Elevation,
 }
 
 /// Everything the map needs from the app besides the photo roll: the planet
@@ -377,7 +380,10 @@ fn map_weather_time_bucket(
     weather_time_s: f64,
 ) -> Option<i64> {
     let moving_clouds = clouds && weather_on && weather_pin.is_none();
-    let time_sensitive = moving_clouds || base != BaseLayer::Biomes;
+    // Biomes and Elevation are season-independent bases; only the seasonal
+    // climate fields (and moving clouds) warrant periodic re-synthesis.
+    let seasonal_base = matches!(base, BaseLayer::Temperature | BaseLayer::Precipitation);
+    let time_sensitive = moving_clouds || seasonal_base;
     time_sensitive.then(|| {
         let t_s = if weather_time_s.is_finite() {
             weather_time_s
@@ -459,6 +465,18 @@ fn precip_color(mm: f64, stops: &[(f32, [f32; 3])]) -> [f32; 3] {
     ramp(stops, x)
 }
 
+/// Sea base color by depth: deep navy to shelf teal. One bathymetry ramp is
+/// shared by the biome and elevation bases so switching layers never recolors
+/// the ocean.
+fn sea_depth_color(e_km: f64) -> [f32; 3] {
+    let d = (-e_km / 4.0).clamp(0.0, 1.0) as f32;
+    [
+        0.10 + (0.02 - 0.10) * d,
+        0.32 + (0.08 - 0.32) * d,
+        0.42 + (0.22 - 0.42) * d,
+    ]
+}
+
 /// Biome base color at a cell — the legacy koppen tint (ocean by depth, land
 /// by class), optionally shaded by elevation + snow (the relief layer). With
 /// `relief` on this reproduces the original `build_minimap` land/sea look.
@@ -467,13 +485,7 @@ fn biome_color(planet: &Planet, f: usize, u: f64, v: f64, relief: bool) -> [f32;
     let climate = planet.biome_climate(f, u, v);
     let k = climate.koppen;
     if climate.sea {
-        // sea: deep navy to shelf teal (bathymetry, kept regardless of relief)
-        let d = (-e / 4.0).clamp(0.0, 1.0) as f32;
-        [
-            0.10 + (0.02 - 0.10) * d,
-            0.32 + (0.08 - 0.32) * d,
-            0.42 + (0.22 - 0.42) * d,
-        ]
+        sea_depth_color(e)
     } else {
         let g = ground_tint(k);
         if relief {
@@ -492,11 +504,236 @@ fn biome_color(planet: &Planet, f: usize, u: f64, v: f64, relief: bool) -> [f32;
     }
 }
 
+// ------------------------------------------------------- elevation base layer
+//
+// Hypsometric tint + per-pixel contour isolines, for reading terrain structure
+// (alpine ranges, river valleys, cliff bands) straight off the teleport map.
+// Everything below is a pure function of the baked rasters and the view
+// bounds — no wall clock, no randomness — so the layer is deterministic and
+// signature-cacheable like every other base.
+
+/// Aim for about this many minor contour bands across the visible land relief.
+const CONTOUR_TARGET_BANDS: f64 = 12.0;
+/// Every Nth isoline is an index contour with a stronger stroke.
+const CONTOUR_INDEX_EVERY: i64 = 4;
+
+/// Minor contour interval (km) for a visible land elevation range: roughly
+/// `CONTOUR_TARGET_BANDS` bands across the range, snapped DOWN onto a 1-2-5
+/// ladder so panning at one zoom rarely churns the interval. Because the
+/// range shrinks as the view zooms into flatter country, the interval
+/// tightens with zoom automatically (≈4.5 km of relief in view → 500 m
+/// lines; a lowland valley with 300 m of relief → 20 m lines). Returns 0.0
+/// when there is nothing to contour (no land in view, flat, or non-finite).
+fn contour_interval_km(land_range_km: f64) -> f64 {
+    if !land_range_km.is_finite() || land_range_km <= 1e-6 {
+        return 0.0;
+    }
+    // floor at 2 m: the base rasters are ~10 km/texel, so finer lines would
+    // only trace bilinear-interpolation artifacts.
+    let raw = (land_range_km / CONTOUR_TARGET_BANDS).max(0.002);
+    let mag = 10f64.powf(raw.log10().floor());
+    let step = raw / mag;
+    let nice = if step < 1.5 {
+        1.0
+    } else if step < 3.5 {
+        2.0
+    } else if step < 7.5 {
+        5.0
+    } else {
+        10.0
+    };
+    nice * mag
+}
+
+/// Lowland green → tan → brown → rock grey → white peaks, indexed by
+/// elevation normalized to the planet's tallest terrain
+/// (`ElevationField::hypso_max_km`). Built once per synth (see the note on
+/// `disp` above `temp_stops`).
+fn hypso_stops() -> [(f32, [f32; 3]); 6] {
+    [
+        (0.00, disp(0.33, 0.51, 0.29)),
+        (0.16, disp(0.56, 0.61, 0.33)),
+        (0.36, disp(0.79, 0.69, 0.44)),
+        (0.58, disp(0.62, 0.44, 0.28)),
+        (0.80, disp(0.55, 0.48, 0.44)),
+        (1.00, disp(0.96, 0.96, 0.97)),
+    ]
+}
+
+/// The elevation base's sampled window: per-pixel elevation, the physical
+/// land/sea split, and the contour interval chosen from the land relief that
+/// is actually in view.
+struct ElevationField {
+    w: usize,
+    h: usize,
+    elev_km: Vec<f32>,
+    sea: Vec<bool>,
+    /// Minor isoline spacing; 0.0 disables contours (all-sea or flat view).
+    interval_km: f64,
+    /// Where the land tint tops out (white): the PLANET's tallest raster
+    /// texel, not the view's — so a mountain stays the same color at every
+    /// pan/zoom and white always means "the highest terrain this seed has".
+    hypso_max_km: f64,
+}
+
+impl ElevationField {
+    fn sample(planet: &Planet, b: Bounds, w: usize, h: usize) -> Self {
+        // One sequential pass over the six elevation rasters (~a few ms,
+        // small next to the per-pixel bilinears below). The maximum texel is
+        // always land — the sea floor is negative — and bilinear samples
+        // can never exceed it.
+        let hypso_max_km = planet
+            .faces
+            .iter()
+            .flat_map(|f| f.elev_km.iter())
+            .fold(f32::MIN, |a, &e| a.max(e))
+            .max(1.0) as f64;
+        let mut elev_km = vec![0.0f32; w * h];
+        let mut sea = vec![false; w * h];
+        let (mut lo, mut hi) = (f64::INFINITY, f64::NEG_INFINITY);
+        for y in 0..h {
+            let lat =
+                (b.lat_top + (b.lat_bot - b.lat_top) * (y as f64 + 0.5) / h as f64).to_radians();
+            let (slat, clat) = lat.sin_cos();
+            for x in 0..w {
+                let lon = (b.lon_left + (b.lon_right - b.lon_left) * (x as f64 + 0.5) / w as f64)
+                    .to_radians();
+                let (f, u, v) = face_from_dir(DVec3::new(clat * lon.cos(), clat * lon.sin(), slat));
+                let e = planet.elevation(f, u, v);
+                // Mirrors Planet::true_sea_at: positive elevation proves land
+                // with one raster read; only shoreline/basin pixels consult
+                // the ocean masks. Dry below-sea-level basins stay land.
+                let is_sea = e <= 0.0
+                    && sea_from_fields(
+                        e as f64,
+                        planet.water_frac(f, u, v) as f64,
+                        planet.ocean(f, u, v) as f64,
+                    );
+                elev_km[y * w + x] = e;
+                sea[y * w + x] = is_sea;
+                if !is_sea {
+                    lo = lo.min(e as f64);
+                    hi = hi.max(e as f64);
+                }
+            }
+        }
+        let interval_km = contour_interval_km(hi - lo);
+        Self {
+            w,
+            h,
+            elev_km,
+            sea,
+            interval_km,
+            hypso_max_km,
+        }
+    }
+
+    /// Quantized contour band at a pixel index.
+    fn level(&self, i: usize) -> i64 {
+        (self.elev_km[i] as f64 / self.interval_km).floor() as i64
+    }
+
+    /// Base tint + contour stroke at a pixel, in the map's linear space.
+    /// A pixel is on a contour when its band differs from the +x or +y
+    /// neighbor's, so every isoline crossing gets a one-pixel stroke on its
+    /// higher side; index contours (every `CONTOUR_INDEX_EVERY`th line)
+    /// stroke darker. Sea pixels keep the shared bathymetry ramp untouched.
+    fn color(&self, x: usize, y: usize, stops: &[(f32, [f32; 3])]) -> [f32; 3] {
+        let i = y * self.w + x;
+        let e = self.elev_km[i] as f64;
+        if self.sea[i] {
+            return sea_depth_color(e);
+        }
+        let mut c = ramp(stops, (e / self.hypso_max_km).clamp(0.0, 1.0) as f32);
+        if self.interval_km > 0.0 {
+            let lv = self.level(i);
+            let mut crossing: Option<i64> = None;
+            let neighbors = [
+                (x + 1 < self.w).then(|| i + 1),
+                (y + 1 < self.h).then(|| i + self.w),
+            ];
+            for ni in neighbors.into_iter().flatten() {
+                if self.sea[ni] {
+                    continue; // the coastline is already a color break
+                }
+                let nl = self.level(ni);
+                if nl != lv {
+                    let line = lv.max(nl);
+                    crossing = Some(crossing.map_or(line, |best: i64| best.max(line)));
+                }
+            }
+            if let Some(line) = crossing {
+                let k = if line.rem_euclid(CONTOUR_INDEX_EVERY) == 0 {
+                    0.42 // index contour: strong stroke
+                } else {
+                    0.68 // minor contour: subtle stroke
+                };
+                c = [c[0] * k, c[1] * k, c[2] * k];
+            }
+        }
+        c
+    }
+}
+
+/// Encode one linear-space map color to display sRGB (the inverse of `disp`).
+fn srgb8(c: [f32; 3]) -> Color32 {
+    Color32::from_rgb(
+        (c[0].clamp(0.0, 1.0).powf(1.0 / 2.2) * 255.0) as u8,
+        (c[1].clamp(0.0, 1.0).powf(1.0 / 2.2) * 255.0) as u8,
+        (c[2].clamp(0.0, 1.0).powf(1.0 / 2.2) * 255.0) as u8,
+    )
+}
+
+/// Rasterize the elevation base alone (no clouds). `synth_map` delegates its
+/// per-pixel colors here via `ElevationField::color`, so this headless twin
+/// cannot drift from what the popup shows.
+fn synth_elevation_map(planet: &Planet, b: Bounds, w: usize, h: usize) -> egui::ColorImage {
+    let field = ElevationField::sample(planet, b, w, h);
+    let stops = hypso_stops();
+    let mut px = vec![Color32::BLACK; w * h];
+    for y in 0..h {
+        for x in 0..w {
+            px[y * w + x] = srgb8(field.color(x, y, &stops));
+        }
+    }
+    egui::ColorImage {
+        size: [w, h],
+        source_size: egui::Vec2::new(w as f32, h as f32),
+        pixels: px,
+    }
+}
+
+/// Headless evidence/export entry point for the teleport map's Elevation
+/// base: hypsometric tint + contours for a lat/lon window, like
+/// `weather_map_image` frames its window.
+pub fn elevation_map_image(
+    planet: &Planet,
+    center_lat: f64,
+    center_lon: f64,
+    zoom: f64,
+    width: usize,
+    height: usize,
+) -> egui::ColorImage {
+    let zoom = zoom.clamp(1.0, MAX_ZOOM);
+    let half_lon = 180.0 / zoom;
+    let half_lat = 90.0 / zoom;
+    let center_lon = center_lon.clamp(-180.0 + half_lon, 180.0 - half_lon);
+    let center_lat = center_lat.clamp(-90.0 + half_lat, 90.0 - half_lat);
+    let bounds = Bounds {
+        lat_top: center_lat + half_lat,
+        lat_bot: center_lat - half_lat,
+        lon_left: center_lon - half_lon,
+        lon_right: center_lon + half_lon,
+    };
+    synth_elevation_map(planet, bounds, width.max(64), height.max(32))
+}
+
 /// Rasterize the base color field for `b` at `w`x`h`. Rivers/lakes/markers are
 /// NOT drawn here (they are vector overlays); this is the biome / temperature
-/// / precipitation field, optionally relief-shaded, with the live cloud field
-/// alpha-composited on top. Clouds sample the renderer's tiny shared raster,
-/// so map synthesis no longer performs synoptic fbm once per map pixel.
+/// / precipitation / elevation field, optionally relief-shaded, with the live
+/// cloud field alpha-composited on top. Clouds sample the renderer's tiny
+/// shared raster, so map synthesis no longer performs synoptic fbm once per
+/// map pixel.
 fn synth_map(
     env: &MapEnv,
     base: BaseLayer,
@@ -529,6 +766,11 @@ fn synth_map(
         })
         .flatten();
     let (tstops, pstops) = (temp_stops(), precip_stops());
+    // The elevation base needs neighbor comparisons for its contour strokes,
+    // so it samples its window up front; the loop below only reads buffers.
+    let elevation_field =
+        (base == BaseLayer::Elevation).then(|| ElevationField::sample(planet, b, w, h));
+    let hstops = hypso_stops();
     let mut px = vec![Color32::BLACK; w * h];
     for y in 0..h {
         let lat = (b.lat_top + (b.lat_bot - b.lat_top) * (y as f64 + 0.5) / h as f64).to_radians();
@@ -554,10 +796,19 @@ fn synth_map(
                     };
                     precip_color(p, &pstops)
                 }
+                BaseLayer::Elevation => elevation_field
+                    .as_ref()
+                    .expect("elevation field sampled above for this base")
+                    .color(x, y, &hstops),
             };
             // relief on the weather bases: a gentle hypsometric brightening of
-            // land only (biome relief is folded into biome_color above).
-            if relief && base != BaseLayer::Biomes && planet.water_frac(f, u, v) < 0.5 {
+            // land only (biome relief is folded into biome_color above, and
+            // the elevation base IS relief — double-shading would smear its
+            // contours).
+            if relief
+                && matches!(base, BaseLayer::Temperature | BaseLayer::Precipitation)
+                && planet.water_frac(f, u, v) < 0.5
+            {
                 let e = planet.elevation(f, u, v) as f64;
                 let l = (e / 6.0).clamp(-0.25, 0.85) as f32;
                 let m = 0.82 + 0.32 * l;
@@ -618,11 +869,7 @@ fn synth_map(
                     ];
                 }
             }
-            px[y * w + x] = Color32::from_rgb(
-                (c[0].clamp(0.0, 1.0).powf(1.0 / 2.2) * 255.0) as u8,
-                (c[1].clamp(0.0, 1.0).powf(1.0 / 2.2) * 255.0) as u8,
-                (c[2].clamp(0.0, 1.0).powf(1.0 / 2.2) * 255.0) as u8,
-            );
+            px[y * w + x] = srgb8(c);
         }
     }
     egui::ColorImage {
@@ -1481,6 +1728,12 @@ impl PhotoMap {
                     ui.radio_value(&mut self.base_layer, BaseLayer::Biomes, "Biomes");
                     ui.radio_value(&mut self.base_layer, BaseLayer::Temperature, "Temp");
                     ui.radio_value(&mut self.base_layer, BaseLayer::Precipitation, "Precip");
+                    ui.radio_value(&mut self.base_layer, BaseLayer::Elevation, "Elevation")
+                        .on_hover_text(
+                            "hypsometric tint (green lowlands → white peaks) with contour \
+                             isolines; every 4th line is a stronger index contour, and the \
+                             interval adapts to the relief in view as you zoom",
+                        );
                     ui.separator();
                     ui.checkbox(&mut self.show_relief, "Relief")
                         .on_hover_text("elevation + snow shading of the base");
@@ -1636,7 +1889,13 @@ impl PhotoMap {
                             (640, 320)
                         } else if self.show_clouds {
                             (512, 256)
-                        } else if self.base_layer == BaseLayer::Biomes {
+                        } else if matches!(
+                            self.base_layer,
+                            BaseLayer::Biomes | BaseLayer::Elevation
+                        ) {
+                            // elevation is the cheapest base (one raster
+                            // bilinear on land, no biome warp), so it shares
+                            // the crispest cap
                             (1280, 640)
                         } else {
                             (960, 480)
@@ -2934,5 +3193,238 @@ mod tests {
             map_weather_time_bucket(BaseLayer::Temperature, false, false, None, 60.0),
             Some(1)
         );
+        // the elevation base is season-independent: no periodic rebuild
+        // unless live clouds are composited over it
+        assert_eq!(
+            map_weather_time_bucket(BaseLayer::Elevation, false, true, None, 60.0),
+            None
+        );
+        assert_eq!(
+            map_weather_time_bucket(BaseLayer::Elevation, true, true, None, 1.9),
+            Some(0)
+        );
+    }
+
+    #[test]
+    fn contour_interval_snaps_nice_and_rejects_flat_views() {
+        // nothing to contour: all-sea view (range is -inf), flat land, junk
+        assert_eq!(contour_interval_km(f64::NEG_INFINITY), 0.0);
+        assert_eq!(contour_interval_km(0.0), 0.0);
+        assert_eq!(contour_interval_km(f64::NAN), 0.0);
+        // planet-scale relief (~4.5 km in view) → 500 m minors / 2 km index
+        assert!((contour_interval_km(4.5) - 0.5).abs() < 1e-12);
+        // a lowland valley with 300 m of relief tightens to 20 m lines
+        assert!((contour_interval_km(0.3) - 0.02).abs() < 1e-12);
+        // micro-relief never collapses below the 2 m raster-noise floor
+        assert!(contour_interval_km(1e-4) >= 0.002);
+        // zooming out (larger range) never tightens the interval
+        let mut last = 0.0f64;
+        for range in [0.01, 0.1, 0.5, 1.0, 2.0, 4.0, 8.0] {
+            let step = contour_interval_km(range);
+            assert!(step >= last, "interval shrank at range {range}: {step} < {last}");
+            last = step;
+        }
+    }
+
+    #[test]
+    fn elevation_layer_is_deterministic_with_adaptive_contours() {
+        let planet = crate::planet::elevation_test_planet(42);
+        let bounds = Bounds {
+            lat_top: 45.0,
+            lat_bot: -45.0,
+            lon_left: -90.0,
+            lon_right: 90.0,
+        };
+        // the fixture ramp is steep (7 km across each face), so sample at a
+        // resolution where 0.2 km bands are several pixels wide and contour
+        // strokes stay visibly sparse
+        let (w, h) = (320usize, 160usize);
+        // same bounds + layer → identical pixels (house determinism rule)
+        let a = synth_elevation_map(&planet, bounds, w, h);
+        let b = synth_elevation_map(&planet, bounds, w, h);
+        assert_eq!(a.pixels, b.pixels);
+
+        // the interactive path (synth_map with the Elevation base, relief
+        // flag irrelevant, clouds off) must match the headless twin exactly
+        let env = MapEnv {
+            planet: &planet,
+            weather_field: None,
+            synoptic_raster: None,
+            weather_tuning: &crate::weather::WeatherTuning::default(),
+            solar_tuning: &crate::orbits::SolarTuning::default(),
+            weather_time_s: 0.0,
+            day_len_s: 1200.0,
+            weather_on: false,
+            weather_pin: None,
+            cur_lat: 0.0,
+            cur_lon: 0.0,
+            cur_moon_lat: 0.0,
+            cur_moon_lon: 0.0,
+            cur_body: MapBody::Neisor,
+            time_scale: 1.0,
+            multiplayer_available: false,
+            multiplayer_connected: false,
+            multiplayer_status: "",
+        };
+        let via_map = synth_map(&env, BaseLayer::Elevation, true, false, bounds, w, h);
+        assert_eq!(via_map.pixels, a.pixels);
+
+        // the fixture's visible land runs 0..~3.9 km, so the adaptive
+        // interval snaps to 200 m minors (index lines every 800 m)
+        let field = ElevationField::sample(&planet, bounds, w, h);
+        assert!(
+            (field.interval_km - 0.2).abs() < 1e-9,
+            "interval {} for the ~3.9 km fixture",
+            field.interval_km
+        );
+
+        // classify pixels off the field, away from contour strokes: a pixel
+        // is "plain" when its +x/+y neighbors share its band and sea-ness
+        let idx = |x: usize, y: usize| y * w + x;
+        let plain = |x: usize, y: usize| {
+            [(x + 1, y), (x, y + 1)].iter().all(|&(nx, ny)| {
+                nx >= w
+                    || ny >= h
+                    || (field.sea[idx(nx, ny)] == field.sea[idx(x, y)]
+                        && field.level(idx(nx, ny)) == field.level(idx(x, y)))
+            })
+        };
+        let (mut sea_px, mut low_px, mut high_px, mut strokes) = (None, None, None, 0usize);
+        for y in 0..h {
+            for x in 0..w {
+                let i = idx(x, y);
+                if field.sea[i] {
+                    if plain(x, y) {
+                        sea_px.get_or_insert(i);
+                    }
+                    continue;
+                }
+                if !plain(x, y) {
+                    strokes += 1;
+                    continue;
+                }
+                let e = field.elev_km[i];
+                if (0.05..0.4).contains(&e) {
+                    low_px.get_or_insert(i);
+                }
+                // track the tallest un-stroked land pixel as "the peak"
+                if high_px.is_none_or(|j: usize| field.elev_km[j] < e) {
+                    high_px = Some(i);
+                }
+            }
+        }
+        // hypsometric ordering: sea reads blue, lowland green, peaks pale
+        let rgb = |i: usize| {
+            let [r, g, b, _] = a.pixels[i].to_array();
+            (r as i32, g as i32, b as i32)
+        };
+        let (sr, _sg, sb) = rgb(sea_px.expect("fixture shows sea"));
+        assert!(sb > sr + 20, "sea should read blue: {:?}", rgb(sea_px.unwrap()));
+        let (lr, lg, lb) = rgb(low_px.expect("fixture shows lowland"));
+        assert!(lg > lr && lg > lb, "lowland should read green: {lr},{lg},{lb}");
+        let (hr, hg, hb) = rgb(high_px.expect("fixture shows peaks"));
+        assert!(
+            hr + hg + hb > lr + lg + lb + 90,
+            "peaks should read paler than lowlands: {hr},{hg},{hb} vs {lr},{lg},{lb}"
+        );
+        // contours exist and stay lines, not fills (the count includes the
+        // coastline band `plain` also rejects, so the bound is generous)
+        let land_total = field.sea.iter().filter(|s| !**s).count();
+        assert!(strokes > 50, "expected contour strokes, got {strokes}");
+        assert!(
+            strokes < land_total / 3,
+            "contours should be sparse strokes: {strokes} of {land_total} land px"
+        );
+        // and a stroked pixel is genuinely darker than its own plain tint
+        let (cx, cy) = (0..h)
+            .flat_map(|y| (0..w).map(move |x| (x, y)))
+            .find(|&(x, y)| {
+                let i = idx(x, y);
+                !field.sea[i]
+                    && !plain(x, y)
+                    && x + 1 < w
+                    && !field.sea[i + 1]
+                    && field.level(i) != field.level(i + 1)
+            })
+            .expect("a horizontal band crossing exists");
+        let stops = hypso_stops();
+        let stroked = srgb8(field.color(cx, cy, &stops));
+        let plain_tint = srgb8(ramp(
+            &stops,
+            (field.elev_km[idx(cx, cy)] as f64 / field.hypso_max_km).clamp(0.0, 1.0) as f32,
+        ));
+        let lum = |c: Color32| {
+            let [r, g, b, _] = c.to_array();
+            r as u32 + g as u32 + b as u32
+        };
+        assert!(
+            lum(stroked) + 30 < lum(plain_tint),
+            "contour stroke should darken the tint: {stroked:?} vs {plain_tint:?}"
+        );
+        assert_eq!(a.pixels[idx(cx, cy)], stroked, "image uses the stroked color");
+    }
+
+    /// Renders the Elevation base over the tallest terrain on the baked
+    /// planet and saves evidence for human eyeballing. Run once with:
+    /// `cargo test --release --lib elevation_map_sample_png -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn elevation_map_sample_png() {
+        let assets = if std::path::Path::new("assets/meta.json").exists() {
+            "assets"
+        } else {
+            "viewer/assets"
+        };
+        let planet = Planet::load(assets).expect("baked assets present");
+        // center the window on the planet's highest raster texel — the most
+        // mountainous view the map can offer
+        let mut best = (0usize, 0usize, 0usize, f32::MIN);
+        for (fi, face) in planet.faces.iter().enumerate() {
+            for (i, &e) in face.elev_km.iter().enumerate() {
+                if e > best.3 {
+                    best = (fi, i % face.res, i / face.res, e);
+                }
+            }
+        }
+        let d = (planet.faces[best.0].res - 1) as f64;
+        let u = -1.0 + 2.0 * best.1 as f64 / d;
+        let v = -1.0 + 2.0 * best.2 as f64 / d;
+        let (lat, lon) = dir_to_geo(crate::planet::face_dir(best.0, u, v));
+        let zoom = 20.0;
+        let t0 = std::time::Instant::now();
+        let img = elevation_map_image(&planet, lat, lon, zoom, 1280, 640);
+        let ms = t0.elapsed().as_secs_f64() * 1000.0;
+        let dir = if std::path::Path::new("interchange").is_dir() {
+            "interchange"
+        } else {
+            "viewer/interchange"
+        };
+        let save = |img: &egui::ColorImage, path: &str| {
+            let mut bytes = Vec::with_capacity(img.pixels.len() * 4);
+            for p in &img.pixels {
+                bytes.extend_from_slice(&p.to_array());
+            }
+            crate::renderer::Renderer::write_png(
+                path,
+                img.size[0] as u32,
+                img.size[1] as u32,
+                &bytes,
+            )
+            .expect("png written");
+        };
+        let path = format!("{dir}/elevation-map-sample.png");
+        save(&img, &path);
+        eprintln!(
+            "elevation map sample: peak {:.2} km at lat {lat:.3} lon {lon:.3}, zoom {zoom}, \
+             synth {ms:.1} ms -> {path}",
+            best.3
+        );
+        // the default-zoom view too, to eyeball the planet-scale interval
+        let t0 = std::time::Instant::now();
+        let overview = elevation_map_image(&planet, 0.0, 0.0, 1.0, 1280, 640);
+        let ms = t0.elapsed().as_secs_f64() * 1000.0;
+        let opath = format!("{dir}/elevation-map-overview.png");
+        save(&overview, &opath);
+        eprintln!("elevation map overview: zoom 1, synth {ms:.1} ms -> {opath}");
     }
 }

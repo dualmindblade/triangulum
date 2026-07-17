@@ -1073,6 +1073,50 @@ pub(crate) fn weather_test_planet(seed: i64) -> Planet {
     }
 }
 
+/// Sloped land/sea fixture for the teleport map's elevation-layer tests:
+/// every face carries the same raster-x ramp from a -3 km sea floor up to
+/// +4 km peaks, with koppen 255 on the submerged half and the water/ocean
+/// masks derived exactly the way `Planet::load` derives them.
+#[cfg(test)]
+pub(crate) fn elevation_test_planet(seed: i64) -> Planet {
+    let res = 16usize;
+    let n = res * res;
+    let mut elev_km = vec![0.0f32; n];
+    let mut koppen = vec![6u8; n];
+    for y in 0..res {
+        for x in 0..res {
+            let e = -3.0 + 7.0 * x as f32 / (res - 1) as f32;
+            elev_km[y * res + x] = e;
+            if e <= 0.0 {
+                koppen[y * res + x] = 255;
+            }
+        }
+    }
+    let water: Vec<f32> = koppen.iter().map(|&k| (k == 255) as u8 as f32).collect();
+    let ocean = blur_mask(&koppen, res, 2);
+    let climate = vec![[8.0f32, 500.0f32]; n];
+    let face = || FaceRaster {
+        res,
+        elev_km: elev_km.clone(),
+        koppen: koppen.clone(),
+        climate_edge: climate_edge_mask(&koppen, res),
+        range_edge: climate_range_edge_mask(&koppen, &climate, res),
+        rough_km: vec![0.0; n],
+        climate: climate.clone(),
+        flow_log10: vec![0.0; n],
+        ocean: ocean.clone(),
+        water: water.clone(),
+    };
+    Planet {
+        radius_km: 6371.0,
+        seed,
+        faces: (0..6).map(|_| face()).collect(),
+        rivers: crate::rivers::RiverIndex::empty(6371.0),
+        weather: None,
+        impostor_candidates: ImpostorCandidateCache::default(),
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 struct RasterPosition {
     face: usize,
