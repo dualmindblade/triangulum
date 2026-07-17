@@ -1015,6 +1015,12 @@ pub struct PhotoMap {
     /// slippy-pans the stale texture until the drag settles).
     map_built: Option<MapSig>,
     preview: Option<(usize, egui::TextureHandle)>,
+    /// Full-resolution texture for the lightbox — separate from `preview`,
+    /// which is downscaled to 560 px for the map-corner overlay.
+    lightbox_tex: Option<(usize, egui::TextureHandle)>,
+    /// The full-size photo lightbox (an `egui::Modal` over everything) is
+    /// showing. Only meaningful while `selected` is Some.
+    lightbox_open: bool,
     selected: Option<usize>,
     checked: HashSet<usize>,
     custom_dest: Option<(f64, f64)>,
@@ -1068,6 +1074,8 @@ impl PhotoMap {
             map_tex: None,
             map_built: None,
             preview: None,
+            lightbox_tex: None,
+            lightbox_open: false,
             selected: None,
             checked: HashSet::new(),
             custom_dest: None,
@@ -1115,6 +1123,8 @@ impl PhotoMap {
             self.photos = scan_photos(&self.interchange);
             self.selected = None;
             self.preview = None;
+            self.lightbox_tex = None;
+            self.lightbox_open = false;
             self.checked.clear();
             self.custom_dest = None;
             self.confirm_delete = false;
@@ -1133,6 +1143,33 @@ impl PhotoMap {
                 }
             );
         }
+    }
+
+    /// Esc backs out one layer inside the open map — lightbox, then delete
+    /// confirmation, then the photo selection / map destination — so the
+    /// window can always return to its plain state before the next Esc
+    /// closes it. Returns true when the keypress was consumed here; false
+    /// tells the caller to close the popup itself.
+    pub fn handle_escape(&mut self) -> bool {
+        if !self.open {
+            return false;
+        }
+        if self.lightbox_open {
+            self.lightbox_open = false;
+            self.lightbox_tex = None;
+            return true;
+        }
+        if self.confirm_delete {
+            self.confirm_delete = false;
+            return true;
+        }
+        if self.selected.is_some() || self.custom_dest.is_some() {
+            self.selected = None;
+            self.preview = None;
+            self.custom_dest = None;
+            return true;
+        }
+        false
     }
 
     fn reset_view(&mut self) {
@@ -1169,32 +1206,33 @@ impl PhotoMap {
         let Some(photo) = self.photos.get(idx) else {
             return;
         };
-        let Ok(raw) = std::fs::read(&photo.path) else {
+        // <=560 px wide is plenty for the small map-corner overlay
+        let Some(img) = decode_photo_scaled(&photo.path, 560) else {
             return;
-        };
-        let Ok(mut dec) = png_dims_and_rgba(&raw) else {
-            return;
-        };
-        // downscale to <=560 px wide for the preview texture
-        let max_w = 560usize;
-        if dec.0[0] > max_w {
-            let step = dec.0[0].div_ceil(max_w);
-            let (nw, nh) = (dec.0[0] / step, dec.0[1] / step);
-            let mut small = Vec::with_capacity(nw * nh);
-            for y in 0..nh {
-                for x in 0..nw {
-                    small.push(dec.1[y * step * dec.0[0] + x * step]);
-                }
-            }
-            dec = ([nw, nh], small);
-        }
-        let img = egui::ColorImage {
-            size: dec.0,
-            source_size: egui::Vec2::new(dec.0[0] as f32, dec.0[1] as f32),
-            pixels: dec.1,
         };
         let tex = ctx.load_texture(format!("preview{idx}"), img, Default::default());
         self.preview = Some((idx, tex));
+    }
+
+    /// Near-full-resolution texture for the lightbox (capped so a giant
+    /// screenshot can't blow the texture budget; 2048 wide fills any screen
+    /// the game realistically runs on).
+    fn load_lightbox(&mut self, ctx: &egui::Context, idx: usize) {
+        if self.lightbox_tex.as_ref().is_some_and(|(i, _)| *i == idx) {
+            return;
+        }
+        let Some(photo) = self.photos.get(idx) else {
+            return;
+        };
+        let Some(img) = decode_photo_scaled(&photo.path, 2048) else {
+            return;
+        };
+        let tex = ctx.load_texture(
+            format!("photo-full{idx}"),
+            img,
+            egui::TextureOptions::LINEAR,
+        );
+        self.lightbox_tex = Some((idx, tex));
     }
 
     /// Persist the selected photo's title/note into its JSON sidecar,
@@ -1283,6 +1321,8 @@ impl PhotoMap {
         self.checked.clear();
         self.selected = None;
         self.preview = None;
+        self.lightbox_tex = None;
+        self.lightbox_open = false;
         self.photos = scan_photos(&self.interchange);
     }
 
@@ -1319,7 +1359,7 @@ impl PhotoMap {
                 ui.horizontal(|ui| {
                     ui.label(&self.status);
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.label("Esc closes · scroll = zoom · drag = pan · double-click = reset · click = destination");
+                        ui.label("Esc backs out · scroll = zoom · drag = pan · double-click = reset · click = destination");
                     });
                 });
                 if env.multiplayer_available {
@@ -1477,6 +1517,8 @@ impl PhotoMap {
                     self.map_built = None;
                     self.selected = None;
                     self.preview = None;
+                    self.lightbox_tex = None;
+                    self.lightbox_open = false;
                     self.custom_dest = None;
                     self.checked.clear();
                     let count = self.photos.iter().filter(|p| p.body == self.body).count();
@@ -1488,19 +1530,30 @@ impl PhotoMap {
                 ui.separator();
                 let list_w = 340.0;
                 ui.horizontal_top(|ui| {
-                    // ---------------- left: map + preview ----------------
+                    // ---------------- left: the map ----------------
                     ui.vertical(|ui| {
-                        let avail = ui.available_width() - list_w;
-                        // keep the 2:1 map SHORT enough that the preview +
-                        // title/notes below it still fit inside the window
-                        let map_w = avail
-                            .max(320.0)
-                            .min((ui.available_height() - 380.0).max(300.0) * 2.0);
+                        // The preview and notes no longer live under the map
+                        // (overlay + right column now), so the 2:1 map claims
+                        // the whole remaining region — as large as it fits.
+                        // set_width pins BOTH min and max so nothing in this
+                        // column can ever widen the window (see the old
+                        // off-screen-inflation bug fixed here).
+                        let region_w = (ui.available_width() - list_w - 24.0).max(320.0);
+                        let region_h = (ui.available_height() - 4.0).max(160.0);
+                        ui.set_width(region_w);
+                        let map_w = region_w.min(region_h * 2.0);
                         let map_h = map_w * 0.5;
-                        let (rect, resp) = ui.allocate_exact_size(
-                            egui::vec2(map_w, map_h),
-                            egui::Sense::click_and_drag(),
-                        );
+                        // center the fixed-aspect map inside its region
+                        ui.add_space(((region_h - map_h) * 0.5).max(0.0));
+                        let (rect, resp) = ui
+                            .horizontal(|ui| {
+                                ui.add_space(((region_w - map_w) * 0.5).max(0.0));
+                                ui.allocate_exact_size(
+                                    egui::vec2(map_w, map_h),
+                                    egui::Sense::click_and_drag(),
+                                )
+                            })
+                            .inner;
 
                         // --- interpret reset / pan / zoom BEFORE deriving the
                         // bounds, so this frame's texture and overlays already
@@ -1513,8 +1566,24 @@ impl PhotoMap {
                         let mut did_reset = false;
                         let mut view_animating = false;
                         if resp.double_clicked() {
-                            self.reset_view();
-                            did_reset = true;
+                            // on a marker: open the photo full-size (the first
+                            // click of the pair already selected it); on open
+                            // water/land: reset the view as before
+                            let marker_hit = self.show_markers
+                                && resp.interact_pointer_pos().is_some_and(|click| {
+                                    let live = self.bounds();
+                                    self.photos.iter().any(|p| {
+                                        p.body == self.body
+                                            && live.project(rect, p.lat, p.lon).distance(click)
+                                                < 10.0
+                                    })
+                                });
+                            if marker_hit {
+                                self.lightbox_open = true;
+                            } else {
+                                self.reset_view();
+                                did_reset = true;
+                            }
                         }
                         if resp.dragged() {
                             let live = self.bounds();
@@ -1862,39 +1931,71 @@ impl PhotoMap {
                                 }
                             }
                         }
-                        // preview of the selected photo
+                        // small preview of the selected photo, overlaid on the
+                        // map's bottom-left corner. PAINTED, never laid out, so
+                        // selecting a photo can't change the window size (the
+                        // old below-map preview + unbounded-width note editor
+                        // inflated the popup past the screen edges). Click it
+                        // for the full-size lightbox; ✕ clears the selection.
                         if let Some(sel) = self.selected {
                             self.load_preview(ui.ctx(), sel);
                             if let Some((pi, tex)) = &self.preview
                                 && *pi == sel
                             {
-                                let size = tex.size_vec2();
-                                let scale = (map_w / size.x).min(220.0 / size.y).min(1.0);
-                                ui.add_space(6.0);
-                                ui.image((tex.id(), size * scale));
-                            }
-                            // title + notes for the selected photo, editable and
-                            // written straight into its sidecar. The edit boxes
-                            // bind to the in-memory Photo; Save (or focus loss)
-                            // commits it to disk.
-                            if sel < self.photos.len() {
-                                ui.add_space(6.0);
-                                ui.label("Title");
-                                let title_resp = ui.add(
-                                    egui::TextEdit::singleline(&mut self.photos[sel].title)
-                                        .hint_text("a name for this shot")
-                                        .desired_width(f32::INFINITY),
+                                let ts = tex.size_vec2();
+                                let pv_max_w = (map_w * 0.30).clamp(140.0, 420.0);
+                                let pv_max_h = (map_h * 0.42).clamp(90.0, 260.0);
+                                let s = (pv_max_w / ts.x).min(pv_max_h / ts.y).min(1.0);
+                                let pv = egui::Rect::from_min_size(
+                                    egui::pos2(
+                                        rect.left() + 10.0,
+                                        rect.bottom() - 10.0 - ts.y * s,
+                                    ),
+                                    ts * s,
                                 );
-                                ui.label("Notes");
-                                let note_resp = ui.add(
-                                    egui::TextEdit::multiline(&mut self.photos[sel].note)
-                                        .hint_text("notes about this shot")
-                                        .desired_rows(3)
-                                        .desired_width(f32::INFINITY),
+                                paint.rect_filled(
+                                    pv.expand(3.0),
+                                    4.0,
+                                    Color32::from_black_alpha(190),
                                 );
-                                let save = ui.button("Save").clicked();
-                                if save || title_resp.lost_focus() || note_resp.lost_focus() {
-                                    self.save_notes(sel);
+                                paint.image(
+                                    tex.id(),
+                                    pv,
+                                    egui::Rect::from_min_max(
+                                        egui::pos2(0.0, 0.0),
+                                        egui::pos2(1.0, 1.0),
+                                    ),
+                                    Color32::WHITE,
+                                );
+                                paint.rect_stroke(
+                                    pv.expand(3.0),
+                                    4.0,
+                                    egui::Stroke::new(1.5, Color32::from_rgb(255, 230, 90)),
+                                    egui::StrokeKind::Outside,
+                                );
+                                let pv_resp = ui
+                                    .interact(
+                                        pv,
+                                        ui.id().with("photo-preview"),
+                                        egui::Sense::click(),
+                                    )
+                                    .on_hover_cursor(egui::CursorIcon::PointingHand)
+                                    .on_hover_text("click to view full size");
+                                if pv_resp.clicked() {
+                                    self.lightbox_open = true;
+                                }
+                                // close affordance: selection is always clearable
+                                let close = egui::Rect::from_center_size(
+                                    pv.right_top() + egui::vec2(-9.0, 9.0),
+                                    egui::vec2(18.0, 18.0),
+                                );
+                                if ui
+                                    .put(close, egui::Button::new("✕").small())
+                                    .on_hover_text("clear selection (Esc)")
+                                    .clicked()
+                                {
+                                    self.selected = None;
+                                    self.preview = None;
                                 }
                             }
                         }
@@ -1929,8 +2030,13 @@ impl PhotoMap {
                         });
                         ui.separator();
                         let row_h = 34.0;
+                        // reserve room under the list for the coord/teleport
+                        // footer, plus the title/notes editor when a photo is
+                        // selected (it lives in this fixed-width column so it
+                        // can never widen the window)
+                        let footer_h = if self.selected.is_some() { 286.0 } else { 96.0 };
                         egui::ScrollArea::vertical().max_height(
-                            ui.available_height() - 96.0,
+                            (ui.available_height() - footer_h).max(row_h * 3.0),
                         ).show_rows(
                             ui,
                             row_h,
@@ -1968,7 +2074,13 @@ impl PhotoMap {
                                         if sel && self.scroll_to_selected {
                                             r.scroll_to_me(Some(egui::Align::Center));
                                         }
-                                        if r.clicked() {
+                                        if r.double_clicked() {
+                                            // the first click of the pair
+                                            // already selected + previewed it
+                                            self.selected = Some(i);
+                                            self.custom_dest = None;
+                                            self.lightbox_open = true;
+                                        } else if r.clicked() {
                                             self.selected = Some(i);
                                             self.custom_dest = None;
                                         }
@@ -1985,6 +2097,33 @@ impl PhotoMap {
                             },
                         );
                         ui.separator();
+                        // title + notes for the selected photo, editable and
+                        // written straight into its sidecar. The edit boxes
+                        // bind to the in-memory Photo; Save (or focus loss)
+                        // commits it to disk. This column's set_width bounds
+                        // the desired_width(INFINITY) edits at list_w.
+                        if let Some(sel) = self.selected
+                            && sel < self.photos.len()
+                        {
+                            ui.label("Title");
+                            let title_resp = ui.add(
+                                egui::TextEdit::singleline(&mut self.photos[sel].title)
+                                    .hint_text("a name for this shot")
+                                    .desired_width(f32::INFINITY),
+                            );
+                            ui.label("Notes");
+                            let note_resp = ui.add(
+                                egui::TextEdit::multiline(&mut self.photos[sel].note)
+                                    .hint_text("notes about this shot")
+                                    .desired_rows(3)
+                                    .desired_width(f32::INFINITY),
+                            );
+                            let save = ui.button("Save").clicked();
+                            if save || title_resp.lost_focus() || note_resp.lost_focus() {
+                                self.save_notes(sel);
+                            }
+                            ui.separator();
+                        }
                         // manual coordinates, like the old title-bar prompt
                         ui.horizontal(|ui| {
                             ui.label("lat lon [alt km]:");
@@ -2014,6 +2153,54 @@ impl PhotoMap {
                     });
                 });
             });
+        // full-size photo lightbox: a true egui::Modal anchored to the SCREEN,
+        // not the map window — the dimmed backdrop covers everything (map
+        // window included), so it reads as a photo viewer rather than a
+        // window stacked inside a window. Click outside (or Esc, routed via
+        // handle_escape) dismisses it and returns to the map untouched.
+        if self.lightbox_open {
+            match self.selected {
+                Some(sel) if sel < self.photos.len() => {
+                    self.load_lightbox(ctx, sel);
+                    let modal = egui::Modal::new(egui::Id::new("photo-lightbox"))
+                        .backdrop_color(Color32::from_black_alpha(160))
+                        .show(ctx, |ui| {
+                            let max_w = screen.width() * 0.86;
+                            let max_h = (screen.height() * 0.86 - 70.0).max(120.0);
+                            if let Some((pi, tex)) = &self.lightbox_tex
+                                && *pi == sel
+                            {
+                                let ts = tex.size_vec2();
+                                let s = (max_w / ts.x).min(max_h / ts.y).min(2.0);
+                                ui.set_max_width((ts.x * s).max(240.0));
+                                ui.image((tex.id(), ts * s));
+                            } else {
+                                ui.set_max_width(320.0);
+                                ui.label("loading full-size photo…");
+                            }
+                            ui.add_space(4.0);
+                            let p = &self.photos[sel];
+                            ui.strong(if p.title.trim().is_empty() {
+                                &p.name
+                            } else {
+                                &p.title
+                            });
+                            if !p.note.trim().is_empty() {
+                                ui.weak(&p.note);
+                            }
+                            ui.weak("click outside or press Esc to close");
+                        });
+                    if modal.should_close() {
+                        self.lightbox_open = false;
+                        self.lightbox_tex = None;
+                    }
+                }
+                _ => {
+                    self.lightbox_open = false;
+                    self.lightbox_tex = None;
+                }
+            }
+        }
         // delete confirmation modal
         if self.confirm_delete {
             let n = self.checked.len();
@@ -2132,6 +2319,30 @@ impl PhotoMap {
         }
         None
     }
+}
+
+/// Read a photo PNG and decode it into an egui image, step-downsampled to at
+/// most `max_w` pixels wide (shared by the small preview and the lightbox).
+fn decode_photo_scaled(path: &Path, max_w: usize) -> Option<egui::ColorImage> {
+    let raw = std::fs::read(path).ok()?;
+    let (mut dims, mut px) = png_dims_and_rgba(&raw).ok()?;
+    if dims[0] > max_w {
+        let step = dims[0].div_ceil(max_w);
+        let (nw, nh) = (dims[0] / step, dims[1] / step);
+        let mut small = Vec::with_capacity(nw * nh);
+        for y in 0..nh {
+            for x in 0..nw {
+                small.push(px[y * step * dims[0] + x * step]);
+            }
+        }
+        dims = [nw, nh];
+        px = small;
+    }
+    Some(egui::ColorImage {
+        size: dims,
+        source_size: egui::Vec2::new(dims[0] as f32, dims[1] as f32),
+        pixels: px,
+    })
 }
 
 /// Decode a PNG into egui Color32 pixels (RGB/RGBA/gray supported).
@@ -2600,6 +2811,28 @@ mod tests {
         assert_eq!(restored.weather_on, Some(true));
         assert_eq!(restored.weather_pin, Some((0.97, 0.9)));
         assert_eq!(restored.weather_time_s, Some(24_000.0));
+    }
+
+    #[test]
+    fn escape_backs_out_lightbox_then_selection_then_window() {
+        let mut map = PhotoMap::new(PathBuf::from("unused"));
+        // closed map: Esc is not ours to consume
+        assert!(!map.handle_escape());
+        map.open = true;
+        map.selected = Some(0);
+        map.custom_dest = Some((1.0, 2.0));
+        map.lightbox_open = true;
+        // 1st Esc: the lightbox closes, the selection stays on the map
+        assert!(map.handle_escape());
+        assert!(!map.lightbox_open);
+        assert_eq!(map.selected, Some(0));
+        // 2nd Esc: selection and free destination clear — the window is
+        // back in its plain state (the old bug: nothing ever cleared these)
+        assert!(map.handle_escape());
+        assert_eq!(map.selected, None);
+        assert_eq!(map.custom_dest, None);
+        // 3rd Esc: nothing left to pop — the caller closes the window
+        assert!(!map.handle_escape());
     }
 
     #[test]
