@@ -9,17 +9,6 @@ are `teleport LAT LON [ALT_KM]` viewer args at `--exagg 1` unless noted.
 
 ## OPEN
 
-### B-12 Long settle: blurry landscape takes 3+ s to sharpen (BOTH versions)
-Austin+Andrew, confirmed 2026-07-16 ("long settle" photo): after
-arriving somewhere, terrain reads blurry and takes 3+ seconds to reach
-final sharpness. Present in the OLD version too - there it appeared
-PERMANENT because the old quiet path never converged (B-11 finding);
-the new convergence makes it end, which made it visible as a
-transition. Suspects: the refinement ladder climbing multiple LOD
-levels sequentially with an 18-frame temporal ease per swap (eases
-stack into seconds), plus geomorph blur at coarse parents. Content-
-independent - fix in parallel with the landscape campaign.
-
 ### L-1 LOD-BOUNDARY PASS (banked for after Track A geology): Austin+
 Andrew 2026-07-16, three related observations that should be tuned
 against REAL campaign content, not today's sparse world: (a) medium-
@@ -523,6 +512,23 @@ texturing conversation with Andrew.
 
 
 ## FIXED
+
+### B-12 Long settle: blurry landscape took 3+ s to sharpen — FIXED
+Two mechanisms (2026-07-16, commit pending): (1) TELEPORT BURST — a
+>5 km single-frame camera jump opens stream_caps(2) EAGER for 150
+frames (renderer.rs burst_until_frame); the previous scene is gone and
+the new pose's refinement ladder is the only work that matters. STRICT
+(F9 level 0) never bursts — it stays the faithful v2 reference; kill
+switch TRI_NO_BURST=1 for A/B. (2) EASE INHERITANCE — a child tile
+landing while its parent is still mid-ease joins the parent's 18-frame
+settle window instead of restarting it (inherit_ease), so an area
+blurs once, not once per LOD rung. Evidence scripts/b12-settle.play
+raw timelines: pixel-settled by frame ~60 with burst vs ~120 without
+(both improved from the reported 3+ s by mechanism 2). The remaining
+~1.5 s first-frame synchronous cover build at teleport is a separate
+pre-existing cost (measured identical in STRICT) — candidate for the
+banked never-block pass. Settled captures bypass both mechanisms
+(byte-determinism unaffected; reels clean).
 
 ### B-10 Eviction storms: vanishing tiles/staircases/bald patches (3cc26ec)
 Austin's tripwire console lines + the soak probe convicted the VRAM

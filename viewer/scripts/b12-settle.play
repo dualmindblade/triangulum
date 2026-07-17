@@ -1,0 +1,21 @@
+# B-12 evidence: how fast does a teleport arrival visually settle?
+# Raw-shot the frames after a cold teleport, then a long-settled reference.
+# Run with TRI_RAW_CAPTURE=1, once normally and once with TRI_NO_BURST=1;
+# diff each timeline shot against its run's own settled reference.
+mode fly
+weather time 322
+teleport 0.0 0.0 0.5
+look 0 -30
+bench 20
+teleport -38.516 -104.457 0.33
+look -168 -58
+bench 30
+shot b12_f030
+bench 30
+shot b12_f060
+bench 60
+shot b12_f120
+bench 120
+shot b12_f240
+bench 360
+shot b12_settled

@@ -463,6 +463,13 @@ pub struct Renderer {
     /// after six steady frames, two bounded background refinements may run.
     last_live_direction: DVec3,
     last_live_motion_frame: u64,
+    /// B-12: a teleport (multi-km positional discontinuity in one frame)
+    /// opens a bounded EAGER window so the refinement ladder — the whole
+    /// screen's content at that moment — streams at full throughput instead
+    /// of settling rung by rung for seconds. STRICT (0) never bursts: it
+    /// stays a faithful v2 reference.
+    last_live_position_km: DVec3,
+    burst_until_frame: u64,
     tile_tx: mpsc::Sender<(TileKey, u64, u32, TileMesh)>,
     tile_rx: mpsc::Receiver<(TileKey, u64, u32, TileMesh)>,
     /// PERF.md item 2: per-segment GPU timing behind TRI_GPU_TIMERS=1.
@@ -1166,6 +1173,8 @@ impl Renderer {
             last_live_altitude_km: 0.0,
             last_live_direction: DVec3::ZERO,
             last_live_motion_frame: 0,
+            last_live_position_km: DVec3::ZERO,
+            burst_until_frame: 0,
             tile_tx: ttx,
             tile_rx: trx,
             gpu_timers: gpu_timers_init,
@@ -2006,6 +2015,8 @@ impl Renderer {
                         let mut gpu = gpu;
                         if let Some(old) = self.cache.get(&k) {
                             gpu.shown_at = old.shown_at;
+                        } else {
+                            self.inherit_ease(k, &mut gpu);
                         }
                         self.cache.insert(k, gpu);
                     }
@@ -2274,7 +2285,26 @@ impl Renderer {
         // "2-3 km descent lag"). A hovering camera warms both covers once
         // and then this is all cache hits.
         let mut prefetched = 0usize;
-        let caps = stream_caps(self.stream_level);
+        // B-12 teleport burst: a >5 km single-frame jump means the previous
+        // scene is gone and the ladder under the new pose is the only work
+        // that matters; open the dial to EAGER for ~2.5 s. Never in STRICT.
+        if !self.settle_visuals {
+            let position = camera.position();
+            if self.stream_level >= 1
+                && self.last_live_position_km.length_squared() > 0.0
+                && (position - self.last_live_position_km).length() > 5.0
+                && std::env::var_os("TRI_NO_BURST").is_none()
+            {
+                self.burst_until_frame = self.frame_counter + 150;
+            }
+            self.last_live_position_km = position;
+        }
+        let caps = if self.stream_level >= 1 && self.frame_counter < self.burst_until_frame
+        {
+            stream_caps(2)
+        } else {
+            stream_caps(self.stream_level)
+        };
         let mut live_budget = caps.budget;
         let mut live_pending_limit = caps.pending;
         let mut productive_pending = self
@@ -2562,12 +2592,8 @@ impl Renderer {
                     let mut gpu = gpu;
                     if let Some(old) = self.cache.get(&k) {
                         gpu.shown_at = old.shown_at;
-                    }
-                    // re-uploads of a live key (edits, refreshes) keep their
-                    // ease state - only genuinely new arrivals rise/dissolve
-                    let mut gpu = gpu;
-                    if let Some(old) = self.cache.get(&k) {
-                        gpu.shown_at = old.shown_at;
+                    } else {
+                        self.inherit_ease(k, &mut gpu);
                     }
                     self.cache.insert(k, gpu);
                 }
@@ -2641,7 +2667,14 @@ impl Renderer {
                         unbuilt_min_km.min((cdir * body.radius_km() - center).length());
                 }
                 if !self.chunk_pending.contains_key(k) {
-                    if !self.settle_visuals && self.chunk_pending.len() >= stream_caps(self.stream_level).chunks {
+                    let chunk_cap = if self.stream_level >= 1
+                        && self.frame_counter < self.burst_until_frame
+                    {
+                        stream_caps(2).chunks
+                    } else {
+                        stream_caps(self.stream_level).chunks
+                    };
+                    if !self.settle_visuals && self.chunk_pending.len() >= chunk_cap {
                         break;
                     }
                     if season_stale && !edit_stale {
@@ -3605,6 +3638,28 @@ impl Renderer {
         let p95 = sorted[((sorted.len() as f32 * 0.95) as usize).min(sorted.len() - 1)];
         let cost = self.draw_cost_ms.iter().sum::<f32>() / self.draw_cost_ms.len().max(1) as f32;
         Some((avg, p95, cost))
+    }
+
+    /// B-12: a child tile landing while its parent is still mid-ease joins
+    /// the parent's settle window instead of restarting its own — an area
+    /// blurs once, not once per rung of the refinement ladder. A settled
+    /// parent keeps the classic single 18-frame ease for its children.
+    fn inherit_ease(&self, k: TileKey, gpu: &mut GpuTile) {
+        if k.level == 0 {
+            return;
+        }
+        let parent = TileKey {
+            face: k.face,
+            level: k.level - 1,
+            ix: k.ix / 2,
+            iy: k.iy / 2,
+            deep: false,
+        };
+        if let Some(par) = self.cache.get(&parent) {
+            if self.frame_counter.saturating_sub(par.shown_at) < 18 {
+                gpu.shown_at = par.shown_at;
+            }
+        }
     }
 
     fn upload(&self, mesh: TileMesh, season_bucket: u32) -> GpuTile {
