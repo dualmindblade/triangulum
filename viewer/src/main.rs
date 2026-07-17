@@ -2060,7 +2060,8 @@ impl ApplicationHandler for App {
             self.keys.clear();
         }
         // an open photo map owns the pointer and keyboard: events go to egui,
-        // not the game (Esc closes the popup; frame/window events pass on)
+        // not the game (Esc backs out one map layer — photo lightbox, then
+        // selection — before closing the popup; frame/window events pass on)
         if self.photo_map.open
             && !matches!(
                 event,
@@ -2073,8 +2074,13 @@ impl ApplicationHandler for App {
                 && ke.state == ElementState::Pressed
                 && ke.logical_key == winit::keyboard::Key::Named(winit::keyboard::NamedKey::Escape)
             {
-                self.photo_map.open = false;
-                self.title_timer = 1.0;
+                if !self.photo_map.handle_escape() {
+                    self.photo_map.open = false;
+                    self.title_timer = 1.0;
+                }
+                if let Some(gfx) = self.gfx.as_ref() {
+                    gfx.window.request_redraw();
+                }
                 return;
             }
             if let (Some(st), Some(gfx)) = (self.egui_state.as_mut(), self.gfx.as_ref()) {
