@@ -9,8 +9,27 @@ are `teleport LAT LON [ALT_KM]` viewer args at `--exagg 1` unless noted.
 
 ## OPEN
 
-### L-1 LOD-BOUNDARY PASS (banked for after Track A geology): Austin+
-Andrew 2026-07-16, three related observations that should be tuned
+### L-1 LOD-BOUNDARY PASS — (c) FIXED, (a)/(b) specified, queued post-Track-B
+2026-07-17: (c) flat mid-altitude color FIXED by the ground patchiness
+field (patch_multiplier in shader.wgsl, sibling of strata_multiplier):
+three world-anchored octaves ~1.4 km/350 m/90 m modulate ground tone,
+warm-bright/cool-dark, per-octave footprint retirement (no orbital
+shimmer/cost), water excluded, snow at 0.35 strength. Austin approved
+from A/B at his titled poses (interchange/runs/l1c-patch/). Knobs:
+PATCH_STRENGTH 0.11, PATCH_FREQ_BASE, warm/cool skew — for Andrew.
+ROOT CAUSE for (a)+(b), one mechanism seen from two directions: the
+categorical ecotone comparator is already fractal to column scale, and
+the fragment shader ANTIALIASES it to the interpolated class mean as
+octaves go sub-pixel — far view = smooth wavy blobs + averaged tint
+contrast, near view = crisp dither + dissolved tint contrast. Fix
+direction (deliberately after Track B merges — same fs_main region as
+the waterfall shader work): keep the class decision crisp at the
+coarsest still-visible octave instead of melting to the mean, and
+converge far tint contrast toward the near field's effective palette
+so borders neither pop at range nor vanish on approach.
+Original observations follow:
+### L-1 original entry (2026-07-16): Austin+
+Andrew, three related observations that should be tuned
 against REAL campaign content, not today's sparse world: (a) medium-
 high altitude renders wavy smooth borders where the next LOD in is
 rougher and better ("smooth"/"not so smooth" photos) - the coarse

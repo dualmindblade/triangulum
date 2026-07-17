@@ -1,0 +1,29 @@
+# L-1(c) ground patchiness evidence: settled shots at Austin's own titled
+# reference poses (Smooth borders / Here we see a border / Noise inconsistency)
+# for before/after comparison against his archived photos.
+mode fly
+weather time 349
+teleport 54.567 130.853 7.852
+look -129 -77
+wait 3
+shot l1c_smoothborders_7852
+teleport 54.567 130.853 3.647
+look -129 -77
+wait 3
+shot l1c_notsosmooth_3647
+teleport 12.572 12.619 6.615
+look 53 -76
+wait 3
+shot l1c_border_6615
+teleport 12.572 12.619 3.893
+look 53 -76
+wait 3
+shot l1c_border_3893
+teleport 59.589 19.234 4.835
+look 63 -52
+wait 3
+shot l1c_noise_mid_4835
+teleport 59.589 19.234 0.612
+look 62 -31
+wait 3
+shot l1c_noise_low_0612

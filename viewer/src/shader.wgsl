@@ -192,6 +192,16 @@ const STRATA_FOLD_FREQUENCY: f32 = 96.0;
 // karst.w preserves the established premultiplied-seed pattern while giving
 // the fold and bed palette an independent deterministic stream.
 const STRATA_SEED_DELTA: u32 = 0xDED7DCECu;
+// L-1(c) ground patchiness (Andrew dials). Strength is the peak fractional
+// luminance swing; the three octaves land at ~1.4 km / ~350 m / ~88 m on the
+// surface, chosen to carry exactly the medium-altitude band where flat-color
+// terrain had no texture octave at all (finer texture belongs to voxels and
+// features, coarser to the biome fields themselves).
+const PATCH_STRENGTH: f32 = 0.11;
+const PATCH_FREQ_BASE: f32 = 4500.0;
+// (91009 - karst.w's 70001) * 0x9E37_79B1 mod 2^32: an independent
+// deterministic stream in the established premultiplied-seed pattern.
+const PATCH_SEED_DELTA: u32 = 0xA8724D10u;
 const STRATA_PALETTE = array<vec3<f32>, 5>(
     vec3<f32>(0.72, 0.80, 0.88), // cool shale
     vec3<f32>(1.18, 1.09, 0.91), // pale ochre
@@ -594,6 +604,53 @@ fn strata_multiplier(
         vec3<f32>(1.0),
         band_color,
         exposed * resolved * STRATA_BAND_STRENGTH,
+    );
+}
+
+// L-1(c): away from cliffs (strata) and features, land rendered as one flat
+// tone across hundreds of meters at medium altitude. Three world-anchored
+// gradient-noise octaves modulate ground luminance a few percent. Each octave
+// retires by its own screen footprint (the strata anti-alias rule), so orbit
+// pays nothing and shows no shimmer, and the multiplier converges to 1.0
+// instead of to a gray veil. One fragment-owned field serves heightfield
+// tiles and voxel chunks identically.
+fn patch_multiplier(rel: vec3<f32>, material_color: vec3<f32>, dist_km: f32) -> vec3<f32> {
+    if (dist_km >= 220.0 || PATCH_STRENGTH <= 0.0) {
+        return vec3<f32>(1.0);
+    }
+    // Water and ice ride their own color lanes/whiteout; a blue-dominant or
+    // near-white pixel keeps its approved tone. Snow keeps a hint (drifts).
+    let hi = max(max(material_color.r, material_color.g), material_color.b);
+    let waterish = smoothstep(0.005, 0.03, material_color.b - max(material_color.r, material_color.g));
+    let snowish = smoothstep(0.55, 0.72, hi);
+    let gate = (1.0 - waterish) * mix(1.0, 0.35, snowish);
+    if (gate <= 0.001) {
+        return vec3<f32>(1.0);
+    }
+    let surface_dir = normalize(rel - globals.center.xyz);
+    let seedmul = globals.karst.w + PATCH_SEED_DELTA;
+    // Shared screen-footprint estimate: lattice cells per pixel at the base
+    // frequency; each finer octave scales it by its frequency ratio.
+    let footprint = length(fwidth(surface_dir)) * PATCH_FREQ_BASE;
+    var value = 0.0;
+    var frequency = 1.0;
+    var amplitude = 1.0;
+    for (var octave = 0u; octave < 3u; octave = octave + 1u) {
+        let resolved = 1.0 - smoothstep(0.35, 0.9, footprint * frequency);
+        if (resolved > 0.001) {
+            value += amplitude * resolved
+                * kgnoise(surface_dir * (PATCH_FREQ_BASE * frequency), seedmul + octave);
+        }
+        frequency *= 4.0;
+        amplitude *= 0.62;
+    }
+    // Bright patches skew warm (dry grass, thin soil), dark patches skew
+    // cool (lush, damp) — reads as ground variation, not a gray veil.
+    let swing = clamp(PATCH_STRENGTH * gate * value, -0.16, 0.16);
+    return clamp(
+        vec3<f32>(1.0 + swing * 1.18, 1.0 + swing, 1.0 + swing * 0.72),
+        vec3<f32>(0.8),
+        vec3<f32>(1.2),
     );
 }
 
@@ -1085,6 +1142,9 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         in.color,
         in.dist_km,
     );
+    // L-1(c): mid-scale patchiness on the winning ground color (post-biome,
+    // post-strata), so gates read the tone that actually renders.
+    ground *= patch_multiplier(in.rel_flag.xyz, ground, in.dist_km);
     // Planet lighting belongs to THIS pixel, not the camera. The vector is
     // reconstructed from camera-relative inputs, so orbital f32 precision
     // never enters through a raw world coordinate. At ground range pixel_up
