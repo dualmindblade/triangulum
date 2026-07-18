@@ -169,11 +169,25 @@ struct VsOut {
 // continuously to the wide multiscale boundary before the 15 km review range.
 const BIOME_RANGE_BLEND_START_KM = 4.0;
 const BIOME_RANGE_BLEND_END_KM = 8.0;
-// Below orbit the 8 km coverage zone is resolved by enough mesh vertices for
-// the fragment comparator to carry full categorical contrast.  Once distance
-// makes that coverage field coarser than its own zone, converge to round 3's
-// approved orbital contrast: the unresolved area mean suppresses LOD-lattice
-// contours while the 0.45 categorical share preserves the broad patchwork.
+// L-1(a): keep the categorical edge one pixel wide, independent of the
+// comparator's local slope or orientation. This is the TOTAL smoothstep band;
+// half is placed on either side of the zero-margin contour.
+const BIOME_BORDER_AA_BAND_PX = 1.0;
+// Retire only comparator octaves whose gradient lattice is crossing Nyquist.
+// The shoulder makes a moving camera shed an octave continuously; the class
+// decision remains hard (apart from the one-pixel coverage band) at the last
+// prefix a pixel can represent. Units are noise-lattice cells per screen px.
+const BIOME_BORDER_OCTAVE_FULL_CELLS_PER_PX = 0.25;
+const BIOME_BORDER_OCTAVE_CUTOFF_CELLS_PER_PX = 0.50;
+// L-1(b): range endpoints are representative zero-slope palette colors, while
+// arrival uses the approved exact local palette/shading. Retain only the
+// measured arrival-equivalent share of their deviation around the conserved
+// range mean. One-family interiors have zero deviation and remain unchanged.
+const BIOME_RANGE_CATEGORICAL_CONTRAST = 0.45;
+// Keep the orbital endpoint separate for Andrew even though it currently
+// matches the medium/arrival dial. The 120..240 km handoff still retires the
+// nested beach carrier below; equal contrast endpoints prevent the old
+// medium-range exaggeration from returning or forming a second altitude ramp.
 const BIOME_ORBIT_CONTRAST_FADE_START_KM = 120.0;
 const BIOME_ORBIT_CONTRAST_FADE_END_KM = 240.0;
 const BIOME_ORBIT_CATEGORICAL_CONTRAST = 0.45;
@@ -703,10 +717,15 @@ fn biome_normal_cdf(x: f32) -> f32 {
 
 fn biome_range_comparator(dir: vec3<f32>) -> f32 {
     // Production climate raster is 1024: 1 / ((2/1023) * 5 texels).
+    // Continue the exact shared field below the old fixed five-octave prefix,
+    // but stop before a carrier becomes sub-pixel. On Neisor the ten layers
+    // are approximately 85 km .. 0.8 m; a 6-8 km view normally resolves the
+    // ~40 m layer, while a 23 km view resolves the ~140 m layer.
+    let pixel_angle = max(length(dpdx(dir)), length(dpdy(dir)));
     var frequency = 102.3;
     var sum = 0.0;
     var variance = 0.0;
-    for (var octave = 0; octave < 5; octave = octave + 1) {
+    for (var octave = 0; octave < 10; octave = octave + 1) {
         let axes = BIOME_RANGE_AXES[octave % 3];
         let domain = vec3<f32>(dot(dir, axes[0]), dot(dir, axes[1]), dot(dir, axes[2]));
         var amplitude = 1.0;
@@ -715,13 +734,35 @@ fn biome_range_comparator(dir: vec3<f32>) -> f32 {
         } else if (octave > 2) {
             amplitude = pow(0.5, f32(octave - 2));
         }
+        let octave_footprint = pixel_angle * frequency;
+        let resolved = 1.0 - smoothstep(
+            BIOME_BORDER_OCTAVE_FULL_CELLS_PER_PX,
+            BIOME_BORDER_OCTAVE_CUTOFF_CELLS_PER_PX,
+            octave_footprint,
+        );
+        // The frequency only rises, so all later octaves are also retired.
+        // Octave zero is a numerical/planet-thumbnail fallback: it remains
+        // the coarsest deterministic class decision if no layer reaches 2 px.
+        if (octave > 0 && resolved <= 0.0) {
+            break;
+        }
+        let adapted = amplitude * select(resolved, 1.0, octave == 0);
         let seedmul = bitcast<u32>(globals.danchor_cell.w)
             + u32(octave) * 131u * 0x9E3779B1u;
-        sum += amplitude * kgnoise(domain * frequency, seedmul);
-        variance += amplitude * amplitude;
+        sum += adapted * kgnoise(domain * frequency, seedmul);
+        variance += adapted * adapted;
         frequency *= 3.6;
     }
     return clamp(biome_normal_cdf(-2.70 * sum / sqrt(variance)), 0.0, 1.0);
+}
+
+fn biome_owner_coverage(margin: f32) -> f32 {
+    // Euclidean screen gradient makes the named TOTAL band orientation-free;
+    // fwidth is an L1 norm and the former +/- full-fwidth radius produced a
+    // 2..2.8 px edge before its additional 2/255 minimum-width floor.
+    let margin_per_px = length(vec2<f32>(dpdx(margin), dpdy(margin)));
+    let half_band = max(0.5 * BIOME_BORDER_AA_BAND_PX * margin_per_px, 1e-6);
+    return smoothstep(-half_band, half_band, margin);
 }
 
 fn beach_range_comparator(dir: vec3<f32>, fine_gain: f32) -> f32 {
@@ -1051,8 +1092,7 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     var biome_valid = true;
     for (var family = 0; family < 8; family = family + 1) {
         let margin = biome_endpoints[family].a - biome_q;
-        let aa = max(fwidth(margin), 2.0 / 255.0);
-        biome_below[family] = smoothstep(-aa, aa, margin);
+        biome_below[family] = biome_owner_coverage(margin);
         if (family > 0) {
             biome_valid = biome_valid
                 && biome_endpoints[family].a >= biome_endpoints[family - 1].a;
@@ -1115,8 +1155,7 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
                 let fine_gain = clamp(in.beach.y, 0.08, 1.0) * beach_detail;
                 let beach_q = beach_range_comparator(surface_dir, fine_gain);
                 let margin = beach_coverage - beach_q;
-                let aa = max(fwidth(margin), 2.0 / 255.0);
-                let beach_owner = smoothstep(-aa, aa, margin);
+                let beach_owner = biome_owner_coverage(margin);
                 range_ground = mix(
                     range_ground,
                     biome_endpoints[6].rgb,
@@ -1130,7 +1169,7 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
             in.dist_km,
         );
         let categorical_contrast = mix(
-            1.0,
+            BIOME_RANGE_CATEGORICAL_CONTRAST,
             BIOME_ORBIT_CATEGORICAL_CONTRAST,
             orbit_undersampling,
         );
