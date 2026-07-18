@@ -26,8 +26,17 @@ UPDATE same-day: rivers.rs fall_foam/sheet_influence ARE arc-bounded
 f000850 shows the same white scalloped banks + translucent cutoff on a
 NON-fall desert river (15.15 -13.8 area, 0.3-0.5 km alt). Prime suspect
 shifts to the B-9 water-carry feather at coarse LOD rendering pale/white
-instead of blue. Next: settled shots over fall site AND a plain reach at
-1.5/3 km, compare against pre-Track-B c2bf501 if needed.
+instead of blue. CONFIRMED REPRO (b13-repro.play, weather time 0 + pin 0.10 0.0):
+b13_fall_3km shows blue water UPSTREAM, pale white-blue for 10+ km
+DOWNSTREAM of the fall with a hard sawtooth channel edge at segment
+boundaries. Island/plain site at 1.5 km is clean blue (no repro) — so
+it IS fall-related after all, but far beyond the FALL_*_REACH_KM
+bounds: check (a) whether consecutive downstream segments each pass
+fall detection (chained falls), (b) how fall_strength/fall_sheet
+(rivers.rs:1009) ride MESH vertices at coarse LOD — km-spaced vertices
+interpolating influence across whole segments would explain it.
+The sawtooth edge is likely the meander centerline sampled at coarse
+vertex spacing — may need its own fragment-side treatment or accept.
 Owner: rivers follow-up (Sol authored the field, iteration 3 candidate);
 do NOT merge tri-sol-borders without checking it doesn't collide.
 ### L-1 LOD-BOUNDARY PASS — (c) FIXED, (a)/(b) specified, queued post-Track-B
