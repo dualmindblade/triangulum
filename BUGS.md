@@ -39,15 +39,7 @@ don't"); (c) flat-color landscapes at medium altitude - needs
 mid-scale ground texture, which Track C strata banding + geology
 directly provide. Schedule: after geology lands, one focused pass.
 
-### B-9 Lakes end at a razor tile boundary at range (PRE-EXISTING)
-Austin's settled photo (shot_lat52.122_lon108.233_alt3.190km) shows a
-lake field cut off along a mesh-level boundary. Reproduced settled at
-HEAD and at pre-v2 c2bf501: BYTE-IDENTICAL PNGs (waterbug-repro.play,
-sha e75340cc...) - not a scheduling regression, it is the established
-lake LOD threshold (coarser tiles drop sub-resolution water planes) at
-its most visible. Candidate fix belongs to the LANDSCAPE.md rivers
-pass: carry water planes one-two levels coarser, or feather the
-water/no-water handoff. Charming-discontinuity vs bug = Andrew call.
+
 
 
 
@@ -531,6 +523,12 @@ texturing conversation with Andrew.
 
 
 ## FIXED
+
+### B-9 Razor water cutoff at mesh-LOD borders — FIXED (Track B merge)
+Fixed in the rivers pass (9399ac7): water coverage now degrades
+gracefully across LOD levels; the exact time-pinned waterbug-repro.play
+capture and a unit test carry the proof. The untimed baseline framing
+pose stayed byte-identical as the control.
 
 ### B-12 Long settle: blurry landscape took 3+ s to sharpen — FIXED
 Two mechanisms (2026-07-16, commit pending): (1) TELEPORT BURST — a
