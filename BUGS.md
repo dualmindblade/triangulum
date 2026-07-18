@@ -9,60 +9,6 @@ are `teleport LAT LON [ALT_KM]` viewer args at `--exagg 1` unless noted.
 
 ## OPEN
 
-### B-14 White outline around lakes at high altitude
-Austin photo "White outline" (17.450 28.943 alt 24.06, yaw 32 pitch
--81): every lake wears a thin pale rim at range. The beach band (or
-the border pass's hard categorical beach owner) stays visible as a
-crisp outline at 24 km where a 10-20 m beach is deep sub-pixel — it
-should retire with footprint like the border octaves now do.
-
-### B-15 Mesh renders beach as water one level above voxels
-Austin photo "Beach level blending" (17.433 28.979 alt 1.012, yaw 41
-pitch -85): at the lake's sand headland, the mesh LOD just above voxel
-range draws its water footprint OVER the beach band (ghosted blue arc
-across sand); the voxel view shows beach. Two-renderer water/land
-boundary disagreement at lake shores — shore field vs mesh water plane
-extent at that LOD.
-
-### B-13 Waterfall aeration paints the whole downstream reach white at range
-Austin (2026-07-17, trailer v1 ~32s; frames interchange/runs/trailer-v1/
-frames/f001260-f001340): from ~1-3 km altitude the river BELOW the fall at
-9.795 107.607 renders as a bright-white sawtooth staircase down the entire
-visible reach — the fall sheet/foam influence is not decaying with world
-distance from the plunge at mesh LOD (coarse vertices span the reach, so
-per-vertex influence>0 whitens every stepped water plane). Close range is
-CORRECT (sheet + short aerated run, dwell frames f990-f1229). Likely fix:
-clamp/decay the Track-B fall influence in world arc-distance from the fall
-segment per-fragment (or bake the falloff into the field itself), so far
-LOD converges to normal blue channel a short distance past the plunge.
-Repro: teleport 9.795 107.607 then view from 1.5-3 km (weather time 0).
-UPDATE same-day: rivers.rs fall_foam/sheet_influence ARE arc-bounded
-(FALL_*_REACH_KM), so the whiteness may NOT be foam at all — trailer
-f000850 shows the same white scalloped banks + translucent cutoff on a
-NON-fall desert river (15.15 -13.8 area, 0.3-0.5 km alt). Prime suspect
-shifts to the B-9 water-carry feather at coarse LOD rendering pale/white
-instead of blue. CONFIRMED REPRO (b13-repro.play, weather time 0 + pin 0.10 0.0):
-b13_fall_3km shows blue water UPSTREAM, pale white-blue for 10+ km
-DOWNSTREAM of the fall with a hard sawtooth channel edge at segment
-boundaries. Island/plain site at 1.5 km is clean blue (no repro) — so
-it IS fall-related after all, but far beyond the FALL_*_REACH_KM
-bounds: check (a) whether consecutive downstream segments each pass
-fall detection (chained falls), (b) how fall_strength/fall_sheet
-(rivers.rs:1009) ride MESH vertices at coarse LOD — km-spaced vertices
-interpolating influence across whole segments would explain it.
-The sawtooth edge is likely the meander centerline sampled at coarse
-vertex spacing — may need its own fragment-side treatment or accept.
-DIAGNOSIS COMPLETE (2026-07-17): RiverHit is computed exactly per query
-(rivers.rs ~1009), so per-vertex interpolation can only bleed ~one
-vertex spacing. The 10+ km of solid white means MANY consecutive
-segments pass fall detection — a steep canyon reach reads as a CHAIN
-of falls, each adding sheet+foam. Fix direction (iteration 3, Sol):
-falls need a density/prominence constraint — only locally-maximal
-drops with a minimum arc spacing qualify; a continuous steep run
-should render as rapids-grade white-water (weak, narrow) rather than
-stacked fall sheets. Pair with the coarse-LOD sawtooth-edge item.
-Owner: rivers follow-up (Sol authored the field, iteration 3 candidate);
-do NOT merge tri-sol-borders without checking it doesn't collide.
 ### L-1 COMPLETE — all three observations fixed (a/b: ced643a, c: 74bfce7)
 (a)+(b) fixed by Sol's border pass, merged ced643a: range comparator
 octaves retire at screen Nyquist, ownership goes hard at the filtered
@@ -589,6 +535,12 @@ texturing conversation with Andrew.
 
 
 ## FIXED
+
+### B-15 Mesh renders beach as water one level above voxels — FIXED 0f991d6 (rivers 3)
+
+### B-14 White outline around lakes at high altitude — FIXED 0f991d6 (rivers 3)
+
+### B-13 Waterfall aeration paints the whole downstream reach white at range — FIXED 0f991d6 (rivers 3)
 
 ### B-9 Razor water cutoff at mesh-LOD borders — FIXED (Track B merge)
 Fixed in the rivers pass (9399ac7): water coverage now degrades
