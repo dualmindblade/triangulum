@@ -25,13 +25,18 @@ fn main() -> anyhow::Result<()> {
         let (f, u, v) = face_from_dir(p);
         match planet.rivers.lake_at(f, u, v, p) {
             Some(h) => println!(
-                "({dx:+},{dy:+}) level={:.1}m d_lake={:.2}km r={:.2}km voronoi={} past_b={:.3}km apron_past={:.3}km dam={}",
+                "({dx:+},{dy:+}) level={:.1}m d_lake={:.2}km r={:.2}km voronoi={} boundary={:.3}km past_b={:.3}km apron_past={:.3}km inner={:.3}km other={:.3}km higher={:.1}m/{:.3}km dam={}",
                 h.level_km * 1000.0,
                 h.d_lake_km,
                 h.radius_km,
                 h.in_lake_voronoi,
+                h.boundary_dist_km,
                 h.past_boundary_km,
                 h.apron_past_km,
+                h.flood_edge_margin_km,
+                h.competing_lake_boundary_km,
+                h.higher_competing_level_km * 1000.0,
+                h.higher_competing_boundary_km,
                 h.rim_is_dam,
             ),
             None => println!("({dx:+},{dy:+}) no lake hit"),

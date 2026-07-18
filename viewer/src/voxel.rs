@@ -217,6 +217,11 @@ pub struct ColCtx {
     pub precip: f32,
     pub rough: f32,
     pub carved: bool, // river/pond carving touched this column
+    pub river_bank_frac: f64,
+    pub river_bank_gravel: f64,
+    pub river_island: bool,
+    pub river_fall: f32,
+    pub river_fall_sheet: f32,
     pub salt: bool,   // water here belongs to a salt lake
     /// TRUE ocean (the map's ocean mask), not merely e_raw < 0: dry basins
     /// and river mouths sit below sea level on purpose. The water color
@@ -687,6 +692,11 @@ pub fn col_ctx_at_season(
         precip: s.precip as f32,
         rough: s.rough as f32,
         carved: s.carve_km > 0.001,
+        river_bank_frac: s.river_bank_frac,
+        river_bank_gravel: s.river_bank_gravel,
+        river_island: s.river_island,
+        river_fall: s.river_fall as f32,
+        river_fall_sheet: s.river_fall_sheet as f32,
         salt: s.salt,
         sea: s.sea,
         lake_shoal: s.lake_shoal,
@@ -762,6 +772,11 @@ fn lunar_col_ctx_from_sample(
         precip: 0.0,
         rough: (1.0 - sample.smoothness) as f32,
         carved: false,
+        river_bank_frac: 0.0,
+        river_bank_gravel: 0.0,
+        river_island: false,
+        river_fall: 0.0,
+        river_fall_sheet: 0.0,
         salt: false,
         sea: false,
         lake_shoal: false,
@@ -856,6 +871,7 @@ fn surface_mat(
     c: &ColCtx,
     steep: i64,
     climate_block: MainBlock,
+    river_bank: Option<Mat>,
     lake_jitter: f64,
     coastal_comparator: f64,
 ) -> Mat {
@@ -874,6 +890,9 @@ fn surface_mat(
     }
     if lake_jitter < c.lake_shore_frac {
         return Mat::Sand;
+    }
+    if let Some(bank) = river_bank {
+        return bank;
     }
     if climate_block == MainBlock::Snow {
         return Mat::Snow;
@@ -912,6 +931,31 @@ pub fn coastal_beach_at(c: &ColCtx, face: u8, ci: u64, cj: u64, seed: i64) -> bo
         c.lake_material_region,
         crate::terrain::beach_blend_comparator(face, ci, cj, seed, c.rough as f64),
     )
+}
+
+/// Exact canonical-column realization of the shared continuous river-bank
+/// material field. Surface blocks and tree eligibility call this same helper.
+pub fn river_bank_material_at(
+    c: &ColCtx,
+    face: u8,
+    ci: u64,
+    cj: u64,
+    seed: i64,
+) -> Option<Mat> {
+    // Occupancy follows a contour of the shared field. A hash-probability
+    // realization broke a one-block band into isolated speckles even when
+    // the underlying river arc was continuous. Material type may change on
+    // a much longer patch scale, but the bank itself never lotteries away.
+    if c.river_bank_frac < crate::rivers::river_tuning::BANK_MATERIAL_VOXEL_THRESHOLD {
+        return None;
+    }
+    let patch_i = ci >> crate::rivers::river_tuning::BANK_MATERIAL_TYPE_PATCH_SHIFT;
+    let patch_j = cj >> crate::rivers::river_tuning::BANK_MATERIAL_TYPE_PATCH_SHIFT;
+    Some(if hash01(face, patch_i, patch_j, seed as u64 ^ 0xB4A0_0002) < c.river_bank_gravel {
+        Mat::Gravel
+    } else {
+        Mat::Sand
+    })
 }
 
 fn mat_main_block(mat: Mat, fallback: MainBlock) -> MainBlock {
@@ -1140,10 +1184,11 @@ pub fn tree_at_scaled(
     if c.has_water()
         || c.water != i64::MIN
         || c.lake_level_band
-        || c.carved
+        || (c.carved && !c.river_island)
         || c.ground != c.ground0
         || c.top_solid() != c.ground
         || coastal_beach_at(c, face, ci, cj, seed)
+        || river_bank_material_at(c, face, ci, cj, seed).is_some()
     {
         return None;
     }
@@ -1248,12 +1293,12 @@ pub fn tree_here(
     }
     let (i, j) = (ci as i64, cj as i64);
     let mut relief = 0i64;
-    let mut carved_near = c.carved;
+    let mut carved_near = c.carved && !c.river_island;
     for (di, dj) in [(2i64, 0i64), (-2, 0), (0, 2), (0, -2), (1, 1), (-1, -1), (1, -1), (-1, 1)] {
         let nb = col_ctx_ext(planet, edits, face, i + di, j + dj);
         // natural relief: a neighbor's player tower must not shake trees down
         relief = relief.max((c.ground0 - nb.ground0).abs());
-        carved_near |= nb.carved;
+        carved_near |= nb.carved && !nb.river_island;
     }
     if relief > 2 || carved_near || c.top_solid() != c.ground {
         return None;
@@ -2071,6 +2116,7 @@ pub fn build_chunk(
                     c,
                     steep,
                     climate.main_block,
+                    river_bank_material_at(c, face as u8, ci, cj, body.seed()),
                     hash01(face as u8, ci, cj, 0xBEAC),
                     crate::terrain::beach_blend_comparator(
                         face as u8,
@@ -2345,6 +2391,22 @@ pub fn build_chunk(
                         }
                     }
                 }
+                let fall_foam = if !frozen && c.river_fall > 0.001 {
+                    let strength = (f64::from(c.river_fall)
+                        * crate::rivers::river_tuning::FOAM_INTENSITY)
+                        .clamp(0.0, 1.0) as f32;
+                    let white = crate::rivers::river_tuning::FALL_FOAM_COLOR;
+                    for col in &mut wtop_cols {
+                        *col = mix_color(*col, white, strength);
+                    }
+                    Some(strength)
+                } else {
+                    None
+                };
+                let fall_sheet = (!frozen && c.river_fall_sheet > 0.001).then_some(
+                    3.0 + c.river_fall_sheet
+                        * crate::rivers::river_tuning::FALL_SHEET_STRENGTH as f32,
+                );
                 let rim_delta = rim_water_analog_delta_km(c, w, exaggeration).map(|d| d as f32);
                 if let Some(delta) = rim_delta {
                     quad_rim_delta.set([delta; 4]);
@@ -2355,7 +2417,7 @@ pub fn build_chunk(
                     up,
                     wtop_cols,
                     1.0,
-                    if rim_delta.is_some() { 2.0 } else { 1.0 },
+                    fall_sheet.unwrap_or(if rim_delta.is_some() { 2.0 } else { 1.0 }),
                 );
                 quad_rim_delta.set([0.0; 4]);
                 quad_rim_weight.set(None);
@@ -2382,6 +2444,15 @@ pub fn build_chunk(
                         let col = lower_liquid_step(nbi)
                             .map(|strength| mix_color(wside, foam, strength))
                             .unwrap_or(wside);
+                        let col = if let Some(strength) = fall_foam {
+                            mix_color(
+                                col,
+                                crate::rivers::river_tuning::FALL_FOAM_COLOR,
+                                strength,
+                            )
+                        } else {
+                            col
+                        };
                         if let Some(delta) = rim_delta {
                             quad_rim_delta.set([delta, delta, 0.0, 0.0]);
                             quad_rim_weight.set(Some([1.0, 1.0, 0.0, 0.0]));
@@ -2391,7 +2462,7 @@ pub fn build_chunk(
                             n_side,
                             [col; 4],
                             1.0,
-                            if rim_delta.is_some() { 2.0 } else { 1.0 },
+                            fall_sheet.unwrap_or(if rim_delta.is_some() { 2.0 } else { 1.0 }),
                         );
                         quad_rim_delta.set([0.0; 4]);
                         quad_rim_weight.set(None);
@@ -2523,12 +2594,12 @@ pub fn build_chunk(
                 continue; // editing a tree's column chops the tree
             }
             let mut relief = 0i64;
-            let mut carved_near = c.carved;
+            let mut carved_near = c.carved && !c.river_island;
             for (di, dj) in [(2i64, 0i64), (-2, 0), (0, 2), (0, -2), (1, 1), (-1, -1), (1, -1), (-1, 1)] {
                 let nb = at(ai + di, aj + dj);
                 // natural relief — must mirror tree_here exactly
                 relief = relief.max((c.ground0 - nb.ground0).abs());
-                carved_near |= nb.carved;
+                carved_near |= nb.carved && !nb.river_island;
             }
             if relief > 2 || carved_near || c.top_solid() != c.ground {
                 continue; // no trees on slopes, gullies, or cave mouths

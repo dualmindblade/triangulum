@@ -920,7 +920,12 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     // wflag>0.5 half alive inside the patch — a floating pale shore-ramp
     // fragment over the block water (photographed at 9.20 114.05). Only
     // all-water triangles (wflag 1 at every vertex) may skip the cut.
-    if (in.rel_flag.w > 0.5 && globals.hole.w > 0.0 && in.wflag < 0.98) {
+    // Track-B river-fall faces (wflag 3+) are the adaptive mesh's shared
+    // profile, not a separate safety plane. Let voxel water replace them in
+    // the near disc; only the established sea/lake carrier around wflag 1
+    // remains beneath the patch.
+    if (in.rel_flag.w > 0.5 && globals.hole.w > 0.0
+        && (in.wflag < 0.98 || in.wflag > 1.5)) {
         let q = in.rel_flag.xyz - globals.hole.xyz;
         let vert = dot(q, globals.hole_up.xyz);
         let horiz = q - globals.hole_up.xyz * vert;
@@ -933,6 +938,7 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     // is visible, so no lattice side/foam face follows the camera at the rim.
     if (in.rel_flag.w < 0.5
         && in.wflag > 1.5
+        && in.wflag < 2.5
         && in.shore < 0.0) {
         discard;
     }
@@ -1374,6 +1380,23 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         // this gain preserves the pinned ground-level moonlight reel while
         // `moon_phase` supplies the new geometric waxing/waning behavior.
         * (1.0 - day) * moon_up * moon_phase * 1.15;
+    // Track-B falls: wflag 3+ carries the Rust river_tuning sheet strength
+    // on both the adaptive shared-profile face and matching voxel water
+    // steps. Motion reads the absolute deterministic weather clock, never
+    // wall time.
+    if (in.wflag > 2.9) {
+        let feature = clamp(in.wflag - 3.0, 0.0, 1.0);
+        let planet_pos = in.rel_flag.xyz - globals.center.xyz;
+        let streak = 0.5 + 0.5 * sin(
+            dot(planet_pos, vec3<f32>(83.0, 47.0, 109.0)) * 145.0
+                - globals.weather4.w * 5.5,
+        );
+        // River-interior and voxel faces carry a negative shore value and
+        // intentionally receive the stronger plunge/white-water treatment.
+        let plunge = 1.0 - smoothstep(0.03, 0.38, max(in.shore, 0.0));
+        let whitewater = clamp(feature * (0.30 + 0.42 * streak + 0.22 * plunge), 0.0, 0.92);
+        c = mix(c, vec3<f32>(0.94, 0.985, 1.0), whitewater);
+    }
     // W2 storm edge on distant terrain. The CPU's eight-probe fit is in the
     // same planet frame as this camera-relative ray, so the dark horizon
     // stays attached to the approaching front while the camera pans.

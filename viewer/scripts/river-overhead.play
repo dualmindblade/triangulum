@@ -1,0 +1,13 @@
+# Track B overhead reach probe: fixed-time low flight along the wide river.
+weather pin 0.10 0.0
+weather time 0
+weather season 0.45
+sun 15.02 2.66
+mode fly
+teleport 15.024 17.662 0.700
+look -75 -67
+shot reach_overhead_start
+hold w+shift 4
+shot reach_overhead_end
+state reach_overhead_end
+

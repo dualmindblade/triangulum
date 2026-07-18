@@ -1,0 +1,14 @@
+# Track B waterfall probe. Segment 8372 is a flowing 326 m baked drop; the
+# endpoint-preserving profile concentrates 120 m at its detected midpoint.
+weather pin 0.10 0.0
+weather time 0
+weather season 0.45
+sun 9.80 122.61
+mode fly
+teleport 9.79546 107.60747 0.080
+look 84.75 -8
+shot fall_overview
+hold w 1
+look 84.75 -3
+shot fall_approach
+state fall_approach

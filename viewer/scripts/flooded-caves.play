@@ -5,14 +5,15 @@ weather season 0.45
 # sat below the water line (photographed at 3.726 63.065); flooding turns that
 # pit into water, so the suppression is lifted and this locks the new physics.
 #
-# Site: a river-bank pool at 3.7259 63.0658 — caveprobe finds a 5 m water
-# column (rock floor z=237, water surface at the river table z=242), open to
+# Site: the same river-bank pool after Track-B's shared meander, at
+# 3.72537 63.06523. caveprobe finds a 6 m water column (rock floor z=237,
+# water surface at the river table z=243), open to
 # the sky so a walker can drop in, be underwater, and swim back up and out.
 
 mode fly
 
 # --- drop into the flooded pit and settle on its rock floor
-teleport 3.725916 63.065764 0.003
+teleport 3.725369 63.065227 0.003
 mode walk
 wait 4
 state at_bottom
@@ -50,7 +51,9 @@ assert underwater == false
 # the player drops through into water (edits interact with the flood — no dry
 # shaft below the table).
 mode fly
-teleport 3.725926 63.065764 0.004
+# The one-block cap moved with the same shared river field; caveprobe reports
+# this deterministic replacement after the Track-B reach-scale meander.
+teleport 3.726050 63.066110 0.004
 mode walk
 wait 2
 assert grounded == true

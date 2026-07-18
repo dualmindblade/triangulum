@@ -310,7 +310,10 @@ if caps_files:
             with open(cf) as fh:
                 sites = json.load(fh)
             for site in sites:
-                p = np.asarray(site["xyz"], dtype=np.float64)
+                # New censuses name the exact serialized lake cell that won
+                # runtime's float32 Voronoi query. Legacy cap files only have
+                # the wall midpoint and retain the old nearest-site fallback.
+                p = np.asarray(site.get("lake_cell_xyz", site["xyz"]), dtype=np.float64)
                 p /= np.linalg.norm(p)
                 dist, k = lt.query(p)
                 if dist * R_planet > 60.0:

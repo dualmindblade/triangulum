@@ -1146,7 +1146,11 @@ impl Planet {
         // a half-screen navy/sand split at the seam). Re-derive the near-edge
         // band over true neighbor data and force shared texels bit-identical.
         seam_exact_ocean(&mut faces, 2);
-        let rivers = match crate::rivers::RiverIndex::load(&format!("{dir}/rivers.bin"), radius_km)
+        let rivers = match crate::rivers::RiverIndex::load(
+            &format!("{dir}/rivers.bin"),
+            radius_km,
+            seed,
+        )
         {
             Ok(r) => {
                 println!("rivers: {} segments, {} lake cells", r.segments.len(), r.lakes.len());
