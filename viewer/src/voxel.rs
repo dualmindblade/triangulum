@@ -222,6 +222,7 @@ pub struct ColCtx {
     pub river_island: bool,
     pub river_fall: f32,
     pub river_fall_sheet: f32,
+    pub river_rapid: f32,
     pub salt: bool,   // water here belongs to a salt lake
     /// TRUE ocean (the map's ocean mask), not merely e_raw < 0: dry basins
     /// and river mouths sit below sea level on purpose. The water color
@@ -697,6 +698,7 @@ pub fn col_ctx_at_season(
         river_island: s.river_island,
         river_fall: s.river_fall as f32,
         river_fall_sheet: s.river_fall_sheet as f32,
+        river_rapid: s.river_rapid as f32,
         salt: s.salt,
         sea: s.sea,
         lake_shoal: s.lake_shoal,
@@ -777,6 +779,7 @@ fn lunar_col_ctx_from_sample(
         river_island: false,
         river_fall: 0.0,
         river_fall_sheet: 0.0,
+        river_rapid: 0.0,
         salt: false,
         sea: false,
         lake_shoal: false,
@@ -2521,8 +2524,10 @@ pub fn build_chunk(
                         }
                     }
                 }
-                let fall_foam = if !frozen && c.river_fall > 0.001 {
-                    let strength = (f64::from(c.river_fall)
+                let fall_foam = if !frozen && (c.river_fall > 0.001 || c.river_rapid > 0.001) {
+                    let fall = f64::from(c.river_fall)
+                        * crate::rivers::river_tuning::FALL_SURFACE_FOAM_GAIN;
+                    let strength = (fall.max(f64::from(c.river_rapid))
                         * crate::rivers::river_tuning::FOAM_INTENSITY)
                         .clamp(0.0, 1.0) as f32;
                     let white = crate::rivers::river_tuning::FALL_FOAM_COLOR;

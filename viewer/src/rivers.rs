@@ -42,6 +42,13 @@ pub mod river_tuning {
     pub const BANK_PROFILE_POWER_BASE: f64 = 0.90;
     pub const BANK_PROFILE_POWER_FLOW_GAIN: f64 = 0.65;
 
+    // A signed bank contour needs more than two samples across a half-channel
+    // to avoid tracing the mesh triangles as teeth. Below this shoulder the
+    // complementary coverage-correct paint owns the same centerline softly.
+    pub const LOD_SHORE_FIELD_START_HALF_WIDTHS: f64 = 2.0;
+    pub const LOD_SHORE_FIELD_FULL_HALF_WIDTHS: f64 = 4.0;
+    pub const LOD_SHORE_PAINT_FEATHER_SPACING: f64 = 1.60;
+
     // Arc-length centerline noise.
     pub const MEANDER_AMPLITUDE_KM: f64 = 0.280;
     pub const MEANDER_WIDTH_GAIN: f64 = 0.10;
@@ -113,7 +120,7 @@ pub mod river_tuning {
     pub const FALL_DRAWDOWN_REACH_KM: f64 = 0.75;
     pub const FALL_PROFILE_HALF_ARC_KM: f64 = 0.0025;
     pub const FALL_PROFILE_MIN_HALF_T: f64 = 0.00004;
-    pub const FALL_FOAM_UPSTREAM_REACH_KM: f64 = 3.0;
+    pub const FALL_FOAM_UPSTREAM_REACH_KM: f64 = 0.55;
     pub const FALL_FOAM_DOWNSTREAM_REACH_KM: f64 = 0.90;
     pub const FALL_SHEET_SHADE_REACH_KM: f64 = 0.11;
     pub const FALL_VISUAL_STRENGTH_GAIN: f64 = 1.85;
@@ -124,6 +131,19 @@ pub mod river_tuning {
     pub const FALL_SURFACE_FOAM_GAIN: f64 = 0.92;
     pub const FALL_FOAM_COLOR: [f32; 3] = [0.86, 0.94, 0.97];
     pub const FOAM_INTENSITY: f64 = 1.10;
+
+    // A drainage-grid canyon can make several adjacent 30--40 km segments
+    // pass the raw fall test. Only a locally-prominent, arc-spaced candidate
+    // receives the concentrated sheet profile; rejected candidates become
+    // weak center-channel rapids without changing their hydraulic level.
+    pub const FALL_PROMINENCE_RADIUS_KM: f64 = 72.0;
+    pub const FALL_MIN_ARC_SPACING_KM: f64 = 96.0;
+    pub const RAPIDS_MAX_FOAM_STRENGTH: f64 = 0.18;
+    pub const RAPIDS_FLOW_START_M3S: f64 = 300.0;
+    pub const RAPIDS_FLOW_FULL_M3S: f64 = 1_800.0;
+    pub const RAPIDS_ENDPOINT_RAMP_KM: f64 = 1.2;
+    pub const RAPIDS_CORE_FULL_HALF_WIDTH: f64 = 0.18;
+    pub const RAPIDS_CORE_END_HALF_WIDTH: f64 = 0.62;
 
     // B-9: procedural ponds are native at eight detail octaves; carry their
     // exact class at seven so the existing parent morph owns a graceful LOD
@@ -146,6 +166,9 @@ pub struct Segment {
     pub flow_m3s: f32,
     /// 0 for an ordinary reach; otherwise load-time waterfall confidence.
     pub fall_strength: f32,
+    /// Raw fall candidates rejected by the prominence/spacing pass retain a
+    /// weak rapid score. It affects color only, never the water profile.
+    pub rapid_strength: f32,
     /// Junction-to-junction course metadata derived at load. Internal graph
     /// nodes share reach arc length and endpoint tangents, so lateral noise
     /// stays continuous instead of restarting at every drainage cell.
@@ -195,6 +218,7 @@ pub struct RiverHit {
     /// are separate so horizontal white water does not inherit sheet streaks.
     pub fall_strength: f64,
     pub fall_sheet_strength: f64,
+    pub rapid_strength: f64,
     pub segment_id: u32,
     pub segment_t: f64,
 }
@@ -427,6 +451,33 @@ fn fall_sheet_influence(s: &Segment, t: f64) -> f64 {
     use river_tuning::*;
     let arc_km = (t.clamp(0.0, 1.0) - 0.5).abs() * f64::from(s.length_km);
     1.0 - smoothstep(FALL_PROFILE_HALF_ARC_KM, FALL_SHEET_SHADE_REACH_KM, arc_km)
+}
+
+fn rapid_foam_influence(
+    s: &Segment,
+    t: f64,
+    signed_dist_km: f64,
+    half_width_km: f64,
+) -> f64 {
+    use river_tuning::*;
+    if s.rapid_strength <= 0.0 || half_width_km <= 0.0 {
+        return 0.0;
+    }
+    let t = t.clamp(0.0, 1.0);
+    let along_edge_km = t.min(1.0 - t) * f64::from(s.length_km);
+    let endpoint = smoothstep(0.0, RAPIDS_ENDPOINT_RAMP_KM, along_edge_km);
+    let core = 1.0
+        - smoothstep(
+            half_width_km * RAPIDS_CORE_FULL_HALF_WIDTH,
+            half_width_km * RAPIDS_CORE_END_HALF_WIDTH,
+            signed_dist_km.abs(),
+        );
+    let flow = smoothstep(
+        RAPIDS_FLOW_START_M3S,
+        RAPIDS_FLOW_FULL_M3S,
+        f64::from(s.flow_m3s),
+    );
+    f64::from(s.rapid_strength) * RAPIDS_MAX_FOAM_STRENGTH * flow * endpoint * core
 }
 
 /// Endpoint-preserving monotone profile. Only a bounded portion of a detected
@@ -686,6 +737,7 @@ impl RiverIndex {
                     (f64::from(level_a_km) - f64::from(level_b_km)).max(0.0),
                     f64::from(length_km),
                 ) as f32,
+                rapid_strength: 0.0,
                 reach_id: i as u32,
                 reach_arc_start_km: 0.0,
                 reach_length_km: f64::from(length_km),
@@ -707,6 +759,7 @@ impl RiverIndex {
             });
         }
         out.build_reaches();
+        out.apply_fall_prominence();
         out.build_fall_sites(seed);
         out.build_buckets();
         Ok(out)
@@ -838,6 +891,80 @@ impl RiverIndex {
             s.tangent_b = tangents[index + 1];
             s.meander_amplitude_km = reach_amplitude;
             arc += f64::from(s.length_km);
+        }
+    }
+
+    /// Promote raw per-segment candidates to sparse, locally-prominent falls.
+    /// The RIV1 order and reach arcs are stable, so even exact-score ties have
+    /// a deterministic winner. Rejected candidates retain only color-grade
+    /// rapids; clearing `fall_strength` restores their original linear level.
+    fn apply_fall_prominence(&mut self) {
+        use river_tuning::*;
+
+        let raw: Vec<f32> = self.segments.iter().map(|s| s.fall_strength).collect();
+        let mut by_reach: HashMap<u32, Vec<usize>> = HashMap::new();
+        for (id, s) in self.segments.iter_mut().enumerate() {
+            s.rapid_strength = raw[id];
+            s.fall_strength = 0.0;
+            if raw[id] > 0.0 {
+                by_reach.entry(s.reach_id).or_default().push(id);
+            }
+        }
+
+        let arc_center = |id: usize, segments: &[Segment]| {
+            segments[id].reach_arc_start_km + 0.5 * f64::from(segments[id].length_km)
+        };
+        let stronger = |a: usize, b: usize, segments: &[Segment]| {
+            let sa = &segments[a];
+            let sb = &segments[b];
+            let drop_a = sa.level_a_km - sa.level_b_km;
+            let drop_b = sb.level_a_km - sb.level_b_km;
+            raw[a]
+                .total_cmp(&raw[b])
+                .then_with(|| drop_a.total_cmp(&drop_b))
+                // Lower serialized id wins an otherwise exact tie.
+                .then_with(|| b.cmp(&a))
+                .is_gt()
+        };
+
+        for candidates in by_reach.values() {
+            let mut maxima: Vec<usize> = candidates
+                .iter()
+                .copied()
+                .filter(|&id| {
+                    let center = arc_center(id, &self.segments);
+                    !candidates.iter().copied().any(|other| {
+                        other != id
+                            && (arc_center(other, &self.segments) - center).abs()
+                                <= FALL_PROMINENCE_RADIUS_KM
+                            && stronger(other, id, &self.segments)
+                    })
+                })
+                .collect();
+            maxima.sort_by(|&a, &b| {
+                if stronger(a, b, &self.segments) {
+                    std::cmp::Ordering::Less
+                } else if stronger(b, a, &self.segments) {
+                    std::cmp::Ordering::Greater
+                } else {
+                    a.cmp(&b)
+                }
+            });
+
+            let mut accepted = Vec::new();
+            for id in maxima {
+                let center = arc_center(id, &self.segments);
+                if accepted.iter().copied().all(|other| {
+                    (arc_center(other, &self.segments) - center).abs()
+                        >= FALL_MIN_ARC_SPACING_KM
+                }) {
+                    accepted.push(id);
+                }
+            }
+            for id in accepted {
+                self.segments[id].fall_strength = raw[id];
+                self.segments[id].rapid_strength = 0.0;
+            }
         }
     }
 
@@ -1008,6 +1135,12 @@ impl RiverIndex {
                     .min(1.0);
                 let fall_strength = visual_fall * fall_foam_influence(s, shape.t);
                 let fall_sheet_strength = visual_fall * fall_sheet_influence(s, shape.t);
+                let rapid_strength = rapid_foam_influence(
+                    s,
+                    shape.t,
+                    shape.signed_dist_km,
+                    half_width_km,
+                );
                 best = Some(RiverHit {
                     dist_km: d,
                     signed_dist_km: shape.signed_dist_km,
@@ -1030,6 +1163,7 @@ impl RiverIndex {
                     ),
                     fall_strength,
                     fall_sheet_strength,
+                    rapid_strength,
                     segment_id: id,
                     segment_t: shape.t,
                 });
@@ -1239,6 +1373,7 @@ mod tests {
                 (level_a_km - level_b_km).max(0.0),
                 length_km,
             ) as f32,
+            rapid_strength: 0.0,
             reach_id: 0,
             reach_arc_start_km: 0.0,
             reach_length_km: length_km,
@@ -1360,8 +1495,75 @@ mod tests {
                 > segment_level_km(&fall, 0.5 - half),
             "approach drawdown did not precede the main sheet"
         );
-        let approach_t = 0.5 - 1.0 / f64::from(fall.length_km);
+        let approach_t = 0.5 - 0.25 / f64::from(fall.length_km);
         assert!(fall_foam_influence(&fall, approach_t) > 0.0);
         assert_eq!(fall_sheet_influence(&fall, approach_t), 0.0);
+    }
+
+    #[test]
+    fn fall_prominence_keeps_arc_spaced_maxima_and_demotes_the_rest_to_rapids() {
+        let radius = 1_000.0;
+        let mut index = RiverIndex::empty(radius);
+        let starts = [0.0, 80.0, 200.0, 240.0];
+        let strengths = [0.90f32, 0.70, 0.80, 0.40];
+        for (&start, &strength) in starts.iter().zip(&strengths) {
+            let mut s = fixture_segment(radius, 0.02, 2_000.0, 0.240, 0.020);
+            s.reach_id = 7;
+            s.reach_arc_start_km = start;
+            s.reach_length_km = 300.0;
+            s.fall_strength = strength;
+            index.segments.push(s);
+        }
+
+        index.apply_fall_prominence();
+
+        // 0 and 1 are outside the local-maximum radius but inside the wider
+        // minimum-spacing radius, so the stronger site wins. 3 is inside 2's
+        // prominence neighborhood and loses before spacing is considered.
+        assert_eq!(index.segments[0].fall_strength.to_bits(), strengths[0].to_bits());
+        assert_eq!(index.segments[2].fall_strength.to_bits(), strengths[2].to_bits());
+        assert_eq!(index.segments[1].fall_strength, 0.0);
+        assert_eq!(index.segments[3].fall_strength, 0.0);
+        assert_eq!(index.segments[0].rapid_strength, 0.0);
+        assert_eq!(index.segments[2].rapid_strength, 0.0);
+        assert_eq!(index.segments[1].rapid_strength.to_bits(), strengths[1].to_bits());
+        assert_eq!(index.segments[3].rapid_strength.to_bits(), strengths[3].to_bits());
+
+        let demoted = &index.segments[1];
+        let (half_width, _) = hydraulic_geometry(f64::from(demoted.flow_m3s));
+        let core = rapid_foam_influence(demoted, 0.5, 0.0, half_width);
+        assert!(core > 0.0 && core <= river_tuning::RAPIDS_MAX_FOAM_STRENGTH);
+        assert_eq!(rapid_foam_influence(demoted, 0.0, 0.0, half_width), 0.0);
+        assert_eq!(rapid_foam_influence(demoted, 0.5, half_width, half_width), 0.0);
+
+        // Demotion removes only the concentrated fall profile.
+        let expected_mid = 0.5
+            * (f64::from(demoted.level_a_km) + f64::from(demoted.level_b_km));
+        assert!((segment_level_km(demoted, 0.5) - expected_mid).abs() < 1e-12);
+    }
+
+    #[test]
+    fn b13_approved_fall_survives_while_its_neighbor_becomes_rapids() {
+        let assets = if std::path::Path::new("assets/meta.json").exists() {
+            "assets"
+        } else {
+            "viewer/assets"
+        };
+        let meta: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(format!("{assets}/meta.json")).expect("read baked metadata"),
+        )
+        .expect("parse baked metadata");
+        let radius = meta["radius_km"].as_f64().expect("metadata radius_km");
+        let index = RiverIndex::load(&format!("{assets}/rivers.bin"), radius, 42)
+            .expect("B-13 test requires authoritative rivers.bin");
+
+        let approved = &index.segments[8372];
+        let neighbor = &index.segments[8423];
+        assert!(approved.fall_strength > 0.0);
+        assert_eq!(approved.rapid_strength, 0.0);
+        assert_eq!(neighbor.fall_strength, 0.0);
+        assert!(neighbor.rapid_strength > 0.0);
+        assert!(index.fall_sites.iter().any(|site| site.segment_id == 8372));
+        assert!(!index.fall_sites.iter().any(|site| site.segment_id == 8423));
     }
 }

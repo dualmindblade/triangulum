@@ -35,6 +35,10 @@ teleport 4.99 -29.403 0.25
 look -10 -40
 sun 4.99 -44.40
 shot river_valley
+teleport 9.79546 107.60747 3.0
+look 84.75 -68
+sun 9.80 92.61
+shot waterfall_site
 teleport -0.798 -67.941 0.15
 look 40 -35
 sun -0.80 -82.94

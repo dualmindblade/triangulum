@@ -179,6 +179,10 @@ const BIOME_BORDER_AA_BAND_PX = 1.0;
 // prefix a pixel can represent. Units are noise-lattice cells per screen px.
 const BIOME_BORDER_OCTAVE_FULL_CELLS_PER_PX = 0.25;
 const BIOME_BORDER_OCTAVE_CUTOFF_CELLS_PER_PX = 0.50;
+// The lake-beach height owner spans 1.5 m in the shared shore field. Unlike
+// the broad generic coast carrier, it retires completely when that band
+// crosses the same Nyquist shoulder as the L-1 comparator octaves.
+const LAKE_BEACH_HEIGHT_CARRIER_KM = 0.0015;
 // L-1(b): range endpoints are representative zero-slope palette colors, while
 // arrival uses the approved exact local palette/shading. Retain only the
 // measured arrival-equivalent share of their deviation around the conserved
@@ -773,8 +777,19 @@ fn beach_range_comparator(dir: vec3<f32>, fine_gain: f32) -> f32 {
     var amplitude = 1.0;
     var sum = 0.0;
     var variance = 0.0;
+    let pixel_angle = max(length(dpdx(dir)), length(dpdy(dir)));
     for (var octave = 0; octave < 2; octave = octave + 1) {
-        let adapted = amplitude * select(fine_gain, 1.0, octave == 0);
+        let octave_footprint = pixel_angle * frequency;
+        let resolved = 1.0 - smoothstep(
+            BIOME_BORDER_OCTAVE_FULL_CELLS_PER_PX,
+            BIOME_BORDER_OCTAVE_CUTOFF_CELLS_PER_PX,
+            octave_footprint,
+        );
+        if (octave > 0 && resolved <= 0.0) {
+            break;
+        }
+        let adapted = amplitude * select(fine_gain, 1.0, octave == 0)
+            * select(resolved, 1.0, octave == 0);
         let seedmul = bitcast<u32>(globals.danchor_cell.w) + 0xAB20C0C2u
             + u32(octave) * 131u * 0x9E3779B1u;
         sum += adapted * kgnoise(dir * frequency, seedmul);
@@ -1057,7 +1072,18 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         // resolution — no more angular lake polygons or orphan blue cells.
         // Rivers keep their own wetness paint (water.a) untouched.
         let e = max(fwidth(in.shore), 1e-5);
-        wet = max(wet, smoothstep(-e, e, in.shore));
+        let shore_coverage = smoothstep(-e, e, in.shore);
+        if (in.wflag < -0.5) {
+            // Mesh rivers use -1..-2 to hand the exact signed contour in only
+            // as channel half-width becomes resolvable at this vertex spacing.
+            // Coarser reaches retain the same centerline through water.a's
+            // coverage-correct soft carrier instead of drawing hard meander
+            // chords between sparse vertices.
+            let river_shore_gain = clamp(-in.wflag - 1.0, 0.0, 1.0);
+            wet = max(wet, shore_coverage * river_shore_gain);
+        } else {
+            wet = max(wet, shore_coverage);
+        }
     }
     // ---- weather on the ground (WEATHER.md Layer 3) ----
     // Dust and darken the GROUND color before the water mix so lakes and
@@ -1138,24 +1164,34 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         range_mean /= max(mean_weight, 1e-5);
         if (beach_mode) {
             let beach_coverage = clamp(in.beach.x, 0.0, 1.0);
+            let lake_beach_mode = in.beach.y < 0.5 / 255.0;
             // CPU endpoint centering makes this combined expectation exactly
             // the former smooth beach mean, so orbit can reduce contrast
             // without shifting the approved continental/coastal color.
-            range_mean = mix(range_mean, biome_endpoints[6].rgb, beach_coverage);
+            if (!lake_beach_mode) {
+                range_mean = mix(range_mean, biome_endpoints[6].rgb, beach_coverage);
+            }
             if (beach_coverage > 0.5 / 255.0) {
-                // The ~440 m carrier is safe through the 95 km review range
-                // but undersampled from orbit. Retire only that nested detail
-                // with the existing orbital handoff; the broad 7 km beach
-                // owner and its 0.45 contrast remain.
-                let beach_detail = 1.0 - smoothstep(
-                    BIOME_ORBIT_CONTRAST_FADE_START_KM,
-                    BIOME_ORBIT_CONTRAST_FADE_END_KM,
-                    in.dist_km,
-                );
-                let fine_gain = clamp(in.beach.y, 0.08, 1.0) * beach_detail;
-                let beach_q = beach_range_comparator(surface_dir, fine_gain);
-                let margin = beach_coverage - beach_q;
-                let beach_owner = biome_owner_coverage(margin);
+                var beach_owner = 0.0;
+                if (lake_beach_mode) {
+                    let shore_per_px = length(vec2<f32>(
+                        dpdx(in.shore),
+                        dpdy(in.shore),
+                    ));
+                    let carrier_footprint = shore_per_px
+                        / LAKE_BEACH_HEIGHT_CARRIER_KM;
+                    let carrier_resolved = 1.0 - smoothstep(
+                        BIOME_BORDER_OCTAVE_FULL_CELLS_PER_PX,
+                        BIOME_BORDER_OCTAVE_CUTOFF_CELLS_PER_PX,
+                        carrier_footprint,
+                    );
+                    beach_owner = beach_coverage * carrier_resolved;
+                } else {
+                    let fine_gain = clamp(in.beach.y, 0.08, 1.0);
+                    let beach_q = beach_range_comparator(surface_dir, fine_gain);
+                    let margin = beach_coverage - beach_q;
+                    beach_owner = biome_owner_coverage(margin);
+                }
                 range_ground = mix(
                     range_ground,
                     biome_endpoints[6].rgb,

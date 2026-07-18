@@ -42,10 +42,10 @@ pub const NO_BIOME_PAYLOAD: [[u8; 4]; BIOME_RANGE_FAMILIES] = [
 #[derive(Clone, Copy)]
 struct BiomePayload {
     endpoints: [[u8; 4]; BIOME_RANGE_FAMILIES],
-    /// x = generic beach coverage, y = roughness-adapted fine gain,
-    /// z = valid marker, w = D-8's signed rain-concavity proxy shifted to
-    /// UNORM (c/2 + 0.5). Kept separate from climate thresholds so
-    /// snow/grass interpolation cannot manufacture a sand outline.
+    /// x = beach coverage. Generic coasts store roughness-adapted fine gain
+    /// in y (>= 0.08); liquid-lake shores store y=0 as a mode marker so their
+    /// 1.5 m carrier can retire by screen footprint. z = valid marker, w =
+    /// D-8's signed rain-concavity proxy shifted to UNORM (c/2 + 0.5).
     beach: [u8; 4],
 }
 
@@ -106,7 +106,9 @@ pub struct Vertex {
     /// vertex spacing, so a split halves its width — the dominant visible
     /// LOD pop. Morphing the wetness with the same factor retires it.
     pub morph_wet: f32,
-    /// 1.0 on a sea/lake water *surface* vertex, else 0.0. The heightfield
+    /// 1.0 on a sea/lake water *surface* vertex; 3+ marks a fall sheet. The
+    /// negative range -1..-2 carries a coarse-river signed-shore gain without
+    /// colliding with any voxel or retained water-plane marker. The heightfield
     /// hole (which lets voxel blocks own the near disc) must NOT cut the
     /// mesh water plane: block water and mesh water are the same surface, so
     /// cutting it opens a see-through crack at the patch boundary that shows
@@ -449,6 +451,9 @@ pub struct Sample {
     /// approach/plunge field; keeping them separate prevents horizontal
     /// white water from receiving vertical falling-sheet streaks.
     pub river_fall_sheet: f64,
+    /// Weak, narrow foam on steep candidates rejected by fall prominence.
+    /// Unlike `river_fall`, this never concentrates the hydraulic profile.
+    pub river_rapid: f64,
     /// Pond pool level (km) when the noise-pond machinery wet this column,
     /// else NEG_INFINITY. Ponds are not lakes (no graph cell, no wflag
     /// plane) and were invisible to the per-pixel shore field — the karst
@@ -598,6 +603,7 @@ fn sample_inner_at_season(
         river_island: false,
         river_fall: 0.0,
         river_fall_sheet: 0.0,
+        river_rapid: 0.0,
         salt: false,
         sea,
     };
@@ -632,6 +638,7 @@ fn sample_inner_at_season(
     let mut island_field = 0.0;
     let mut fall_strength = 0.0;
     let mut fall_sheet_strength = 0.0;
+    let mut rapid_strength = 0.0;
     if planet.rivers.maybe_river(face, u, v)
         && let Some(hit) = planet.rivers.river_near(face, u, v, dir, seed)
         && hit.half_width_km > 0.0
@@ -646,6 +653,7 @@ fn sample_inner_at_season(
         island_field = hit.island_field;
         fall_strength = hit.fall_strength;
         fall_sheet_strength = hit.fall_sheet_strength;
+        rapid_strength = hit.rapid_strength;
     }
 
     // lake candidate (level/salt/dist/radius) — queried BEFORE the octave
@@ -834,6 +842,7 @@ fn sample_inner_at_season(
         out.river_level_km = wl;
         out.river_fall = fall_strength;
         out.river_fall_sheet = fall_sheet_strength;
+        out.river_rapid = rapid_strength;
         out.river_wet = 1.0 - smoothstep(0.002, 0.006, wl - h_river_ref);
         let bank_w = (hw * bank_width_scale)
             .max(crate::rivers::river_tuning::BANK_MIN_WIDTH_KM)
@@ -1245,35 +1254,55 @@ fn tile_wet(s: &Sample, spacing_km: f64) -> f64 {
         return 0.0;
     }
     let wide = if s.river_dist_km.is_finite() {
-        let paint_w = s.river_hw_km.max(spacing_km * 0.9);
-        // coverage-correct opacity: the corridor is widened to the vertex
-        // spacing for continuity, so paint it only as strongly as the real
-        // channel fills it (sqrt for perceptual balance). A 30 m stream
-        // across an 800 m corridor becomes a faint thread instead of a
-        // full-strength band — which is what made every confluence bloom
-        // into a blob: the union of two full-opacity widened corridors.
-        // Big rivers (hw ~ spacing) still paint at full strength, and the
-        // geomorph wet-lerp fades threads smoothly across LOD switches.
-        let coverage = (s.river_hw_km / paint_w).min(1.0).sqrt();
-        // hand-off to the per-pixel shore field (Vertex::shore): once the
-        // channel out-resolves the vertex grid the field draws the bank at
-        // pixel precision, and the paint's vertex-interpolated edge only
-        // smears past it in triangle-shaped teeth (Austin's
-        // river-zoom-2.png). Wide rivers mute the paint and let the field
-        // own the water; the paint's remaining job is sub-vertex threads.
-        let field_owns = smoothstep(0.9, 2.0, s.river_hw_km / spacing_km);
-        (1.0 - smoothstep(s.river_hw_km, paint_w, s.river_dist_km))
-            * s.river_wet
-            * coverage
-            * (1.0 - field_owns)
+        let field_owns = river_shore_field_gain(s, spacing_km);
+        if field_owns >= 1.0 {
+            0.0
+        } else {
+            let paint_w = s.river_hw_km
+                + spacing_km
+                    * crate::rivers::river_tuning::LOD_SHORE_PAINT_FEATHER_SPACING
+                    * (1.0 - field_owns);
+            // Coverage-correct opacity: the corridor is widened to the
+            // spacing for continuity, so paint it only as strongly as the
+            // real channel fills it. Big rivers still paint at full strength.
+            let coverage = (s.river_hw_km / paint_w).min(1.0).sqrt();
+            // Hand off to the per-pixel signed shore field once the channel
+            // out-resolves the vertex grid. The remaining paint only carries
+            // sub-vertex threads and never moves the authoritative zero.
+            (1.0 - smoothstep(s.river_hw_km, paint_w, s.river_dist_km))
+                * s.river_wet
+                * coverage
+                * (1.0 - field_owns)
+        }
     } else {
         0.0
     };
-    // ponds get the same treatment: their feather scale is ~0.28 km, so on
-    // tiles whose vertices are further apart than that, lone vertices catch
-    // a pond and paint whole angular triangles — fade them by coverage too
+    // `wet_soft` predates the explicit river carrier and contains both river
+    // and pond contributions. Letting it win this max bypasses the LOD bank
+    // handoff above and restores the old hard, 280 m-wide river zigzag. Only
+    // a real pond may consume this legacy lane; rivers use `wide` exclusively.
     let pond_cov = (0.28 / spacing_km).min(1.0).sqrt();
-    (s.wet_soft * pond_cov).max(wide * 0.9)
+    let pond = if s.pond_level_km.is_finite() {
+        s.wet_soft * pond_cov
+    } else {
+        0.0
+    };
+    pond.max(wide * 0.9)
+}
+
+/// How strongly the exact signed river-bank contour may own this mesh LOD.
+/// The zero crossing never moves: below the shoulder the coverage-correct
+/// soft carrier owns an under-resolved channel; above it the exact shared
+/// shore field becomes opaque. Kept separate from lake/sea/pond shorelines.
+fn river_shore_field_gain(s: &Sample, spacing_km: f64) -> f64 {
+    if !s.river_dist_km.is_finite() || spacing_km <= 0.0 {
+        return 0.0;
+    }
+    smoothstep(
+        crate::rivers::river_tuning::LOD_SHORE_FIELD_START_HALF_WIDTHS,
+        crate::rivers::river_tuning::LOD_SHORE_FIELD_FULL_HALF_WIDTHS,
+        s.river_hw_km / spacing_km,
+    )
 }
 
 const SHORE_CLAMP_KM: f64 = 0.005;
@@ -1473,11 +1502,11 @@ fn shore_field(planet: &Planet, face: usize, u: f64, v: f64, s: &Sample) -> f32 
         f64::NEG_INFINITY
     };
     let shore_lake = if s.lake_shoal {
-        // Occupancy is a solid cap, but visually it represents analog water
-        // too shallow to encode as a distinct cell. Keep the mesh wet across
-        // it; the next true dry bank owns the zero crossing. This also keeps
-        // the mesh karst hint from reopening a cave mouth through the cap.
-        s.lake_shoal_depth_km.clamp(1e-6, SHORE_CLAMP_KM)
+        // A shoal is shared, walkable, voxel-dry SAND. The old positive
+        // analog-depth exception made the mesh paint water over that exact
+        // cap one LOD above the blocks (B-15). Preserve its magnitude for a
+        // stable interpolant, but keep it on the dry side of the authority.
+        -s.lake_shoal_depth_km.clamp(1e-6, SHORE_CLAMP_KM)
     } else if s.lake_level_km.is_finite() && !s.frozen {
         // Floor the per-lake constant level, never the position-varying
         // ground. This stays smooth across triangles while its zero crossing
@@ -1722,19 +1751,35 @@ pub fn build_tile_at_season(
             let k = gj * np2 + gi;
             let geometry_s = &samples[k];
             let class_s = &class_samples[k];
+            // Only mixed shoreline triangles can reveal a lake vertex's land
+            // backing. Keep the expensive biome/range payload on that exact
+            // one-vertex ring; open-water interiors retain the cheap carrier.
+            let lake_edge_backing = class_s.lake
+                && (-1isize..=1).any(|dj| {
+                    (-1isize..=1).any(|di| {
+                        let ni = (gi as isize + di) as usize;
+                        let nj = (gj as isize + dj) as usize;
+                        !class_samples[nj * np2 + ni].lake
+                    })
+                });
             // surface slope for rock exposure: radial up vs mesh normal
             let up = world[gj * np2 + gi].normalize();
             let slope = 1.0 - nrm.dot(up).clamp(0.0, 1.0);
-            let river_fall_foam = class_s.river_level_km.is_finite()
+            let river_aeration = class_s.river_level_km.is_finite()
                 && class_s.has_water()
-                && class_s.river_fall > 0.0;
+                && (class_s.river_fall > 0.0 || class_s.river_rapid > 0.0);
             let river_fall_sheet = class_s.river_level_km.is_finite()
                 && class_s.has_water()
                 && class_s.river_fall_sheet > 0.0;
-            let wc = if river_fall_foam {
-                let foam = (class_s.river_fall
-                    * crate::rivers::river_tuning::FOAM_INTENSITY
-                    * crate::rivers::river_tuning::FALL_SURFACE_FOAM_GAIN)
+            let river_shore = class_s.river_level_km.is_finite()
+                && class_s.river_wet > 0.5
+                && !class_s.frozen
+                && class_s.river_dist_km < class_s.river_hw_km * 3.0;
+            let wc = if river_aeration {
+                let fall_foam = class_s.river_fall
+                    * crate::rivers::river_tuning::FALL_SURFACE_FOAM_GAIN;
+                let foam = (fall_foam.max(class_s.river_rapid)
+                    * crate::rivers::river_tuning::FOAM_INTENSITY)
                     .clamp(0.0, 1.0) as f32;
                 mix3(
                     water_color(class_s),
@@ -1765,12 +1810,19 @@ pub fn build_tile_at_season(
             let (ground, biome) = if class_s.sea || class_s.lake || class_s.lake_shoal {
                 // a frozen sheet is solid walkable ice — give it a snow-dusted,
                 // LOD-stable surface so it reads as ground, not a flat plane
-                let color = if class_s.frozen {
-                    frost_color(world[gj * np2 + gi])
+                if class_s.frozen {
+                    (frost_color(world[gj * np2 + gi]), BiomePayload::NONE)
+                } else if lake_edge_backing {
+                    // A mixed lake triangle needs honest land and the same
+                    // range payload as its dry vertex below the exact shore.
+                    shade_ground_pair(planet, face, uu, vv, class_s, slope)
+                } else if class_s.lake_shoal {
+                    // Signed shore coverage remains authoritative; this is
+                    // only the honest land backing revealed on its dry side.
+                    shade_ground_pair(planet, face, uu, vv, class_s, slope)
                 } else {
-                    wc
-                };
-                (color, BiomePayload::NONE)
+                    (wc, BiomePayload::NONE)
+                }
             } else {
                 shade_ground_pair(planet, face, uu, vv, class_s, slope)
             };
@@ -1809,6 +1861,11 @@ pub fn build_tile_at_season(
                         * crate::rivers::river_tuning::FALL_SHEET_STRENGTH) as f32
                 } else if class_s.sea || class_s.lake {
                     1.0
+                } else if river_shore {
+                    // -1 = under-resolved (soft paint only), -2 = exact
+                    // signed contour fully owns the bank. No LOD path changes
+                    // the displaced centerline or the contour's zero.
+                    -1.0 - river_shore_field_gain(class_s, spacing) as f32
                 } else {
                     0.0
                 },
@@ -2425,6 +2482,18 @@ const LAKE_SHORE_HEIGHT_KM: f64 = 0.0015;
 const LAKE_SHORE_SOLID_KM: f64 = 0.100;
 const LAKE_SHORE_REACH_KM: f64 = 0.300;
 
+#[inline]
+fn lake_shore_edge_frac(
+    frozen: bool,
+    lake_level_km: f64,
+    lake_boundary_dist_km: f64,
+) -> f64 {
+    if frozen || !lake_level_km.is_finite() || !lake_boundary_dist_km.is_finite() {
+        return 0.0;
+    }
+    1.0 - smoothstep(LAKE_SHORE_SOLID_KM, LAKE_SHORE_REACH_KM, lake_boundary_dist_km)
+}
+
 /// THE lake-shore material decision (BUGS.md V-7): liquid-lake sand on dry
 /// ground in a small height band above the local waterline AND near the baked
 /// lake footprint's actual lake/rim edge. The height half preserves the old
@@ -2462,8 +2531,7 @@ pub fn lake_shore_frac_for_class(
         return 0.0;
     }
     let by_height = 1.0 - smoothstep(0.0, LAKE_SHORE_HEIGHT_KM, h_km - lake_level_km);
-    let by_edge =
-        1.0 - smoothstep(LAKE_SHORE_SOLID_KM, LAKE_SHORE_REACH_KM, lake_boundary_dist_km);
+    let by_edge = lake_shore_edge_frac(frozen, lake_level_km, lake_boundary_dist_km);
     by_height * by_edge
 }
 
@@ -2526,7 +2594,18 @@ fn shade_ground_pair(
     } else {
         climate_surface_pair(planet, face, u, v, s.temp_c, s.precip, s.sea)
     };
-    let ground = shade_ground_climate(local, s, slope, false, true);
+    let mut ground = shade_ground_climate(local, s, slope, false, true, true);
+    if s.lake && !s.frozen {
+        let backing = lake_shore_edge_frac(
+            s.frozen,
+            s.lake_level_km,
+            s.lake_boundary_dist_km,
+        ) as f32;
+        ground = mix3(ground, local.tint(MainBlock::Sand), backing);
+    }
+    let lake_beach_mode = !s.frozen
+        && s.lake_level_km.is_finite()
+        && s.lake_boundary_dist_km.is_finite();
     let categorical = range.candidates.map(|candidate| {
         // Range endpoints must not bake the spacing-capped mesh normal back
         // into categorical color: adjacent LODs legitimately have different
@@ -2534,7 +2613,7 @@ fn shade_ground_pair(
         // Generic beach is also omitted here: its own categorical comparator
         // selects the fixed sand endpoint in the fragment. Exact near color
         // retains both the voxel-matched rock and smooth coverage averages.
-        shade_ground_climate(candidate, s, 0.0, false, false)
+        shade_ground_climate(candidate, s, 0.0, false, false, false)
     });
     let mut palette_mean = [0.0f32; 3];
     for (color, weight) in categorical.into_iter().zip(range.weights) {
@@ -2547,10 +2626,17 @@ fn shade_ground_pair(
     // a second categorical owner: at range its coverage selects family 6's
     // sand endpoint through the beach field instead of being mixed smoothly
     // into every endpoint (the round-4B 9 km wash).
-    let target_mean = shade_ground_climate(range.mean, s, 0.0, true, true);
-    let beach_payload = local.main_block != MainBlock::Snow
-        && range.weights[7] <= f32::EPSILON;
-    let beach_fraction = if beach_payload && !s.lake_level_km.is_finite() {
+    let target_mean = shade_ground_climate(range.mean, s, 0.0, true, true, false);
+    let beach_payload = lake_beach_mode
+        || (local.main_block != MainBlock::Snow && range.weights[7] <= f32::EPSILON);
+    let beach_fraction = if lake_beach_mode {
+        lake_shore_frac_for_class(
+            s.frozen,
+            s.h_km,
+            s.lake_level_km,
+            s.lake_boundary_dist_km,
+        ) as f32
+    } else if beach_payload {
         beach_frac(s.e_raw, s.h_km) as f32
     } else {
         0.0
@@ -2566,8 +2652,9 @@ fn shade_ground_pair(
     // Independent climate and beach comparators have expectations
     // `palette_mean` and `beach_coverage`. Centering the common base by the
     // sand deviation makes their combined expected RGB exactly target_mean.
+    let centered_beach_coverage = if lake_beach_mode { 0.0 } else { beach_coverage };
     let common_base: [f32; 3] = std::array::from_fn(|channel| {
-        target_mean[channel] - beach_coverage * deviations[6][channel]
+        target_mean[channel] - centered_beach_coverage * deviations[6][channel]
     });
     let endpoint = |slot: usize, scalar: f32| {
         let color = std::array::from_fn(|channel| {
@@ -2578,7 +2665,11 @@ fn shade_ground_pair(
     let endpoints = std::array::from_fn(|family| {
         endpoint(family, range.thresholds[family])
     });
-    let beach_gain = (coast_noise_fine_gain(s.rough) * 255.0).round() as u8;
+    let beach_gain = if lake_beach_mode {
+        0
+    } else {
+        (coast_noise_fine_gain(s.rough) * 255.0).round() as u8
+    };
     // D-8's signed rain-concavity proxy rides the reserved beach.w lane
     // (UNORM: c/2 + 0.5); the pre-payload vertex carried it in the retired
     // far_color_delta alpha byte.
@@ -2612,6 +2703,7 @@ fn shade_ground_climate(
     slope: f64,
     soften_range: bool,
     smooth_generic_beach: bool,
+    smooth_lake_shore: bool,
 ) -> [f32; 3] {
     let contrast = if soften_range { 0.0 } else { 1.0 };
     let weights = climate.display_weights(contrast);
@@ -2622,6 +2714,7 @@ fn shade_ground_climate(
         weights,
         !soften_range,
         smooth_generic_beach,
+        smooth_lake_shore,
     )
 }
 
@@ -2632,6 +2725,7 @@ fn shade_ground_weights(
     weights: [f32; 3],
     snow_priority: bool,
     smooth_generic_beach: bool,
+    smooth_lake_shore: bool,
 ) -> [f32; 3] {
     let grass_tint = climate.tint(MainBlock::Grass);
     let sand = climate.tint(MainBlock::Sand);
@@ -2676,12 +2770,16 @@ fn shade_ground_weights(
     }
     // Lake-shore sand uses the SAME fraction the blocks dither on. Apply
     // after rock/snow so barely-emergent liquid-lake shoals read as sandbars.
-    let lake_shore = lake_shore_frac_for_class(
-        s.frozen,
-        s.h_km,
-        s.lake_level_km,
-        s.lake_boundary_dist_km,
-    ) as f32;
+    let lake_shore = if smooth_lake_shore {
+        lake_shore_frac_for_class(
+            s.frozen,
+            s.h_km,
+            s.lake_level_km,
+            s.lake_boundary_dist_km,
+        ) as f32
+    } else {
+        0.0
+    };
     c = mix3(c, sand, lake_shore);
     let gravel = crate::voxel::Mat::Gravel.color([0.0; 3]);
     let bank = mix3(sand, gravel, s.river_bank_gravel as f32);
@@ -2924,7 +3022,7 @@ mod tests {
             f64::NEG_INFINITY
         };
         let lake = if s.lake_shoal {
-            s.lake_shoal_depth_km.clamp(1e-6, SHORE_CLAMP_KM)
+            -s.lake_shoal_depth_km.clamp(1e-6, SHORE_CLAMP_KM)
         } else if s.lake_level_km.is_finite() && !s.frozen {
             (s.lake_level_km * 1000.0).floor() / 1000.0 - (s.h_km + 1e-6)
         } else {
@@ -3055,6 +3153,31 @@ mod tests {
     }
 
     #[test]
+    fn coarse_river_carrier_cannot_be_bypassed_by_legacy_wet_soft() {
+        let planet = test_planet();
+        let mut s = sample(planet, 0, 0.0, 0.0, RIVER_REF_OCTAVES);
+        s.sea = false;
+        s.lake = false;
+        s.river_dist_km = 0.030;
+        s.river_hw_km = 0.060;
+        s.river_wet = 1.0;
+        s.pond_level_km = f64::NEG_INFINITY;
+        s.wet_soft = 1.0;
+
+        let with_legacy = tile_wet(&s, 0.200);
+        s.wet_soft = 0.0;
+        assert_eq!(
+            with_legacy.to_bits(),
+            tile_wet(&s, 0.200).to_bits(),
+            "legacy river feather bypassed the footprint-aware carrier"
+        );
+
+        s.pond_level_km = 0.0;
+        s.wet_soft = 0.8;
+        assert!(tile_wet(&s, 0.200) > with_legacy, "pond carrier was retired with rivers");
+    }
+
+    #[test]
     fn pond_fill_is_bounded_continuous_and_dies_at_the_cap() {
         let target = 0.030;
         assert_eq!(bounded_pond_fill(0.040, target), 0.040);
@@ -3109,7 +3232,7 @@ mod tests {
             assert!((s.render_h_km() - s.lake_level_km).abs() < 1e-12);
             assert!(s.lake_shoal_depth_km > 0.0 && s.lake_shoal_depth_km < 0.0011);
             assert_eq!(s.wet_soft, 0.0, "a dry shoal must not carry lake wet paint");
-            assert_eq!(shore_field(planet, face, u, v, &s), s.lake_shoal_depth_km as f32);
+            assert_eq!(shore_field(planet, face, u, v, &s), -(s.lake_shoal_depth_km as f32));
 
             // Probe the authoritative lattice center too: the photographed
             // coordinate and every consumer resolve to this same ColCtx.
@@ -3161,6 +3284,81 @@ mod tests {
         assert!((s.lake_level_km * 1000.0).floor() <= ((dry_h + 1e-6) * 1000.0).floor());
         s.h_km = dry_h;
         assert!(shore_field(planet, face, u, v, &s) < 0.0);
+    }
+
+    #[test]
+    fn b15_liquid_lake_mesh_uses_shore_truth_over_land_backing() {
+        let planet = test_planet();
+        let mut wet_edge = 0usize;
+        let mut dry_beach = 0usize;
+        let mut dry_lake_material = 0usize;
+        let mut lake_count = 0usize;
+
+        // Austin's B-15 photograph is nearly nadir from 1.012 km. March the
+        // complete visible headland rather than pinning one fragile noise
+        // sample: both sides of the shared lake boundary must be present.
+        for ilat in -40..=40 {
+            for ilon in -40..=40 {
+                let lat = (17.433 + ilat as f64 * 0.001).to_radians();
+                let lon = (28.979 + ilon as f64 * 0.001).to_radians();
+                let dir = DVec3::new(lat.cos() * lon.cos(), lat.cos() * lon.sin(), lat.sin());
+                let (face, u, v) = crate::planet::face_from_dir(dir);
+                let s = sample(planet, face, u, v, VOXEL_OCTAVES);
+                if s.frozen || !s.lake_level_km.is_finite() {
+                    continue;
+                }
+
+                let shore = shore_field(planet, face, u, v, &s);
+                let (_, payload) = shade_ground_pair(planet, face, u, v, &s, 0.0);
+                assert_eq!(payload.beach[1], 0, "lake beach lost its range-mode marker");
+                assert_eq!(payload.beach[2], 255, "lake vertex disabled its land payload");
+
+                if s.lake {
+                    lake_count += 1;
+                }
+                if s.lake {
+                    wet_edge += 1;
+                    assert!(shore > 0.0, "voxel-wet lake edge became mesh-dry");
+                    let (backing, _) = shade_ground_pair(planet, face, u, v, &s, 0.0);
+                    let water = water_color(&s);
+                    let delta: f32 = backing
+                        .into_iter()
+                        .zip(water)
+                        .map(|(a, b)| (a - b).abs())
+                        .sum();
+                    assert!(delta > 0.05, "lake edge still uses water as its ground backing");
+                } else {
+                    let frac = lake_shore_frac_for_class(
+                        s.frozen,
+                        s.h_km,
+                        s.lake_level_km,
+                        s.lake_boundary_dist_km,
+                    );
+                    if !s.has_water() {
+                        dry_lake_material += 1;
+                        assert!(shore <= 0.0, "voxel-dry beach received mesh water ownership");
+                        if frac > 0.5 {
+                            dry_beach += 1;
+                            assert!(
+                                (f64::from(payload.beach[0]) / 255.0 - frac).abs() < 1.0 / 255.0
+                            );
+                        }
+                    }
+                }
+            }
+        }
+        assert!(
+            wet_edge > 0,
+            "B-15 window no longer contains wet lake truth (lake={lake_count})"
+        );
+        assert!(
+            dry_lake_material > 0,
+            "B-15 window no longer contains voxel-dry lake material"
+        );
+        // The exact photographed headland is primarily an underlying sand
+        // climate; nearby V-7 fractional sand is optional. If present, the
+        // payload equality above still locks its shared fraction.
+        let _ = dry_beach;
     }
 
     #[test]
@@ -3292,7 +3490,18 @@ mod tests {
                         < 0.000_001
                 );
                 assert!((f64::from(vertex.water[3]) - tile_wet(&class, spacing)).abs() < 1e-6);
-                assert_eq!(vertex.wflag, if class.sea || class.lake { 1.0 } else { 0.0 });
+                let expected_wflag = if class.sea || class.lake {
+                    1.0
+                } else if class.river_level_km.is_finite()
+                    && class.river_wet > 0.5
+                    && !class.frozen
+                    && class.river_dist_km < class.river_hw_km * 3.0
+                {
+                    -1.0 - river_shore_field_gain(&class, spacing) as f32
+                } else {
+                    0.0
+                };
+                assert_eq!(vertex.wflag, expected_wflag);
             }
         }
         assert!(shifted_fields > 0, "V-5 tile no longer exercises an octave shore shift");
