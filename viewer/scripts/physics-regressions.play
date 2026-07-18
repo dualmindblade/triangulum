@@ -29,7 +29,9 @@ shot r1_place2
 # underwater==true (was previously missing the immersion flag in fly mode).
 log R2 fly below river water -> underwater true
 mode fly
-teleport -0.490 -30.550 0.004
+# Track-B's shared meander moves the thalweg ~22 m south at this reach; keep
+# the regression in the same river, now over its 10 m-deep carved column.
+teleport -0.4902 -30.550 0.004
 assert underwater true
 shot r2_fly_river
 

@@ -1,0 +1,30 @@
+# Unchanged-7aefe2e evidence set captured before Track B rendering changes.
+weather pin 0.10 0.0
+weather time 0
+weather season 0.45
+mode fly
+
+teleport 15.024 17.662 0.154
+look -75 -21
+sun 15.02 2.66
+shot river_wide
+
+teleport 4.990 -29.403 0.250
+look -10 -40
+sun 4.99 -44.40
+shot river_valley
+
+teleport 7.042 33.477 0.300
+look -55 -16
+sun 7.04 18.48
+shot river_mouth
+
+teleport -8.7585 100.2594 1.250
+look 84 -38
+sun -8.76 85.26
+shot waterfall_site
+
+teleport 52.121544 108.232651 3.189768
+look -37.128249 -34.388927
+sun 10.156558 6.338151
+shot b9_lod_border

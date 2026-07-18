@@ -1,0 +1,22 @@
+# Track B riverbank ground-contact probe. The opening settle drops the player
+# onto the bank; movement then follows the broad river reach at walking height.
+weather pin 0.10 0.0
+weather time 0
+weather season 0.45
+sun 15.02 2.66
+teleport 15.0258 17.66325 0.050
+mode walk
+look -90 -12
+wait 7
+assert grounded true
+assert underwater false
+shot bank_start
+look -101 -12
+hold w 4
+assert mode walk
+wait 1
+assert grounded true
+assert underwater false
+look -90 -12
+shot bank_walked
+state bank_walked

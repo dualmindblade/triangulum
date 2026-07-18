@@ -305,6 +305,13 @@ fn pond_noise(face: usize, u: f64, v: f64, seed: i64) -> f64 {
     fbm_band(face_dir(face, u, v), 0, 2, 16000.0, seed.wrapping_add(9241))
 }
 
+fn pond_flat_at(planet: &Planet, face: usize, u: f64, v: f64) -> bool {
+    let d = 1e-4; // ~0.5 km in face uv
+    let gx = planet.elevation(face, u + d, v) - planet.elevation(face, u - d, v);
+    let gy = planet.elevation(face, u, v + d) - planet.elevation(face, u, v - d);
+    ((gx * gx + gy * gy) as f64).sqrt() < 0.02
+}
+
 /// Follow the local pn gradient to a point safely inside the adjoining pool.
 fn pond_interior_probe_uv(face: usize, u: f64, v: f64, seed: i64) -> Option<(f64, f64)> {
     const TARGET: f64 = -0.55;
@@ -430,6 +437,18 @@ pub struct Sample {
     /// caves passing under a river bank (flooded-caves feature) reads this.
     /// f64::NEG_INFINITY when no river is near.
     pub river_level_km: f64,
+    /// Dry near-water bank material shared by mesh color and voxel material
+    /// contours. `river_bank_gravel` selects gravel over sand inside it.
+    pub river_bank_frac: f64,
+    pub river_bank_gravel: f64,
+    /// A braided-reach sediment bar emerged above the local water surface.
+    pub river_island: bool,
+    /// Deterministic proximity to a detected steep-reach chute (0..1).
+    pub river_fall: f64,
+    /// Narrow main-sheet influence. `river_fall` is the broader aerated
+    /// approach/plunge field; keeping them separate prevents horizontal
+    /// white water from receiving vertical falling-sheet streaks.
+    pub river_fall_sheet: f64,
     /// Pond pool level (km) when the noise-pond machinery wet this column,
     /// else NEG_INFINITY. Ponds are not lakes (no graph cell, no wflag
     /// plane) and were invisible to the per-pixel shore field — the karst
@@ -574,6 +593,11 @@ fn sample_inner_at_season(
         river_hw_km: 0.0,
         river_wet: 0.0,
         river_level_km: f64::NEG_INFINITY,
+        river_bank_frac: 0.0,
+        river_bank_gravel: 0.0,
+        river_island: false,
+        river_fall: 0.0,
+        river_fall_sheet: 0.0,
         salt: false,
         sea,
     };
@@ -594,34 +618,34 @@ fn sample_inner_at_season(
     let seed = planet.seed;
 
     // rivers: the course is DATA (nearest drainage-graph segment, exported
-    // by scripts/bake_rivers.py), not noise. Noise only bends the perceived
-    // course into meanders — a bounded displacement of the query point, so
-    // the wiggled channel always stays inside its own damped floodplain.
-    let mut riv_d = f64::INFINITY; // distance to (meandered) course, km
-    let mut hw = 0.0; //  channel half-width, km
+    // by scripts/bake_rivers.py), not screen/world noise. RiverIndex applies
+    // bounded seeded 1-D noise in segment arc length to the centerline, so
+    // mesh, voxel, physics, shore, and vegetation all measure one course.
+    let mut riv_d = f64::INFINITY; // distance to the arc-noise course, km
+    let mut hw = 0.0; // channel half-width after flow + arc modulation, km
     let mut d_max = 0.0; // extra mid-channel depth, km
     let mut wl = f64::NEG_INFINITY; // water level from the graph, km
-    if planet.rivers.maybe_river(face, u, v) {
-        let ref_axis = if dir.z.abs() < 0.9 { DVec3::Z } else { DVec3::X };
-        let t1 = (ref_axis - dir * ref_axis.dot(dir)).normalize();
-        let t2 = dir.cross(t1);
-        let m1 = fbm_band(dir, 0, 2, 9000.0, seed.wrapping_add(4111));
-        let m2 = fbm_band(dir, 0, 2, 9000.0, seed.wrapping_add(4513));
-        let dm = (dir + (t1 * m1 + t2 * m2) * (0.18 / planet.radius_km)).normalize();
-        let (mf, mu, mv) = crate::planet::face_from_dir(dm);
-        if let Some(hit) = planet.rivers.river_near(mf, mu, mv, dm) {
-            // hydraulic geometry: width ~ 3 sqrt(Q) m, depth ~ Q^0.39,
-            // tapering in from the headwater cutoff so creeks grow from
-            // nothing instead of popping out at full width
-            let q = hit.flow;
-            let taper = smoothstep(120.0, 400.0, q);
-            if taper > 0.0 {
-                hw = 0.0015 * q.sqrt() * taper;
-                d_max = (0.00027 * q.powf(0.39)).min(0.012) * taper;
-                wl = hit.level_km;
-                riv_d = hit.dist_km;
-            }
-        }
+    let mut river_flow = 0.0; // m3/s, decoded from baked flow_log10 at load
+    let mut bank_width_scale = 1.0;
+    let mut bank_profile_power = 1.0;
+    let mut bank_outer_km = 0.0;
+    let mut island_field = 0.0;
+    let mut fall_strength = 0.0;
+    let mut fall_sheet_strength = 0.0;
+    if planet.rivers.maybe_river(face, u, v)
+        && let Some(hit) = planet.rivers.river_near(face, u, v, dir, seed)
+        && hit.half_width_km > 0.0
+    {
+        hw = hit.half_width_km;
+        d_max = hit.depth_km;
+        wl = hit.level_km;
+        riv_d = hit.dist_km;
+        river_flow = hit.flow;
+        bank_width_scale = hit.bank_width_scale;
+        bank_profile_power = hit.bank_profile_power;
+        island_field = hit.island_field;
+        fall_strength = hit.fall_strength;
+        fall_sheet_strength = hit.fall_sheet_strength;
     }
 
     // lake candidate (level/salt/dist/radius) — queried BEFORE the octave
@@ -667,7 +691,6 @@ fn sample_inner_at_season(
         // ...and only over TRUE DAMS: a rim whose own elevation is far below
         // the level (a peeled conduit cell down a flank) must not pass the
         // flood through its territory (W-5, lake 873).
-        let d_any = hit.d_lake_km - hit.past_boundary_km;
         // ...and only within 2.6 radii of a true lake cell: a dam-height rim
         // left far up a peeled conduit chain otherwise floods its band with
         // water pinned at basin level 40+ km from any actual lake — phantom
@@ -675,9 +698,8 @@ fn sample_inner_at_season(
         // them (166 m at 16.569 -32.262). Legit shore bands top out ~2.2 r
         // (voronoi edge + rim band), so 2.6 keeps every real shore wet. The
         // shore apron grades from this frontier too (rivers.rs apron_past).
-        (hit.d_lake_km < hit.radius_km * 2.6
-            && (hit.in_lake_voronoi || (d_any < hit.radius_km * 1.15 && hit.rim_is_dam)))
-        .then_some((hit.level_km, hit.salt, hit.boundary_dist_km))
+        hit.flood_eligible()
+            .then_some((hit.level_km, hit.salt, hit.boundary_dist_km))
     });
 
     // the roughness raster spikes wherever a land cell borders deep ocean
@@ -733,6 +755,40 @@ fn sample_inner_at_season(
         }
     }
 
+    // W-7 / Track-B census closure: the dry shore already rises to the lake
+    // level on a 3% apron, but the wet side of a very large merged lake cell
+    // could remain tens of metres deep right up to that boundary. Give liquid
+    // lakes the matching inward bathymetric shelf. It stays 1.2 m below the
+    // serialized level at the edge, so neither flood territory nor the
+    // block-quantized wet/dry decision moves; only shared ground yields.
+    if !frozen && lake_flood.is_some() && let Some(hit) = &lake {
+        let floor = hit.level_km
+            - crate::rivers::river_tuning::LIQUID_LAKE_INNER_APRON_CLEARANCE_KM
+            - crate::rivers::river_tuning::LIQUID_LAKE_INNER_APRON_GRADE
+                * hit.flood_edge_margin_km;
+        if h < floor {
+            h = floor;
+            h_river_ref = h_river_ref.max(floor);
+        }
+    }
+    // Different-level lake cells can meet at their own Voronoi seam, which
+    // is independent of the lake/rim frontier above. On the lower winner's
+    // side, build the same dry 3% bank toward the nearby higher surface.
+    // The winner and flood predicate remain untouched.
+    if !frozen
+        && let Some(hit) = &lake
+        && hit.higher_competing_level_km.is_finite()
+    {
+        let floor = hit.higher_competing_level_km
+            - crate::rivers::river_tuning::LIQUID_LAKE_INNER_APRON_CLEARANCE_KM
+            - crate::rivers::river_tuning::LIQUID_LAKE_INNER_APRON_GRADE
+                * hit.higher_competing_boundary_km;
+        if h < floor {
+            h = floor;
+            h_river_ref = h_river_ref.max(floor);
+        }
+    }
+
     // shore apron (Sol review finding 1, generalized by census): fine relief
     // digs dips just OUTSIDE a lake's flood boundary that the bake's
     // blended-raster renderability cap cannot see, and the consequence is
@@ -776,8 +832,13 @@ fn sample_inner_at_season(
         out.river_dist_km = riv_d;
         out.river_hw_km = hw;
         out.river_level_km = wl;
+        out.river_fall = fall_strength;
+        out.river_fall_sheet = fall_sheet_strength;
         out.river_wet = 1.0 - smoothstep(0.002, 0.006, wl - h_river_ref);
-        let bank_w = (hw * 0.9).max(0.02) + (h - wl).max(0.0) * 1.2;
+        let bank_w = (hw * bank_width_scale)
+            .max(crate::rivers::river_tuning::BANK_MIN_WIDTH_KM)
+            + (h - wl).max(0.0) * crate::rivers::river_tuning::BANK_CUT_DEPTH_GAIN;
+        bank_outer_km = hw + bank_w;
         if riv_d < hw + bank_w {
             // the graph level never exceeds its own cell's bed elevation,
             // so perching only happens where raster and graph disagree —
@@ -788,13 +849,27 @@ fn sample_inner_at_season(
                 let x = riv_d / hw;
                 let bed = wl - 0.0012 - d_max * (1.0 - x * x);
                 let target = bed.min(h);
-                out.carve_km += h - target;
+                let natural_h = h;
                 h = target;
+                if island_field > 0.0 {
+                    // A tapered sediment target rises from a submerged apron
+                    // to a dry core. It changes only ground; `wl` remains the
+                    // same monotone graph profile and water passes both sides.
+                    let bar = wl
+                        - crate::rivers::river_tuning::ISLAND_SUBMERGED_MARGIN_KM
+                        + island_field
+                            * (crate::rivers::river_tuning::ISLAND_SUBMERGED_MARGIN_KM
+                                + crate::rivers::river_tuning::ISLAND_EMERGENCE_KM);
+                    h = h.max(bar);
+                    out.river_island = h > wl + 1e-6;
+                }
+                out.carve_km += (natural_h - h).max(0.0);
                 if perch < 0.5 && (wl * 1000.0).floor() > ((h + 1e-6) * 1000.0).floor() {
                     out.water_km = wl;
                 }
             } else {
-                let t = smoothstep(0.0, 1.0, (riv_d - hw) / bank_w);
+                let t = smoothstep(0.0, 1.0, (riv_d - hw) / bank_w)
+                    .powf(bank_profile_power);
                 let edge = wl - 0.0012;
                 let target = (edge + (h - edge) * t).min(h);
                 out.carve_km += h - target;
@@ -811,7 +886,14 @@ fn sample_inner_at_season(
                 }
             }
             out.wet_soft =
-                (1.0 - smoothstep(hw, (hw * 1.8).max(0.28), riv_d)) * (1.0 - perch);
+                (1.0 - smoothstep(hw, (hw * 1.8).max(0.28), riv_d))
+                    * (1.0 - perch)
+                    * (1.0
+                        - smoothstep(
+                            crate::rivers::river_tuning::ISLAND_WET_FADE_START,
+                            crate::rivers::river_tuning::ISLAND_WET_FADE_END,
+                            island_field,
+                        ));
         } else if wl.is_finite() {
             // beside the carve zone, natural relief dips below the waterline
             // are the river's own bathymetry — a dry pit sunk under the
@@ -834,7 +916,6 @@ fn sample_inner_at_season(
                     let floor = wl - 0.001 - 0.030 * (riv_d - edge - bay_reach);
                     if h < floor {
                         h = floor;
-                        h_river_ref = h_river_ref.max(floor);
                     }
                 }
             }
@@ -868,6 +949,14 @@ fn sample_inner_at_season(
             && wl.is_finite()
             && wl < lvl - 0.008
             && (riv_d < hw * 1.5 || out.carve_km > 0.0005);
+        if river_owns && !out.water_km.is_finite() {
+            // A perched/dry outlet still owns the corridor, but it cannot
+            // leave the adjacent lake ending over its deep dry carve. Build
+            // a shallow shared bank without changing either water class.
+            let floor = lvl
+                - crate::rivers::river_tuning::LIQUID_LAKE_INNER_APRON_CLEARANCE_KM;
+            h = h.max(floor);
+        }
         if !river_owns {
             // Match the one-metre column lattice, exactly as F-23 does for
             // rivers: a lake exists when its surface block is above the
@@ -923,12 +1012,6 @@ fn sample_inner_at_season(
     // rough coastal escarpments at e.g. 9.27 -76.81). Two taps per axis
     // ~0.5 km apart, gated at a 2% grade; clamped taps at face edges only
     // make the gate more permissive there, never wrong-sided.
-    let pond_flat = || {
-        let d = 1e-4; // ~0.5 km in face uv
-        let gx = planet.elevation(face, u + d, v) - planet.elevation(face, u - d, v);
-        let gy = planet.elevation(face, u, v + d) - planet.elevation(face, u, v - d);
-        ((gx * gx + gy * gy) as f64).sqrt() < 0.02
-    };
     // ...and never inside a lake's flood-eligible territory: the raster
     // blends an escarpment over ~12 km, so e_raw at a basin's rim can read
     // 55 m above the actual lake level — a pond anchored to it is fiction
@@ -937,14 +1020,14 @@ fn sample_inner_at_season(
     // quantization does not relax this Phase-8h cut line: `lake_flood` still
     // excludes the whole eligible territory before the pond mask, and the
     // interior `out.water_km <= h` bench guard remains a second defense.
-    if octaves >= 8
+    if octaves >= crate::rivers::river_tuning::POND_NATIVE_MIN_OCTAVES
         && precip > 550.0
         && rough_r < 0.45
         && e_raw > 0.03
         && env0 < 0.13
         && lake_flood.is_none()
         && !on_apron_band
-        && pond_flat()
+        && pond_flat_at(planet, face, u, v)
     {
         let pn = pond_noise(face, u, v, seed);
         if pn < -0.50 && valley >= 0.999 {
@@ -1065,6 +1148,68 @@ fn sample_inner_at_season(
         }
     }
 
+    // Reassert the lake-bank invariant after every possible carve. This is
+    // deliberately dry-only: water carriers and their levels are immutable,
+    // while a pond or outlet operation cannot reopen a pit beside them.
+    if !frozen && !out.water_km.is_finite() && let Some(hit) = &lake {
+        use crate::rivers::river_tuning as rt;
+        let mut floor = hit.level_km
+            - rt::LIQUID_LAKE_INNER_APRON_CLEARANCE_KM
+            - rt::LIQUID_LAKE_INNER_APRON_GRADE * hit.apron_past_km;
+        if hit.higher_competing_level_km.is_finite() {
+            floor = floor.max(
+                hit.higher_competing_level_km
+                    - rt::LIQUID_LAKE_INNER_APRON_CLEARANCE_KM
+                    - rt::LIQUID_LAKE_INNER_APRON_GRADE
+                        * hit.higher_competing_boundary_km,
+            );
+        }
+        h = h.max(floor);
+    }
+
+    // River seam material is a field, not a renderer decal: it follows the
+    // same meandered distance, bank profile, bar ground, and graph level as
+    // occupancy. Mesh color mixes the fraction; voxel columns dither it.
+    if wl.is_finite() && bank_outer_km > hw && riv_d < bank_outer_km {
+        use crate::rivers::river_tuning as rt;
+        let above = h - wl;
+        let height = 1.0
+            - smoothstep(
+                rt::BANK_MATERIAL_FULL_HEIGHT_KM,
+                rt::BANK_MATERIAL_END_HEIGHT_KM,
+                above.abs(),
+            );
+        let lateral = 1.0
+            - smoothstep(
+                hw * rt::BANK_MATERIAL_INNER_REACH,
+                hw + (bank_outer_km - hw) * rt::BANK_MATERIAL_REACH,
+                riv_d,
+            );
+        let dry = smoothstep(rt::BANK_MATERIAL_DRY_START_KM, rt::BANK_MATERIAL_DRY_END_KM, above);
+        let raw_band = height * lateral * dry;
+        let coherent_band = smoothstep(
+            rt::BANK_MATERIAL_COHERENT_START,
+            rt::BANK_MATERIAL_COHERENT_FULL,
+            raw_band,
+        );
+        let fall_keep = 1.0
+            - smoothstep(
+                rt::FALL_BANK_MATERIAL_SUPPRESS_START,
+                rt::FALL_BANK_MATERIAL_SUPPRESS_FULL,
+                fall_strength,
+            );
+        out.river_bank_frac = coherent_band * fall_keep;
+        let flow = smoothstep(rt::BANK_GRAVEL_FLOW_START_M3S, rt::BANK_GRAVEL_FLOW_END_M3S, river_flow);
+        let cold = 1.0 - smoothstep(rt::BANK_GRAVEL_COLD_FULL_C, rt::BANK_GRAVEL_COLD_END_C, temp_c);
+        let wet = smoothstep(rt::BANK_GRAVEL_WET_START_MM, rt::BANK_GRAVEL_WET_FULL_MM, precip);
+        out.river_bank_gravel = (rt::BANK_GRAVEL_BASE
+            + rt::BANK_GRAVEL_FLOW_GAIN * flow
+            + rt::BANK_GRAVEL_COLD_GAIN * cold
+            + rt::BANK_GRAVEL_WET_GAIN * wet
+            + rt::BANK_GRAVEL_ROUGH_GAIN * rough_r.clamp(0.0, 1.0))
+            .clamp(0.0, 1.0);
+    }
+
     if lake.is_none()
         && (out.water_km > h
             || out.river_level_km.is_finite()
@@ -1132,6 +1277,36 @@ fn tile_wet(s: &Sample, spacing_km: f64) -> f64 {
 }
 
 const SHORE_CLAMP_KM: f64 = 0.005;
+
+/// B-9's one-level pond carrier gate. Pond construction itself stays at the
+/// full/native octave budget; a seven-octave mesh vertex only asks for that
+/// exact class where the octave-independent climate/raster gates and the
+/// deterministic pond mask say a pool can exist. The authoritative sampler
+/// still makes the final support/perch decision.
+fn needs_pond_lod_reference(
+    planet: &Planet,
+    face: usize,
+    u: f64,
+    v: f64,
+    octaves: u32,
+    s: &Sample,
+) -> bool {
+    use crate::rivers::river_tuning as rt;
+    if octaves != rt::POND_LOD_CARRY_OCTAVES
+        || s.precip <= 550.0
+        || s.e_raw <= 0.03
+        || s.lake_level_km.is_finite()
+        || s.river_dist_km.is_finite()
+    {
+        return false;
+    }
+    let rough_r = s.rough * smoothstep(0.02, 0.30, s.e_raw);
+    let env0 = (0.06 + rough_r * 0.85 + s.e_raw * 0.10).clamp(0.05, 1.7);
+    rough_r < 0.45
+        && env0 < 0.13
+        && pond_noise(face, u, v, planet.seed) < -0.50
+        && pond_flat_at(planet, face, u, v)
+}
 
 /// Whether this vertex's liquid lake/river classification can depend on the
 /// procedural ground octave budget. Sea is deliberately absent: ocean
@@ -1344,6 +1519,39 @@ fn shore_field(planet: &Planet, face: usize, u: f64, v: f64, s: &Sample) -> f32 
         .clamp(-SHORE_CLAMP_KM, SHORE_CLAMP_KM) as f32
 }
 
+/// Water-class reference for mesh presentation. Ground geometry keeps its
+/// spacing-capped octave budget, while lake/river shore decisions and B-9's
+/// one-level pond carrier use the exact full-depth wet/dry class. `sample`
+/// and physics remain the sole flood authority.
+fn mesh_class_sample(
+    planet: &Planet,
+    face: usize,
+    u: f64,
+    v: f64,
+    octaves: u32,
+    s: &Sample,
+) -> Sample {
+    if octaves != VOXEL_OCTAVES
+        && (needs_voxel_shore_reference(s, octaves)
+            || needs_pond_lod_reference(planet, face, u, v, octaves, s))
+    {
+        voxel_shore_reference(planet, face, u, v, octaves, s)
+    } else {
+        *s
+    }
+}
+
+fn mesh_render_h_km(geometry: &Sample, class: &Sample) -> f64 {
+    if class.sea || class.lake || class.lake_shoal {
+        class.render_h_km()
+    } else {
+        // If capped geometry called this point a lake but voxel truth calls it
+        // dry, recover its already-retained bed rather than keeping a false
+        // water plane. Ordinary land and painted rivers are unchanged.
+        geometry.h_km
+    }
+}
+
 /// Build the mesh for one tile. Positions are computed on a grid with one
 /// ghost ring so normals use central differences everywhere — one-sided
 /// normals at tile borders leave visible lighting seams between tiles.
@@ -1431,14 +1639,20 @@ pub fn build_tile_at_season(
 
     let mut world = vec![DVec3::ZERO; np2 * np2];
     let mut samples = Vec::with_capacity(np2 * np2);
+    let mut class_samples = Vec::with_capacity(np2 * np2);
+    let mut render_heights = Vec::with_capacity(np2 * np2);
     for gj in 0..np2 {
         for gi in 0..np2 {
             let u = u0 + size * (gi as f64 - 1.0) / TILE_QUADS as f64;
             let v = v0 + size * (gj as f64 - 1.0) / TILE_QUADS as f64;
             let dir = face_dir(face, u, v);
             let s = sample_at_season(planet, face, u, v, octaves, season);
-            world[gj * np2 + gi] = dir * (radius + s.render_h_km() * exaggeration);
+            let class_s = mesh_class_sample(planet, face, u, v, octaves, &s);
+            let render_h = mesh_render_h_km(&s, &class_s);
+            world[gj * np2 + gi] = dir * (radius + render_h * exaggeration);
             samples.push(s);
+            class_samples.push(class_s);
+            render_heights.push(render_h);
         }
     }
 
@@ -1463,13 +1677,14 @@ pub fn build_tile_at_season(
                 let k = pj * half + pi;
                 if parent_oct == octaves {
                     let s = &samples[(2 * pj + 1) * np2 + 2 * pi + 1];
-                    hp[k] = s.render_h_km();
+                    hp[k] = render_heights[(2 * pj + 1) * np2 + 2 * pi + 1];
                     wp[k] = tile_wet(s, spacing * 2.0);
                 } else {
                     let u = u0 + size * (2 * pi) as f64 / TILE_QUADS as f64;
                     let v = v0 + size * (2 * pj) as f64 / TILE_QUADS as f64;
                     let s = sample_at_season(planet, face, u, v, parent_oct, season);
-                    hp[k] = s.render_h_km();
+                    let class_s = mesh_class_sample(planet, face, u, v, parent_oct, &s);
+                    hp[k] = mesh_render_h_km(&s, &class_s);
                     wp[k] = tile_wet(&s, spacing * 2.0);
                 }
             }
@@ -1504,30 +1719,40 @@ pub fn build_tile_at_season(
             let p = world[gj * np2 + gi] - origin;
             let uu = u0 + size * i as f64 / TILE_QUADS as f64;
             let vv = v0 + size * j as f64 / TILE_QUADS as f64;
-            let s = &samples[gj * np2 + gi];
+            let k = gj * np2 + gi;
+            let geometry_s = &samples[k];
+            let class_s = &class_samples[k];
             // surface slope for rock exposure: radial up vs mesh normal
             let up = world[gj * np2 + gi].normalize();
             let slope = 1.0 - nrm.dot(up).clamp(0.0, 1.0);
-            // Shore is a COLOR/CLASS channel, so liquid lake/river crossings
-            // read the same full-octave ground as voxel columns even though
-            // this tile's positions, normals, paint, water plane, and morph
-            // data remain honestly spacing-capped. Restrict the extra sample
-            // to vertices where those fields can participate; doing it for
-            // every vertex would defeat the geometry octave cap's cost bound.
-            let shore_reference = (octaves != VOXEL_OCTAVES
-                && needs_voxel_shore_reference(s, octaves))
-            .then(|| voxel_shore_reference(planet, face, uu, vv, octaves, s));
-            let class_s = shore_reference.as_ref().unwrap_or(s);
-            let wc = water_color(class_s);
+            let river_fall_foam = class_s.river_level_km.is_finite()
+                && class_s.has_water()
+                && class_s.river_fall > 0.0;
+            let river_fall_sheet = class_s.river_level_km.is_finite()
+                && class_s.has_water()
+                && class_s.river_fall_sheet > 0.0;
+            let wc = if river_fall_foam {
+                let foam = (class_s.river_fall
+                    * crate::rivers::river_tuning::FOAM_INTENSITY
+                    * crate::rivers::river_tuning::FALL_SURFACE_FOAM_GAIN)
+                    .clamp(0.0, 1.0) as f32;
+                mix3(
+                    water_color(class_s),
+                    crate::rivers::river_tuning::FALL_FOAM_COLOR,
+                    foam,
+                )
+            } else {
+                water_color(class_s)
+            };
             // deep tiles resolve water: binary flag, crisp step in the
             // shader. Far tiles get the continuous feathered wetness. The
             // sea carries NO wet paint: its geometry+ground color already
             // are the water, and paint only bleeds navy bands onto the
             // beach triangles next door.
-            let wet = if key.deep && !(s.sea || s.lake) {
-                s.has_water() as u32 as f64
+            let wet = if key.deep && !(class_s.sea || class_s.lake) {
+                class_s.has_water() as u32 as f64
             } else {
-                tile_wet(s, spacing)
+                tile_wet(class_s, spacing)
             };
             let wet_parent = if key.level > 0 {
                 parent_value(&wp, i, j)
@@ -1550,11 +1775,28 @@ pub fn build_tile_at_season(
                 shade_ground_pair(planet, face, uu, vv, class_s, slope)
             };
             let dh = if key.level > 0 {
-                ((parent_value(&hp, i, j) - s.render_h_km()) * exaggeration) as f32
+                ((parent_value(&hp, i, j) - render_heights[k]) * exaggeration) as f32
             } else {
                 0.0
             };
-            let shore = shore_field(planet, face, uu, vv, class_s);
+            // A B-9 pond carried onto the one-level-coarser mesh uses the
+            // existing coverage-correct wet paint, whose parent value is
+            // zero and therefore geomorphs away before the next LOD. Keeping
+            // its full-depth signed shore field here would override that
+            // fade in the fragment shader and merely move the razor outward.
+            let carried_pond = octaves
+                == crate::rivers::river_tuning::POND_LOD_CARRY_OCTAVES
+                && class_s.pond_level_km.is_finite()
+                && !geometry_s.pond_level_km.is_finite();
+            let shore = if carried_pond {
+                -(SHORE_CLAMP_KM as f32)
+            } else {
+                shore_field(planet, face, uu, vv, class_s)
+            };
+            // The concentrated shared river profile is already the falling
+            // sheet. Mark those wet vertices for deterministic foam/streak
+            // shading instead of laying a second, slightly displaced quad
+            // over the adaptive mesh face.
             vertices.push(Vertex {
                 pos: [p.x as f32, p.y as f32, p.z as f32],
                 normal: [nrm.x as f32, nrm.y as f32, nrm.z as f32],
@@ -1562,7 +1804,14 @@ pub fn build_tile_at_season(
                 water: [wc[0], wc[1], wc[2], wet as f32],
                 morph_dh: dh,
                 morph_wet: wet_parent as f32,
-                wflag: if s.sea || s.lake { 1.0 } else { 0.0 },
+                wflag: if river_fall_sheet {
+                    3.0 + (class_s.river_fall_sheet
+                        * crate::rivers::river_tuning::FALL_SHEET_STRENGTH) as f32
+                } else if class_s.sea || class_s.lake {
+                    1.0
+                } else {
+                    0.0
+                },
                 shore,
                 biome: biome.endpoints,
                 beach: biome.beach,
@@ -1587,6 +1836,7 @@ pub fn build_tile_at_season(
         .chain((0..n).map(|j| idx(0, j)))
         .chain((0..n).map(|j| idx(n - 1, j)))
         .collect();
+    let skirt_base = (n * n) as u32;
     for &b in &border {
         let v = vertices[b as usize];
         let p = DVec3::new(v.pos[0] as f64, v.pos[1] as f64, v.pos[2] as f64) + origin;
@@ -1605,7 +1855,6 @@ pub fn build_tile_at_season(
             beach: v.beach,
         });
     }
-    let skirt_base = (n * n) as u32;
     let seg = n as u32;
     for side in 0..4u32 {
         for t in 0..(n - 1) as u32 {
@@ -1616,7 +1865,6 @@ pub fn build_tile_at_season(
             indices.extend_from_slice(&[o0, o1, s0, o1, s1, s0]);
         }
     }
-
     // ---- forest impostors (TRANSITIONS.md E, Andrew-greenlit) ----
     // The same trees the voxel patch grows, as crossed billboard quads on
     // the two finest mesh levels: the SAME placement lottery, species mix,
@@ -2435,6 +2683,9 @@ fn shade_ground_weights(
         s.lake_boundary_dist_km,
     ) as f32;
     c = mix3(c, sand, lake_shore);
+    let gravel = crate::voxel::Mat::Gravel.color([0.0; 3]);
+    let bank = mix3(sand, gravel, s.river_bank_gravel as f32);
+    c = mix3(c, bank, s.river_bank_frac as f32);
     c
 }
 
@@ -2913,8 +3164,47 @@ mod tests {
     }
 
     #[test]
-    fn v5_shore_uses_voxel_ground_without_moving_capped_mesh() {
+    fn b9_lake_plane_uses_voxel_class_without_uncapping_dry_ground() {
         let planet = test_planet();
+        // Historical B-9 repro, byte-localized: this is a native eight-
+        // octave pond that vanished on the adjacent seven-octave parent.
+        let pond_lat = 52.1190f64.to_radians();
+        let pond_lon = 108.1955f64.to_radians();
+        let pond_dir = DVec3::new(
+            pond_lat.cos() * pond_lon.cos(),
+            pond_lat.cos() * pond_lon.sin(),
+            pond_lat.sin(),
+        );
+        let (pond_face, pond_u, pond_v) = crate::planet::face_from_dir(pond_dir);
+        let capped_pond = sample(
+            planet,
+            pond_face,
+            pond_u,
+            pond_v,
+            crate::rivers::river_tuning::POND_LOD_CARRY_OCTAVES,
+        );
+        let voxel_pond = sample(planet, pond_face, pond_u, pond_v, VOXEL_OCTAVES);
+        assert!(!capped_pond.pond_level_km.is_finite() && !capped_pond.has_water());
+        assert!(voxel_pond.pond_level_km.is_finite() && voxel_pond.has_water());
+        assert!(needs_pond_lod_reference(
+            planet,
+            pond_face,
+            pond_u,
+            pond_v,
+            crate::rivers::river_tuning::POND_LOD_CARRY_OCTAVES,
+            &capped_pond,
+        ));
+        let carried_pond = mesh_class_sample(
+            planet,
+            pond_face,
+            pond_u,
+            pond_v,
+            crate::rivers::river_tuning::POND_LOD_CARRY_OCTAVES,
+            &capped_pond,
+        );
+        assert_eq!(carried_pond, voxel_pond);
+        assert!(tile_wet(&carried_pond, 0.052) > 0.5);
+
         // A spacing-capped level-14 tile two kilometres from the measured
         // lake_shore camera. Its gentle shoals contain both 8<->12 octave
         // shore shifts and lake-class flips.
@@ -2927,16 +3217,17 @@ mod tests {
         let (u0, v0, size) = key.uv_range();
         let spacing = key.size_km(planet.radius_km) / TILE_QUADS as f64;
 
-        // Reconstruct the geometry source independently at the capped budget,
-        // including the ghost ring that owns vertex normals.
-        let mut capped_world = vec![DVec3::ZERO; np2 * np2];
+        // Reconstruct B-9's carrier independently, including the ghost ring
+        // that owns vertex normals: capped dry ground, voxel-class lake plane.
+        let mut carrier_world = vec![DVec3::ZERO; np2 * np2];
         for gj in 0..np2 {
             for gi in 0..np2 {
                 let u = u0 + size * (gi as f64 - 1.0) / TILE_QUADS as f64;
                 let v = v0 + size * (gj as f64 - 1.0) / TILE_QUADS as f64;
                 let s = sample(planet, key.face as usize, u, v, octaves);
-                capped_world[gj * np2 + gi] =
-                    face_dir(key.face as usize, u, v) * (planet.radius_km + s.render_h_km());
+                let class = mesh_class_sample(planet, key.face as usize, u, v, octaves, &s);
+                carrier_world[gj * np2 + gi] = face_dir(key.face as usize, u, v)
+                    * (planet.radius_km + mesh_render_h_km(&s, &class));
             }
         }
 
@@ -2983,24 +3274,25 @@ mod tests {
                     assert_eq!(optimized.salt, voxel.salt);
                 }
 
-                // Positions, normals, paint, and water-plane ownership must
-                // remain tied to the capped geometry Sample.
+                let class = mesh_class_sample(planet, key.face as usize, u, v, octaves, &capped);
+                // Positions/normals follow the B-9 carrier. Paint remains
+                // spacing-capped; lake plane ownership follows voxel class.
                 let world = mesh_world(&mesh, i, j);
-                let expected_world = capped_world[gj * np2 + gi];
+                let expected_world = carrier_world[gj * np2 + gi];
                 assert!(world.distance(expected_world) < 0.000_001);
-                let expected_normal = (capped_world[gj * np2 + gi + 1]
-                    - capped_world[gj * np2 + gi - 1])
+                let expected_normal = (carrier_world[gj * np2 + gi + 1]
+                    - carrier_world[gj * np2 + gi - 1])
                     .cross(
-                        capped_world[(gj + 1) * np2 + gi]
-                            - capped_world[(gj - 1) * np2 + gi],
+                        carrier_world[(gj + 1) * np2 + gi]
+                            - carrier_world[(gj - 1) * np2 + gi],
                     )
                     .normalize_or_zero();
                 assert!(
                     DVec3::from_array(vertex.normal.map(f64::from)).distance(expected_normal)
                         < 0.000_001
                 );
-                assert!((f64::from(vertex.water[3]) - tile_wet(&capped, spacing)).abs() < 1e-6);
-                assert_eq!(vertex.wflag, if capped.sea || capped.lake { 1.0 } else { 0.0 });
+                assert!((f64::from(vertex.water[3]) - tile_wet(&class, spacing)).abs() < 1e-6);
+                assert_eq!(vertex.wflag, if class.sea || class.lake { 1.0 } else { 0.0 });
             }
         }
         assert!(shifted_fields > 0, "V-5 tile no longer exercises an octave shore shift");

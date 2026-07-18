@@ -1,0 +1,22 @@
+# Track B braided-reach proof. Segment 5467 carries ~47,600 m3/s on a flat
+# reach; its deterministic mid-reach bar is dry, walkable ground at +4.2 m.
+weather pin 0.10 0.0
+weather time 0
+weather season 0.45
+sun 15.16 -28.82
+mode fly
+teleport 15.15595 -13.81879 1.800
+look 0 -80
+shot island_overhead
+state island_overhead
+
+# Same bar from its own east bank at walk height. This is the scenery
+# judgment: dry height, the flanking water, and vegetation read together.
+teleport 15.15850 -13.81860 0.120
+mode walk
+look 0 -8
+wait 7
+assert grounded true
+assert underwater false
+shot island_bar_walkheight
+state island_bar_walkheight

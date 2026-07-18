@@ -1,0 +1,11 @@
+# Iteration-2 fixed overhead reach for the 0.18/0.28/0.38 km amplitude sheet.
+# Only the compile-time river_tuning amplitude changes between the three runs.
+weather pin 0.10 0.0
+weather time 0
+weather season 0.45
+sun 4.99 -44.40
+mode fly
+teleport 4.990 -29.403 1.000
+look -10 -72
+shot meander_comparison
+state meander_comparison

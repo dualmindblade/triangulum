@@ -60,6 +60,7 @@ enum Class {
 struct Side {
     h_km: f64,
     water_km: f64, // NEG_INFINITY = dry
+    lake_level_km: f64,
     sea: bool,
     lake: bool,
     river: bool,
@@ -81,6 +82,7 @@ fn side(s: &Sample) -> Side {
     Side {
         h_km: s.h_km,
         water_km: if s.has_water() { s.water_km } else { f64::NEG_INFINITY },
+        lake_level_km: s.lake_level_km,
         sea: s.sea,
         lake: s.lake,
         river: s.river_dist_km.is_finite() && s.river_dist_km < s.river_hw_km,
@@ -382,12 +384,14 @@ fn main() -> anyhow::Result<()> {
             let m = sample_at_season(&planet, f, u, v, 5, season);
             let (plat, plon) = lat_lon(p);
             println!(
-                "({dx:+},{dy:+}) lat {plat:.4} lon {plon:.4}  h={:.1}m e_raw={:.1}m water={} sea={} lake={} riv_d={} hw={:.3}km rlvl={} wet={:.2} rwet={:.2} | mesh5 water={} wet={:.2} rwet={:.2} | ofrac={:.2} wmask={:.2} rough={:.2}",
+                "({dx:+},{dy:+}) lat {plat:.4} lon {plon:.4}  h={:.1}m e_raw={:.1}m water={} sea={} lake={} frozen={} llvl={} riv_d={} hw={:.3}km rlvl={} wet={:.2} rwet={:.2} | mesh5 water={} wet={:.2} rwet={:.2} | ofrac={:.2} wmask={:.2} rough={:.2}",
                 s.h_km * 1000.0,
                 s.e_raw * 1000.0,
                 if s.has_water() { format!("{:.1}m", s.water_km * 1000.0) } else { "-".into() },
                 s.sea,
                 s.lake,
+                s.frozen,
+                if s.lake_level_km.is_finite() { format!("{:.1}m", s.lake_level_km * 1000.0) } else { "-".into() },
                 if s.river_dist_km.is_finite() { format!("{:.2}km", s.river_dist_km) } else { "-".into() },
                 s.river_hw_km,
                 if s.river_level_km.is_finite() {
@@ -637,12 +641,33 @@ fn main() -> anyhow::Result<()> {
             }
             let (wet, dry) =
                 if f.a.water_km.is_finite() { (&f.a, &f.b) } else { (&f.b, &f.a) };
-            if !wet.lake || wet.sea || wet.frozen {
+            // `lake` records flood participation, but overlapping river
+            // water may be the higher (and therefore visible) carrier. A
+            // lake cap can only fix a wall whose surface is actually the
+            // lake level; exporting river-authored walls here creates an
+            // impossible cap loop that destroys unrelated lakes.
+            if !wet.lake
+                || wet.sea
+                || wet.frozen
+                || !wet.lake_level_km.is_finite()
+                || (wet.water_km - wet.lake_level_km).abs() > 1e-9
+            {
                 continue;
             }
             let (lat, lon) = lat_lon(f.mid);
+            // Attribute the feedback to the exact serialized lake cell that
+            // runtime chose. Re-discovering a lake from this boundary
+            // midpoint in bake-space can flip a float32 Voronoi tie and cap
+            // a neighbouring lake forever instead of the visible one.
+            let (face, u, v) = face_from_dir(f.mid);
+            let lake_cell = planet
+                .rivers
+                .lake_at(face, u, v, f.mid)
+                .expect("liquid lake wall must retain a nearest lake cell")
+                .lake_center;
             sites.push(serde_json::json!({
                 "xyz": [f.mid.x, f.mid.y, f.mid.z],
+                "lake_cell_xyz": [lake_cell.x, lake_cell.y, lake_cell.z],
                 "lat": lat,
                 "lon": lon,
                 "level_km": wet.water_km,
