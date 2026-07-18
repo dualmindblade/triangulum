@@ -1,0 +1,47 @@
+# Triangulum trailer v1 (46s @ 30fps, settled frames -> frames/)
+mode fly
+
+# S1 orbit reveal (5s)
+weather time 335
+teleport 20 -10 550
+look 20 -35
+wait 3
+glide 26 2 480 15 -40 5
+
+# S2 descent toward the forest continent (7s)
+weather time 349
+teleport -8 -60 300
+look -60 -75
+wait 3
+glide -1.5 -67.2 10 -75 -60 7
+
+# S3 spiral down onto the forest coast (6s)
+glide -0.906 -67.804 0.45 -210 -25 6
+
+# S4 canopy run (5s) - seamless continuation
+glide -0.93 -67.85 0.10 -195 -12 5
+
+# S5 meander reach overhead (6s)
+weather time 0
+weather pin 0.10 0.0
+teleport 15.024 17.662 0.9
+look -75 -70
+wait 3
+glide 14.93 17.65 0.55 -170 -60 6
+
+# S6 island (4s)
+teleport 15.15595 -13.81879 1.6
+look 0 -80
+wait 3
+glide 15.157 -13.818 0.35 10 -55 4
+
+# S7 waterfall finale (8s)
+teleport 9.79546 107.60747 0.085
+look 84.75 -6
+wait 3
+dwell 1.5
+glide 9.7955 107.6105 0.075 84.75 -4 5
+dwell 1.5
+
+# S8 rise away (5s)
+glide 9.80 107.615 2.5 60 -18 5

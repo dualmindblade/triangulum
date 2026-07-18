@@ -374,6 +374,9 @@ fn main() -> anyhow::Result<()> {
     // .play script doubles as a self-checking regression/discovery test.
     let mut assert_fails: u32 = 0;
     let mut sim_ticks: u64 = 0;
+    // trailer recording: glide/hold append settled frames here, numbered
+    // across the whole script so ffmpeg assembles one continuous timeline
+    let mut rec_frame: u64 = 0;
     let mut moon_probe_dir = glam::DVec3::X;
     for (ln, raw) in script.lines().enumerate() {
         let line = raw.split('#').next().unwrap_or("").trim();
@@ -775,6 +778,83 @@ fn main() -> anyhow::Result<()> {
                     f(1)?,
                     camera.altitude_km,
                     ps.grounded
+                );
+            }
+            // glide LAT LON ALT_KM YAW PITCH SECONDS — smooth eased camera
+            // move from the current pose, recording every output frame (30
+            // fps) as a SETTLED capture into <run>/frames/. dwell SECONDS
+            // records without moving. Settled per-frame captures mean every
+            // trailer frame is fully converged (no pops, no blur) and the
+            // whole timeline is deterministic; world time advances at real
+            // rate (2 sim ticks per output frame).
+            "glide" | "dwell" => {
+                const REC_FPS: f64 = 30.0;
+                let holding = toks[0] == "dwell";
+                let seconds = if holding { f(1)? } else { f(6)? };
+                let frames = (seconds * REC_FPS).round().max(1.0) as u64;
+                let start = (
+                    camera.lat.to_degrees(),
+                    camera.lon.to_degrees(),
+                    camera.altitude_km,
+                    camera.yaw.to_degrees(),
+                    camera.pitch.to_degrees(),
+                );
+                let target = if holding {
+                    start
+                } else {
+                    (f(1)?, f(2)?, f(3)?, f(4)?, f(5)?)
+                };
+                let wrap = |a: f64| (a + 540.0).rem_euclid(360.0) - 180.0;
+                let frames_dir = format!("{dir}/frames");
+                std::fs::create_dir_all(&frames_dir)?;
+                for i in 0..frames {
+                    let t = (i + 1) as f64 / frames as f64;
+                    let e = t * t * (3.0 - 2.0 * t);
+                    let lat = start.0 + (target.0 - start.0) * e;
+                    let lon = start.1 + wrap(target.1 - start.1) * e;
+                    // geometric altitude interpolation: descents from orbit
+                    // spend their time near the ground, not in empty sky
+                    let alt = if start.2 > 1e-6 && target.2 > 1e-6 {
+                        start.2 * (target.2 / start.2).powf(e)
+                    } else {
+                        start.2 + (target.2 - start.2) * e
+                    };
+                    let yaw = start.3 + wrap(target.3 - start.3) * e;
+                    let pitch = start.4 + (target.4 - start.4) * e;
+                    ps.teleport(&planet, &edits, &mut camera, lat, lon, Some(alt), exagg);
+                    camera.yaw = yaw.to_radians();
+                    camera.pitch = pitch.to_radians().clamp(-1.50, 1.50);
+                    sim_ticks += 1;
+                    renderer.set_render_time_s(sim_ticks as f64 * DT);
+                    let solar = renderer.solar_state(camera.position(), planet.radius_km);
+                    camera_rig.realign(solar, &mut camera);
+                    renderer.underwater = ps.underwater;
+                    let active_edits = focused_edits(&camera, &edits, &moon_edits);
+                    renderer.refresh_edits_snapshot(active_edits);
+                    renderer.capture(
+                        &planet,
+                        &camera,
+                        active_edits,
+                        &format!("{frames_dir}/f{rec_frame:06}.png"),
+                    )?;
+                    rec_frame += 1;
+                    if rec_frame.is_multiple_of(30) {
+                        trace!(
+                            "[{}] {} frame {rec_frame} ({:.0}s of video)",
+                            ln + 1,
+                            toks[0],
+                            rec_frame as f64 / REC_FPS
+                        );
+                    }
+                }
+                trace!(
+                    "[{}] {} done -> lat {:.4} lon {:.4} alt {:.4} ({} frames total)",
+                    ln + 1,
+                    toks[0],
+                    camera.lat.to_degrees(),
+                    camera.lon.to_degrees(),
+                    camera.altitude_km,
+                    rec_frame
                 );
             }
             "tap" => {
