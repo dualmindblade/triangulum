@@ -48,7 +48,19 @@ should render as rapids-grade white-water (weak, narrow) rather than
 stacked fall sheets. Pair with the coarse-LOD sawtooth-edge item.
 Owner: rivers follow-up (Sol authored the field, iteration 3 candidate);
 do NOT merge tri-sol-borders without checking it doesn't collide.
-### L-1 LOD-BOUNDARY PASS — (c) FIXED, (a)/(b) specified, queued post-Track-B
+### L-1 COMPLETE — all three observations fixed (a/b: ced643a, c: 74bfce7)
+(a)+(b) fixed by Sol's border pass, merged ced643a: range comparator
+octaves retire at screen Nyquist, ownership goes hard at the filtered
+prefix (~1 px AA, BIOME_BORDER_AA_BAND_PX dial), medium-range
+categorical deviation converges toward range_mean (dial composes with
+the orbital one). Far borders read as the near view's ragged fractal;
+far tint predicts arrival. World unchanged (shader-only); 2 orbital
+reel poses re-blessed (means 0.33/0.41). After-captures at Austin's
+titled poses: interchange/borders-after-merge/ (befores = his archived
+photos). NOTE: worktree evidence was deleted before archiving —
+FINDINGS gist lives in the merge commit message; lesson: archive
+FINDINGS + sheets BEFORE git worktree remove.
+### L-1 historical entry (superseded):
 2026-07-17: (c) flat mid-altitude color FIXED by the ground patchiness
 field (patch_multiplier in shader.wgsl, sibling of strata_multiplier):
 three world-anchored octaves ~1.4 km/350 m/90 m modulate ground tone,
