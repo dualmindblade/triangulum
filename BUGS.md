@@ -37,6 +37,15 @@ fall detection (chained falls), (b) how fall_strength/fall_sheet
 interpolating influence across whole segments would explain it.
 The sawtooth edge is likely the meander centerline sampled at coarse
 vertex spacing — may need its own fragment-side treatment or accept.
+DIAGNOSIS COMPLETE (2026-07-17): RiverHit is computed exactly per query
+(rivers.rs ~1009), so per-vertex interpolation can only bleed ~one
+vertex spacing. The 10+ km of solid white means MANY consecutive
+segments pass fall detection — a steep canyon reach reads as a CHAIN
+of falls, each adding sheet+foam. Fix direction (iteration 3, Sol):
+falls need a density/prominence constraint — only locally-maximal
+drops with a minimum arc spacing qualify; a continuous steep run
+should render as rapids-grade white-water (weak, narrow) rather than
+stacked fall sheets. Pair with the coarse-LOD sawtooth-edge item.
 Owner: rivers follow-up (Sol authored the field, iteration 3 candidate);
 do NOT merge tri-sol-borders without checking it doesn't collide.
 ### L-1 LOD-BOUNDARY PASS — (c) FIXED, (a)/(b) specified, queued post-Track-B
