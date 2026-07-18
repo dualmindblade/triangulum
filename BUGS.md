@@ -21,6 +21,13 @@ clamp/decay the Track-B fall influence in world arc-distance from the fall
 segment per-fragment (or bake the falloff into the field itself), so far
 LOD converges to normal blue channel a short distance past the plunge.
 Repro: teleport 9.795 107.607 then view from 1.5-3 km (weather time 0).
+UPDATE same-day: rivers.rs fall_foam/sheet_influence ARE arc-bounded
+(FALL_*_REACH_KM), so the whiteness may NOT be foam at all — trailer
+f000850 shows the same white scalloped banks + translucent cutoff on a
+NON-fall desert river (15.15 -13.8 area, 0.3-0.5 km alt). Prime suspect
+shifts to the B-9 water-carry feather at coarse LOD rendering pale/white
+instead of blue. Next: settled shots over fall site AND a plain reach at
+1.5/3 km, compare against pre-Track-B c2bf501 if needed.
 Owner: rivers follow-up (Sol authored the field, iteration 3 candidate);
 do NOT merge tri-sol-borders without checking it doesn't collide.
 ### L-1 LOD-BOUNDARY PASS — (c) FIXED, (a)/(b) specified, queued post-Track-B
