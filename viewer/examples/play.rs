@@ -377,6 +377,8 @@ fn main() -> anyhow::Result<()> {
     // trailer recording: glide/hold append settled frames here, numbered
     // across the whole script so ffmpeg assembles one continuous timeline
     let mut rec_frame: u64 = 0;
+    // session replay cadence: sim ticks advanced per `pose` line (posehz N)
+    let mut pose_ticks: u64 = 6;
     let mut moon_probe_dir = glam::DVec3::X;
     for (ln, raw) in script.lines().enumerate() {
         let line = raw.split('#').next().unwrap_or("").trim();
@@ -779,6 +781,39 @@ fn main() -> anyhow::Result<()> {
                     camera.altitude_km,
                     ps.grounded
                 );
+            }
+            // posehz N — sample rate of the following `pose` lines (in-game
+            // recordings are written at 10 Hz); pose LAT LON ALT YAW PITCH —
+            // one sample of a recorded session: set the exact pose, advance
+            // the world clock by the sample interval. With TRI_POSE_RENDER=1
+            // each pose also records a settled frame (glide-style) so any
+            // recorded session renders straight to video.
+            "posehz" => {
+                let hz = f(1)?.clamp(1.0, 60.0);
+                pose_ticks = (60.0 / hz).round().max(1.0) as u64;
+            }
+            "pose" => {
+                ps.teleport(&planet, &edits, &mut camera, f(1)?, f(2)?, Some(f(3)?), exagg);
+                camera.yaw = f(4)?.to_radians();
+                camera.pitch = f(5)?.to_radians().clamp(-1.50, 1.50);
+                sim_ticks += pose_ticks;
+                renderer.set_render_time_s(sim_ticks as f64 * DT);
+                let solar = renderer.solar_state(camera.position(), planet.radius_km);
+                camera_rig.realign(solar, &mut camera);
+                if std::env::var_os("TRI_POSE_RENDER").is_some() {
+                    let frames_dir = format!("{dir}/frames");
+                    std::fs::create_dir_all(&frames_dir)?;
+                    renderer.underwater = ps.underwater;
+                    let active_edits = focused_edits(&camera, &edits, &moon_edits);
+                    renderer.refresh_edits_snapshot(active_edits);
+                    renderer.capture(
+                        &planet,
+                        &camera,
+                        active_edits,
+                        &format!("{frames_dir}/f{rec_frame:06}.png"),
+                    )?;
+                    rec_frame += 1;
+                }
             }
             // glide LAT LON ALT_KM YAW PITCH SECONDS — smooth eased camera
             // move from the current pose, recording every output frame (30

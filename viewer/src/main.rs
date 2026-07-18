@@ -280,6 +280,7 @@ fn main() -> Result<()> {
         camera,
         args,
         gfx: None,
+        session_rec: None,
         dragging: false,
         last_cursor: (0.0, 0.0),
         keys: Default::default(),
@@ -780,6 +781,13 @@ struct App {
     camera: Camera,
     args: Args,
     gfx: Option<Gfx>,
+    /// F10 session recorder: while Some, the camera pose is sampled at 10 Hz
+    /// of render time into .play `pose` lines. One truth makes this a
+    /// complete session record — pose track + absolute time base; the world
+    /// re-derives. Stop (F10 again) writes interchange/recordings/*.play,
+    /// replayable in the play harness (and renderable to video with
+    /// TRI_POSE_RENDER=1).
+    session_rec: Option<(Vec<String>, f64)>,
     dragging: bool,
     last_cursor: (f64, f64),
     keys: std::collections::HashSet<winit::keyboard::KeyCode>,
@@ -2151,6 +2159,58 @@ impl ApplicationHandler for App {
                                             );
                                         }
                                     }
+                                    // F10 toggles the session recorder: a
+                                    // 10 Hz camera-pose track + the absolute
+                                    // time base, written as a replayable
+                                    // .play script. Deterministic evidence:
+                                    // record what you saw, hand off the file.
+                                    K::F10 => {
+                                        if let Some((lines, _)) = self.session_rec.take() {
+                                            let dir =
+                                                format!("{}/recordings", interchange_dir());
+                                            let _ = std::fs::create_dir_all(&dir);
+                                            let mut n = 1;
+                                            let mut path;
+                                            loop {
+                                                path = format!("{dir}/rec_{n:03}.play");
+                                                if !std::path::Path::new(&path).exists() {
+                                                    break;
+                                                }
+                                                n += 1;
+                                            }
+                                            match std::fs::write(&path, lines.join("\n") + "\n")
+                                            {
+                                                Ok(()) => println!(
+                                                    "session recording saved: {path} ({} poses)",
+                                                    lines.len().saturating_sub(4)
+                                                ),
+                                                Err(e) => {
+                                                    println!("recording save FAILED: {e}")
+                                                }
+                                            }
+                                        } else if let Some(gfx) = self.gfx.as_ref() {
+                                            let t = gfx.renderer.render_time_s();
+                                            let mode = if self.player.mode == Mode::Walk {
+                                                "walk"
+                                            } else {
+                                                "fly"
+                                            };
+                                            self.session_rec = Some((
+                                                vec![
+                                                    format!(
+                                                        "# session recorded in-game (F10), 10 Hz"
+                                                    ),
+                                                    format!("mode {mode}"),
+                                                    format!("weather time {t:.3}"),
+                                                    "posehz 10".to_string(),
+                                                ],
+                                                f64::NEG_INFINITY,
+                                            ));
+                                            println!(
+                                                "session recording STARTED (F10 again to save)"
+                                            );
+                                        }
+                                    }
                                     // time fast-forward ladder (Austin):
                                     // [ slower, ] faster - the ONE clock
                                     // (sun, seasons, weather, orbits)
@@ -2435,6 +2495,22 @@ impl ApplicationHandler for App {
                 let view = frame.texture.create_view(&Default::default());
                 gfx.renderer.underwater = self.player.underwater;
                 let edits = self.edits.for_body(self.camera.body);
+                // session recorder: sample the camera track on render time
+                // (10 Hz) so replays land on the exact same world clock
+                if let Some((lines, last)) = self.session_rec.as_mut() {
+                    let t = gfx.renderer.render_time_s();
+                    if t - *last >= 0.0999 {
+                        *last = t;
+                        lines.push(format!(
+                            "pose {:.6} {:.6} {:.5} {:.2} {:.2}",
+                            self.camera.lat.to_degrees(),
+                            self.camera.lon.to_degrees(),
+                            self.camera.altitude_km,
+                            self.camera.yaw.to_degrees(),
+                            self.camera.pitch.to_degrees(),
+                        ));
+                    }
+                }
                 gfx.renderer.draw(&view, &self.planet, &self.camera, edits);
                 if let (Some((prims, deltas, ppp)), Some(paint)) =
                     (ui_frame, self.egui_paint.as_mut())
