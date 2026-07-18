@@ -9,6 +9,20 @@ are `teleport LAT LON [ALT_KM]` viewer args at `--exagg 1` unless noted.
 
 ## OPEN
 
+### B-13 Waterfall aeration paints the whole downstream reach white at range
+Austin (2026-07-17, trailer v1 ~32s; frames interchange/runs/trailer-v1/
+frames/f001260-f001340): from ~1-3 km altitude the river BELOW the fall at
+9.795 107.607 renders as a bright-white sawtooth staircase down the entire
+visible reach — the fall sheet/foam influence is not decaying with world
+distance from the plunge at mesh LOD (coarse vertices span the reach, so
+per-vertex influence>0 whitens every stepped water plane). Close range is
+CORRECT (sheet + short aerated run, dwell frames f990-f1229). Likely fix:
+clamp/decay the Track-B fall influence in world arc-distance from the fall
+segment per-fragment (or bake the falloff into the field itself), so far
+LOD converges to normal blue channel a short distance past the plunge.
+Repro: teleport 9.795 107.607 then view from 1.5-3 km (weather time 0).
+Owner: rivers follow-up (Sol authored the field, iteration 3 candidate);
+do NOT merge tri-sol-borders without checking it doesn't collide.
 ### L-1 LOD-BOUNDARY PASS — (c) FIXED, (a)/(b) specified, queued post-Track-B
 2026-07-17: (c) flat mid-altitude color FIXED by the ground patchiness
 field (patch_multiplier in shader.wgsl, sibling of strata_multiplier):
