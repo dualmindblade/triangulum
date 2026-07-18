@@ -9,6 +9,21 @@ are `teleport LAT LON [ALT_KM]` viewer args at `--exagg 1` unless noted.
 
 ## OPEN
 
+### B-14 White outline around lakes at high altitude
+Austin photo "White outline" (17.450 28.943 alt 24.06, yaw 32 pitch
+-81): every lake wears a thin pale rim at range. The beach band (or
+the border pass's hard categorical beach owner) stays visible as a
+crisp outline at 24 km where a 10-20 m beach is deep sub-pixel — it
+should retire with footprint like the border octaves now do.
+
+### B-15 Mesh renders beach as water one level above voxels
+Austin photo "Beach level blending" (17.433 28.979 alt 1.012, yaw 41
+pitch -85): at the lake's sand headland, the mesh LOD just above voxel
+range draws its water footprint OVER the beach band (ghosted blue arc
+across sand); the voxel view shows beach. Two-renderer water/land
+boundary disagreement at lake shores — shore field vs mesh water plane
+extent at that LOD.
+
 ### B-13 Waterfall aeration paints the whole downstream reach white at range
 Austin (2026-07-17, trailer v1 ~32s; frames interchange/runs/trailer-v1/
 frames/f001260-f001340): from ~1-3 km altitude the river BELOW the fall at
