@@ -470,6 +470,11 @@ pub struct Renderer {
     /// stays a faithful v2 reference.
     last_live_position_km: DVec3,
     burst_until_frame: u64,
+    /// B-16: the tile keys select_tiles wants THIS frame. The gentle
+    /// eviction path must never shed these — otherwise a pose whose wanted
+    /// set exceeds the budget reaches a rotating equilibrium (tiles land,
+    /// get shed, get re-requested forever) and the view never sharpens.
+    live_wanted: std::collections::HashSet<TileKey>,
     tile_tx: mpsc::Sender<(TileKey, u64, u32, TileMesh)>,
     tile_rx: mpsc::Receiver<(TileKey, u64, u32, TileMesh)>,
     /// PERF.md item 2: per-segment GPU timing behind TRI_GPU_TIMERS=1.
@@ -1175,6 +1180,7 @@ impl Renderer {
             last_live_motion_frame: 0,
             last_live_position_km: DVec3::ZERO,
             burst_until_frame: 0,
+            live_wanted: std::collections::HashSet::new(),
             tile_tx: ttx,
             tile_rx: trx,
             gpu_timers: gpu_timers_init,
@@ -2008,6 +2014,15 @@ impl Renderer {
             while let Ok((k, epoch, bucket, mesh)) = self.tile_rx.try_recv() {
                 if self.tile_pending.get(&k) == Some(&epoch) {
                     self.tile_pending.remove(&k);
+                    if bucket != structural_season.bucket
+                        && std::env::var_os("TRI_STREAM_DEBUG").is_some()
+                    {
+                        eprintln!(
+                            "STREAMDBG DROP f{}L{}({},{}) built-bucket {} != now {}",
+                            k.face, k.level, k.ix, k.iy, bucket,
+                            structural_season.bucket
+                        );
+                    }
                     if bucket == structural_season.bucket {
                         let gpu = self.upload(mesh, bucket);
                         // re-uploads of a live key (edits, refreshes) keep their
@@ -2331,6 +2346,26 @@ impl Renderer {
                 productive_pending,
                 self.chunk_pending.len(),
                 keys.join(" ")
+            );
+        }
+        self.live_wanted = keys.iter().copied().collect();
+        if std::env::var_os("TRI_STREAM_DEBUG").is_some()
+            && self.frame_counter.is_multiple_of(300)
+        {
+            let uncached: Vec<&TileKey> =
+                keys.iter().filter(|k| !self.cache.contains_key(k)).collect();
+            let sample: Vec<String> = uncached
+                .iter()
+                .take(8)
+                .map(|k| format!("f{}L{}({},{}){}", k.face, k.level, k.ix, k.iy,
+                    if k.deep { "D" } else { "" }))
+                .collect();
+            eprintln!(
+                "STREAMDBG frame {} wanted {} uncached {}: {}",
+                self.frame_counter,
+                keys.len(),
+                uncached.len(),
+                sample.join(" ")
             );
         }
         if !self.settle_visuals && camera.body == BodyId::Neisor {
@@ -3770,7 +3805,9 @@ impl Renderer {
             let mut old: Vec<(u64, TileKey)> = self
                 .cache
                 .iter()
-                .filter(|(_, t)| t.last_used < protected)
+                .filter(|(k, t)| {
+                    t.last_used < protected && !self.live_wanted.contains(k)
+                })
                 .map(|(k, t)| (t.last_used, *k))
                 .collect();
             if old.is_empty() {
@@ -3781,7 +3818,10 @@ impl Renderer {
                 old = self
                     .cache
                     .iter()
-                    .filter(|(_, t)| t.last_used + 2 < self.frame_counter)
+                    .filter(|(k, t)| {
+                        t.last_used + 2 < self.frame_counter
+                            && !self.live_wanted.contains(k)
+                    })
                     .map(|(k, t)| (t.last_used, *k))
                     .collect();
             }

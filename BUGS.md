@@ -32,8 +32,24 @@ selected vs wanted set for the view region and compare with cache
 contents; suspects are the covered/ancestor selection logic, the
 child-completeness swap rule, or ease/dissolve gating at this pose
 class. Repro: TRI_POSE_LIVE=1 play scripts/b16-live.play (+
-TRI_STREAM_DEBUG=1); the blur is visible in
-interchange/runs/b16-live/b16_hold_end.png.
+TRI_STREAM_DEBUG=1); blur in interchange/runs/b16-live/b16_hold_end.png.
+HUNT 2 (2026-07-24): wanted=1540, uncached~445 STABLE, and the stuck
+keys (f4L11 2002-2005/1652-1653) NEVER appear in pending — they are
+never REQUESTED. Bucket drops: zero. Eviction: exonerated twice (a
+wanted-set protection was added to the gentle shed anyway — correct
+hardening, kept). ROOT CAUSE = ADMISSION STARVATION: productive cap
+(caps.productive=3 balanced) + finest-first covered_missing ordering
+(level DESC) lets an endless L12 candidate supply win every slot;
+the L11 stand-in gaps (the visible blur) never get a build slot, and
+winners do not accumulate fast enough to drain 445 (needs slot audit:
+log admissions + landings per level next).
+FIX DIRECTION: admission must prioritize the tiles actually COVERING
+BY ANCESTOR in the drawn set (the visible gaps) — e.g. reserve half
+the productive slots for coarsest-missing keys, or sort by
+(is-visible-gap, view-angle) instead of pure level; also consider
+raising caps.productive when quiet (motion stopped) since the quiet
+pose has budget to spare. Verify: uncached must drain to 0 during the
+recording hold and draws reach 1540 live.
 
 ### L-1 COMPLETE — all three observations fixed (a/b: ced643a, c: 74bfce7)
 (a)+(b) fixed by Sol's border pass, merged ced643a: range comparator
