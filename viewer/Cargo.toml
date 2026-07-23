@@ -33,7 +33,8 @@ rayon = "1.12.0"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1.0.150"
 wgpu = "30.0.0"
-winit = "0.30.13"
+# "serde" gives KeyCode Serialize/Deserialize for keybindings.json
+winit = { version = "0.30.13", features = ["serde"] }
 futures-util = { version = "0.3", optional = true }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time"], optional = true }
 tokio-tungstenite = { version = "0.28", optional = true, features = ["rustls-tls-webpki-roots"] }

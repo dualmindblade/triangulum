@@ -3,6 +3,7 @@
 //! (notably the Python-parity noise goldens) link against the library.
 
 pub mod camera;
+pub mod keybindings;
 pub mod moon;
 #[cfg(feature = "multiplayer")]
 pub mod net;

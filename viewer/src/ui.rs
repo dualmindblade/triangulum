@@ -17,7 +17,9 @@ use std::path::{Path, PathBuf};
 use egui::epaint::{ImageDelta, Primitive};
 use egui::{ClippedPrimitive, Color32, TextureId, TexturesDelta};
 use glam::DVec3;
+use winit::keyboard::KeyCode;
 
+use crate::keybindings::{Action, KeyBindings, Rebind, key_name};
 use crate::planet::{Planet, face_from_dir, ground_tint, sea_from_fields};
 
 /// Deepest zoom the pan/zoom view allows (1 = whole planet). At 180x the map
@@ -2634,6 +2636,190 @@ fn png_dims_and_rgba(raw: &[u8]) -> anyhow::Result<([usize; 2], Vec<Color32>)> {
         other => anyhow::bail!("unsupported png color type {other:?}"),
     }
     Ok(([w, h], px))
+}
+
+// ------------------------------------------------- controls window (keys)
+
+/// The Controls popup (F1 by default — itself rebindable): every game
+/// action with its current key and a Rebind button. Follows the PhotoMap
+/// house pattern — while open it owns pointer and keyboard (main.rs routes
+/// events to egui, movement stops), and Esc backs out one layer: a pending
+/// rebind first, then the window.
+///
+/// The rebind key capture happens in main.rs's window_event (it needs the
+/// raw winit `KeyCode` before egui sees it); this struct only holds the
+/// popup state and paints the table. Conflict policy is SWAP — see the
+/// `keybindings` module docs.
+pub struct KeysWindow {
+    pub open: bool,
+    /// Some(action) while "press a key…" is armed; the next key press in
+    /// main.rs lands here via `apply_rebind` (Esc cancels).
+    pending: Option<Action>,
+    /// Rows tinted after the last change so a swap's second row is
+    /// impossible to miss.
+    changed: Vec<Action>,
+    status: String,
+    /// Same recenter-on-resize guard as PhotoMap (egui otherwise remembers
+    /// a possibly off-screen position across OS-window resizes).
+    last_screen: Option<egui::Vec2>,
+}
+
+impl Default for KeysWindow {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl KeysWindow {
+    pub fn new() -> Self {
+        Self {
+            open: false,
+            pending: None,
+            changed: Vec::new(),
+            status: String::new(),
+            last_screen: None,
+        }
+    }
+
+    pub fn toggle(&mut self) {
+        self.open = !self.open;
+        self.pending = None;
+        self.changed.clear();
+        self.status.clear();
+    }
+
+    /// Esc backs out one layer: cancel a pending rebind (returns true —
+    /// consumed), else tell the caller to close the window (false).
+    pub fn handle_escape(&mut self) -> bool {
+        if self.pending.take().is_some() {
+            self.status = "rebind cancelled".into();
+            return true;
+        }
+        false
+    }
+
+    /// The action armed for rebinding, if any (main.rs checks this before
+    /// treating a key press as a window toggle).
+    pub fn pending(&self) -> Option<Action> {
+        self.pending
+    }
+
+    /// A key press arrived while armed. Returns true when the bindings
+    /// actually changed (the caller persists them).
+    pub fn apply_rebind(&mut self, bindings: &mut KeyBindings, code: KeyCode) -> bool {
+        let Some(action) = self.pending.take() else {
+            return false;
+        };
+        match bindings.rebind(action, code) {
+            Rebind::Unchanged => {
+                self.status = format!(
+                    "{} already was {}",
+                    action.label(),
+                    key_name(bindings.key(action))
+                );
+                false
+            }
+            Rebind::Bound => {
+                self.changed = vec![action];
+                self.status = format!("{} → {}", action.label(), key_name(code));
+                true
+            }
+            Rebind::Swapped(other) => {
+                self.changed = vec![action, other];
+                self.status = format!(
+                    "{} → {}; {} takes {} (swap)",
+                    action.label(),
+                    key_name(code),
+                    other.label(),
+                    key_name(bindings.key(other))
+                );
+                true
+            }
+        }
+    }
+
+    /// Paint the popup. Returns true when the bindings changed here (only
+    /// Reset — rebinds arrive through `apply_rebind`) so the app saves.
+    pub fn ui(&mut self, ctx: &egui::Context, bindings: &mut KeyBindings) -> bool {
+        if !self.open {
+            return false;
+        }
+        let mut dirty = false;
+        let screen = ctx.content_rect();
+        let recenter = self.last_screen != Some(screen.size());
+        self.last_screen = Some(screen.size());
+        let mut window = egui::Window::new("Controls — key bindings")
+            .collapsible(false)
+            .resizable(false)
+            .max_height(screen.height() * 0.85)
+            .vscroll(true)
+            .pivot(egui::Align2::CENTER_CENTER)
+            .default_pos(screen.center());
+        if recenter {
+            window = window.current_pos(screen.center());
+        }
+        window.show(ctx, |ui| {
+            ui.horizontal(|ui| {
+                ui.label(if self.pending.is_some() {
+                    "Press the new key… (Esc cancels)"
+                } else {
+                    "Click Rebind, then press the new key. A taken key swaps with its owner."
+                });
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.button("Reset to defaults").clicked() {
+                        bindings.reset();
+                        self.pending = None;
+                        self.changed.clear();
+                        self.status = "defaults restored".into();
+                        dirty = true;
+                    }
+                });
+            });
+            ui.separator();
+            egui::Grid::new("keybindings-grid")
+                .num_columns(4)
+                .striped(true)
+                .spacing(egui::vec2(14.0, 4.0))
+                .show(ui, |ui| {
+                    ui.strong("Action");
+                    ui.strong("Key");
+                    ui.strong("");
+                    ui.strong("Does");
+                    ui.end_row();
+                    for &action in &Action::ALL {
+                        let tint = self.changed.contains(&action);
+                        let name = if tint {
+                            egui::RichText::new(action.label())
+                                .color(egui::Color32::from_rgb(255, 205, 90))
+                        } else {
+                            egui::RichText::new(action.label())
+                        };
+                        ui.label(name);
+                        ui.monospace(key_name(bindings.key(action)));
+                        if self.pending == Some(action) {
+                            // the armed row: the button becomes the prompt
+                            let _ = ui.small_button("press a key…");
+                        } else if ui.small_button("Rebind").clicked() {
+                            self.pending = Some(action);
+                            self.changed.clear();
+                            self.status.clear();
+                        }
+                        ui.weak(action.description());
+                        ui.end_row();
+                    }
+                });
+            ui.separator();
+            ui.weak(
+                "Fixed: Esc backs out (rebind → window → mouse capture → quit) · \
+                 Shift+screenshot = raw frame · mouse: click captures / digs, \
+                 right-click places, wheel = fly altitude, drag = look",
+            );
+            if !self.status.is_empty() {
+                ui.label(&self.status);
+            }
+        });
+        dirty
+    }
 }
 
 // ----------------------------------------------------- egui paint (wgpu 30)

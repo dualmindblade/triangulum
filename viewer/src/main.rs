@@ -4,8 +4,10 @@
 //!   cargo run --release -- --capture shot.png \
 //!       --lat 15 --lon 40 --alt 12000            headless screenshot
 //!
-//! Controls: mouse = look, LMB/RMB = break/place, C = cycle body focus,
-//! Q/E = freecam roll, scroll = Neisor fly altitude, Esc = release/quit.
+//! Controls: mouse = look, LMB/RMB = break/place, scroll = Neisor fly
+//! altitude, Esc = release/quit — and F1 opens the Controls window, the
+//! live reference for every key binding (all remappable there; the layout
+//! persists in `{assets}/keybindings.json`).
 
 use anyhow::Result;
 use std::sync::Arc;
@@ -289,6 +291,8 @@ fn main() -> Result<()> {
         last_frame: std::time::Instant::now(),
         mouse_locked: false,
         photo_map,
+        bindings: triangulum_viewer::keybindings::KeyBindings::load(&assets_dir()),
+        keys_window: triangulum_viewer::ui::KeysWindow::new(),
         egui_ctx: egui::Context::default(),
         egui_state: None,
         egui_paint: None,
@@ -798,6 +802,11 @@ struct App {
     /// T opens the photo-map popup (ui.rs): teleport by map, photo, or
     /// typed coordinates; browse/delete the screenshot roll.
     photo_map: triangulum_viewer::ui::PhotoMap,
+    /// Every keyboard game action resolves through this table (defaults =
+    /// the historical layout); persisted to `{assets}/keybindings.json`.
+    bindings: triangulum_viewer::keybindings::KeyBindings,
+    /// F1 (rebindable) opens the Controls popup (ui.rs): list + remap keys.
+    keys_window: triangulum_viewer::ui::KeysWindow,
     egui_ctx: egui::Context,
     egui_state: Option<egui_winit::State>,
     egui_paint: Option<triangulum_viewer::ui::EguiPaint>,
@@ -1387,6 +1396,14 @@ impl App {
         self.title_timer = -2.0; // let the message linger
     }
 
+    /// Persist the key layout on every change (rebind/reset) so it
+    /// survives the session; a failed write only costs the persistence.
+    fn save_bindings(&self) {
+        if let Err(e) = self.bindings.save(&assets_dir()) {
+            eprintln!("keybindings save FAILED: {e}");
+        }
+    }
+
     /// V key: the in-game sync-delta meter — scripts/sync_diff.py's twin.
     /// Renders the current pose twice (voxel patch on, then off), diffs the
     /// pair in memory, and saves vox/mesh/heatmap PNGs plus sidecars under
@@ -1811,7 +1828,6 @@ impl App {
     /// the shared player physics (player.rs — same code the play harness
     /// scripts drive).
     fn update(&mut self) {
-        use winit::keyboard::KeyCode as K;
         let dt = {
             let now = std::time::Instant::now();
             let dt = now.duration_since(self.last_frame).as_secs_f64();
@@ -1827,17 +1843,18 @@ impl App {
                 .solar_state(self.camera.position(), self.planet.radius_km);
             self.camera_rig.realign(solar, &mut self.camera);
         }
-        // an open photo map owns the keyboard: no movement input
-        let input = if self.photo_map.open {
+        // an open popup (photo map / controls) owns the keyboard: no
+        // movement input
+        use triangulum_viewer::keybindings::Action as A;
+        let held = |a: A| self.keys.contains(&self.bindings.key(a));
+        let input = if self.photo_map.open || self.keys_window.open {
             triangulum_viewer::player::Input::default()
         } else {
             triangulum_viewer::player::Input {
-                fwd: (self.keys.contains(&K::KeyW) as i32 - self.keys.contains(&K::KeyS) as i32)
-                    as f64,
-                strafe: (self.keys.contains(&K::KeyD) as i32 - self.keys.contains(&K::KeyA) as i32)
-                    as f64,
-                sprint: self.keys.contains(&K::ShiftLeft),
-                swim_up: self.keys.contains(&K::Space),
+                fwd: (held(A::MoveForward) as i32 - held(A::MoveBack) as i32) as f64,
+                strafe: (held(A::MoveRight) as i32 - held(A::MoveLeft) as i32) as f64,
+                sprint: held(A::Sprint),
+                swim_up: held(A::Jump),
             }
         };
         match self.camera_rig.mode {
@@ -1879,11 +1896,12 @@ impl App {
             }
             CameraMode::Focused(_) => {}
             CameraMode::Freecam => {
-                let vertical = (self.keys.contains(&K::Space) as i32
-                    - self.keys.contains(&K::ControlLeft) as i32)
+                let vertical = (self.keys.contains(&self.bindings.key(A::Jump)) as i32
+                    - self.keys.contains(&self.bindings.key(A::Descend)) as i32)
                     as f64;
-                let roll = (self.keys.contains(&K::KeyE) as i32
-                    - self.keys.contains(&K::KeyQ) as i32) as f64;
+                let roll = (self.keys.contains(&self.bindings.key(A::RollRight)) as i32
+                    - self.keys.contains(&self.bindings.key(A::RollLeft)) as i32)
+                    as f64;
                 self.camera.roll =
                     (self.camera.roll + roll * dt * 1.2).rem_euclid(std::f64::consts::TAU);
                 let nav_altitude = self
@@ -1918,9 +1936,20 @@ impl App {
         if self.title_timer > 0.5 && !self.photo_map.open {
             self.title_timer = 0.0;
             if let Some(gfx) = &self.gfx {
+                // the Controls window (F1 unless remapped) is the real key
+                // reference now; the title only points the way to it
+                let controls = triangulum_viewer::keybindings::key_name(
+                    self.bindings.key(A::ControlsWindow),
+                );
                 let mode = match self.player.mode {
-                    Mode::Fly => "fly (click captures mouse, G walk, T teleport, P shot, V sync)",
-                    Mode::Walk => "walk (F fly, space jump, T teleport, P shot, V sync)",
+                    Mode::Fly => format!(
+                        "fly (click captures mouse, {} walk, {controls} controls)",
+                        triangulum_viewer::keybindings::key_name(self.bindings.key(A::WalkMode)),
+                    ),
+                    Mode::Walk => format!(
+                        "walk ({} fly, {controls} controls)",
+                        triangulum_viewer::keybindings::key_name(self.bindings.key(A::FlyMode)),
+                    ),
                 };
                 // objective framerate, not "feels smooth": avg cadence
                 // (vsync-locked 60 Hz reads 16.7), p95 where hitches live
@@ -1962,7 +1991,7 @@ impl ApplicationHandler for App {
     ) {
         // raw mouse motion drives the view while the pointer is captured
         if let winit::event::DeviceEvent::MouseMotion { delta: (dx, dy) } = event {
-            if self.mouse_locked && !self.photo_map.open {
+            if self.mouse_locked && !self.photo_map.open && !self.keys_window.open {
                 self.camera.yaw += dx * 0.0022;
                 self.camera.pitch = (self.camera.pitch - dy * 0.0022).clamp(
                     -triangulum_viewer::camera::MAX_PITCH_RAD,
@@ -2097,6 +2126,64 @@ impl ApplicationHandler for App {
             }
             return;
         }
+        // an open Controls window owns input the same way the photo map
+        // does: key presses feed the rebind flow, everything else goes to
+        // egui, never the game. Esc backs out one layer — a pending rebind
+        // first, then the window itself.
+        if self.keys_window.open
+            && !matches!(
+                event,
+                WindowEvent::CloseRequested
+                    | WindowEvent::Resized(_)
+                    | WindowEvent::RedrawRequested
+            )
+        {
+            if let WindowEvent::KeyboardInput { event: ke, .. } = &event
+                && ke.state == ElementState::Pressed
+                && !ke.repeat
+            {
+                use triangulum_viewer::keybindings::Action as A;
+                use winit::keyboard::PhysicalKey;
+                if ke.logical_key
+                    == winit::keyboard::Key::Named(winit::keyboard::NamedKey::Escape)
+                {
+                    if !self.keys_window.handle_escape() {
+                        self.keys_window.open = false;
+                        self.title_timer = 1.0;
+                    }
+                    if let Some(gfx) = self.gfx.as_ref() {
+                        gfx.window.request_redraw();
+                    }
+                    return;
+                }
+                if let PhysicalKey::Code(code) = ke.physical_key {
+                    if self.keys_window.pending().is_some() {
+                        // the armed rebind captures ANY key (that's the
+                        // point), so this branch runs before the toggle check
+                        if self.keys_window.apply_rebind(&mut self.bindings, code) {
+                            self.save_bindings();
+                        }
+                        if let Some(gfx) = self.gfx.as_ref() {
+                            gfx.window.request_redraw();
+                        }
+                        return;
+                    }
+                    if code == self.bindings.key(A::ControlsWindow) {
+                        self.keys_window.toggle();
+                        self.title_timer = 1.0;
+                        if let Some(gfx) = self.gfx.as_ref() {
+                            gfx.window.request_redraw();
+                        }
+                        return;
+                    }
+                }
+            }
+            if let (Some(st), Some(gfx)) = (self.egui_state.as_mut(), self.gfx.as_ref()) {
+                let _ = st.on_window_event(&gfx.window, &event);
+                gfx.window.request_redraw();
+            }
+            return;
+        }
         match event {
             WindowEvent::CloseRequested => event_loop.exit(),
             WindowEvent::KeyboardInput { event, .. } => {
@@ -2116,9 +2203,14 @@ impl ApplicationHandler for App {
                     match event.state {
                         ElementState::Pressed => {
                             self.keys.insert(code);
-                            if !event.repeat {
-                                match code {
-                                    K::KeyG => {
+                            // every game action resolves through the bindings
+                            // table (F1 Controls window remaps + persists it)
+                            use triangulum_viewer::keybindings::Action as A;
+                            if !event.repeat
+                                && let Some(action) = self.bindings.action_for(code)
+                            {
+                                match action {
+                                    A::WalkMode => {
                                         // walk/fly IN PLACE: focus_camera
                                         // re-places the camera at the orbit
                                         // view, so calling it while already
@@ -2132,20 +2224,20 @@ impl ApplicationHandler for App {
                                         }
                                         self.player.set_walk(&mut self.camera);
                                     }
-                                    K::KeyF => {
+                                    A::FlyMode => {
                                         let body = self.mode_switch_body();
                                         if self.camera_rig.focused_body() != Some(body) {
                                             self.focus_camera(body);
                                         }
                                         self.player.set_fly(&mut self.camera);
                                     }
-                                    K::KeyC => self.cycle_camera_focus(),
+                                    A::CycleCameraFocus => self.cycle_camera_focus(),
                                     // F9 cycles live detail streaming so the
                                     // fidelity-vs-frame-cost trade can be
                                     // FELT mid-flight: 0 strict (silkiest,
                                     // barren flight), 1 balanced, 2 eager
                                     // (continuous detail, pre-v2 frame cost)
-                                    K::F9 => {
+                                    A::StreamCycle => {
                                         if let Some(gfx) = self.gfx.as_mut() {
                                             gfx.renderer.stream_level =
                                                 (gfx.renderer.stream_level + 1) % 3;
@@ -2164,7 +2256,7 @@ impl ApplicationHandler for App {
                                     // time base, written as a replayable
                                     // .play script. Deterministic evidence:
                                     // record what you saw, hand off the file.
-                                    K::F10 => {
+                                    A::SessionRecord => {
                                         if let Some((lines, _)) = self.session_rec.take() {
                                             let dir =
                                                 format!("{}/recordings", interchange_dir());
@@ -2214,7 +2306,7 @@ impl ApplicationHandler for App {
                                     // time fast-forward ladder (Austin):
                                     // [ slower, ] faster - the ONE clock
                                     // (sun, seasons, weather, orbits)
-                                    K::BracketLeft | K::BracketRight => {
+                                    A::TimeSlower | A::TimeFaster => {
                                         const LADDER: [f64; 5] =
                                             [1.0, 10.0, 60.0, 600.0, 3600.0];
                                         #[cfg(feature = "multiplayer")]
@@ -2227,7 +2319,7 @@ impl ApplicationHandler for App {
                                                 .iter()
                                                 .position(|s| (s - cur).abs() < 0.5)
                                                 .unwrap_or(0);
-                                            let next = if code == K::BracketRight {
+                                            let next = if action == A::TimeFaster {
                                                 (idx + 1).min(LADDER.len() - 1)
                                             } else {
                                                 idx.saturating_sub(1)
@@ -2235,9 +2327,9 @@ impl ApplicationHandler for App {
                                             gfx.renderer.set_time_scale(LADDER[next]);
                                         }
                                     }
-                                    K::Space => self.player.jump(),
-                                    K::KeyR => self.toggle_torch(),
-                                    K::KeyT => {
+                                    A::Jump => self.player.jump(),
+                                    A::Torch => self.toggle_torch(),
+                                    A::TeleportMap => {
                                         // the photo map owns input while open, so
                                         // release the pointer and stop movement
                                         self.set_mouse_lock(false);
@@ -2249,7 +2341,7 @@ impl ApplicationHandler for App {
                                     // frame - the only lens that shows what
                                     // you actually saw mid-flight (stand-ins,
                                     // missing detail, transient seams).
-                                    K::KeyP => {
+                                    A::Photo => {
                                         let raw = self.keys.contains(&K::ShiftLeft)
                                             || self.keys.contains(&K::ShiftRight);
                                         if raw {
@@ -2264,8 +2356,25 @@ impl ApplicationHandler for App {
                                             self.save_screenshot();
                                         }
                                     }
-                                    K::KeyV => self.save_sync_delta(),
-                                    _ => {}
+                                    A::SyncDelta => self.save_sync_delta(),
+                                    A::ControlsWindow => {
+                                        // like the map: the popup owns input,
+                                        // so release the pointer and stop
+                                        // any in-flight movement
+                                        self.set_mouse_lock(false);
+                                        self.keys.clear();
+                                        self.keys_window.toggle();
+                                    }
+                                    // held movement keys are consumed from
+                                    // self.keys each frame in update()
+                                    A::MoveForward
+                                    | A::MoveBack
+                                    | A::MoveLeft
+                                    | A::MoveRight
+                                    | A::Sprint
+                                    | A::Descend
+                                    | A::RollLeft
+                                    | A::RollRight => {}
                                 }
                             }
                         }
@@ -2442,6 +2551,27 @@ impl ApplicationHandler for App {
                     st.handle_platform_output(&gfx.window, full.platform_output);
                     let prims = self.egui_ctx.tessellate(full.shapes, full.pixels_per_point);
                     ui_frame = Some((prims, full.textures_delta, full.pixels_per_point));
+                }
+                // Controls window: same split-borrow egui build as the photo
+                // map (the two popups are mutually exclusive — each one owns
+                // input while open, so the other's toggle key never fires)
+                if !self.photo_map.open
+                    && self.keys_window.open
+                    && let (Some(st), Some(gfx)) = (self.egui_state.as_mut(), self.gfx.as_ref())
+                {
+                    let raw = st.take_egui_input(&gfx.window);
+                    let kw = &mut self.keys_window;
+                    let kb = &mut self.bindings;
+                    let mut dirty = false;
+                    let full = self.egui_ctx.run_ui(raw, |ctx| {
+                        dirty = kw.ui(ctx, kb);
+                    });
+                    st.handle_platform_output(&gfx.window, full.platform_output);
+                    let prims = self.egui_ctx.tessellate(full.shapes, full.pixels_per_point);
+                    ui_frame = Some((prims, full.textures_delta, full.pixels_per_point));
+                    if dirty {
+                        self.save_bindings();
+                    }
                 }
                 #[cfg(feature = "multiplayer")]
                 if self.photo_map.pending_disconnect {
