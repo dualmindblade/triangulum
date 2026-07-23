@@ -131,7 +131,9 @@ struct VsIn {
     @location(4) morph: vec4<f32>,
     // Fixed Koppen-family endpoints. RGB is linear UNORM8; alpha is the
     // cumulative class-coverage threshold. Descending thresholds disable the
-    // payload on voxels, water, and impostors.
+    // payload on voxels, water, and impostors; trees reuse biome0/1 RGB for a
+    // packed root-relative displacement and biome2.r for retained probability
+    // while keeping descending alpha.
     @location(5) biome0: vec4<f32>,
     @location(6) biome1: vec4<f32>,
     @location(7) biome2: vec4<f32>,
@@ -141,7 +143,8 @@ struct VsIn {
     @location(11) biome6: vec4<f32>,
     @location(12) biome7: vec4<f32>,
     // x = coverage, y = roughness-adapted fine gain, z = valid marker,
-    // w = D-8's signed rain-concavity proxy in UNORM (c/2 + 0.5)
+    // w = D-8's signed rain-concavity proxy in UNORM (c/2 + 0.5). Payload-off
+    // trees put their nonzero conditional placement ticket in y.
     @location(13) beach: vec4<f32>,
 };
 struct VsOut {
@@ -195,6 +198,37 @@ const BIOME_RANGE_CATEGORICAL_CONTRAST = 0.45;
 const BIOME_ORBIT_CONTRAST_FADE_START_KM = 120.0;
 const BIOME_ORBIT_CONTRAST_FADE_END_KM = 240.0;
 const BIOME_ORBIT_CATEGORICAL_CONTRAST = 0.45;
+// B-18: individual forest geometry retires into the existing continuous
+// far-canopy tint by camera distance, never by mesh level. The probability
+// knots sit safely below each level's CPU superset budget at its handoff
+// distance (L14/13 ~4.7 km, L13/12 ~9.5 km, L12/11 ~19 km); the final knot
+// reaches zero before the L11/10 edge. Scale conserves canopy area while
+// resolved, then caps before trees read as blobs. These are Andrew's forest
+// handoff knobs.
+const TREE_IMPOSTOR_FULL_DISTANCE_KM = 1.8;
+const TREE_IMPOSTOR_NEAR_FADE_DISTANCE_KM = 2.5;
+const TREE_IMPOSTOR_L14_L13_DISTANCE_KM = 4.3;
+const TREE_IMPOSTOR_L13_L12_DISTANCE_KM = 8.8;
+const TREE_IMPOSTOR_L12_L11_DISTANCE_KM = 18.0;
+const TREE_IMPOSTOR_ZERO_DISTANCE_KM = 34.0;
+const TREE_IMPOSTOR_NEAR_PROBABILITY = 0.30;
+const TREE_IMPOSTOR_L14_L13_PROBABILITY = 0.16;
+const TREE_IMPOSTOR_L13_L12_PROBABILITY = 0.075;
+const TREE_IMPOSTOR_L12_L11_PROBABILITY = 0.010;
+const TREE_IMPOSTOR_MAX_SCALE = 2.2;
+const TREE_IMPOSTOR_OFFSET_RANGE_KM = 0.128;
+// B-17: coarse shore triangles retain the exact signed authority carrier but
+// cannot recover curvature between saturated +/-5 m vertices. Above the
+// approved L-1 flight range, bend only that presentation contour with a
+// screen-filtered, world-anchored rotated-gradient residual. The residual is
+// gated out at the carrier extremes, so it cannot create water in a pure-land
+// or pure-water triangle. These are Andrew's range-curve knobs.
+const COAST_RANGE_CURVE_START_ALT_KM = 12.0;
+const COAST_RANGE_CURVE_FULL_ALT_KM = 60.0;
+const COAST_RANGE_CURVE_BASE_WAVELENGTH_KM = 28.0;
+const COAST_RANGE_CURVE_CARRIER_GAIN_KM = 0.0042;
+const COAST_RANGE_SHORE_CARRIER_KM = 0.005;
+const COAST_RANGE_AA_WIDTH_PX = 1.35;
 
 // ---- Track C landscape color knobs ----------------------------------------
 // Strata are a modulation of the approved material color, never a replacement.
@@ -800,11 +834,150 @@ fn beach_range_comparator(dir: vec3<f32>, fine_gain: f32) -> f32 {
     return clamp(biome_normal_cdf(2.56 * sum / sqrt(variance)), 0.0, 1.0);
 }
 
+fn coast_range_curved_shore(shore: f32, rel: vec3<f32>) -> f32 {
+    let range_gain = smoothstep(
+        COAST_RANGE_CURVE_START_ALT_KM,
+        COAST_RANGE_CURVE_FULL_ALT_KM,
+        max(globals.weather8.w, 0.0),
+    );
+    let dir = normalize(rel - globals.center.xyz);
+    let pixel_angle = max(length(dpdx(dir)), length(dpdy(dir)));
+    let edge_gate = 1.0 - smoothstep(
+        COAST_RANGE_SHORE_CARRIER_KM * 0.75,
+        COAST_RANGE_SHORE_CARRIER_KM,
+        abs(shore),
+    );
+    if (range_gain <= 0.0 || edge_gate <= 0.0) {
+        return shore;
+    }
+
+    // Direction-space frequency converts the artist-facing kilometre
+    // wavelength using the rendered body's radius. Three rotated octaves
+    // break both the mesh/raster axes and one another; each retires before its
+    // lattice crosses screen Nyquist, matching the L-1 stability contract.
+    let radius_km = length(rel - globals.center.xyz);
+    var frequency = radius_km / COAST_RANGE_CURVE_BASE_WAVELENGTH_KM;
+    var amplitude = 1.0;
+    var residual = 0.0;
+    for (var octave = 0; octave < 3; octave = octave + 1) {
+        let footprint = pixel_angle * frequency;
+        let resolved = 1.0 - smoothstep(
+            BIOME_BORDER_OCTAVE_FULL_CELLS_PER_PX,
+            BIOME_BORDER_OCTAVE_CUTOFF_CELLS_PER_PX,
+            footprint,
+        );
+        if (resolved <= 0.0) {
+            break;
+        }
+        let axes = BIOME_RANGE_AXES[octave % 3];
+        let domain = vec3<f32>(
+            dot(dir, axes[0]),
+            dot(dir, axes[1]),
+            dot(dir, axes[2]),
+        );
+        let seedmul = bitcast<u32>(globals.danchor_cell.w)
+            + 0x0C057A11u
+            + u32(octave) * 131u * 0x9E3779B1u;
+        residual += amplitude * resolved * kgnoise(domain * frequency, seedmul);
+        frequency *= 2.7;
+        amplitude *= 0.5;
+    }
+    return shore + residual * COAST_RANGE_CURVE_CARRIER_GAIN_KM
+        * range_gain * edge_gate;
+}
+
+fn tree_impostor_probability(distance_km: f32) -> f32 {
+    if (distance_km <= TREE_IMPOSTOR_FULL_DISTANCE_KM) {
+        return 1.0;
+    }
+    if (distance_km <= TREE_IMPOSTOR_NEAR_FADE_DISTANCE_KM) {
+        let t = smoothstep(
+            TREE_IMPOSTOR_FULL_DISTANCE_KM,
+            TREE_IMPOSTOR_NEAR_FADE_DISTANCE_KM,
+            distance_km,
+        );
+        return mix(1.0, TREE_IMPOSTOR_NEAR_PROBABILITY, t);
+    }
+    if (distance_km <= TREE_IMPOSTOR_L14_L13_DISTANCE_KM) {
+        let t = smoothstep(
+            TREE_IMPOSTOR_NEAR_FADE_DISTANCE_KM,
+            TREE_IMPOSTOR_L14_L13_DISTANCE_KM,
+            distance_km,
+        );
+        return mix(
+            TREE_IMPOSTOR_NEAR_PROBABILITY,
+            TREE_IMPOSTOR_L14_L13_PROBABILITY,
+            t,
+        );
+    }
+    if (distance_km <= TREE_IMPOSTOR_L13_L12_DISTANCE_KM) {
+        let t = smoothstep(
+            TREE_IMPOSTOR_L14_L13_DISTANCE_KM,
+            TREE_IMPOSTOR_L13_L12_DISTANCE_KM,
+            distance_km,
+        );
+        return mix(
+            TREE_IMPOSTOR_L14_L13_PROBABILITY,
+            TREE_IMPOSTOR_L13_L12_PROBABILITY,
+            t,
+        );
+    }
+    if (distance_km <= TREE_IMPOSTOR_L12_L11_DISTANCE_KM) {
+        let t = smoothstep(
+            TREE_IMPOSTOR_L13_L12_DISTANCE_KM,
+            TREE_IMPOSTOR_L12_L11_DISTANCE_KM,
+            distance_km,
+        );
+        return mix(
+            TREE_IMPOSTOR_L13_L12_PROBABILITY,
+            TREE_IMPOSTOR_L12_L11_PROBABILITY,
+            t,
+        );
+    }
+    let retire = 1.0 - smoothstep(
+        TREE_IMPOSTOR_L12_L11_DISTANCE_KM,
+        TREE_IMPOSTOR_ZERO_DISTANCE_KM,
+        distance_km,
+    );
+    return TREE_IMPOSTOR_L12_L11_PROBABILITY * retire;
+}
+
+fn tree_impostor_offset(in: VsIn) -> vec3<f32> {
+    let lo = round(in.biome0.rgb * 255.0);
+    let hi = round(in.biome1.rgb * 255.0);
+    let packed = lo + hi * 256.0;
+    return (packed / 65535.0 * 2.0 - 1.0)
+        * TREE_IMPOSTOR_OFFSET_RANGE_KM;
+}
+
 @vertex
 fn vs_main(in: VsIn) -> VsOut {
     var out: VsOut;
     var rel = in.pos + tile.offset.xyz;
     let d = length(rel);
+    let tree_impostor = tile.offset.w > 0.5
+        && in.beach.z < 0.5
+        && in.beach.y > 0.5 / 255.0
+        && in.morph.w < -0.5;
+    if (tree_impostor) {
+        let probability = tree_impostor_probability(d);
+        let represented_probability = min(
+            probability,
+            max(in.biome2.r, 1.0 / 255.0),
+        );
+        let scale = min(
+            inverseSqrt(max(represented_probability, 1e-5)),
+            TREE_IMPOSTOR_MAX_SCALE,
+        );
+        let root_offset = tree_impostor_offset(in);
+        let radial_offset = in.normal * dot(root_offset, in.normal);
+        let lateral_offset = root_offset - radial_offset;
+        // Match the approved impostor silhouette: canopy footprint carries
+        // area compensation, height changes only weakly so far trees do not
+        // turn into long strokes.
+        rel += lateral_offset * (scale - 1.0)
+            + radial_offset * (pow(scale, 0.25) - 1.0);
+    }
     var wet = in.water.a;
     var shore = in.morph.w;
     if (tile.morph.y > 0.0) {
@@ -1004,6 +1177,26 @@ fn solar_occlusion_at(rel: vec3<f32>) -> f32 {
 
 @fragment
 fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
+    // TRI_LOD_RING_DEBUG: uniform per-draw false-color level map. This is a
+    // standing read-only probe; tile.morph.w is zero in production.
+    if (tile.morph.w > 0.0) {
+        let band = tile.morph.w;
+        let color = 0.20 + 0.75 * fract(
+            vec3<f32>(0.37, 0.61, 0.83) * band,
+        );
+        return vec4<f32>(color, 1.0);
+    }
+    // B-18 forest representation: the conditional lot is constant across a
+    // billboard and the probability is camera-distance-owned. Adjacent LODs
+    // therefore show the same expected tree density/scale at their shared
+    // edge, while the near endpoint is the exact stride-1 voxel stream.
+    if (in.rel_flag.w > 0.5 && in.beach.z < 0.5
+        && in.beach.y > 0.5 / 255.0 && in.shore < -0.5) {
+        let lot = in.beach.y - 0.5 / 255.0;
+        if (lot >= tree_impostor_probability(in.dist_km)) {
+            discard;
+        }
+    }
     // Freshly-landed tiles (tile.morph.z = temporal ease) DISSOLVE their
     // impostor trees in with a screen dither instead of materializing a
     // denser LOD's canopy in one frame - the flashiest motion pop. The
@@ -1071,8 +1264,18 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         // the sea/lake edge at pixel resolution instead of vertex
         // resolution — no more angular lake polygons or orphan blue cells.
         // Rivers keep their own wetness paint (water.a) untouched.
-        let e = max(fwidth(in.shore), 1e-5);
-        let shore_coverage = smoothstep(-e, e, in.shore);
+        let presented_shore = coast_range_curved_shore(in.shore, in.rel_flag.xyz);
+        let coast_range_aa = mix(
+            1.0,
+            COAST_RANGE_AA_WIDTH_PX,
+            smoothstep(
+                COAST_RANGE_CURVE_START_ALT_KM,
+                COAST_RANGE_CURVE_FULL_ALT_KM,
+                max(globals.weather8.w, 0.0),
+            ),
+        );
+        let e = max(fwidth(presented_shore) * coast_range_aa, 1e-5);
+        let shore_coverage = smoothstep(-e, e, presented_shore);
         if (in.wflag < -0.5) {
             // Mesh rivers use -1..-2 to hand the exact signed contour in only
             // as channel half-width becomes resolvable at this vertex spacing.
@@ -1284,7 +1487,11 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     // (Andrew's 'breaches on mesh' ice photos at 73.9 -76). weather-off
     // sentinel is 999, which passes.
     if (in.rel_flag.w > 0.5 && wet < 0.98 && globals.weather.w > -4.0) {
-        let kfade = 1.0 - smoothstep(globals.misc.z + 0.4, globals.misc.z + 2.4, in.dist_km);
+        let kfade = 1.0 - smoothstep(
+            globals.misc.z + 0.4,
+            globals.misc.z + 2.4,
+            in.dist_km,
+        );
         if (kfade > 0.02) {
             let wp = in.rel_flag.xyz - globals.center.xyz;
             let dirp = normalize(wp);

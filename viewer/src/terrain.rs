@@ -125,12 +125,15 @@ pub struct Vertex {
     /// Eight fixed Koppen-family endpoints in linear UNORM8 RGB; alpha is each
     /// family's cumulative coverage threshold. The fragment shader evaluates
     /// the resolved comparator inside the triangle. Descending alpha marks
-    /// voxel, water, and impostor vertices as payload-off.
+    /// voxel, water, and impostor vertices as payload-off; tree impostors
+    /// reuse the otherwise-dead first two RGB triplets for their root offset
+    /// and biome2.r for the CPU superset's retained probability.
     pub biome: [[u8; 4]; BIOME_RANGE_FAMILIES],
     /// Generic beach coverage + field gain, packed as UNORM8x4 (w = the D-8
     /// rain-concavity proxy in UNORM). This material has an independent
     /// all-range comparator and therefore cannot share a one-dimensional
-    /// climate threshold without losing either silhouette.
+    /// climate threshold without losing either silhouette. On payload-off
+    /// trees, y stores the nonzero conditional placement ticket.
     pub beach: [u8; 4],
 }
 
@@ -1306,6 +1309,44 @@ fn river_shore_field_gain(s: &Sample, spacing_km: f64) -> f64 {
 }
 
 const SHORE_CLAMP_KM: f64 = 0.005;
+/// B-17 range-coast reconstruction knobs. The physical sea predicate remains
+/// `sea_from_fields`; these spans only normalize its three continuous margins
+/// into the compact +/-SHORE_CLAMP_KM vertex carrier. Wider spans retain more
+/// analog distance-to-boundary before the payload saturates.
+pub const COAST_MARGIN_ELEVATION_SPAN_KM: f64 = 0.100;
+pub const COAST_MARGIN_WATER_FRACTION_SPAN: f64 = 0.500;
+pub const COAST_MARGIN_OCEAN_FRACTION_SPAN: f64 = 0.350;
+const COAST_MARGIN_SIGN_FLOOR_KM: f64 = 0.000_001;
+
+/// Continuous signed twin of `sea_from_fields`.
+///
+/// `min` composes AND and `max` composes OR, so the zero set is the exact
+/// physical classifier while the magnitude retains where each sample lies
+/// relative to its elevation/water/ocean decision surface. The final sign
+/// floor resolves the predicate's inclusive/strict equality edges without
+/// throwing away that analog magnitude everywhere else.
+fn sea_ownership_margin_km(
+    e_raw_km: f64,
+    water_fraction: f64,
+    ocean_fraction: f64,
+) -> f64 {
+    let elevation_gate = -e_raw_km / COAST_MARGIN_ELEVATION_SPAN_KM;
+    let sharp_water =
+        (water_fraction - 0.5) / COAST_MARGIN_WATER_FRACTION_SPAN;
+    let deep_elevation =
+        (-e_raw_km - 0.1) / COAST_MARGIN_ELEVATION_SPAN_KM;
+    let blurred_ocean =
+        (ocean_fraction - 0.35) / COAST_MARGIN_OCEAN_FRACTION_SPAN;
+    let deep_ocean = deep_elevation.min(blurred_ocean);
+    let raw = elevation_gate.min(sharp_water.max(deep_ocean));
+    let normalized_floor = COAST_MARGIN_SIGN_FLOOR_KM / SHORE_CLAMP_KM;
+    let signed = if sea_from_fields(e_raw_km, water_fraction, ocean_fraction) {
+        raw.max(normalized_floor)
+    } else {
+        raw.min(-normalized_floor)
+    };
+    (signed * SHORE_CLAMP_KM).clamp(-SHORE_CLAMP_KM, SHORE_CLAMP_KM)
+}
 
 /// B-9's one-level pond carrier gate. Pond construction itself stays at the
 /// full/native octave budget; a seven-octave mesh vertex only asks for that
@@ -1484,23 +1525,18 @@ fn voxel_shore_reference(
 /// liquid lakes and rivers, but may be the geometry sample when that sample
 /// is already full-depth or when the reference cannot affect this vertex.
 fn shore_field(planet: &Planet, face: usize, u: f64, v: f64, s: &Sample) -> f32 {
-    // The raster/mask is the actual sea-side authority (interior dry basins
-    // may sit below zero), and both values are octave-independent. Using it
-    // also preserves the smooth, stable coastal crossing without re-running
-    // the full sampler throughout open ocean.
-    // The SIGN must follow the sea CLASS, with -e_raw only as magnitude:
-    // bilinear e_raw dips a few metres below zero on LAND all along the
-    // coasts (the documented dry-basin quirk), and a raw -e_raw term
-    // painted those pockets as water - whole-triangle navy plates on sandy
-    // coasts at orbital LOD (Andrew's first field report, 15.238 150.848;
-    // probed land at +2.0 m with e_raw -1.0, ofrac 0.56).
-    let shore_sea = if s.sea {
-        (-s.e_raw).max(0.0001)
-    } else if planet.ocean(face, u, v) > 0.02 {
-        (-s.e_raw).min(-0.0001)
-    } else {
-        f64::NEG_INFINITY
-    };
+    // B-17: preserve the continuous margin of the exact sea authority.
+    // Collapsing it to Sample::sea and almost always clamping to +/-5 m made
+    // every coarse mixed triangle cross halfway between Boolean vertices:
+    // derivative AA crispened that discarded-curvature midpoint into the
+    // orbital staircase. This min/max margin has the identical sign as
+    // sea_from_fields, including dry below-sea basins, while retaining the
+    // sub-texel position of its three decision surfaces.
+    let shore_sea = sea_ownership_margin_km(
+        s.e_raw,
+        planet.water_frac(face, u, v) as f64,
+        planet.ocean(face, u, v) as f64,
+    );
     let shore_lake = if s.lake_shoal {
         // A shoal is shared, walkable, voxel-dry SAND. The old positive
         // analog-depth exception made the mesh paint water over that exact
@@ -1601,6 +1637,41 @@ fn impostor_stride_for_level(level: u8) -> u64 {
         11 => 8,
         _ => 0,
     }
+}
+
+// B-18: tree billboards use the otherwise-invalid biome RGB lanes to carry
+// their canonical vertex displacement from the tree root. The vertex shader
+// can then apply one camera-distance-owned scale on either side of a mesh LOD
+// boundary. Two bytes per component keep exaggerated tall trees precise while
+// preserving the descending-alpha payload-off marker.
+const TREE_IMPOSTOR_OFFSET_RANGE_KM: f64 = 0.128;
+
+fn tree_impostor_payload(
+    offset_km: DVec3,
+    keep_ratio: f64,
+) -> [[u8; 4]; BIOME_RANGE_FAMILIES] {
+    let mut payload = NO_BIOME_PAYLOAD;
+    for (channel, value) in offset_km.to_array().into_iter().enumerate() {
+        let normalized = (value / TREE_IMPOSTOR_OFFSET_RANGE_KM * 0.5 + 0.5)
+            .clamp(0.0, 1.0);
+        let packed = (normalized * u16::MAX as f64).round() as u16;
+        payload[0][channel] = packed as u8;
+        payload[1][channel] = (packed >> 8) as u8;
+    }
+    payload[2][0] = (keep_ratio.clamp(0.0, 1.0) * 255.0).round() as u8;
+    payload
+}
+
+/// Quantized conditional placement ticket. Zero remains reserved so the
+/// shader can distinguish rocks and other payload-off geometry from trees;
+/// bin centers stay strictly inside (0, 1), making fade endpoints exact.
+fn tree_impostor_lot_byte(lot: f64, winning_threshold: f64) -> u8 {
+    let q = if winning_threshold > 0.0 {
+        (lot / winning_threshold).clamp(0.0, 1.0 - f64::EPSILON)
+    } else {
+        1.0 - f64::EPSILON
+    };
+    ((q * 255.0).floor() as u8).saturating_add(1)
 }
 
 fn impostor_lattice_bounds(key: TileKey) -> Option<(u64, u64, u64, u64, u64)> {
@@ -1762,6 +1833,14 @@ pub fn build_tile_at_season(
                         !class_samples[nj * np2 + ni].lake
                     })
                 });
+            let sea_edge_backing = class_s.sea
+                && (-1isize..=1).any(|dj| {
+                    (-1isize..=1).any(|di| {
+                        let ni = (gi as isize + di) as usize;
+                        let nj = (gj as isize + dj) as usize;
+                        !class_samples[nj * np2 + ni].sea
+                    })
+                });
             // surface slope for rock exposure: radial up vs mesh normal
             let up = world[gj * np2 + gi].normalize();
             let slope = 1.0 - nrm.dot(up).clamp(0.0, 1.0);
@@ -1789,11 +1868,10 @@ pub fn build_tile_at_season(
             } else {
                 water_color(class_s)
             };
-            // deep tiles resolve water: binary flag, crisp step in the
-            // shader. Far tiles get the continuous feathered wetness. The
-            // sea carries NO wet paint: its geometry+ground color already
-            // are the water, and paint only bleeds navy bands onto the
-            // beach triangles next door.
+            // Deep tiles resolve painted river water with a binary flag; far
+            // tiles get continuous feathered wetness. Sea/lake carry no soft
+            // paint: their signed contour owns mixed triangles, while open
+            // water still uses water RGB as its cheap ground backing.
             let wet = if key.deep && !(class_s.sea || class_s.lake) {
                 class_s.has_water() as u32 as f64
             } else {
@@ -1804,17 +1882,20 @@ pub fn build_tile_at_season(
             } else {
                 wet
             };
-            // the sea is real geometry at its surface — its "ground" color
-            // is the water color so the wetness blend is a no-op there and
-            // it stays fully blue at every distance
+            // Standing water is real geometry at its surface. Interiors use
+            // water as their cheap ground backing; the one-vertex edge ring
+            // supplies honest land for the signed contour to reveal.
             let (ground, biome) = if class_s.sea || class_s.lake || class_s.lake_shoal {
                 // a frozen sheet is solid walkable ice — give it a snow-dusted,
                 // LOD-stable surface so it reads as ground, not a flat plane
                 if class_s.frozen {
                     (frost_color(world[gj * np2 + gi]), BiomePayload::NONE)
-                } else if lake_edge_backing {
-                    // A mixed lake triangle needs honest land and the same
-                    // range payload as its dry vertex below the exact shore.
+                } else if lake_edge_backing || sea_edge_backing {
+                    // A mixed standing-water triangle needs honest land and
+                    // the same range payload as its dry vertex below the exact
+                    // shore. Water remains authoritative through the signed
+                    // per-fragment contour; using water RGB as sea "ground"
+                    // hid B-17's curved contour behind coarse interpolation.
                     shade_ground_pair(planet, face, uu, vv, class_s, slope)
                 } else if class_s.lake_shoal {
                     // Signed shore coverage remains authoritative; this is
@@ -1940,7 +2021,11 @@ pub fn build_tile_at_season(
         // trees per tile: the vertex/fill budget knob. Austin measured the
         // frame rate sagging at mid distance on the RTX 2060 at 4000/4000;
         // level 11 (whose trees are 1-3 px) carries a lighter load
-        let impostor_cap: usize = if key.level == 12 { 2600 } else { 1400 };
+        let impostor_cap: usize = if key.level == 12 {
+            2600
+        } else {
+            1400
+        };
         let s = impostor_stride;
         let nnf = crate::voxel::COLUMNS_PER_FACE as f64;
         let (ci_start, ci1, cj_start, cj1, _) =
@@ -1968,16 +2053,21 @@ pub fn build_tile_at_season(
         if !region_rejects_all {
             cands = planet.impostor_candidates(face as u8, ci_start, ci1, cj_start, cj1, s);
         }
-        let keep_every = cands.len().div_ceil(impostor_cap).max(1);
-        // decimation past the cap keeps visual mass by growing the kept
-        // trees (area-conserving sqrt, capped before they read as blobs).
-        // PROBABILISTIC, not sorted: keep iff lot < cap/candidates. The lot
-        // is a uniform level-independent hash, so this is spatially EVEN
-        // (a global lot sort clumped the survivors - Austin's mid-distance
-        // discontinuity) and still NESTED across LODs (the finer level's
-        // keep ratio is strictly larger, so every coarse survivor persists).
-        let boost = (keep_every as f64).sqrt().min(2.2);
+        // The CPU cap is only a superset budget. Visible survival and canopy
+        // compensation are distance-owned in the shader, so neither changes
+        // at a quadtree edge. PROBABILISTIC, not sorted: keep iff
+        // lot < cap/candidates. The lot is a uniform level-independent hash,
+        // so this remains spatially even and nested.
         let keep_ratio = (impostor_cap as f64 / cands.len().max(1) as f64).min(1.0);
+        if std::env::var_os("TRI_IMPOSTOR_STATS").is_some() && !cands.is_empty() {
+            eprintln!(
+                "impostor-stats tree {:?} stride={} candidates={} keep_ratio={:.6}",
+                key,
+                s,
+                cands.len(),
+                keep_ratio,
+            );
+        }
         let no_edits = crate::voxel::Edits::default();
         // parent-lattice membership: a tree the PARENT tile also shows must
         // not dissolve when this tile lands - Andrew's approach-fade report
@@ -1997,6 +2087,7 @@ pub fn build_tile_at_season(
             if lot >= density * comp * keep_ratio {
                 continue;
             }
+            let lot_byte = tree_impostor_lot_byte(lot, density * comp);
             let u = -1.0 + 2.0 * (ci as f64 + 0.5) / nnf;
             let v = -1.0 + 2.0 * (cj as f64 + 0.5) / nnf;
             // The mesh-height sample roots the billboard on this LOD. One
@@ -2062,10 +2153,11 @@ pub fn build_tile_at_season(
             let dir = face_dir(face, u, v);
             // sink slightly so slopes don't leave floating root gaps
             let root = dir * (radius + smp.render_h_km() * exaggeration - 0.0008) - origin;
-            // decimation boost conserves canopy AREA via width only —
-            // heights stay true so the rim handoff keeps its skyline
-            let hgt = (trunk as f64 * 0.001 + canopy_km) * exaggeration * boost.powf(0.25);
-            let wid = half_w_km * boost;
+            // Canonical voxel-scale silhouette. B-18's shader reconstructs
+            // its distance-owned coverage scale from the packed root offset;
+            // baking cap/level scale here was the ring tint seam.
+            let hgt = (trunk as f64 * 0.001 + canopy_km) * exaggeration;
+            let wid = half_w_km;
             let ax = if dir.z.abs() < 0.9 { DVec3::Z } else { DVec3::Y };
             let e1 = (ax - dir * ax.dot(dir)).normalize();
             let e2 = dir.cross(e1);
@@ -2111,10 +2203,12 @@ pub fn build_tile_at_season(
                         morph_wet: 0.0,
                         wflag: 0.0,
                         shore: -1.0,
-                        biome: NO_BIOME_PAYLOAD,
+                        biome: tree_impostor_payload(p - root, keep_ratio),
                         // x = 255: parent lattice member, exempt from the
-                        // landing dissolve. w = 127: neutral rain concavity.
-                        beach: [if keep { 255 } else { 0 }, 0, 0, 127],
+                        // landing dissolve. y = conditional placement ticket
+                        // + 1 (zero marks non-tree payload-off geometry).
+                        // w = 127: neutral rain concavity.
+                        beach: [if keep { 255 } else { 0 }, lot_byte, 0, 127],
                     });
                 }
                 indices.extend_from_slice(&[
@@ -2860,6 +2954,70 @@ mod tests {
         }
         assert!((packed[3] as f32 / 255.0 - 0.37).abs() <= 1.0 / 510.0);
         assert!(NO_BIOME_PAYLOAD[1][3] < NO_BIOME_PAYLOAD[0][3]);
+    }
+
+    #[test]
+    fn tree_impostor_payload_roundtrips_without_enabling_biomes() {
+        for offset in [
+            DVec3::ZERO,
+            DVec3::new(-0.0023, 0.0017, 0.0132),
+            DVec3::new(0.064, -0.032, -0.0008),
+        ] {
+            let payload = tree_impostor_payload(offset, 0.37);
+            assert!(payload[1][3] < payload[0][3]);
+            assert!((f64::from(payload[2][0]) / 255.0 - 0.37).abs() <= 0.5 / 255.0);
+            for channel in 0..3 {
+                let packed = u16::from(payload[0][channel])
+                    | (u16::from(payload[1][channel]) << 8);
+                let decoded = (f64::from(packed) / f64::from(u16::MAX) * 2.0 - 1.0)
+                    * TREE_IMPOSTOR_OFFSET_RANGE_KM;
+                assert!(
+                    (decoded - offset[channel]).abs()
+                        <= TREE_IMPOSTOR_OFFSET_RANGE_KM / f64::from(u16::MAX)
+                );
+            }
+        }
+
+        let bytes = [
+            tree_impostor_lot_byte(0.0, 1.0),
+            tree_impostor_lot_byte(0.5, 1.0),
+            tree_impostor_lot_byte(1.0 - f64::EPSILON, 1.0),
+        ];
+        assert!(bytes[0] > 0);
+        assert!(bytes[0] < bytes[1] && bytes[1] < bytes[2]);
+        for byte in bytes {
+            let center = (f64::from(byte) - 0.5) / 255.0;
+            assert!(center > 0.0 && center < 1.0);
+        }
+    }
+
+    #[test]
+    fn sea_ownership_margin_is_sign_exact_and_analog() {
+        // Cover both OR branches, the elevation AND gate, dry negative
+        // basins, and all inclusive/strict equality edges densely enough that
+        // a future predicate edit cannot silently desynchronize presentation.
+        for e_raw in [-1.0, -0.101, -0.1, -0.099, -0.001, 0.0, 0.001, 0.2] {
+            for water in [0.0, 0.49, 0.5, 0.51, 1.0] {
+                for ocean in [0.0, 0.34, 0.35, 0.351, 1.0] {
+                    let expected = sea_from_fields(e_raw, water, ocean);
+                    let margin = sea_ownership_margin_km(e_raw, water, ocean);
+                    assert!(margin.is_finite());
+                    assert_ne!(margin, 0.0);
+                    assert_eq!(
+                        margin > 0.0,
+                        expected,
+                        "e={e_raw} water={water} ocean={ocean} margin={margin}"
+                    );
+                    assert!(margin.abs() <= SHORE_CLAMP_KM);
+                }
+            }
+        }
+
+        // Unlike the retired Boolean +/- carrier, samples on the same side
+        // retain how far they lie inside the classifier.
+        let near = sea_ownership_margin_km(-0.02, 0.51, 0.20);
+        let deep = sea_ownership_margin_km(-0.08, 0.75, 0.20);
+        assert!(near > 0.0 && deep > near);
     }
 
     #[test]

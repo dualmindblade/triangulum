@@ -3263,6 +3263,10 @@ impl Renderer {
                 .saturating_add(lunar_chunk_keys.len())
                 .saturating_add(1),
         );
+        // Read-only diagnostic for B-18 and future ring regressions. The
+        // otherwise-spare tile.morph.w lane carries level+1 only when asked;
+        // production remains bit-identical at zero.
+        let lod_ring_debug = std::env::var_os("TRI_LOD_RING_DEBUG").is_some();
         for (slot, key) in all_keys.enumerate().take(terrain_slots) {
             let tile = match key {
                 DrawKey::Tile(k) => self.cache.get_mut(&k).unwrap(),
@@ -3343,7 +3347,14 @@ impl Renderer {
                 morph[0],
                 morph[1],
                 morph[2],
-                morph[3],
+                if lod_ring_debug {
+                    match key {
+                        DrawKey::Tile(k) => k.level as f32 + 1.0,
+                        DrawKey::Chunk(_) => 0.5,
+                    }
+                } else {
+                    morph[3]
+                },
             ];
             self.queue.write_buffer(
                 &self.tiles_buf,
