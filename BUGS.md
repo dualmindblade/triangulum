@@ -24,24 +24,6 @@ BEFORE flying into a blurry area (replay rebuilds streaming state).
 Candidate fix: never shed tiles drawn this frame; scale RETAIN with
 drawn-set bytes; audit frozen-tile vertex counts.
 
-### B-17 Boundary staircase at range (Andrew priority: natural curves)
-All irregular boundaries (biomes, coasts) read as grid/staircase from
-high altitude/orbit — the coarsest retained comparator octave exposes
-its value-noise lattice (axis-aligned steps). Andrew wants natural
-curves everywhere. Likely fix: rotate/warp the coarse octave domains
-(BIOME_RANGE_AXES pattern), or gradient-noise the coarse octaves, or
-keep one sub-Nyquist octave softly AA'd to break the grid.
-
-### B-18 LOD-ring tint seams on gradient landscapes + voxel handoff
-Austin recording rec_001 (32.34 35.52, replay frames
-interchange/runs/rec001-replay/): on ecotone GRADIENTS adjacent mesh
-rings show a visible tint step (dither mix density/shade changes at
-the ring boundary; see f000035), and the tone drifts across the
-descent to voxel arrival. The L-1 pass converged BORDER contrast; the
-broad gradient MIX is still resolution-dependent (class weights
-sampled at ring-specific raster footprints → different effective mix
-per ring). Gate: no visible ring seam in the rec_001 replay.
-
 ### L-1 COMPLETE — all three observations fixed (a/b: ced643a, c: 74bfce7)
 (a)+(b) fixed by Sol's border pass, merged ced643a: range comparator
 octaves retire at screen Nyquist, ownership goes hard at the filtered
@@ -568,6 +550,10 @@ texturing conversation with Andrew.
 
 
 ## FIXED
+
+### B-18 LOD-ring tint seams on gradient landscapes + voxel handoff — FIXED fb97a33 (lodcolor)
+
+### B-17 Boundary staircase at range (Andrew priority: natural curves) — FIXED fb97a33 (lodcolor)
 
 ### B-15 Mesh renders beach as water one level above voxels — FIXED 0f991d6 (rivers 3)
 
