@@ -43,8 +43,18 @@ hardening, kept). ROOT CAUSE = ADMISSION STARVATION: productive cap
 the L11 stand-in gaps (the visible blur) never get a build slot, and
 winners do not accumulate fast enough to drain 445 (needs slot audit:
 log admissions + landings per level next).
-FIX DIRECTION: admission must prioritize the tiles actually COVERING
-BY ANCESTOR in the drawn set (the visible gaps) — e.g. reserve half
+HUNT 3 (2026-07-24): three fixes landed — wanted-set eviction
+protection, coarsest-first covered_missing ordering, and a 2-slot
+visible-gap reserve that pierces both the live budget AND the shared
+productive cap. Result: the gap set now DRAINS (447->399 during the
+hold) instead of freezing, but a core 8 keys (f4L11 2002-2005 x
+1652-1653) STILL never admit — one more refusing condition remains.
+NEXT: instrument the covered_missing loop to log the head keys'
+per-frame decision (in list? which continue fires?), and check the
+pre-filters that gate covered_missing membership (urgent path,
+region-proof checks) for those exact keys.
+ORIGINAL FIX DIRECTION: admission must prioritize the tiles actually
+COVERED BY ANCESTOR in the drawn set (the visible gaps) — e.g. reserve half
 the productive slots for coarsest-missing keys, or sort by
 (is-visible-gap, view-angle) instead of pure level; also consider
 raising caps.productive when quiet (motion stopped) since the quiet

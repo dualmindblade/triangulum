@@ -2484,9 +2484,15 @@ impl Renderer {
         // Spend only what remains after imminent motion forecasts, choosing
         // the finest/nearest selected replacements first.
         let direction = camera.local_direction();
+        // B-16: COARSEST first. Finest-first let an endless fine-tile supply
+        // win every productive slot while coarser visible gaps (the actual
+        // blur the player sees) starved forever - a pose could hold ~445
+        // wanted tiles permanently unrequested. Coarsest-first converges
+        // hierarchically: each landed parent shrinks the visible gap AND
+        // legitimizes its children for the next pass.
         covered_missing.sort_unstable_by(|a, b| {
-            b.level
-                .cmp(&a.level)
+            a.level
+                .cmp(&b.level)
                 .then_with(|| {
                     let da = 1.0 - a.center_dir().dot(direction);
                     let db = 1.0 - b.center_dir().dot(direction);
@@ -2495,12 +2501,24 @@ impl Renderer {
                 .then_with(|| (a.face, a.ix, a.iy).cmp(&(b.face, b.ix, b.iy)))
         });
         for key in covered_missing {
-            if prefetched >= live_budget || self.tile_pending.len() >= live_pending_limit {
+            // B-16 (the actual kill): the forecast loops above can consume
+            // the whole live budget EVERY frame (their speculative rings
+            // are an endless supply), so the visible gaps under ancestor
+            // stand-ins never won a single build slot and a held pose
+            // stayed blurry forever. Visible blur outranks speculation:
+            // this loop always gets two slots of its own.
+            if prefetched >= live_budget + 2
+                || self.tile_pending.len() >= live_pending_limit + 2
+            {
                 break;
             }
             let productive = key.deep || key.level >= 11;
+            // the visible-gap reserve pierces the shared productive cap by
+            // two as well: the forecast loops saturate it every frame, and
+            // a capped gap is a permanently blurry gap (B-16)
             if productive
-                && productive_pending >= caps.productive.min(live_pending_limit)
+                && productive_pending
+                    >= caps.productive.min(live_pending_limit) + 2
             {
                 continue;
             }
