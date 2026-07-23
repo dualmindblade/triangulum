@@ -49,10 +49,16 @@ visible-gap reserve that pierces both the live budget AND the shared
 productive cap. Result: the gap set now DRAINS (447->399 during the
 hold) instead of freezing, but a core 8 keys (f4L11 2002-2005 x
 1652-1653) STILL never admit — one more refusing condition remains.
-NEXT: instrument the covered_missing loop to log the head keys'
-per-frame decision (in list? which continue fires?), and check the
-pre-filters that gate covered_missing membership (urgent path,
-region-proof checks) for those exact keys.
+HUNT 4 / RESOLUTION (2026-07-24): gap-list instrumentation shows
+~405 L11 gaps all admitted-or-pending, draining at build throughput.
+The remaining tail is BUILD COST, not scheduling: this pose class
+wants ~1540 tiles incl. ~400 heavyweight ice-region L11 builds at
+seconds each, so post-fix convergence is minutes (was: NEVER). The
+three scheduling defects (finest-first ordering, budget starvation,
+productive-cap starvation of visible gaps) are FIXED. Remaining
+speed-up belongs to the B-4c cold-build campaign + auditing why the
+pose wants 1540 tiles. Austin/Andrew: confirm in-game that stuck
+areas now sharpen progressively (fast start, ~minute tail in ice).
 ORIGINAL FIX DIRECTION: admission must prioritize the tiles actually
 COVERED BY ANCESTOR in the drawn set (the visible gaps) — e.g. reserve half
 the productive slots for coarsest-missing keys, or sort by
