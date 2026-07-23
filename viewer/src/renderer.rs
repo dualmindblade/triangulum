@@ -2500,6 +2500,21 @@ impl Renderer {
                 })
                 .then_with(|| (a.face, a.ix, a.iy).cmp(&(b.face, b.ix, b.iy)))
         });
+        if std::env::var_os("TRI_STREAM_DEBUG").is_some()
+            && self.frame_counter.is_multiple_of(300)
+        {
+            let head: Vec<String> = covered_missing
+                .iter()
+                .take(4)
+                .map(|k| format!("f{}L{}({},{})", k.face, k.level, k.ix, k.iy))
+                .collect();
+            eprintln!(
+                "STREAMDBG frame {} covered_missing {}: {}",
+                self.frame_counter,
+                covered_missing.len(),
+                head.join(" ")
+            );
+        }
         for key in covered_missing {
             // B-16 (the actual kill): the forecast loops above can consume
             // the whole live budget EVERY frame (their speculative rings
