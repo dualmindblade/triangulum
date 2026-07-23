@@ -21,8 +21,19 @@ gentle eviction sheds tiles that are immediately rebuilt — each
 arrival restarts its ease → perpetual blur; settle slams the full set
 → storm tripwire. DATA NEEDED: an F10 recording starting ~1 min
 BEFORE flying into a blurry area (replay rebuilds streaming state).
-Candidate fix: never shed tiles drawn this frame; scale RETAIN with
-drawn-set bytes; audit frozen-tile vertex counts.
+HUNT 2026-07-23 (Austin's sustained-blur.play recording + new
+TRI_POSE_LIVE replay mode): REPRODUCED — final hold pose (41.519
+122.511 @ 3.05, yaw 93 pitch -68) renders soft/coarse and draws freeze
+at exactly 1135 for 8+ s. TRI_STREAM_DEBUG shows the pending pipeline
+FLOWING (L11/L12 keys complete and rotate — not wedged, eviction
+exonerated, storm incidental). Conclusion: arrivals land in cache but
+SELECTION never swaps the viewed area to finer tiles. Next: dump the
+selected vs wanted set for the view region and compare with cache
+contents; suspects are the covered/ancestor selection logic, the
+child-completeness swap rule, or ease/dissolve gating at this pose
+class. Repro: TRI_POSE_LIVE=1 play scripts/b16-live.play (+
+TRI_STREAM_DEBUG=1); the blur is visible in
+interchange/runs/b16-live/b16_hold_end.png.
 
 ### L-1 COMPLETE — all three observations fixed (a/b: ced643a, c: 74bfce7)
 (a)+(b) fixed by Sol's border pass, merged ced643a: range comparator

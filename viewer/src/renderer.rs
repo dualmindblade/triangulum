@@ -2312,6 +2312,27 @@ impl Renderer {
             .keys()
             .filter(|key| key.deep || key.level >= 11)
             .count();
+        // B-16 diagnosis: dump the pending set periodically so a wedged
+        // pipeline (same keys forever) is visible. Dev-only via env.
+        if std::env::var_os("TRI_STREAM_DEBUG").is_some()
+            && self.frame_counter.is_multiple_of(300)
+        {
+            let mut keys: Vec<String> = self
+                .tile_pending
+                .keys()
+                .map(|k| format!("f{}L{}({},{}){}", k.face, k.level, k.ix, k.iy,
+                    if k.deep { "D" } else { "" }))
+                .collect();
+            keys.sort();
+            eprintln!(
+                "STREAMDBG frame {} pending {} (productive {}) chunks {}: {}",
+                self.frame_counter,
+                self.tile_pending.len(),
+                productive_pending,
+                self.chunk_pending.len(),
+                keys.join(" ")
+            );
+        }
         if !self.settle_visuals && camera.body == BodyId::Neisor {
             let altitude = camera.altitude_km;
             let vertical_delta = altitude - self.last_live_altitude_km;

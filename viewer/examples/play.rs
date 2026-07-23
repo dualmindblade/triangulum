@@ -379,6 +379,10 @@ fn main() -> anyhow::Result<()> {
     let mut rec_frame: u64 = 0;
     // session replay cadence: sim ticks advanced per `pose` line (posehz N)
     let mut pose_ticks: u64 = 6;
+    // TRI_POSE_LIVE=1: each pose draws its full tick cadence of LIVE frames
+    // (streaming scheduler runs exactly as in gameplay — settled captures
+    // would hide streaming bugs like B-16). Offscreen target built lazily.
+    let mut live_target: Option<wgpu::TextureView> = None;
     let mut moon_probe_dir = glam::DVec3::X;
     for (ln, raw) in script.lines().enumerate() {
         let line = raw.split('#').next().unwrap_or("").trim();
@@ -796,6 +800,40 @@ fn main() -> anyhow::Result<()> {
                 ps.teleport(&planet, &edits, &mut camera, f(1)?, f(2)?, Some(f(3)?), exagg);
                 camera.yaw = f(4)?.to_radians();
                 camera.pitch = f(5)?.to_radians().clamp(-1.50, 1.50);
+                if std::env::var_os("TRI_POSE_LIVE").is_some() {
+                    let view = live_target.get_or_insert_with(|| {
+                        let tex = renderer.device.create_texture(&wgpu::TextureDescriptor {
+                            label: Some("pose-live"),
+                            size: wgpu::Extent3d {
+                                width: renderer.size.0,
+                                height: renderer.size.1,
+                                depth_or_array_layers: 1,
+                            },
+                            mip_level_count: 1,
+                            sample_count: 1,
+                            dimension: wgpu::TextureDimension::D2,
+                            format: renderer.format,
+                            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+                            view_formats: &[],
+                        });
+                        tex.create_view(&Default::default())
+                    });
+                    renderer.underwater = ps.underwater;
+                    let active_edits = focused_edits(&camera, &edits, &moon_edits);
+                    renderer.refresh_edits_snapshot(active_edits);
+                    for _ in 0..pose_ticks {
+                        sim_ticks += 1;
+                        renderer.set_render_time_s(sim_ticks as f64 * DT);
+                        let solar =
+                            renderer.solar_state(camera.position(), planet.radius_km);
+                        camera_rig.realign(solar, &mut camera);
+                        renderer.draw(view, &planet, &camera, active_edits);
+                        let _ = renderer
+                            .device
+                            .poll(wgpu::PollType::wait_indefinitely());
+                    }
+                    continue;
+                }
                 sim_ticks += pose_ticks;
                 renderer.set_render_time_s(sim_ticks as f64 * DT);
                 let solar = renderer.solar_state(camera.position(), planet.radius_km);
