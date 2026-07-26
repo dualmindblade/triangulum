@@ -453,6 +453,20 @@ class in miniature at `descent_land`'s draw counts: 1831 → 2344).
 - **`weather_tuning.json` differs between the main checkout and the tracked
   version by line endings only** (CRLF vs LF, `.gitattributes` presumably).
   Harmless, but it means a naive `diff` of an asset directory looks alarming.
+- **`viewer/assets/*.edj2` and `*.edt1` are not gitignored.** `.gitignore`
+  covers `viewer/assets/*.bin` and `meta.json` but not the multiplayer
+  journal/save files beside them, so they sit as permanent `??` noise in every
+  `git status` (they are in the main checkout's too). Same class of wart as the
+  generated `_*.play`; I did not add them myself in case one of them is
+  deliberately meant to be tracked.
+- **A footgun I built and then had to fix, worth knowing exists in the other
+  reels too:** `--accept` copying `current.json` wholesale is wrong as soon as
+  a tool has tiers or a `--flight` filter, because `current.json` only holds
+  what the last run selected — blessing after a cheap partial run silently
+  drops the expensive flight's baseline, and the next full run reports it as a
+  brand-new finding. `convergence_flight.py` merges instead. `perf_reel.py` and
+  `convergence_reel.py` always run their whole table so they are safe today,
+  but the first time either grows a filter it inherits the bug.
 
 **Surprises worth recording.**
 - The ref phase of a 128 s flight costs **19 seconds**. I had budgeted for it

@@ -356,11 +356,20 @@ def main():
     current_p, accepted_p = out / "current.json", out / "accepted.json"
 
     if args.accept:
-        if current_p.exists():
-            accepted_p.write_text(current_p.read_text())
-            print("accepted: current flight table blessed as baseline")
-        else:
+        if not current_p.exists():
             print("nothing to accept - run without --accept first")
+            return
+        # MERGE, do not replace. current.json only holds the flights the last
+        # run selected, so a wholesale copy after `--tier merge` would silently
+        # drop ice_session's blessed known-pinned state and the next deep run
+        # would report it as a NEW finding.
+        cur = json.loads(current_p.read_text())
+        acc = json.loads(accepted_p.read_text()) if accepted_p.exists() else {}
+        acc["meta"] = cur.get("meta", {})
+        acc.setdefault("flights", {}).update(cur.get("flights", {}))
+        accepted_p.write_text(json.dumps(acc, indent=1), encoding="utf-8")
+        print("accepted: blessed " + ", ".join(sorted(cur.get("flights", {})))
+              + f" ({len(acc['flights'])} flight(s) in the baseline)")
         return
 
     # merge = the cheap tier only; deep = merge + the accumulated sessions;
