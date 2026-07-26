@@ -61,6 +61,11 @@ comment for the authoritative command list.** Runs land in
   `TRI_POSE_LIVE=1` with `pose`/`posehz` instead draws **live** frames with the
   streaming scheduler running as in gameplay — settled captures hide streaming
   bugs, so use live replay for anything time-domain.
+- **`TRI_POSE_LIVE=1` and `TRI_RAW_CAPTURE=1` compose**, and together they are
+  the complete live-frame sampler: every `shot` becomes a photograph of the
+  actual in-flight frame (one draw, no settle, no drain). That pairing is what
+  the convergence reel is built from. Nothing else hints that they combine —
+  the gap cost two separate sessions the discovery.
 - **`sun LAT LON` sets a GLOBAL sun direction**, so a far-longitude teleport
   afterwards renders at *night*. Omit `sun` in surveys (the default lights
   every location at local noon), or derive it per-pose the way
@@ -80,6 +85,7 @@ see `docs/PROCESS.md`.
 | suites | `bash scripts/verify.sh` (repo root) | physics/geometry invariants, 8 asserting suites |
 | world reel | `python scripts/world_reel.py` | pixel changes vs blessed poses, + VOID/GRID lint |
 | perf reel | `python scripts/perf_reel.py` | frame cost vs blessed baseline |
+| convergence reel | `python scripts/convergence_reel.py` | **time-domain**: does the live view actually reach the settled one, and how fast. Self-blessing — the settled frame is its own reference |
 | sky reel | `python scripts/sky_reel.py` | sky/atmosphere appearance |
 | sync diff | `python scripts/sync_diff.py` | mesh↔voxel agreement (`sea_calib` must stay 0.0%) |
 | census | `cargo run --release --example census` (planet-wide; `-- --at LAT LON --radius KM` for one site) | water/terrain discontinuities at planet scale |
