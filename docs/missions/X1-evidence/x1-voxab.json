@@ -1,0 +1,322 @@
+[
+ {
+  "site": "lake_shore",
+  "alt_km": 0.3,
+  "on": {
+   "status": "ok",
+   "jumpiness": 4.66,
+   "step_px": 4.479,
+   "step_m": 3.181,
+   "step_voxels": 2.36,
+   "staircase": false
+  },
+  "off": {
+   "status": "ok",
+   "jumpiness": 2.643,
+   "step_px": 5.253,
+   "step_m": 3.802,
+   "step_voxels": 2.82,
+   "staircase": false
+  }
+ },
+ {
+  "site": "lake_shore",
+  "alt_km": 0.5,
+  "on": {
+   "status": "ok",
+   "jumpiness": 3.643,
+   "step_px": 3.727,
+   "step_m": 4.45,
+   "step_voxels": 3.3,
+   "staircase": false
+  },
+  "off": {
+   "status": "ok",
+   "jumpiness": 3.004,
+   "step_px": 5.931,
+   "step_m": 6.875,
+   "step_voxels": 5.09,
+   "staircase": false
+  }
+ },
+ {
+  "site": "lake_shore",
+  "alt_km": 0.7,
+  "on": {
+   "status": "ok",
+   "jumpiness": 4.343,
+   "step_px": 6.223,
+   "step_m": 10.236,
+   "step_voxels": 7.58,
+   "staircase": false
+  },
+  "off": {
+   "status": "ok",
+   "jumpiness": 3.406,
+   "step_px": 11.426,
+   "step_m": 19.71,
+   "step_voxels": 14.6,
+   "staircase": false
+  }
+ },
+ {
+  "site": "lake_shore",
+  "alt_km": 1.0,
+  "on": {
+   "status": "ok",
+   "jumpiness": 6.181,
+   "step_px": 7.993,
+   "step_m": 19.402,
+   "step_voxels": 14.37,
+   "staircase": true
+  },
+  "off": {
+   "status": "ok",
+   "jumpiness": 4.297,
+   "step_px": 14.777,
+   "step_m": 36.768,
+   "step_voxels": 27.24,
+   "staircase": false
+  }
+ },
+ {
+  "site": "river_bank",
+  "alt_km": 0.3,
+  "on": {
+   "status": "ok",
+   "jumpiness": 4.049,
+   "step_px": 4.669,
+   "step_m": 3.413,
+   "step_voxels": 2.53,
+   "staircase": false
+  },
+  "off": {
+   "status": "ok",
+   "jumpiness": 4.398,
+   "step_px": 15.118,
+   "step_m": 10.117,
+   "step_voxels": 7.49,
+   "staircase": false
+  }
+ },
+ {
+  "site": "river_bank",
+  "alt_km": 0.5,
+  "on": {
+   "status": "ok",
+   "jumpiness": 8.432,
+   "step_px": 8.99,
+   "step_m": 10.326,
+   "step_voxels": 7.65,
+   "staircase": false
+  },
+  "off": {
+   "status": "ok",
+   "jumpiness": 9.826,
+   "step_px": 11.825,
+   "step_m": 13.49,
+   "step_voxels": 9.99,
+   "staircase": true
+  }
+ },
+ {
+  "site": "river_bank",
+  "alt_km": 0.7,
+  "on": {
+   "status": "ok",
+   "jumpiness": 8.684,
+   "step_px": 9.308,
+   "step_m": 14.995,
+   "step_voxels": 11.11,
+   "staircase": true
+  },
+  "off": {
+   "status": "ok",
+   "jumpiness": 10.577,
+   "step_px": 10.749,
+   "step_m": 17.138,
+   "step_voxels": 12.69,
+   "staircase": true
+  }
+ },
+ {
+  "site": "river_bank",
+  "alt_km": 1.0,
+  "on": {
+   "status": "ok",
+   "jumpiness": 10.914,
+   "step_px": 9.492,
+   "step_m": 21.511,
+   "step_voxels": 15.93,
+   "staircase": true
+  },
+  "off": {
+   "status": "ok",
+   "jumpiness": 11.461,
+   "step_px": 9.492,
+   "step_m": 21.511,
+   "step_voxels": 15.93,
+   "staircase": true
+  }
+ },
+ {
+  "site": "snowline",
+  "alt_km": 0.3,
+  "on": {
+   "status": "ok",
+   "jumpiness": 9.402,
+   "step_px": 12.0,
+   "step_m": 8.275,
+   "step_voxels": 6.13,
+   "staircase": false
+  },
+  "off": {
+   "status": "ok",
+   "jumpiness": 3.761,
+   "step_px": 14.086,
+   "step_m": 10.504,
+   "step_voxels": 7.78,
+   "staircase": false
+  }
+ },
+ {
+  "site": "snowline",
+  "alt_km": 0.5,
+  "on": {
+   "status": "ok",
+   "jumpiness": 4.425,
+   "step_px": 9.581,
+   "step_m": 11.401,
+   "step_voxels": 8.45,
+   "staircase": false
+  },
+  "off": {
+   "status": "ok",
+   "jumpiness": 3.791,
+   "step_px": 9.881,
+   "step_m": 12.165,
+   "step_voxels": 9.01,
+   "staircase": false
+  }
+ },
+ {
+  "site": "snowline",
+  "alt_km": 0.7,
+  "on": {
+   "status": "ok",
+   "jumpiness": 6.071,
+   "step_px": 15.297,
+   "step_m": 25.585,
+   "step_voxels": 18.95,
+   "staircase": true
+  },
+  "off": {
+   "status": "ok",
+   "jumpiness": 5.171,
+   "step_px": 12.557,
+   "step_m": 21.513,
+   "step_voxels": 15.94,
+   "staircase": false
+  }
+ },
+ {
+  "site": "snowline",
+  "alt_km": 1.0,
+  "on": {
+   "status": "ok",
+   "jumpiness": 5.785,
+   "step_px": 13.721,
+   "step_m": 32.696,
+   "step_voxels": 24.22,
+   "staircase": false
+  },
+  "off": {
+   "status": "ok",
+   "jumpiness": 5.331,
+   "step_px": 14.441,
+   "step_m": 35.179,
+   "step_voxels": 26.06,
+   "staircase": false
+  }
+ },
+ {
+  "site": "ecotone",
+  "alt_km": 0.3,
+  "on": {
+   "status": "ok",
+   "jumpiness": 6.356,
+   "step_px": 12.796,
+   "step_m": 9.371,
+   "step_voxels": 6.94,
+   "staircase": false
+  },
+  "off": {
+   "status": "ok",
+   "jumpiness": 4.862,
+   "step_px": 7.67,
+   "step_m": 5.496,
+   "step_voxels": 4.07,
+   "staircase": false
+  }
+ },
+ {
+  "site": "ecotone",
+  "alt_km": 0.5,
+  "on": {
+   "status": "ok",
+   "jumpiness": 5.564,
+   "step_px": 7.0,
+   "step_m": 7.561,
+   "step_voxels": 5.6,
+   "staircase": false
+  },
+  "off": {
+   "status": "ok",
+   "jumpiness": 4.176,
+   "step_px": 9.243,
+   "step_m": 11.085,
+   "step_voxels": 8.21,
+   "staircase": false
+  }
+ },
+ {
+  "site": "ecotone",
+  "alt_km": 0.7,
+  "on": {
+   "status": "ok",
+   "jumpiness": 7.392,
+   "step_px": 7.0,
+   "step_m": 10.586,
+   "step_voxels": 7.84,
+   "staircase": false
+  },
+  "off": {
+   "status": "ok",
+   "jumpiness": 5.68,
+   "step_px": 13.449,
+   "step_m": 21.442,
+   "step_voxels": 15.88,
+   "staircase": false
+  }
+ },
+ {
+  "site": "ecotone",
+  "alt_km": 1.0,
+  "on": {
+   "status": "ok",
+   "jumpiness": 7.207,
+   "step_px": 14.71,
+   "step_m": 35.428,
+   "step_voxels": 26.24,
+   "staircase": true
+  },
+  "off": {
+   "status": "ok",
+   "jumpiness": 7.159,
+   "step_px": 11.202,
+   "step_m": 26.512,
+   "step_voxels": 19.64,
+   "staircase": true
+  }
+ }
+]

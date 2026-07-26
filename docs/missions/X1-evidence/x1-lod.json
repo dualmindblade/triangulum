@@ -1,0 +1,147 @@
+{
+ "vertex_spacing_m": {
+  "L10": 415.15,
+  "L11": 207.57,
+  "L12": 103.79,
+  "L13": 51.89,
+  "L14": 25.95,
+  "L15": 12.97,
+  "L16": 6.49,
+  "L17": 3.24
+ },
+ "rows": [
+  {
+   "site": "lake_shore",
+   "alt_km": 0.3,
+   "centre_owner": "chunk",
+   "unmatched_frac": 0.0,
+   "composition": {
+    "chunk": 0.678,
+    "L14": 0.322
+   },
+   "png": "interchange\\runs\\_x1-lod\\lake_shore_0p3km.png"
+  },
+  {
+   "site": "lake_shore",
+   "alt_km": 0.7,
+   "centre_owner": "L14",
+   "unmatched_frac": 0.0,
+   "composition": {
+    "chunk": 0.1961,
+    "L14": 0.8039
+   },
+   "png": "interchange\\runs\\_x1-lod\\lake_shore_0p7km.png"
+  },
+  {
+   "site": "lake_shore",
+   "alt_km": 1.0,
+   "centre_owner": "L14",
+   "unmatched_frac": 0.0,
+   "composition": {
+    "chunk": 0.0885,
+    "L14": 0.9115
+   },
+   "png": "interchange\\runs\\_x1-lod\\lake_shore_1km.png"
+  },
+  {
+   "site": "river_bank",
+   "alt_km": 0.3,
+   "centre_owner": "chunk",
+   "unmatched_frac": 0.0,
+   "composition": {
+    "chunk": 0.6981,
+    "L14": 0.3019
+   },
+   "png": "interchange\\runs\\_x1-lod\\river_bank_0p3km.png"
+  },
+  {
+   "site": "river_bank",
+   "alt_km": 0.7,
+   "centre_owner": "L14",
+   "unmatched_frac": 0.0,
+   "composition": {
+    "chunk": 0.2017,
+    "L14": 0.7983
+   },
+   "png": "interchange\\runs\\_x1-lod\\river_bank_0p7km.png"
+  },
+  {
+   "site": "river_bank",
+   "alt_km": 1.0,
+   "centre_owner": "L14",
+   "unmatched_frac": 0.0,
+   "composition": {
+    "chunk": 0.0882,
+    "L14": 0.9118
+   },
+   "png": "interchange\\runs\\_x1-lod\\river_bank_1km.png"
+  },
+  {
+   "site": "snowline",
+   "alt_km": 0.3,
+   "centre_owner": "L14",
+   "unmatched_frac": 0.0,
+   "composition": {
+    "chunk": 0.5994,
+    "L14": 0.4006
+   },
+   "png": "interchange\\runs\\_x1-lod\\snowline_0p3km.png"
+  },
+  {
+   "site": "snowline",
+   "alt_km": 0.7,
+   "centre_owner": "L14",
+   "unmatched_frac": 0.0,
+   "composition": {
+    "chunk": 0.1545,
+    "L14": 0.8455
+   },
+   "png": "interchange\\runs\\_x1-lod\\snowline_0p7km.png"
+  },
+  {
+   "site": "snowline",
+   "alt_km": 1.0,
+   "centre_owner": "L14",
+   "unmatched_frac": 0.0,
+   "composition": {
+    "chunk": 0.0694,
+    "L14": 0.9306
+   },
+   "png": "interchange\\runs\\_x1-lod\\snowline_1km.png"
+  },
+  {
+   "site": "ecotone",
+   "alt_km": 0.3,
+   "centre_owner": "chunk",
+   "unmatched_frac": 0.0,
+   "composition": {
+    "chunk": 0.4862,
+    "L14": 0.5138
+   },
+   "png": "interchange\\runs\\_x1-lod\\ecotone_0p3km.png"
+  },
+  {
+   "site": "ecotone",
+   "alt_km": 0.7,
+   "centre_owner": "L14",
+   "unmatched_frac": 0.0,
+   "composition": {
+    "chunk": 0.1366,
+    "L14": 0.8634
+   },
+   "png": "interchange\\runs\\_x1-lod\\ecotone_0p7km.png"
+  },
+  {
+   "site": "ecotone",
+   "alt_km": 1.0,
+   "centre_owner": "L14",
+   "unmatched_frac": 0.0,
+   "composition": {
+    "chunk": 0.067,
+    "L13": 0.0245,
+    "L14": 0.9085
+   },
+   "png": "interchange\\runs\\_x1-lod\\ecotone_1km.png"
+  }
+ ]
+}

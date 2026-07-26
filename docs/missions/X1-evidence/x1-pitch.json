@@ -1,0 +1,105 @@
+{
+ "note": "river_bank @1 km AGL, rows 60..400 (ground range 0.6-1.9 km, all mesh). Lateral jump sizes of the water/land boundary per scanline, in pixels. One lattice cell = vertex spacing / m_per_px.",
+ "vertex_spacing_m": {
+  "L12": 103.79,
+  "L13": 51.89,
+  "L14": 25.95,
+  "L15": 12.97,
+  "L16": 6.49
+ },
+ "selected_level_measured_by_TRI_LOD_RING_DEBUG": {
+  "MAX_LEVEL=12": 12,
+  "MAX_LEVEL=14": 14,
+  "MAX_LEVEL=16": 15
+ },
+ "predicted_jump_px": {
+  "MAX_LEVEL=12": 48.1,
+  "MAX_LEVEL=14": 12.0,
+  "MAX_LEVEL=16": 6.0
+ },
+ "measured": {
+  "MAX_LEVEL=12": {
+   "m_per_px": 2.16,
+   "side0_jumps_px": [
+    3,
+    3,
+    5,
+    5,
+    6,
+    7,
+    7,
+    9,
+    10,
+    24,
+    28,
+    28,
+    40
+   ],
+   "side1_jumps_px": [
+    36,
+    42,
+    46
+   ]
+  },
+  "MAX_LEVEL=14": {
+   "m_per_px": 2.16,
+   "side0_jumps_px": [
+    4,
+    5,
+    5,
+    6,
+    9,
+    10,
+    11,
+    11,
+    12,
+    12,
+    12,
+    12,
+    13,
+    13,
+    13
+   ],
+   "side1_jumps_px": [
+    9,
+    9,
+    10,
+    10,
+    11,
+    11,
+    12,
+    12,
+    12,
+    12,
+    12,
+    13,
+    14,
+    14,
+    14,
+    14,
+    37
+   ]
+  },
+  "MAX_LEVEL=16": {
+   "m_per_px": 2.16,
+   "side0_jumps_px": [
+    3,
+    3,
+    3,
+    3,
+    4
+   ],
+   "side1_jumps_px": [
+    3,
+    3,
+    3,
+    3,
+    4,
+    5,
+    9,
+    9,
+    35
+   ]
+  }
+ }
+}

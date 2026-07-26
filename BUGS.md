@@ -9,6 +9,47 @@ are `teleport LAT LON [ALT_KM]` viewer args at `--exagg 1` unless noted.
 
 ## OPEN
 
+### B-24 `--patch 2` hangs the play harness
+X-1 2026-07-26, found while building the B-19 double dissociation. At
+`play.exe SCRIPT --patch 2` a settled `shot` at 300 m AGL ran >8 minutes
+at 2 GB RSS without producing a frame; `--patch 1` at the identical pose
+takes ~1.3 s. `--patch` is documented in play.rs's header and clamped to
+0.3..2.0 with no warning, so it reads as a supported range. Voxel radius
+at that pose is 928 m vs 464 m nominal — 4x the disc area — so either
+`select_chunks` generates more work than the streaming budget can drain
+or something in the chunk path is worse than quadratic in radius.
+IMPACT: mild on its own, but `--patch` is the only knob that moves the
+voxel/mesh handoff without moving the camera, which makes it the natural
+control for any near-field appearance work (B-19's missing arm).
+REPRO: any ladder pose, `--patch 2`, watch run.log stall on the first
+`shot`. Killed by hand; no data.
+
+### B-23 LOD distance is measured to the sea-level sphere, so high ground gets coarser mesh
+X-1 2026-07-26, found while diagnosing B-19. `select_tiles`
+(terrain.rs:186) computes `dist = (cam_pos_km - center * radius_km)
+.length()` where `center` is the tile-centre DIRECTION and `radius_km`
+is the body radius — i.e. the tile is treated as sitting at sea level.
+Terrain elevation is therefore added to every near tile's apparent
+distance, and the screen-error test `size/dist > ERR_TARGET` refines
+less. CONSEQUENCE: at the same height ABOVE GROUND you get materially
+less mesh detail over high terrain. Measured: at the B-19 `ecotone` site
+(target elevation 2.429 km) the camera at 1 km AGL is 3.56 km from the
+sea-level tile centre, so level 14 is chosen by ERR_TARGET rather than
+by the MAX_LEVEL cap — rebuilding with MAX_LEVEL=16 left every frame at
+that site BYTE-IDENTICAL (mean |delta| 0.000 at four rungs), while the
+three low-elevation sites all refined. Verified directly by decoding
+TRI_LOD_RING_DEBUG under both builds: `ecotone 1 km centre=L14, 90.9%
+L14` in both.
+WHY IT MATTERS: it silently changes the answer to "what does a boundary
+look like at 1 km" depending on where you are, and it is invisible
+without the LOD-ring decode. It is also the reason the B-19 fix
+direction "raise MAX_LEVEL" does not help everywhere.
+FIX DIRECTION: use the tile's own surface height (the LOD tree already
+knows it) or a per-tile elevation bound in the distance term. Must stay
+deterministic — tile selection feeds the whole verification stack.
+Not verified as intentional; nothing in TRANSITIONS.md or the code
+comments mentions it.
+
 ### B-21 Count-1500 eviction sweep ignores the wanted set
 Found by Sol's R-1 audit 2026-07-26, re-verified by the coordinator in
 source. `evict()` (renderer.rs:3792-3796) runs
@@ -70,10 +111,53 @@ healthy vs 1 km sawtooth, side by side), ladder_*.png contact sheets,
 report.json pitch numbers.
 REPRO: `python scripts/altitude_ladder.py` from viewer/ (66 s); brackets
 via `--rungs`/`--tag`. The lint flags it automatically below ~1 km.
-NOT YET DIAGNOSED — no root cause proposed. The band sits between the
-voxel near-field and the far mesh, so the LOD/geomorph handoff and the
-per-pixel shore/biome fields are the obvious suspects; TRANSITIONS.md is
-the contract. Andrew has final say on how natural is natural enough.
+DIAGNOSED by X-1 2026-07-26 (docs/missions/X1-b19-findings.md, evidence
+in X1-evidence/). ROOT CAUSE: every mesh-drawn boundary is a PER-VERTEX
+scalar — Vertex::color (biome/snow categorical pick), water.a + wflag
+(river), shore (sea/lake/pond margin) — so no mesh boundary can carry
+shape finer than the vertex spacing, and terrain.rs:22 MAX_LEVEL = 14
+caps that at 25.95 m for every fragment inside 2.37 km. The voxel
+near-field evaluates the SAME fields per 1.35 m column but only inside a
+disc of (200 + (2.5-alt_km)*120)*patch_scale metres (renderer.rs:1820)
+that SHRINKS with altitude; the ladder's aim point leaves it at a
+predicted 0.610 km AGL (measured 0.59 +/- 0.01 by decoding
+TRI_LOD_RING_DEBUG per pixel). The per-pixel reconstruction that DOES
+draw curves is gated off here: BIOME_RANGE_BLEND_START_KM = 4.0 (fragment
+distance) and COAST_RANGE_CURVE_START_ALT_KM = 12.0 (camera altitude).
+So 0.5-4 km from the camera is an annulus neither system owns.
+PROOF: identical pose/light/seed, only terrain.rs MAX_LEVEL changed —
+L12 -> 104 m teeth, L14 -> 25.9 m measured vs 25.95 predicted (modal
+lateral jump 12 px on both banks independently), L16 -> level 15 is
+selected (ERR_TARGET, not the cap) and the staircase disappears. A
+world-anchored noise octave cannot track the SELECTED level like that,
+which kills the 38.9 m / 21.6 m field-octave alternative. `voxels off` at
+river_bank 1 km changes the pitch by exactly zero (21.511 -> 21.511): the
+voxels contribute nothing there. `--patch 0.3` reproduces the full
+staircase at 300 m altitude with the camera unmoved.
+SAME MECHANISM AS THE "~100 m per-vertex sawtooth" in TRANSITIONS.md:
+that note (a65591f) predates d1237cb, which raised MAX_LEVEL 12 -> 14 and
+says "the finest mesh level carried 103 m vertex spacing". 103.79/4 =
+25.95. The pitch was divided by four; the mechanism was never fixed.
+ONE CAUSE, FOUR CARRIERS: all four classes are per-vertex fields in the
+same Vertex struct on the same lattice, and MAX_LEVEL moves all of them
+together. A lattice-level fix fixes all four at once; a per-pixel fix
+must be done four times.
+c9cb081 (the B-17 fix) did NOT cause this and structurally cannot reach
+it: both paths it added are gated above 4 km / 12 km and evaluate to
+exactly zero in this band.
+THE BAND IS NOT SHARP and is not really an altitude window — it is the
+crossing of a shrinking disc with a growing look-distance, so it moves
+with depression angle, patch_scale, and terrain elevation (see B-23).
+FIX DIRECTION (costed in the findings; Andrew decides how natural is
+natural enough, and X1-evidence/x1-maxlevel-*.png are built for that
+call): (1) MAX_LEVEL 14 -> 15, one constant, ~1 day dominated by the perf
+reel; (2) make select_tiles' distance terrain-aware (B-23); (3) lower
+ERR_TARGET; (4) the real answer — extend the per-pixel categorical path
+down into the near field (TRANSITIONS.md A / Round 4), several days plus
+a perf story, because the near case is the expensive direction.
+NOT YET TESTED: ERR_TARGET's half of the mechanism (renderer.rs was
+owned by another mission this shift). Halving ERR_TARGET should halve the
+ecotone pitch at its 2.4 km-elevation site — cheapest open experiment.
 
 ### B-20 Two blessed world-reel poses guard nothing
 Found by V-2 2026-07-26, independently re-verified by the coordinator
