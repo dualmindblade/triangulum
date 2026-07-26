@@ -1,0 +1,1629 @@
+{
+ "lake_shore": {
+  "class": "irregular lake shore",
+  "target": [
+   -0.79691,
+   -67.94009
+  ],
+  "bearing": 40.0,
+  "note": "forest pond field; world reel `pond_country` aim point",
+  "target_truth": {
+   "target_h_km": 0.11320000000000001,
+   "target_water": true,
+   "aim_km": 0.1147,
+   "cam_ground_km": {
+    "0p05km": 0.11335958166018827,
+    "0p2km": 0.11388320101541466,
+    "1km": 0.11015347545799159,
+    "5km": 0.13063044471709873,
+    "20km": 0.19892806129610108,
+    "100km": 0.38078347236114496,
+    "300km": 0.5645217205565132
+   }
+  },
+  "rungs": [
+   {
+    "alt_km": 0.05,
+    "slant_km": 0.061,
+    "cam_lat": -0.797087,
+    "cam_lon": -67.940239,
+    "yaw_deg": 40.0,
+    "pitch_deg": -54.2648,
+    "gsd_m": 0.119,
+    "frame_ground_width_km": 0.1383,
+    "framing": {
+     "status": "ok",
+     "miss_m": 0.0,
+     "miss_frac_halfframe": 0.0
+    },
+    "class_frac": 0.7502,
+    "staircase": {
+     "jumpiness": 1.727,
+     "step_px": 0.0,
+     "step_m": 0.0,
+     "slope_px": 0.579,
+     "jump_frac": 0.0,
+     "status": "ok",
+     "profiles": 1,
+     "profile_px": 1272,
+     "gsd_m": 0.119,
+     "step_voxels": 0.0,
+     "gate_applies": true,
+     "staircase": false
+    },
+    "flag": false,
+    "ncc_to_next": {
+     "peak": 0.5081,
+     "dy_px": -6,
+     "dx_px": 9,
+     "scale_px": 320,
+     "offset_frac": 0.0676
+    }
+   },
+   {
+    "alt_km": 0.2,
+    "slant_km": 0.2442,
+    "cam_lat": -0.79762,
+    "cam_lon": -67.940686,
+    "yaw_deg": 40.0,
+    "pitch_deg": -54.8896,
+    "gsd_m": 0.477,
+    "frame_ground_width_km": 0.553,
+    "framing": {
+     "status": "ok",
+     "miss_m": 0.13,
+     "miss_frac_halfframe": 0.00068
+    },
+    "class_frac": 0.3973,
+    "staircase": {
+     "jumpiness": 5.536,
+     "step_px": 5.653,
+     "step_m": 2.712,
+     "slope_px": 1.139,
+     "jump_frac": 0.31,
+     "status": "ok",
+     "profiles": 3,
+     "profile_px": 2011,
+     "gsd_m": 0.477,
+     "step_voxels": 2.01,
+     "gate_applies": true,
+     "staircase": false
+    },
+    "flag": false,
+    "ncc_to_next": {
+     "peak": 0.3353,
+     "dy_px": 1,
+     "dx_px": 1,
+     "scale_px": 256,
+     "offset_frac": 0.011
+    }
+   },
+   {
+    "alt_km": 1.0,
+    "slant_km": 1.2208,
+    "cam_lat": -0.800459,
+    "cam_lon": -67.943068,
+    "yaw_deg": 40.0,
+    "pitch_deg": -54.8776,
+    "gsd_m": 2.387,
+    "frame_ground_width_km": 2.7652,
+    "framing": {
+     "status": "ok",
+     "miss_m": 0.0,
+     "miss_frac_halfframe": 0.0
+    },
+    "class_frac": 0.0675,
+    "staircase": {
+     "jumpiness": 6.181,
+     "step_px": 7.993,
+     "step_m": 19.402,
+     "slope_px": 1.127,
+     "jump_frac": 0.28,
+     "status": "ok",
+     "profiles": 4,
+     "profile_px": 1276,
+     "gsd_m": 2.387,
+     "step_voxels": 14.37,
+     "gate_applies": true,
+     "staircase": true
+    },
+    "flag": true,
+    "ncc_to_next": {
+     "peak": 0.0914,
+     "dy_px": -1,
+     "dx_px": -1,
+     "scale_px": 256,
+     "offset_frac": 0.011
+    }
+   },
+   {
+    "alt_km": 5.0,
+    "slant_km": 6.1039,
+    "cam_lat": -0.8146540000000001,
+    "cam_lon": -67.95498,
+    "yaw_deg": 40.0002,
+    "pitch_deg": -55.089,
+    "gsd_m": 11.935,
+    "frame_ground_width_km": 13.8261,
+    "framing": {
+     "status": "ok",
+     "miss_m": 0.0,
+     "miss_frac_halfframe": 0.0
+    },
+    "class_frac": 0.0019,
+    "staircase": {
+     "status": "no-usable-boundary"
+    },
+    "flag": false,
+    "ncc_to_next": {
+     "peak": 0.339,
+     "dy_px": -3,
+     "dx_px": 0,
+     "scale_px": 320,
+     "offset_frac": 0.0187
+    }
+   },
+   {
+    "alt_km": 20.0,
+    "slant_km": 24.4155,
+    "cam_lat": -0.867884,
+    "cam_lon": -67.99965200000001,
+    "yaw_deg": 40.0009,
+    "pitch_deg": -55.1279,
+    "gsd_m": 47.738,
+    "frame_ground_width_km": 55.3045,
+    "framing": {
+     "status": "ok",
+     "miss_m": 0.0,
+     "miss_frac_halfframe": 0.0
+    },
+    "class_frac": 0.0655,
+    "staircase": {
+     "jumpiness": 4.234,
+     "step_px": 4.474,
+     "step_m": 211.367,
+     "slope_px": 1.025,
+     "jump_frac": 0.249,
+     "status": "ok",
+     "profiles": 2,
+     "profile_px": 817,
+     "gsd_m": 47.738,
+     "step_voxels": 156.57,
+     "gate_applies": false,
+     "staircase": false
+    },
+    "flag": false,
+    "ncc_to_next": {
+     "peak": 0.7595,
+     "dy_px": 21,
+     "dx_px": -19,
+     "scale_px": 256,
+     "offset_frac": 0.2212
+    }
+   },
+   {
+    "alt_km": 100.0,
+    "slant_km": 122.0775,
+    "cam_lat": -1.15177,
+    "cam_lon": -68.237922,
+    "yaw_deg": 40.0051,
+    "pitch_deg": -55.1472,
+    "gsd_m": 238.692,
+    "frame_ground_width_km": 276.5224,
+    "framing": {
+     "status": "ok",
+     "miss_m": 0.0,
+     "miss_frac_halfframe": 0.0
+    },
+    "class_frac": 0.3347,
+    "staircase": {
+     "jumpiness": 5.43,
+     "step_px": 13.438,
+     "step_m": 3102.41,
+     "slope_px": 1.364,
+     "jump_frac": 0.472,
+     "status": "ok",
+     "profiles": 2,
+     "profile_px": 1581,
+     "gsd_m": 238.692,
+     "step_voxels": 2298.08,
+     "gate_applies": false,
+     "staircase": false
+    },
+    "flag": false,
+    "ncc_to_next": {
+     "peak": 0.7263,
+     "dy_px": -4,
+     "dx_px": -4,
+     "scale_px": 426,
+     "offset_frac": 0.0266
+    }
+   },
+   {
+    "alt_km": 300.0,
+    "slant_km": 366.2324,
+    "cam_lat": -1.861388,
+    "cam_lon": -68.833831,
+    "yaw_deg": 40.0207,
+    "pitch_deg": -55.2694,
+    "gsd_m": 716.076,
+    "frame_ground_width_km": 829.5671,
+    "framing": {
+     "status": "ok",
+     "miss_m": 0.13,
+     "miss_frac_halfframe": 0.0
+    },
+    "class_frac": 0.3476,
+    "staircase": {
+     "jumpiness": 7.468,
+     "step_px": 5.0,
+     "step_m": 3955.916,
+     "slope_px": 0.803,
+     "jump_frac": 0.506,
+     "status": "ok",
+     "profiles": 1,
+     "profile_px": 1064,
+     "gsd_m": 716.076,
+     "step_voxels": 2930.31,
+     "gate_applies": false,
+     "staircase": false
+    },
+    "flag": false
+   }
+  ]
+ },
+ "river_bank": {
+  "class": "river bank",
+  "target": [
+   15.02469,
+   17.65934
+  ],
+  "bearing": -75.0,
+  "note": "world reel `river_wide` aim point; known staircase specimen",
+  "target_truth": {
+   "target_h_km": 0.8715,
+   "target_water": false,
+   "aim_km": 0.8715,
+   "cam_ground_km": {
+    "0p05km": 0.8819254607908078,
+    "0p2km": 0.8946315907258395,
+    "1km": 0.9037456151909282,
+    "5km": 0.8938515001373162,
+    "20km": 0.8984285957940301,
+    "100km": 1.0508739161668927,
+    "300km": 1.1465730757245183
+   }
+  },
+  "rungs": [
+   {
+    "alt_km": 0.05,
+    "slant_km": 0.061,
+    "cam_lat": 15.02463,
+    "cam_lon": 17.659572,
+    "yaw_deg": -74.9999,
+    "pitch_deg": -59.9096,
+    "gsd_m": 0.119,
+    "frame_ground_width_km": 0.1383,
+    "framing": {
+     "status": "ok",
+     "miss_m": 0.13,
+     "miss_frac_halfframe": 0.002718
+    },
+    "class_frac": 0.2105,
+    "staircase": {
+     "jumpiness": 5.468,
+     "step_px": 5.825,
+     "step_m": 0.681,
+     "slope_px": 1.093,
+     "jump_frac": 0.279,
+     "status": "ok",
+     "profiles": 2,
+     "profile_px": 1234,
+     "gsd_m": 0.119,
+     "step_voxels": 0.5,
+     "gate_applies": true,
+     "staircase": false
+    },
+    "flag": false,
+    "ncc_to_next": {
+     "peak": 0.6564,
+     "dy_px": 3,
+     "dx_px": 27,
+     "scale_px": 320,
+     "offset_frac": 0.1698
+    }
+   },
+   {
+    "alt_km": 0.2,
+    "slant_km": 0.2442,
+    "cam_lat": 15.024450000000002,
+    "cam_lon": 17.660267,
+    "yaw_deg": -74.9998,
+    "pitch_deg": -57.8844,
+    "gsd_m": 0.477,
+    "frame_ground_width_km": 0.553,
+    "framing": {
+     "status": "ok",
+     "miss_m": 0.0,
+     "miss_frac_halfframe": 0.0
+    },
+    "class_frac": 0.2405,
+    "staircase": {
+     "jumpiness": 3.665,
+     "step_px": 3.458,
+     "step_m": 1.668,
+     "slope_px": 1.105,
+     "jump_frac": 0.315,
+     "status": "ok",
+     "profiles": 4,
+     "profile_px": 2477,
+     "gsd_m": 0.477,
+     "step_voxels": 1.24,
+     "gate_applies": true,
+     "staircase": false
+    },
+    "flag": false,
+    "ncc_to_next": {
+     "peak": 0.6163,
+     "dy_px": -19,
+     "dx_px": -13,
+     "scale_px": 256,
+     "offset_frac": 0.1799
+    }
+   },
+   {
+    "alt_km": 1.0,
+    "slant_km": 1.2208,
+    "cam_lat": 15.023491,
+    "cam_lon": 17.663973,
+    "yaw_deg": -74.9988,
+    "pitch_deg": -55.8477,
+    "gsd_m": 2.387,
+    "frame_ground_width_km": 2.7652,
+    "framing": {
+     "status": "ok",
+     "miss_m": 0.13,
+     "miss_frac_halfframe": 0.000136
+    },
+    "class_frac": 0.058,
+    "staircase": {
+     "jumpiness": 10.914,
+     "step_px": 9.492,
+     "step_m": 21.511,
+     "slope_px": 1.027,
+     "jump_frac": 0.405,
+     "status": "ok",
+     "profiles": 4,
+     "profile_px": 2313,
+     "gsd_m": 2.387,
+     "step_voxels": 15.93,
+     "gate_applies": true,
+     "staircase": true
+    },
+    "flag": true,
+    "ncc_to_next": {
+     "peak": 0.5676,
+     "dy_px": -7,
+     "dx_px": -5,
+     "scale_px": 256,
+     "offset_frac": 0.0672
+    }
+   },
+   {
+    "alt_km": 5.0,
+    "slant_km": 6.1039,
+    "cam_lat": 15.018693999999998,
+    "cam_lon": 17.682505,
+    "yaw_deg": -74.994,
+    "pitch_deg": -55.1211,
+    "gsd_m": 11.935,
+    "frame_ground_width_km": 13.8261,
+    "framing": {
+     "status": "ok",
+     "miss_m": 0.0,
+     "miss_frac_halfframe": 0.0
+    },
+    "class_frac": 0.0,
+    "staircase": {
+     "status": "no-usable-boundary"
+    },
+    "flag": false,
+    "ncc_to_next": {
+     "peak": 0.3162,
+     "dy_px": -6,
+     "dx_px": -6,
+     "scale_px": 320,
+     "offset_frac": 0.053
+    }
+   },
+   {
+    "alt_km": 20.0,
+    "slant_km": 24.4155,
+    "cam_lat": 15.000691,
+    "cam_lon": 17.751991,
+    "yaw_deg": -74.976,
+    "pitch_deg": -55.0487,
+    "gsd_m": 47.738,
+    "frame_ground_width_km": 55.3045,
+    "framing": {
+     "status": "ok",
+     "miss_m": 0.0,
+     "miss_frac_halfframe": 0.0
+    },
+    "class_frac": 0.0,
+    "staircase": {
+     "status": "no-usable-boundary"
+    },
+    "flag": false,
+    "ncc_to_next": {
+     "peak": 0.8366,
+     "dy_px": 3,
+     "dx_px": 5,
+     "scale_px": 256,
+     "offset_frac": 0.0456
+    }
+   },
+   {
+    "alt_km": 100.0,
+    "slant_km": 122.0775,
+    "cam_lat": 14.904324,
+    "cam_lon": 18.122387,
+    "yaw_deg": -74.8804,
+    "pitch_deg": -55.1217,
+    "gsd_m": 238.692,
+    "frame_ground_width_km": 276.5224,
+    "framing": {
+     "status": "ok",
+     "miss_m": 0.0,
+     "miss_frac_halfframe": 0.0
+    },
+    "class_frac": 0.0,
+    "staircase": {
+     "status": "no-usable-boundary"
+    },
+    "flag": false,
+    "ncc_to_next": {
+     "peak": 0.817,
+     "dy_px": -4,
+     "dx_px": 8,
+     "scale_px": 426,
+     "offset_frac": 0.042
+    }
+   },
+   {
+    "alt_km": 300.0,
+    "slant_km": 366.2324,
+    "cam_lat": 14.660813,
+    "cam_lon": 19.046924,
+    "yaw_deg": -74.6445,
+    "pitch_deg": -55.2516,
+    "gsd_m": 716.076,
+    "frame_ground_width_km": 829.5671,
+    "framing": {
+     "status": "ok",
+     "miss_m": 0.0,
+     "miss_frac_halfframe": 0.0
+    },
+    "class_frac": 0.0101,
+    "staircase": {
+     "jumpiness": 8.457,
+     "step_px": 11.365,
+     "step_m": 8155.955,
+     "slope_px": 1.834,
+     "jump_frac": 0.58,
+     "status": "ok",
+     "profiles": 4,
+     "profile_px": 422,
+     "gsd_m": 716.076,
+     "step_voxels": 6041.45,
+     "gate_applies": false,
+     "staircase": false
+    },
+    "flag": false
+   }
+  ]
+ },
+ "ocean_coast": {
+  "class": "ocean coastline",
+  "target": [
+   15.10556,
+   150.92017
+  ],
+  "bearing": 146.0,
+  "note": "shore of the `orbital_coast` archipelago, --scout snapped to the waterline",
+  "target_truth": {
+   "target_h_km": -0.0011,
+   "target_water": true,
+   "aim_km": 0.0,
+   "cam_ground_km": {
+    "0p05km": -7.275985369759042e-13,
+    "0p2km": 7.275846591880963e-13,
+    "1km": 0.0,
+    "5km": 0.0,
+    "20km": 0.0,
+    "100km": 0.0,
+    "300km": 0.0
+   }
+  },
+  "rungs": [
+   {
+    "alt_km": 0.05,
+    "slant_km": 0.061,
+    "cam_lat": 15.105752,
+    "cam_lon": 150.920036,
+    "yaw_deg": 146.0,
+    "pitch_deg": -55.0,
+    "gsd_m": 0.119,
+    "frame_ground_width_km": 0.1383,
+    "framing": {
+     "status": "ok",
+     "miss_m": 0.22,
+     "miss_frac_halfframe": 0.004709
+    },
+    "class_frac": 0.6326,
+    "staircase": {
+     "jumpiness": 7.252,
+     "step_px": 6.192,
+     "step_m": 0.768,
+     "slope_px": 1.099,
+     "jump_frac": 0.361,
+     "status": "ok",
+     "profiles": 2,
+     "profile_px": 1388,
+     "gsd_m": 0.119,
+     "step_voxels": 0.57,
+     "gate_applies": true,
+     "staircase": false
+    },
+    "flag": false,
+    "ncc_to_next": {
+     "peak": 0.9178,
+     "dy_px": 21,
+     "dx_px": 12,
+     "scale_px": 320,
+     "offset_frac": 0.1512
+    }
+   },
+   {
+    "alt_km": 0.2,
+    "slant_km": 0.2442,
+    "cam_lat": 15.106327999999998,
+    "cam_lon": 150.919633,
+    "yaw_deg": 145.9999,
+    "pitch_deg": -55.0001,
+    "gsd_m": 0.477,
+    "frame_ground_width_km": 0.553,
+    "framing": {
+     "status": "ok",
+     "miss_m": 0.0,
+     "miss_frac_halfframe": 0.0
+    },
+    "class_frac": 0.5333,
+    "staircase": {
+     "jumpiness": 3.523,
+     "step_px": 3.891,
+     "step_m": 1.894,
+     "slope_px": 1.087,
+     "jump_frac": 0.255,
+     "status": "ok",
+     "profiles": 2,
+     "profile_px": 1284,
+     "gsd_m": 0.477,
+     "step_voxels": 1.4,
+     "gate_applies": true,
+     "staircase": false
+    },
+    "flag": false,
+    "ncc_to_next": {
+     "peak": 0.985,
+     "dy_px": 9,
+     "dx_px": 5,
+     "scale_px": 256,
+     "offset_frac": 0.0804
+    }
+   },
+   {
+    "alt_km": 1.0,
+    "slant_km": 1.2208,
+    "cam_lat": 15.109401,
+    "cam_lon": 150.917487,
+    "yaw_deg": 145.9993,
+    "pitch_deg": -55.0008,
+    "gsd_m": 2.387,
+    "frame_ground_width_km": 2.7652,
+    "framing": {
+     "status": "ok",
+     "miss_m": 0.13,
+     "miss_frac_halfframe": 0.000136
+    },
+    "class_frac": 0.5123,
+    "staircase": {
+     "jumpiness": 1.41,
+     "step_px": 0.0,
+     "step_m": 0.0,
+     "slope_px": 0.999,
+     "jump_frac": 0.0,
+     "status": "ok",
+     "profiles": 2,
+     "profile_px": 1222,
+     "gsd_m": 2.387,
+     "step_voxels": 0.0,
+     "gate_applies": true,
+     "staircase": false
+    },
+    "flag": false,
+    "ncc_to_next": {
+     "peak": 0.9971,
+     "dy_px": -1,
+     "dx_px": -1,
+     "scale_px": 256,
+     "offset_frac": 0.011
+    }
+   },
+   {
+    "alt_km": 5.0,
+    "slant_km": 6.1039,
+    "cam_lat": 15.124762,
+    "cam_lon": 150.906753,
+    "yaw_deg": 145.9965,
+    "pitch_deg": -55.0038,
+    "gsd_m": 11.935,
+    "frame_ground_width_km": 13.8261,
+    "framing": {
+     "status": "ok",
+     "miss_m": 0.13,
+     "miss_frac_halfframe": 2.7e-05
+    },
+    "class_frac": 0.5197,
+    "staircase": {
+     "jumpiness": 1.77,
+     "step_px": 0.0,
+     "step_m": 0.0,
+     "slope_px": 0.826,
+     "jump_frac": 0.0,
+     "status": "ok",
+     "profiles": 2,
+     "profile_px": 1014,
+     "gsd_m": 11.935,
+     "step_voxels": 0.0,
+     "gate_applies": false,
+     "staircase": false
+    },
+    "flag": false,
+    "ncc_to_next": {
+     "peak": 0.9596,
+     "dy_px": -9,
+     "dx_px": 0,
+     "scale_px": 320,
+     "offset_frac": 0.0563
+    }
+   },
+   {
+    "alt_km": 20.0,
+    "slant_km": 24.4155,
+    "cam_lat": 15.182365,
+    "cam_lon": 150.866487,
+    "yaw_deg": 145.986,
+    "pitch_deg": -55.0153,
+    "gsd_m": 47.738,
+    "frame_ground_width_km": 55.3045,
+    "framing": {
+     "status": "ok",
+     "miss_m": 0.0,
+     "miss_frac_halfframe": 0.0
+    },
+    "class_frac": 0.4989,
+    "staircase": {
+     "jumpiness": 5.291,
+     "step_px": 5.312,
+     "step_m": 259.344,
+     "slope_px": 1.034,
+     "jump_frac": 0.352,
+     "status": "ok",
+     "profiles": 2,
+     "profile_px": 978,
+     "gsd_m": 47.738,
+     "step_voxels": 192.11,
+     "gate_applies": false,
+     "staircase": false
+    },
+    "flag": false,
+    "ncc_to_next": {
+     "peak": 0.5405,
+     "dy_px": -7,
+     "dx_px": 17,
+     "scale_px": 256,
+     "offset_frac": 0.1436
+    }
+   },
+   {
+    "alt_km": 100.0,
+    "slant_km": 122.0775,
+    "cam_lat": 15.489454999999998,
+    "cam_lon": 150.65136,
+    "yaw_deg": 145.9291,
+    "pitch_deg": -55.0763,
+    "gsd_m": 238.692,
+    "frame_ground_width_km": 276.5224,
+    "framing": {
+     "status": "ok",
+     "miss_m": 0.0,
+     "miss_frac_halfframe": 0.0
+    },
+    "class_frac": 0.4773,
+    "staircase": {
+     "jumpiness": 3.479,
+     "step_px": 4.0,
+     "step_m": 1054.911,
+     "slope_px": 0.862,
+     "jump_frac": 0.552,
+     "status": "ok",
+     "profiles": 1,
+     "profile_px": 1272,
+     "gsd_m": 238.692,
+     "step_voxels": 781.42,
+     "gate_applies": false,
+     "staircase": false
+    },
+    "flag": false,
+    "ncc_to_next": {
+     "peak": 0.7355,
+     "dy_px": 0,
+     "dx_px": 0,
+     "scale_px": 426,
+     "offset_frac": 0.0
+    }
+   },
+   {
+    "alt_km": 300.0,
+    "slant_km": 366.2324,
+    "cam_lat": 16.256258,
+    "cam_lon": 150.110713,
+    "yaw_deg": 145.7812,
+    "pitch_deg": -55.2299,
+    "gsd_m": 716.076,
+    "frame_ground_width_km": 829.5671,
+    "framing": {
+     "status": "ok",
+     "miss_m": 0.13,
+     "miss_frac_halfframe": 0.0
+    },
+    "class_frac": 0.6389,
+    "staircase": {
+     "jumpiness": 9.67,
+     "step_px": 6.0,
+     "step_m": 4747.099,
+     "slope_px": 1.272,
+     "jump_frac": 0.646,
+     "status": "ok",
+     "profiles": 1,
+     "profile_px": 387,
+     "gsd_m": 716.076,
+     "step_voxels": 3516.37,
+     "gate_applies": false,
+     "staircase": false
+    },
+    "flag": false
+   }
+  ]
+ },
+ "sand_patch": {
+  "class": "sand/grass patch edge",
+  "target": [
+   12.19894,
+   -44.82774
+  ],
+  "bearing": -90.0,
+  "note": "world reel `dossier_ponds` aim point; a NEAR-FIELD class - the patches are ~30 m, so only the bottom rungs resolve them",
+  "target_truth": {
+   "target_h_km": 0.0559,
+   "target_water": false,
+   "aim_km": 0.0559,
+   "cam_ground_km": {
+    "0p05km": 0.056554269625121376,
+    "0p2km": 0.05803916541372017,
+    "1km": 0.06395535243791528,
+    "5km": 0.0755748956980824,
+    "20km": 0.17475734774052398,
+    "100km": 0.576065208952059,
+    "300km": 0.70363020728837
+   }
+  },
+  "rungs": [
+   {
+    "alt_km": 0.05,
+    "slant_km": 0.061,
+    "cam_lat": 12.19894,
+    "cam_lon": -44.827503,
+    "yaw_deg": -90.0,
+    "pitch_deg": -55.3491,
+    "gsd_m": 0.119,
+    "frame_ground_width_km": 0.1383,
+    "framing": {
+     "status": "ok",
+     "miss_m": 0.13,
+     "miss_frac_halfframe": 0.002718
+    },
+    "class_frac": 0.0917,
+    "staircase": {
+     "jumpiness": 9.516,
+     "step_px": 6.952,
+     "step_m": 0.795,
+     "slope_px": 0.84,
+     "jump_frac": 0.611,
+     "status": "ok",
+     "profiles": 4,
+     "profile_px": 1286,
+     "gsd_m": 0.119,
+     "step_voxels": 0.59,
+     "gate_applies": true,
+     "staircase": false
+    },
+    "flag": false,
+    "ncc_to_next": {
+     "peak": 0.6618,
+     "dy_px": -3,
+     "dx_px": 3,
+     "scale_px": 320,
+     "offset_frac": 0.0265
+    }
+   },
+   {
+    "alt_km": 0.2,
+    "slant_km": 0.2442,
+    "cam_lat": 12.19894,
+    "cam_lon": -44.826792,
+    "yaw_deg": -89.9998,
+    "pitch_deg": -55.2859,
+    "gsd_m": 0.477,
+    "frame_ground_width_km": 0.553,
+    "framing": {
+     "status": "ok",
+     "miss_m": 0.13,
+     "miss_frac_halfframe": 0.00068
+    },
+    "class_frac": 0.021,
+    "staircase": {
+     "jumpiness": 4.678,
+     "step_px": 11.714,
+     "step_m": 5.899,
+     "slope_px": 1.227,
+     "jump_frac": 0.471,
+     "status": "ok",
+     "profiles": 6,
+     "profile_px": 594,
+     "gsd_m": 0.477,
+     "step_voxels": 4.37,
+     "gate_applies": true,
+     "staircase": false
+    },
+    "flag": false,
+    "ncc_to_next": {
+     "peak": 0.2118,
+     "dy_px": -1,
+     "dx_px": 1,
+     "scale_px": 256,
+     "offset_frac": 0.011
+    }
+   },
+   {
+    "alt_km": 1.0,
+    "slant_km": 1.2208,
+    "cam_lat": 12.19894,
+    "cam_lon": -44.823,
+    "yaw_deg": -89.999,
+    "pitch_deg": -55.2163,
+    "gsd_m": 2.387,
+    "frame_ground_width_km": 2.7652,
+    "framing": {
+     "status": "ok",
+     "miss_m": 0.18,
+     "miss_frac_halfframe": 0.000192
+    },
+    "class_frac": 0.0073,
+    "staircase": {
+     "status": "no-usable-boundary"
+    },
+    "flag": false,
+    "ncc_to_next": {
+     "peak": 0.3763,
+     "dy_px": -1,
+     "dx_px": 1,
+     "scale_px": 256,
+     "offset_frac": 0.011
+    }
+   },
+   {
+    "alt_km": 5.0,
+    "slant_km": 6.1039,
+    "cam_lat": 12.198939,
+    "cam_lon": -44.804042,
+    "yaw_deg": -89.995,
+    "pitch_deg": -55.1093,
+    "gsd_m": 11.935,
+    "frame_ground_width_km": 13.8261,
+    "framing": {
+     "status": "ok",
+     "miss_m": 0.13,
+     "miss_frac_halfframe": 2.7e-05
+    },
+    "class_frac": 0.3109,
+    "staircase": {
+     "jumpiness": 5.005,
+     "step_px": 5.917,
+     "step_m": 76.679,
+     "slope_px": 0.935,
+     "jump_frac": 0.382,
+     "status": "ok",
+     "profiles": 4,
+     "profile_px": 1896,
+     "gsd_m": 11.935,
+     "step_voxels": 56.8,
+     "gate_applies": false,
+     "staircase": false
+    },
+    "flag": false,
+    "ncc_to_next": {
+     "peak": 0.744,
+     "dy_px": -6,
+     "dx_px": -6,
+     "scale_px": 320,
+     "offset_frac": 0.053
+    }
+   },
+   {
+    "alt_km": 20.0,
+    "slant_km": 24.4155,
+    "cam_lat": 12.198924000000002,
+    "cam_lon": -44.732949,
+    "yaw_deg": -89.98,
+    "pitch_deg": -55.1743,
+    "gsd_m": 47.738,
+    "frame_ground_width_km": 55.3045,
+    "framing": {
+     "status": "ok",
+     "miss_m": 0.18,
+     "miss_frac_halfframe": 1e-05
+    },
+    "class_frac": 0.129,
+    "staircase": {
+     "jumpiness": 4.997,
+     "step_px": 4.46,
+     "step_m": 235.256,
+     "slope_px": 0.639,
+     "jump_frac": 0.376,
+     "status": "ok",
+     "profiles": 4,
+     "profile_px": 2098,
+     "gsd_m": 47.738,
+     "step_voxels": 174.26,
+     "gate_applies": false,
+     "staircase": false
+    },
+    "flag": false,
+    "ncc_to_next": {
+     "peak": 0.6764,
+     "dy_px": -5,
+     "dx_px": 3,
+     "scale_px": 256,
+     "offset_frac": 0.0456
+    }
+   },
+   {
+    "alt_km": 100.0,
+    "slant_km": 122.0775,
+    "cam_lat": 12.198535,
+    "cam_lon": -44.353785,
+    "yaw_deg": -89.8999,
+    "pitch_deg": -55.2152,
+    "gsd_m": 238.692,
+    "frame_ground_width_km": 276.5224,
+    "framing": {
+     "status": "ok",
+     "miss_m": 0.18,
+     "miss_frac_halfframe": 2e-06
+    },
+    "class_frac": 0.2928,
+    "staircase": {
+     "jumpiness": 6.324,
+     "step_px": 7.831,
+     "step_m": 2065.382,
+     "slope_px": 1.311,
+     "jump_frac": 0.497,
+     "status": "ok",
+     "profiles": 2,
+     "profile_px": 1448,
+     "gsd_m": 238.692,
+     "step_voxels": 1529.91,
+     "gate_applies": false,
+     "staircase": false
+    },
+    "flag": false,
+    "ncc_to_next": {
+     "peak": 0.7753,
+     "dy_px": 0,
+     "dx_px": 0,
+     "scale_px": 426,
+     "offset_frac": 0.0
+    }
+   },
+   {
+    "alt_km": 300.0,
+    "slant_km": 366.2324,
+    "cam_lat": 12.195296,
+    "cam_lon": -43.405886,
+    "yaw_deg": -89.6996,
+    "pitch_deg": -55.2871,
+    "gsd_m": 716.076,
+    "frame_ground_width_km": 829.5671,
+    "framing": {
+     "status": "ok",
+     "miss_m": 0.0,
+     "miss_frac_halfframe": 0.0
+    },
+    "class_frac": 0.4067,
+    "staircase": {
+     "jumpiness": 6.791,
+     "step_px": 7.2,
+     "step_m": 5696.345,
+     "slope_px": 1.121,
+     "jump_frac": 0.544,
+     "status": "ok",
+     "profiles": 2,
+     "profile_px": 1817,
+     "gsd_m": 716.076,
+     "step_voxels": 4219.51,
+     "gate_applies": false,
+     "staircase": false
+    },
+    "flag": false
+   }
+  ]
+ },
+ "snowline": {
+  "class": "snow/rock line",
+  "target": [
+   -12.30741,
+   107.18103
+  ],
+  "bearing": 20.0,
+  "note": "tropical 3.2 km massif; the boundary is elevation-driven, not water",
+  "target_truth": {
+   "target_h_km": 0.3619,
+   "target_water": false,
+   "aim_km": 0.3619,
+   "cam_ground_km": {
+    "0p05km": 0.3604173982559587,
+    "0p2km": 0.3718367435820255,
+    "1km": 0.3775682619980216,
+    "5km": 0.45874542275851127,
+    "20km": 0.5459528746177966,
+    "100km": 1.7423263969922118,
+    "300km": 5.138490861731043
+   }
+  },
+  "rungs": [
+   {
+    "alt_km": 0.05,
+    "slant_km": 0.061,
+    "cam_lat": -12.307628,
+    "cam_lon": 107.180949,
+    "yaw_deg": 20.0,
+    "pitch_deg": -54.1845,
+    "gsd_m": 0.119,
+    "frame_ground_width_km": 0.1383,
+    "framing": {
+     "status": "ok",
+     "miss_m": 0.13,
+     "miss_frac_halfframe": 0.002718
+    },
+    "class_frac": 0.2746,
+    "staircase": {
+     "jumpiness": 6.852,
+     "step_px": 16.584,
+     "step_m": 1.944,
+     "slope_px": 1.704,
+     "jump_frac": 0.459,
+     "status": "ok",
+     "profiles": 3,
+     "profile_px": 1537,
+     "gsd_m": 0.119,
+     "step_voxels": 1.44,
+     "gate_applies": true,
+     "staircase": false
+    },
+    "flag": false,
+    "ncc_to_next": {
+     "peak": 0.8629,
+     "dy_px": 0,
+     "dx_px": 3,
+     "scale_px": 320,
+     "offset_frac": 0.0187
+    }
+   },
+   {
+    "alt_km": 0.2,
+    "slant_km": 0.2442,
+    "cam_lat": -12.308281,
+    "cam_lon": 107.180706,
+    "yaw_deg": 20.0001,
+    "pitch_deg": -56.2932,
+    "gsd_m": 0.477,
+    "frame_ground_width_km": 0.553,
+    "framing": {
+     "status": "ok",
+     "miss_m": 0.13,
+     "miss_frac_halfframe": 0.00068
+    },
+    "class_frac": 0.3531,
+    "staircase": {
+     "jumpiness": 6.998,
+     "step_px": 11.996,
+     "step_m": 5.715,
+     "slope_px": 2.02,
+     "jump_frac": 0.511,
+     "status": "ok",
+     "profiles": 3,
+     "profile_px": 1275,
+     "gsd_m": 0.477,
+     "step_voxels": 4.23,
+     "gate_applies": true,
+     "staircase": false
+    },
+    "flag": false,
+    "ncc_to_next": {
+     "peak": 0.9119,
+     "dy_px": -3,
+     "dx_px": -1,
+     "scale_px": 256,
+     "offset_frac": 0.0247
+    }
+   },
+   {
+    "alt_km": 1.0,
+    "slant_km": 1.2208,
+    "cam_lat": -12.311763,
+    "cam_lon": 107.179408,
+    "yaw_deg": 20.0004,
+    "pitch_deg": -55.417,
+    "gsd_m": 2.387,
+    "frame_ground_width_km": 2.7652,
+    "framing": {
+     "status": "ok",
+     "miss_m": 0.13,
+     "miss_frac_halfframe": 0.000136
+    },
+    "class_frac": 0.3937,
+    "staircase": {
+     "jumpiness": 5.785,
+     "step_px": 13.721,
+     "step_m": 32.696,
+     "slope_px": 1.992,
+     "jump_frac": 0.52,
+     "status": "ok",
+     "profiles": 3,
+     "profile_px": 1265,
+     "gsd_m": 2.387,
+     "step_voxels": 24.22,
+     "gate_applies": true,
+     "staircase": false
+    },
+    "flag": false,
+    "ncc_to_next": {
+     "peak": 0.9514,
+     "dy_px": -3,
+     "dx_px": 1,
+     "scale_px": 256,
+     "offset_frac": 0.0247
+    }
+   },
+   {
+    "alt_km": 5.0,
+    "slant_km": 6.1039,
+    "cam_lat": -12.329176,
+    "cam_lon": 107.172921,
+    "yaw_deg": 20.0017,
+    "pitch_deg": -55.5173,
+    "gsd_m": 11.935,
+    "frame_ground_width_km": 13.8261,
+    "framing": {
+     "status": "ok",
+     "miss_m": 0.18,
+     "miss_frac_halfframe": 3.8e-05
+    },
+    "class_frac": 0.9459,
+    "staircase": {
+     "jumpiness": 3.635,
+     "step_px": 3.0,
+     "step_m": 32.405,
+     "slope_px": 0.825,
+     "jump_frac": 0.192,
+     "status": "ok",
+     "profiles": 1,
+     "profile_px": 64,
+     "gsd_m": 11.935,
+     "step_voxels": 24.0,
+     "gate_applies": false,
+     "staircase": false
+    },
+    "flag": false,
+    "ncc_to_next": {
+     "peak": 0.9264,
+     "dy_px": -3,
+     "dx_px": 3,
+     "scale_px": 320,
+     "offset_frac": 0.0265
+    }
+   },
+   {
+    "alt_km": 20.0,
+    "slant_km": 24.4155,
+    "cam_lat": -12.394471,
+    "cam_lon": 107.14858500000001,
+    "yaw_deg": 20.0069,
+    "pitch_deg": -55.2602,
+    "gsd_m": 47.738,
+    "frame_ground_width_km": 55.3045,
+    "framing": {
+     "status": "ok",
+     "miss_m": 0.0,
+     "miss_frac_halfframe": 0.0
+    },
+    "class_frac": 0.7298,
+    "staircase": {
+     "jumpiness": 5.561,
+     "step_px": 12.0,
+     "step_m": 564.09,
+     "slope_px": 2.425,
+     "jump_frac": 0.625,
+     "status": "ok",
+     "profiles": 2,
+     "profile_px": 911,
+     "gsd_m": 47.738,
+     "step_voxels": 417.84,
+     "gate_applies": false,
+     "staircase": false
+    },
+    "flag": false,
+    "ncc_to_next": {
+     "peak": 0.9692,
+     "dy_px": -3,
+     "dx_px": 1,
+     "scale_px": 256,
+     "offset_frac": 0.0247
+    }
+   },
+   {
+    "alt_km": 100.0,
+    "slant_km": 122.0775,
+    "cam_lat": -12.742678,
+    "cam_lon": 107.018589,
+    "yaw_deg": 20.0352,
+    "pitch_deg": -55.442,
+    "gsd_m": 238.692,
+    "frame_ground_width_km": 276.5224,
+    "framing": {
+     "status": "ok",
+     "miss_m": 0.22,
+     "miss_frac_halfframe": 2e-06
+    },
+    "class_frac": 0.9608,
+    "staircase": {
+     "status": "no-usable-boundary"
+    },
+    "flag": false,
+    "ncc_to_next": {
+     "peak": 0.8871,
+     "dy_px": 0,
+     "dx_px": 0,
+     "scale_px": 426,
+     "offset_frac": 0.0
+    }
+   },
+   {
+    "alt_km": 300.0,
+    "slant_km": 366.2324,
+    "cam_lat": -13.61291,
+    "cam_lon": 106.692007,
+    "yaw_deg": 20.1097,
+    "pitch_deg": -55.6481,
+    "gsd_m": 716.076,
+    "frame_ground_width_km": 829.5671,
+    "framing": {
+     "status": "ok",
+     "miss_m": 0.13,
+     "miss_frac_halfframe": 0.0
+    },
+    "class_frac": 0.995,
+    "staircase": {
+     "status": "no-usable-boundary"
+    },
+    "flag": false
+   }
+  ]
+ },
+ "ecotone": {
+  "class": "biome ecotone",
+  "target": [
+   10.76433,
+   81.17593
+  ],
+  "bearing": 0.0,
+  "note": "desert->rainforest koppen edge (98 -> 9386 mm/yr); a FAR-FIELD class - biome blending is 8 km wide, so only the top rungs resolve it",
+  "target_truth": {
+   "target_h_km": 2.429,
+   "target_water": false,
+   "aim_km": 2.429,
+   "cam_ground_km": {
+    "0p05km": 2.422662608648534,
+    "0p2km": 2.425279585352473,
+    "1km": 2.557929470174713,
+    "5km": 2.7580262939081877,
+    "20km": 2.9037757879796118,
+    "100km": 0.0,
+    "300km": 0.0
+   }
+  },
+  "rungs": [
+   {
+    "alt_km": 0.05,
+    "slant_km": 0.061,
+    "cam_lat": 10.764098,
+    "cam_lon": 81.17593,
+    "yaw_deg": 0.0,
+    "pitch_deg": -51.2682,
+    "gsd_m": 0.119,
+    "frame_ground_width_km": 0.1383,
+    "framing": {
+     "status": "ok",
+     "miss_m": 0.0,
+     "miss_frac_halfframe": 0.0
+    },
+    "class_frac": 0.5017,
+    "staircase": {
+     "jumpiness": 8.105,
+     "step_px": 15.479,
+     "step_m": 1.869,
+     "slope_px": 1.257,
+     "jump_frac": 0.79,
+     "status": "ok",
+     "profiles": 3,
+     "profile_px": 1334,
+     "gsd_m": 0.119,
+     "step_voxels": 1.38,
+     "gate_applies": true,
+     "staircase": false
+    },
+    "flag": false,
+    "ncc_to_next": {
+     "peak": 0.8175,
+     "dy_px": -6,
+     "dx_px": 0,
+     "scale_px": 320,
+     "offset_frac": 0.0375
+    }
+   },
+   {
+    "alt_km": 0.2,
+    "slant_km": 0.2442,
+    "cam_lat": 10.763403,
+    "cam_lon": 81.17593,
+    "yaw_deg": 0.0,
+    "pitch_deg": -54.4855,
+    "gsd_m": 0.477,
+    "frame_ground_width_km": 0.553,
+    "framing": {
+     "status": "ok",
+     "miss_m": 0.0,
+     "miss_frac_halfframe": 0.0
+    },
+    "class_frac": 0.5037,
+    "staircase": {
+     "jumpiness": 6.826,
+     "step_px": 14.953,
+     "step_m": 7.242,
+     "slope_px": 2.408,
+     "jump_frac": 0.656,
+     "status": "ok",
+     "profiles": 2,
+     "profile_px": 1106,
+     "gsd_m": 0.477,
+     "step_voxels": 5.36,
+     "gate_applies": true,
+     "staircase": false
+    },
+    "flag": false,
+    "ncc_to_next": {
+     "peak": 0.8859,
+     "dy_px": -1,
+     "dx_px": 1,
+     "scale_px": 256,
+     "offset_frac": 0.011
+    }
+   },
+   {
+    "alt_km": 1.0,
+    "slant_km": 1.2208,
+    "cam_lat": 10.759697,
+    "cam_lon": 81.17593,
+    "yaw_deg": 0.0,
+    "pitch_deg": -58.1846,
+    "gsd_m": 2.387,
+    "frame_ground_width_km": 2.7652,
+    "framing": {
+     "status": "ok",
+     "miss_m": 0.18,
+     "miss_frac_halfframe": 0.000192
+    },
+    "class_frac": 0.5663,
+    "staircase": {
+     "jumpiness": 7.207,
+     "step_px": 14.71,
+     "step_m": 35.428,
+     "slope_px": 1.728,
+     "jump_frac": 0.52,
+     "status": "ok",
+     "profiles": 2,
+     "profile_px": 1009,
+     "gsd_m": 2.387,
+     "step_voxels": 26.24,
+     "gate_applies": true,
+     "staircase": true
+    },
+    "flag": true,
+    "ncc_to_next": {
+     "peak": 0.95,
+     "dy_px": -5,
+     "dx_px": -3,
+     "scale_px": 256,
+     "offset_frac": 0.0456
+    }
+   },
+   {
+    "alt_km": 5.0,
+    "slant_km": 6.1039,
+    "cam_lat": 10.741167,
+    "cam_lon": 81.17593,
+    "yaw_deg": -0.0,
+    "pitch_deg": -56.6922,
+    "gsd_m": 11.935,
+    "frame_ground_width_km": 13.8261,
+    "framing": {
+     "status": "ok",
+     "miss_m": 0.18,
+     "miss_frac_halfframe": 3.8e-05
+    },
+    "class_frac": 0.7497,
+    "staircase": {
+     "jumpiness": 8.313,
+     "step_px": 9.876,
+     "step_m": 130.235,
+     "slope_px": 1.334,
+     "jump_frac": 0.591,
+     "status": "ok",
+     "profiles": 3,
+     "profile_px": 1287,
+     "gsd_m": 11.935,
+     "step_voxels": 96.47,
+     "gate_applies": false,
+     "staircase": false
+    },
+    "flag": false,
+    "ncc_to_next": {
+     "peak": 0.5446,
+     "dy_px": -6,
+     "dx_px": -3,
+     "scale_px": 320,
+     "offset_frac": 0.0419
+    }
+   },
+   {
+    "alt_km": 20.0,
+    "slant_km": 24.4155,
+    "cam_lat": 10.671679,
+    "cam_lon": 81.17593,
+    "yaw_deg": -0.0,
+    "pitch_deg": -55.6363,
+    "gsd_m": 47.738,
+    "frame_ground_width_km": 55.3045,
+    "framing": {
+     "status": "ok",
+     "miss_m": 0.0,
+     "miss_frac_halfframe": 0.0
+    },
+    "class_frac": 0.683,
+    "staircase": {
+     "jumpiness": 6.933,
+     "step_px": 12.0,
+     "step_m": 632.947,
+     "slope_px": 1.731,
+     "jump_frac": 0.645,
+     "status": "ok",
+     "profiles": 1,
+     "profile_px": 889,
+     "gsd_m": 47.738,
+     "step_voxels": 468.85,
+     "gate_applies": false,
+     "staircase": false
+    },
+    "flag": false,
+    "ncc_to_next": {
+     "peak": 0.8813,
+     "dy_px": -1,
+     "dx_px": -1,
+     "scale_px": 256,
+     "offset_frac": 0.011
+    }
+   },
+   {
+    "alt_km": 100.0,
+    "slant_km": 122.0775,
+    "cam_lat": 10.301076,
+    "cam_lon": 81.17593,
+    "yaw_deg": 0.0,
+    "pitch_deg": -54.4066,
+    "gsd_m": 238.692,
+    "frame_ground_width_km": 276.5224,
+    "framing": {
+     "status": "ok",
+     "miss_m": 0.0,
+     "miss_frac_halfframe": 0.0
+    },
+    "class_frac": 0.496,
+    "staircase": {
+     "jumpiness": 3.046,
+     "step_px": 18.827,
+     "step_m": 4830.561,
+     "slope_px": 1.255,
+     "jump_frac": 0.413,
+     "status": "ok",
+     "profiles": 4,
+     "profile_px": 2390,
+     "gsd_m": 238.692,
+     "step_voxels": 3578.19,
+     "gate_applies": false,
+     "staircase": false
+    },
+    "flag": false,
+    "ncc_to_next": {
+     "peak": 0.9039,
+     "dy_px": -8,
+     "dx_px": 0,
+     "scale_px": 426,
+     "offset_frac": 0.0376
+    }
+   },
+   {
+    "alt_km": 300.0,
+    "slant_km": 366.2324,
+    "cam_lat": 9.374569,
+    "cam_lon": 81.17593,
+    "yaw_deg": -0.0,
+    "pitch_deg": -55.0058,
+    "gsd_m": 716.076,
+    "frame_ground_width_km": 829.5671,
+    "framing": {
+     "status": "ok",
+     "miss_m": 0.0,
+     "miss_frac_halfframe": 0.0
+    },
+    "class_frac": 0.4689,
+    "staircase": {
+     "jumpiness": 3.922,
+     "step_px": 16.689,
+     "step_m": 12411.241,
+     "slope_px": 1.564,
+     "jump_frac": 0.541,
+     "status": "ok",
+     "profiles": 5,
+     "profile_px": 3041,
+     "gsd_m": 716.076,
+     "step_voxels": 9193.51,
+     "gate_applies": false,
+     "staircase": false
+    },
+    "flag": false
+   }
+  ]
+ }
+}
