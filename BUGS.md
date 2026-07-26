@@ -59,6 +59,18 @@ productive-cap starvation of visible gaps) are FIXED. Remaining
 speed-up belongs to the B-4c cold-build campaign + auditing why the
 pose wants 1540 tiles. Austin/Andrew: confirm in-game that stuck
 areas now sharpen progressively (fast start, ~minute tail in ice).
+REPRO IS SEASON-SENSITIVE (found by V-1, 2026-07-26): the heavyweight
+frozen-water tile load at this pose depends on the season implied by the
+weather clock. The hunt scripts pin `weather time 555.111` and the
+convergence reel inherits it — **if someone "cleans up" that constant to
+0 the slow specimen quietly stops being slow** and the gate silently
+stops guarding anything.
+NOW GATED: `viewer/scripts/convergence_reel.py` carries this pose as
+`b16_ice_hold`. Post-fix it reads residual 1.96-2.19 with progress
+0.57-0.64 (draining, correctly not flagged); pre-fix the signature was a
+flat curve at progress ~1.0. The cold-start B-16 CLASS is now a standing
+gate; the original accumulated-session trigger is NOT (see that mission's
+escaped-gate analysis — it needs a recorded-flight lane).
 ORIGINAL FIX DIRECTION: admission must prioritize the tiles actually
 COVERED BY ANCESTOR in the drawn set (the visible gaps) — e.g. reserve half
 the productive slots for coarsest-missing keys, or sort by
