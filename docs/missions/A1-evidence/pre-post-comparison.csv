@@ -1,0 +1,20 @@
+metric,pre_b21,post_b21,delta_or_result
+ordinary_h3_verdict,CLEAN,CLEAN,no verdict flip
+ordinary_h3_t_converge_s,45.0,8.0,-37.0 s (single-run timing; not causal alone)
+ordinary_h3_changed_frac_final,0.0,0.0,unchanged
+ordinary_h3_tail_ratio,0.633,0.0,both draining/clean
+raw_replay_wall_s,274.3,222.7,-51.6 s observed
+first_h3_uncached,254,48,-206
+first_h3_on_screen_missing,100,23,-77
+first_h3_gap_unadmitted,249,46,-203
+first_h3_exact_selected_draws,1242,1443,+201
+h3_wall_to_first_zero_uncached_ms,7882.500,2806.276,-5076.224
+wanted_count1500_evictions_whole_trace,68,0,-68
+wanted_count1500_evictions_h3,9,0,-9
+hunt3_eight_wanted_count1500_evictions,4,0,-4
+hunt3_eight_worker_starts,12,8,-4 duplicate builds
+matched_23_t_total_mean_ms,22038.248522,17171.598043,-4866.650478
+matched_23_t_unadmitted_mean_ms,21846.801174,16957.278783,-4889.522391
+matched_23_t_queue_mean_ms,0.324696,0.307522,-0.017174
+matched_23_t_build_mean_ms,19.489522,19.014435,-0.475087
+matched_23_t_land_swap_mean_ms,171.633130,194.997304,+23.364174

@@ -1,0 +1,35 @@
+building play harness (examples are NOT built by a bare cargo build)...
+bash.exe :    Compiling triangulum-viewer v0.1.0 (C:\code\tri-a1\viewer)
+At line:2 char:1
++ & 'C:\Program Files\Git\bin\bash.exe' -lc 'cd /c/code/tri-a1/viewer & ...
++ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (   Compiling tr...\tri-a1\viewer):String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+
+warning: use of deprecated associated function `glam::DMat4::look_at_rh`: use the
+`glam::dcamera::rh::view::look_at_mat4` function instead
+   --> src\camera.rs:226:27
+    |
+226 |         let view = DMat4::look_at_rh(DVec3::ZERO, look, view_up);
+    |                           ^^^^^^^^^^
+    |
+    = note: `#[warn(deprecated)]` on by default
+
+warning: use of deprecated associated function `glam::DMat4::perspective_infinite_reverse_rh`: use the
+`glam::dcamera::rh::proj::directx::perspective_infinite_reverse` function instead
+   --> src\camera.rs:234:27
+    |
+234 |         let proj = DMat4::perspective_infinite_reverse_rh(65f64.to_radians(), aspect, near);
+    |                           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: `triangulum-viewer` (lib) generated 2 warnings
+    Finished `release` profile [optimized] target(s) in 17.33s
+  physics-regressions    PASS
+  water-regressions      PASS
+  lake-regressions       PASS
+  flooded-caves          PASS
+  invariant-survey       PASS
+  auto-survey            PASS
+  camera-controls        PASS
+  solar-system           PASS
+all suites green

@@ -1,0 +1,8 @@
+flight/hold                  stop@    dur  t_conv  res_1st  res_end  tailrat
+ice_session h0                 9.3    1.7     0.2     0.00     0.00     0.00  (short hold: not gated)
+ice_session h1                44.7    1.6     0.2     0.00     0.00     0.00  (short hold: not gated)
+ice_session h2                77.4    4.7      >5     2.78     2.78     1.00
+ice_session h3                82.8   45.0     8.0     3.94     0.00     0.00
+ice_session [in motion]    cruise mean 0.00 max 0.00 over 3 samples, sim/wall 0.68
+CONVERGENCE FLIGHT: 1 finding(s) to review:
+  ice_session hold 2 (t=77.4s, 4.7s): STUCK — residual 2.781 (frac 0.089) at hold end, tail not draining (last third 2.782 vs middle third 2.783, ratio 0.999) (the B-16 signature: a held view that is not approaching settled)

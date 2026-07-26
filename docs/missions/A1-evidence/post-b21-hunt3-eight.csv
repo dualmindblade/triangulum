@@ -1,0 +1,9 @@
+key,blocked_reasons,first_block_frame,first_block_rank,first_block_productive,first_block_budget,admit_sources,worker_starts,worker_done,reported_build_ms,accepted_receives,wanted_count1500_evictions,wanted_count1500_evict_frames,first_exact_draw_frame,first_exact_draw_t_us
+"f4L11(2002,1652)",productive_cap,4392,55,6/6,1/18,covered_gap,1,1,330.5518,1,0,,4797,112828319
+"f4L11(2003,1652)",productive_cap,4392,46,6/6,1/18,covered_gap,1,1,313.0833,1,0,,4797,112828077
+"f4L11(2004,1652)",admission_budget+productive_cap,4386,32,6/6,18/18,covered_gap,1,1,344.6235,1,0,,4818,113515941
+"f4L11(2005,1652)",,,,,,forecast,1,1,307.4109,1,0,,4818,113515775
+"f4L11(2002,1653)",productive_cap,4392,66,6/6,1/18,covered_gap,1,1,299.1939,1,0,,4797,112827819
+"f4L11(2003,1653)",productive_cap,4392,65,6/6,1/18,covered_gap,1,1,318.2283,1,0,,4797,112827541
+"f4L11(2004,1653)",admission_budget+productive_cap,4386,44,6/6,18/18,covered_gap,1,1,336.4166,1,0,,4818,113515588
+"f4L11(2005,1653)",admission_budget+productive_cap,4386,43,6/6,18/18,covered_gap,1,1,328.1428,1,0,,4818,113515355

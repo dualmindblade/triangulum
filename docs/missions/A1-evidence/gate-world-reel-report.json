@@ -1,0 +1,203 @@
+{
+ "dossier_shore": {
+  "void_blob_px": 0,
+  "dark_frac": 0.0,
+  "grid_score": 0.0,
+  "mean_delta": 0.0,
+  "changed_frac": 0.0
+ },
+ "dossier_dlake": {
+  "void_blob_px": 0,
+  "dark_frac": 0.0,
+  "grid_score": 0.0,
+  "mean_delta": 0.0,
+  "changed_frac": 0.0
+ },
+ "dossier_ponds": {
+  "void_blob_px": 0,
+  "dark_frac": 0.0,
+  "grid_score": 0.0,
+  "mean_delta": 0.0,
+  "changed_frac": 0.0
+ },
+ "dossier_band": {
+  "void_blob_px": 0,
+  "dark_frac": 0.0,
+  "grid_score": 0.267,
+  "mean_delta": 0.0,
+  "changed_frac": 0.0
+ },
+ "karst_field": {
+  "void_blob_px": 0,
+  "dark_frac": 0.0,
+  "grid_score": 0.07,
+  "mean_delta": 0.0,
+  "changed_frac": 0.0
+ },
+ "river_wide": {
+  "void_blob_px": 0,
+  "dark_frac": 0.0,
+  "grid_score": 0.588,
+  "mean_delta": 0.0,
+  "changed_frac": 0.0
+ },
+ "river_mouth": {
+  "void_blob_px": 0,
+  "dark_frac": 0.0,
+  "grid_score": 0.556,
+  "mean_delta": 0.0,
+  "changed_frac": 0.0
+ },
+ "river_valley": {
+  "void_blob_px": 0,
+  "dark_frac": 0.0,
+  "grid_score": 0.893,
+  "mean_delta": 0.0,
+  "changed_frac": 0.0
+ },
+ "waterfall_site": {
+  "void_blob_px": 0,
+  "dark_frac": 0.0,
+  "grid_score": 0.0,
+  "mean_delta": 0.0,
+  "changed_frac": 0.0
+ },
+ "pond_country": {
+  "void_blob_px": 0,
+  "dark_frac": 0.0,
+  "grid_score": 0.855,
+  "mean_delta": 0.0,
+  "changed_frac": 0.0
+ },
+ "lake_archi": {
+  "void_blob_px": 0,
+  "dark_frac": 0.0,
+  "grid_score": 0.68,
+  "mean_delta": 0.0,
+  "changed_frac": 0.0
+ },
+ "inland_sea": {
+  "void_blob_px": 0,
+  "dark_frac": 0.0,
+  "grid_score": 0.689,
+  "mean_delta": 0.0,
+  "changed_frac": 0.0
+ },
+ "coast_beach": {
+  "void_blob_px": 1,
+  "dark_frac": 0.0,
+  "grid_score": 0.0,
+  "mean_delta": 0.0,
+  "changed_frac": 0.0
+ },
+ "frozen_lake": {
+  "void_blob_px": 0,
+  "dark_frac": 0.0,
+  "grid_score": 0.0,
+  "mean_delta": 0.0,
+  "changed_frac": 0.0
+ },
+ "sea_ice": {
+  "void_blob_px": 0,
+  "dark_frac": 0.0,
+  "grid_score": 0.966,
+  "mean_delta": 0.0,
+  "changed_frac": 0.0
+ },
+ "ecotone_corner": {
+  "void_blob_px": 0,
+  "dark_frac": 0.0,
+  "grid_score": 0.0,
+  "mean_delta": 0.0,
+  "changed_frac": 0.0
+ },
+ "desert": {
+  "void_blob_px": 0,
+  "dark_frac": 0.0,
+  "grid_score": 0.0,
+  "mean_delta": 0.0,
+  "changed_frac": 0.0
+ },
+ "savanna": {
+  "void_blob_px": 0,
+  "dark_frac": 0.0,
+  "grid_score": 0.0,
+  "mean_delta": 0.0,
+  "changed_frac": 0.0
+ },
+ "jungle": {
+  "void_blob_px": 0,
+  "dark_frac": 0.0,
+  "grid_score": 0.582,
+  "mean_delta": 0.0,
+  "changed_frac": 0.0
+ },
+ "taiga": {
+  "void_blob_px": 0,
+  "dark_frac": 0.0,
+  "grid_score": 0.0,
+  "mean_delta": 0.0,
+  "changed_frac": 0.0
+ },
+ "peak": {
+  "void_blob_px": 0,
+  "dark_frac": 0.0,
+  "grid_score": 0.0,
+  "mean_delta": 0.0,
+  "changed_frac": 0.0
+ },
+ "groves": {
+  "void_blob_px": 1,
+  "dark_frac": 0.0,
+  "grid_score": 0.0,
+  "mean_delta": 0.0,
+  "changed_frac": 0.0
+ },
+ "mid_altitude": {
+  "void_blob_px": 0,
+  "dark_frac": 0.0,
+  "grid_score": 0.0,
+  "mean_delta": 0.0,
+  "changed_frac": 0.0
+ },
+ "orbital_coast": {
+  "void_blob_px": 0,
+  "dark_frac": 0.0,
+  "grid_score": 0.778,
+  "mean_delta": 0.0,
+  "changed_frac": 0.0
+ },
+ "orbital_biomes": {
+  "void_blob_px": 0,
+  "dark_frac": 0.0,
+  "grid_score": 0.0,
+  "mean_delta": 0.0,
+  "changed_frac": 0.0
+ },
+ "frozen_lake_summer": {
+  "void_blob_px": 0,
+  "dark_frac": 0.0,
+  "grid_score": 0.0,
+  "mean_delta": 0.0,
+  "changed_frac": 0.0
+ },
+ "sea_ice_summer": {
+  "void_blob_px": 0,
+  "dark_frac": 0.0,
+  "grid_score": 0.919,
+  "mean_delta": 0.0,
+  "changed_frac": 0.0
+ },
+ "moon_orbit_face": {
+  "moon_surface_frac": 0.5135,
+  "moon_surface_std": 26.716,
+  "mean_delta": 0.0,
+  "changed_frac": 0.0
+ },
+ "moon_low_flyby": {
+  "moon_surface_frac": 0.702,
+  "moon_surface_std": 5.456,
+  "mean_delta": 0.0,
+  "changed_frac": 0.0
+ }
+}

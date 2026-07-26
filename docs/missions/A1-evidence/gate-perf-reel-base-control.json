@@ -1,0 +1,50 @@
+{
+ "forest_ground": {
+  "avg_ms": 30.61,
+  "p95_ms": 33.33,
+  "min_ms": 27.13,
+  "max_ms": 36.49
+ },
+ "plains_walk": {
+  "avg_ms": 27.74,
+  "p95_ms": 32.0,
+  "min_ms": 24.52,
+  "max_ms": 32.89
+ },
+ "mountain_mid": {
+  "avg_ms": 32.55,
+  "p95_ms": 38.0,
+  "min_ms": 29.56,
+  "max_ms": 43.57
+ },
+ "ocean_storm": {
+  "avg_ms": 19.52,
+  "p95_ms": 22.58,
+  "min_ms": 16.75,
+  "max_ms": 30.19
+ },
+ "orbit": {
+  "avg_ms": 18.77,
+  "p95_ms": 20.18,
+  "min_ms": 17.43,
+  "max_ms": 29.77
+ },
+ "moon_surface": {
+  "avg_ms": 22.22,
+  "p95_ms": 23.17,
+  "min_ms": 20.81,
+  "max_ms": 24.01
+ },
+ "moon_orbit": {
+  "avg_ms": 3.2,
+  "p95_ms": 3.52,
+  "min_ms": 2.92,
+  "max_ms": 3.55
+ },
+ "ascent_sweep": {
+  "avg_ms": 32.01,
+  "p95_ms": 34.81,
+  "min_ms": 28.59,
+  "max_ms": 35.65
+ }
+}

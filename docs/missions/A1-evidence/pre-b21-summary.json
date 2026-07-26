@@ -1,0 +1,189 @@
+{
+  "clock": "renderer_monotonic_t_us_wall_time",
+  "cohort": {
+    "accepted_receives_never_exact": [],
+    "admit_source_counts": {
+      "covered_gap": 93,
+      "forecast": 7
+    },
+    "censored_or_missing_event": 0,
+    "completed": 100,
+    "dominant_phase_counts": {
+      "unadmitted": 100
+    },
+    "evictions": 0,
+    "high_impact_area_at_least_10000_px": {
+      "count": 69,
+      "partition": {
+        "reported_build_ms": {
+          "count": 69,
+          "max": 49.2364,
+          "mean": 31.532857,
+          "median": 32.5884,
+          "p95": 45.86272,
+          "sum": 2175.7671
+        },
+        "t_build_ms": {
+          "count": 69,
+          "max": 95.977,
+          "mean": 32.985638,
+          "median": 33.086,
+          "p95": 46.9696,
+          "sum": 2276.009
+        },
+        "t_land_swap_ms": {
+          "count": 69,
+          "max": 4300.656,
+          "mean": 642.204014,
+          "median": 428.995,
+          "p95": 2625.6214,
+          "sum": 44312.077
+        },
+        "t_queue_ms": {
+          "count": 69,
+          "max": 0.631,
+          "mean": 0.339145,
+          "median": 0.341,
+          "p95": 0.4868,
+          "sum": 23.401
+        },
+        "t_total_ms": {
+          "count": 69,
+          "max": 27195.81,
+          "mean": 23749.157652,
+          "median": 24053.107,
+          "p95": 25129.563,
+          "sum": 1638691.878
+        },
+        "t_unadmitted_ms": {
+          "count": 69,
+          "max": 25051.806,
+          "mean": 23073.628855,
+          "median": 23409.974,
+          "p95": 24655.0076,
+          "sum": 1592080.391
+        }
+      }
+    },
+    "on_screen_missing_keys": 100,
+    "partition": {
+      "reported_build_ms": {
+        "count": 100,
+        "max": 49.2364,
+        "mean": 30.036429,
+        "median": 32.3375,
+        "p95": 43.69232,
+        "sum": 3003.6429
+      },
+      "t_build_ms": {
+        "count": 100,
+        "max": 95.977,
+        "mean": 31.67933,
+        "median": 32.8195,
+        "p95": 46.4878,
+        "sum": 3167.933
+      },
+      "t_land_swap_ms": {
+        "count": 100,
+        "max": 4300.656,
+        "mean": 759.77816,
+        "median": 435.3155,
+        "p95": 3505.1717,
+        "sum": 75977.816
+      },
+      "t_queue_ms": {
+        "count": 100,
+        "max": 0.631,
+        "mean": 0.33606,
+        "median": 0.339,
+        "p95": 0.4891,
+        "sum": 33.606
+      },
+      "t_total_ms": {
+        "count": 100,
+        "max": 27195.81,
+        "mean": 23522.87474,
+        "median": 23933.424,
+        "p95": 25147.7395,
+        "sum": 2352287.474
+      },
+      "t_unadmitted_ms": {
+        "count": 100,
+        "max": 25065.24,
+        "mean": 22731.08119,
+        "median": 23266.053,
+        "p95": 24736.88385,
+        "sum": 2273108.119
+      }
+    },
+    "phase_share_of_total": {
+      "build": 0.001347,
+      "land_swap": 0.0323,
+      "queue": 1.4e-05,
+      "unadmitted": 0.966339
+    },
+    "worker_attempts": 100
+  },
+  "evictions": {
+    "h3": {
+      "by_reason_and_wanted": {
+        "count1500|live_wanted=false": 8504,
+        "count1500|live_wanted=true": 9,
+        "gentle|live_wanted=false": 496
+      },
+      "total": 9009
+    },
+    "whole_trace": {
+      "by_reason_and_wanted": {
+        "count1500|live_wanted=false": 15541,
+        "count1500|live_wanted=true": 68,
+        "gentle|live_wanted=false": 496
+      },
+      "total": 16105
+    }
+  },
+  "h3": {
+    "end_frame": 7680,
+    "end_t_us": 269727510,
+    "first_summary": {
+      "covered_missing": 254,
+      "exact_selected_draws": 1242,
+      "gap_pending": 5,
+      "gap_unadmitted": 249,
+      "on_screen_missing": 100,
+      "productive_workers_active": 5,
+      "uncached": 254,
+      "wanted": 1540
+    },
+    "last_summary": {
+      "covered_missing": 0,
+      "exact_selected_draws": 1540,
+      "gap_pending": 0,
+      "gap_unadmitted": 0,
+      "on_screen_missing": 0,
+      "productive_workers_active": 3,
+      "uncached": 0,
+      "wanted": 1540
+    },
+    "start_frame": 5040,
+    "start_t_us": 130796789,
+    "summary_count": 45,
+    "wall_duration_ms": 138930.721
+  },
+  "hunt3_eight": {
+    "blocked_reason_counts": {
+      "admission_budget": 3,
+      "productive_cap": 8
+    },
+    "exact_drawn": 8,
+    "keys": 8,
+    "wanted_count1500_evictions": 4
+  },
+  "received_without_first_exact_audit": {
+    "accepted_receives_during_h3": 9245,
+    "note": "The trace-wide count includes forecast, parent, stale, and off-screen work. The visual conclusion uses the on-screen cohort's accepted_receives_never_exact list above.",
+    "unique_received_keys_during_h3": 811,
+    "unique_received_keys_with_no_first_exact_event_anywhere": 189
+  },
+  "trace": "docs\\missions\\A1-evidence\\pre-b21-trace.jsonl"
+}

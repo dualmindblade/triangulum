@@ -1,0 +1,29 @@
+[4] mode fly
+[5] weather time 555.111000
+[102] shot s0095 (93 draws) at lat 48.096562 lon 121.986905 alt 6732.85645 yaw 15 pitch -82
+[106] shot s0098 (93 draws) at lat 48.096562 lon 121.986905 alt 6732.85645 yaw 15 pitch -82
+[112] shot s0103 (93 draws) at lat 48.096562 lon 121.986905 alt 6732.85645 yaw 15 pitch -82
+[120] shot s0110 (93 draws) at lat 48.096562 lon 121.986905 alt 6732.85645 yaw 15 pitch -82
+[211] shot s0200 (88 draws) at lat 29.776194 lon 120.135380 alt 6732.47738 yaw -141 pitch -85
+[412] shot s0400 (95 draws) at lat 24.675298 lon 105.769486 alt 6732.22974 yaw -146 pitch -85
+[462] shot s0449 (93 draws) at lat 34.324279 lon 117.494918 alt 6732.63300 yaw 48 pitch -86
+[466] shot s0452 (93 draws) at lat 34.324279 lon 117.494918 alt 6732.63300 yaw 48 pitch -86
+[472] shot s0457 (93 draws) at lat 34.324279 lon 117.494918 alt 6732.63300 yaw 48 pitch -86
+[479] shot s0463 (93 draws) at lat 34.324279 lon 117.494918 alt 6732.63300 yaw 48 pitch -86
+[617] shot s0600 (709 draws) at lat 37.532982 lon 127.003001 alt 205.41583 yaw -89 pitch -59
+[794] shot s0776 (1117 draws) at lat 41.518883 lon 122.511318 alt 3.04980 yaw 33 pitch -61
+[798] shot s0779 (1120 draws) at lat 41.518883 lon 122.511318 alt 3.04980 yaw 33 pitch -61
+[804] shot s0784 (1132 draws) at lat 41.518883 lon 122.511318 alt 3.04980 yaw 33 pitch -61
+[815] shot s0794 (1147 draws) at lat 41.518883 lon 122.511318 alt 3.04980 yaw 33 pitch -61
+[836] shot s0814 (1156 draws) at lat 41.518883 lon 122.511318 alt 3.04980 yaw 33 pitch -61
+[844] shot s0821 (1159 draws) at lat 41.518883 lon 122.511318 alt 3.04980 yaw 33 pitch -61
+[854] shot s0830 (1162 draws) at lat 41.518883 lon 122.511318 alt 3.04980 yaw 93 pitch -68
+[858] shot s0833 (1165 draws) at lat 41.518883 lon 122.511318 alt 3.04980 yaw 93 pitch -68
+[864] shot s0838 (1165 draws) at lat 41.518883 lon 122.511318 alt 3.04980 yaw 93 pitch -68
+[875] shot s0848 (1168 draws) at lat 41.518883 lon 122.511318 alt 3.04980 yaw 93 pitch -68
+[896] shot s0868 (1171 draws) at lat 41.518883 lon 122.511318 alt 3.04980 yaw 93 pitch -68
+[937] shot s0908 (1177 draws) at lat 41.518883 lon 122.511318 alt 3.04980 yaw 93 pitch -68
+[1018] shot s0988 (1243 draws) at lat 41.518883 lon 122.511318 alt 3.04980 yaw 93 pitch -68
+[1159] shot s1128 (1252 draws) at lat 41.518883 lon 122.511318 alt 3.04980 yaw 93 pitch -68
+[1310] shot s1278 (1540 draws) at lat 41.518883 lon 122.511318 alt 3.04980 yaw 93 pitch -68
+run complete -> C:\code\tri-a1\viewer\interchange\runs\convflight\ice_session\live

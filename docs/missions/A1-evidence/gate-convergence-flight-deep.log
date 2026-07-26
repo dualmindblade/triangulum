@@ -1,0 +1,9 @@
+flight/hold                  stop@    dur  t_conv  res_1st  res_end  tailrat
+descent_land h0                6.1   15.0     0.2     0.04     0.00     0.00
+descent_land [in motion]   cruise mean 0.62 max 0.89 over 3 samples, sim/wall 0.51
+ice_session h0                 9.3    1.7     0.2     0.00     0.00     0.00  (short hold: not gated)
+ice_session h1                44.7    1.6     0.2     0.00     0.00     0.00  (short hold: not gated)
+ice_session h2                77.4    4.7      >5     1.95     1.68     0.93
+ice_session h3                82.8   45.0     8.0     2.32     0.00     0.00
+ice_session [in motion]    cruise mean 0.00 max 0.00 over 3 samples, sim/wall 0.67
+CONVERGENCE FLIGHT: all 5 hold(s) across 2 flight(s) clean (no baseline yet - --accept to bless)
