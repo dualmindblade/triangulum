@@ -1,0 +1,35 @@
+== D-2 determinism check ==
+(all runs use the SAME --out path, so even the trailing
+ 'run complete -> DIR' line is comparable)
+
+--- 1. double run of the same script (no pick), full recursive byte diff
+    run.log + every PNG + every JSON: IDENTICAL
+    sha256 run.log:
+      327fde22f443b10c04b5caf99edfb311608dd4d05411d9c4c7aca1a407417a49 *interchange/runs/d2det.snap1/run.log
+      327fde22f443b10c04b5caf99edfb311608dd4d05411d9c4c7aca1a407417a49 *interchange/runs/d2det.snap2/run.log
+
+--- 2. TRI_LOG_WALLCLOCK=1: rendered output must be bit-identical,
+       run.log identical once the prefix and t0 anchor are stripped
+      det_pond.png     d8d828e3926e934f d8d828e3926e934f SAME
+      det_pose.png     9fb63348b35f005d 9fb63348b35f005d SAME
+      det_river.png    563752db6635e598 563752db6635e598 SAME
+      det_pond.json    09027f46ddf582dd 09027f46ddf582dd SAME
+      det_pose.json    5168006766025628 5168006766025628 SAME
+      det_river.json   e88e517dac717f67 e88e517dac717f67 SAME
+      run.log (prefix stripped): IDENTICAL
+
+--- 3. inserting `pick` lines must not perturb any captured frame
+      det_pond.png     d8d828e3926e934f d8d828e3926e934f SAME
+      det_pose.png     9fb63348b35f005d 9fb63348b35f005d SAME
+      det_river.png    563752db6635e598 563752db6635e598 SAME
+      det_pond.json    09027f46ddf582dd 09027f46ddf582dd SAME
+      det_pose.json    5168006766025628 5168006766025628 SAME
+      det_river.json   e88e517dac717f67 e88e517dac717f67 SAME
+
+--- 4. `pick` itself is deterministic: the pick lines from two runs of B
+      IDENTICAL:
+        [7] pick 639.5 359.5: hit=neisor lat=-0.7969240 lon=-67.9400971 dist=0.25917km elev=35.00deg err=+-2.2m surface=water z=115.60m vis=115.6m solid=114.6m koppen=0/Af | col=1.49m bracket=0.50m evals=87
+        [8] pick 100 600: hit=neisor lat=-0.7968833 lon=-67.9413832 dist=0.23162km elev=39.60deg err=+-2.0m surface=water z=116.60m vis=116.6m solid=115.6m koppen=0/Af | col=1.49m bracket=0.50m evals=84
+        [13] pick 639.5 359.5: hit=neisor lat=15.0249088 lon=17.6584882 dist=0.56856km elev=21.00deg err=+-3.4m surface=water z=848.60m vis=848.6m solid=847.6m koppen=6/BSk | col=1.52m bracket=0.50m evals=120
+        [14] pick 900 200: hit=neisor lat=15.0298313 lon=17.6545475 dist=1.40521km elev=4.78deg err=+-12.7m surface=terrain z=935.19m vis=935.6m solid=935.6m koppen=6/BSk | col=1.52m bracket=0.50m evals=170
+        [20] pick 639.5 359.5: hit=neisor lat=15.0368923 lon=17.6709778 dist=0.49420km elev=21.00deg err=+-3.4m surface=terrain z=910.60m vis=910.6m solid=910.6m koppen=6/BSk | col=1.52m bracket=0.50m evals=106

@@ -1,0 +1,19 @@
+# D-2 item 2: does `probe` report koppen, and does it DISCRIMINATE?
+# Two world-reel poses whose names assert their biome, plus a cross-check
+# against the temperature/precipitation the same probe reports.
+log ===== world reel `desert` pose (0.870 -89.800) -- expect an arid B class
+probe 0.870 -89.800
+log ===== world reel `jungle` pose (-0.906 -67.804) -- expect tropical A
+probe -0.906 -67.804
+log ===== world reel `frozen_lake` (51.180 85.830) and `sea_ice` (83.997 40.220)
+probe 51.180 85.830
+probe 83.997 40.220
+log ===== the koppen letter must track the temperature the same probe prints:
+log ===== EF (ice cap) needs sub-zero, A classes need warm and wet
+probe 12.7788529 20.0
+probe 6.4331790 20.0
+log ===== altitude_ladder.py's `ecotone` site: a desert->rainforest edge.
+log ===== koppen is the DOMAIN-WARPED class; temp/precip are UNWARPED, so at a
+log ===== class edge they legitimately disagree. Away from edges they do not.
+probe 10.76433 81.17593
+probe 10.90000 81.60000

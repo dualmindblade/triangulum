@@ -1,0 +1,15 @@
+raster 1024x1024 per face, 8 probes from 02-probe-koppen
+
+         lat          lon    probe (warped)  raw baked texel    precip    temp  agree
+     0.87000    -89.80000             6/BSk            6/BSk     148mm   2.28C  yes
+    -0.90600    -67.80400              0/Af             0/Af   12219mm  28.40C  yes
+    51.18000     85.83000            26/Dfc           26/Dfc     258mm   2.55C  yes
+    83.99700     40.22000            255/--           255/--      38mm -15.31C  yes
+    12.77885     20.00000             29/EF            29/EF     170mm  -1.50C  yes
+     6.43318     20.00000             4/BWk            4/BWk     173mm   1.95C  yes
+    10.76433     81.17593             4/BWk            4/BWk    1832mm   9.21C  yes
+    10.90000     81.60000            14/Cfb           255/--    3244mm  20.32C  NO (warp band)
+
+7/8 probes match the raw baked texel exactly.
+Mismatches are the domain warp displacing the class lookup near a
+boundary — planet.rs::koppen is deliberately warped, temp/precip are not.

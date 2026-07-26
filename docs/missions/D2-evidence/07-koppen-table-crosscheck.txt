@@ -1,0 +1,38 @@
+planetgen/biomes.py::KOPPEN   n = 30
+play.rs::KOPPEN_CODES         n = 30
+
+  id  0  planetgen=Af    play.rs=Af  
+  id  1  planetgen=Am    play.rs=Am  
+  id  2  planetgen=Aw    play.rs=Aw  
+  id  3  planetgen=BWh   play.rs=BWh 
+  id  4  planetgen=BWk   play.rs=BWk 
+  id  5  planetgen=BSh   play.rs=BSh 
+  id  6  planetgen=BSk   play.rs=BSk 
+  id  7  planetgen=Csa   play.rs=Csa 
+  id  8  planetgen=Csb   play.rs=Csb 
+  id  9  planetgen=Csc   play.rs=Csc 
+  id 10  planetgen=Cwa   play.rs=Cwa 
+  id 11  planetgen=Cwb   play.rs=Cwb 
+  id 12  planetgen=Cwc   play.rs=Cwc 
+  id 13  planetgen=Cfa   play.rs=Cfa 
+  id 14  planetgen=Cfb   play.rs=Cfb 
+  id 15  planetgen=Cfc   play.rs=Cfc 
+  id 16  planetgen=Dsa   play.rs=Dsa 
+  id 17  planetgen=Dsb   play.rs=Dsb 
+  id 18  planetgen=Dsc   play.rs=Dsc 
+  id 19  planetgen=Dsd   play.rs=Dsd 
+  id 20  planetgen=Dwa   play.rs=Dwa 
+  id 21  planetgen=Dwb   play.rs=Dwb 
+  id 22  planetgen=Dwc   play.rs=Dwc 
+  id 23  planetgen=Dwd   play.rs=Dwd 
+  id 24  planetgen=Dfa   play.rs=Dfa 
+  id 25  planetgen=Dfb   play.rs=Dfb 
+  id 26  planetgen=Dfc   play.rs=Dfc 
+  id 27  planetgen=Dfd   play.rs=Dfd 
+  id 28  planetgen=ET    play.rs=ET  
+  id 29  planetgen=EF    play.rs=EF  
+
+IDENTICAL
+
+id 255 is the bake's no-class sentinel (ocean, and some dry land);
+play.rs prints it as `255/--`, exercised at the sea_ice probe in 02.

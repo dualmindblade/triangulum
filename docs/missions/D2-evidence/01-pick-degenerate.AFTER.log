@@ -1,0 +1,49 @@
+[2] mode fly
+[3] weather pin cover 0.10 precip 0.00
+[4] weather time 0.000000
+[6] # ===== 1. TERRAIN vs WATER in the same frame (pond_country, world reel pose)
+[7] teleport -> lat -0.798000 lon -67.941000 alt 0.15000 km
+[8] look yaw 40.0000 pitch -35.0000
+[9] shot degen_pond (1043 draws) at lat -0.798000 lon -67.941000 alt 0.15000 yaw 40 pitch -35
+[10] pick 639.5 359.5: hit=neisor lat=-0.7969240 lon=-67.9400971 dist=0.25917km elev=35.00deg err=+-2.2m surface=water z=115.60m vis=115.6m solid=114.6m koppen=0/Af | col=1.49m bracket=0.50m evals=87
+[11] pick 200 620: hit=neisor lat=-0.7970502 lon=-67.9412457 dist=0.20927km elev=44.88deg err=+-1.7m surface=water z=116.60m vis=116.6m solid=115.6m koppen=0/Af | col=1.49m bracket=0.50m evals=82
+[12] pick 1100 300: hit=neisor lat=-0.7976946 lon=-67.9385768 dist=0.39846km elev=22.12deg err=+-3.2m surface=terrain z=114.23m vis=114.6m solid=114.6m koppen=0/Af | col=1.49m bracket=0.50m evals=101
+[14] # ===== 2. SKY: the ray clears every body
+[15] look yaw 40.0000 pitch 40.0000
+[16] pick 639.5 359.5: hit=sky ray_lat=35.297000 ray_lon=-30.833526 | no body along this ray (sky/space; clouds and impostors are not geometry)
+[17] pick 0 0: hit=sky ray_lat=36.953894 ray_lon=-97.065859 | no body along this ray (sky/space; clouds and impostors are not geometry)
+[19] # ===== 3. HORIZON: sweeping pitch through the horizon dip from 300 km
+[20] # ===== (dip = acos(R/(R+h)) = 15.13 deg, so -14 is sky and -16 is ground)
+[21] teleport -> lat 0.000000 lon 20.000000 alt 300.00000 km
+[22] look yaw 0.0000 pitch -14.0000
+[23] pick 639.5 359.5: hit=sky ray_lat=76.000000 ray_lon=-160.000000 | no body along this ray (sky/space; clouds and impostors are not geometry)
+[24] look yaw 0.0000 pitch -15.0000
+[25] pick 639.5 359.5: hit=neisor lat=12.7788529 lon=20.0000000 dist=1983.42600km elev=2.22deg err=+-26.5m surface=terrain z=1325.60m vis=1325.6m solid=1325.6m koppen=29/EF | col=1.50m bracket=0.50m evals=877
+[26] look yaw 0.0000 pitch -15.2000
+[27] pick 639.5 359.5: hit=neisor lat=11.8436105 lon=20.0000000 dist=1842.19983km elev=3.36deg err=+-17.8m surface=terrain z=1527.75m vis=1528.6m solid=1528.6m koppen=29/EF | col=1.50m bracket=0.50m evals=566
+[28] look yaw 0.0000 pitch -16.0000
+[29] pick 639.5 359.5: hit=neisor lat=9.9337975 lon=20.0000000 dist=1554.46262km elev=6.07deg err=+-10.2m surface=terrain z=1527.60m vis=1527.6m solid=1527.6m koppen=29/EF | col=1.51m bracket=0.50m evals=419
+[30] look yaw 0.0000 pitch -20.0000
+[31] pick 639.5 359.5: hit=neisor lat=6.4331790 lon=20.0000000 dist=1032.77902km elev=13.57deg err=+-4.9m surface=terrain z=1445.60m vis=1445.6m solid=1445.6m koppen=4/BWk | col=1.52m bracket=0.50m evals=217
+[32] look yaw 0.0000 pitch -40.0000
+[33] pick 639.5 359.5: hit=neisor lat=2.4219406 lon=20.0000000 dist=477.77829km elev=37.58deg err=+-2.1m surface=terrain z=762.60m vis=762.6m solid=762.6m koppen=6/BSk | col=1.53m bracket=0.50m evals=120
+[34] look yaw 0.0000 pitch -85.0000
+[35] pick 639.5 359.5: hit=neisor lat=0.1736363 lon=20.0000000 dist=301.13494km elev=84.83deg err=+-0.9m surface=terrain z=186.60m vis=186.6m solid=186.6m koppen=1/Am | col=1.53m bracket=0.50m evals=96
+[37] # ===== 4. MOON: focus it and pick its disc, then land and pick the ground
+[38] focus moon (id 1)
+[39] pick 639.5 359.5: hit=moon lat=-9.1995518 lon=-153.2142271 dist=4712.20094km elev=77.75deg err=+-0.9m surface=terrain z=20.60m vis=20.6m solid=20.6m koppen=-/- | col=1.37m bracket=0.50m evals=97
+[40] pick 300 200: hit=sky ray_lat=-18.865917 ray_lon=55.914337 | no body along this ray (sky/space; clouds and impostors are not geometry)
+[41] pick 20 20: hit=sky ray_lat=-32.076422 ray_lon=69.386896 | no body along this ray (sky/space; clouds and impostors are not geometry)
+[42] moonland -> lat 10.000000 lon 25.000000 surface 0.333 km grounded true
+[43] pick 639.5 500: hit=moon lat=10.0000655 lon=25.0000000 dist=0.00322km elev=33.96deg err=+-2.2m surface=terrain z=332.60m vis=332.6m solid=332.6m koppen=-/- | col=1.41m bracket=0.50m evals=68
+[44] # ===== 5. SUN
+[45] focus sun (id 2)
+[46] pick 639.5 359.5: hit=sun dist=1902341km ray_lat=-12.006842 ray_lon=-143.449626
+[48] # ===== 6. EYE AT OR BELOW THE SURFACE (freecam driven underground)
+[49] focus neisor (id 0)
+[50] teleport -> lat -0.798000 lon -67.941000 alt 0.10000 km
+[51] look yaw 40.0000 pitch -35.0000
+[52] focus free (id -1)
+[53] hold ctrl 3s -> lat -0.798538 lon -67.941451 alt 0.06267 grounded false
+[54] pick 639.5 359.5: hit=neisor lat=-0.7985379 lon=-67.9414514 dist=0.00000km elev=35.00deg err=+-2.2m surface=water z=62.67m vis=117.6m solid=115.6m koppen=0/Af | col=1.49m bracket=0.00m evals=1 EYE-AT-OR-BELOW-SURFACE
+run complete -> interchange/runs/d2e1a
