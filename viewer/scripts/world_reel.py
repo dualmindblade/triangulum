@@ -296,9 +296,16 @@ def footprint(lat, lon, alt_km, yaw, pitch):
     return out
 
 
+# Tolerant by construction: `.*?` spans between the fields this parser
+# actually consumes, so a new `probe` field inserted anywhere in the trace
+# cannot silently zero the premise pass. That is not hypothetical — D-2 added
+# `koppen=` and `precip=` between `frozen=` and `annual=` in the same shift
+# this parser landed, and a positional pattern matched nothing (world reel
+# exit 1, "parsed 0 probes"). V-3 hit the same class with `shot (s\d{4})`
+# hard-coded in the convergence reel. Add fields freely; do not re-tighten.
 PROBE_RE = re.compile(
     r"probe (-?[\d.]+) (-?[\d.]+): h=(-?[\d.]+)m water=(\S+) lake=(\w+) "
-    r"frozen=(\w+) annual=(-?[\d.]+)C seasonal=(-?[\d.]+)C lake_lvl=(\S+) "
+    r"frozen=(\w+) .*?annual=(-?[\d.]+)C seasonal=(-?[\d.]+)C lake_lvl=(\S+) "
     r"pond_lvl=(\S+) riv hw=(-?[\d.]+)m wet=([\d.]+) \|"
 )
 
