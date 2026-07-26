@@ -9,6 +9,10 @@ viewer/interchange/*
 !viewer/interchange/tint_*.png
 !viewer/interchange/v7_*.png
 
+# reel/ladder-generated .play scripts: written fresh on every run, so they
+# are outputs, not sources (_perf_*, _conv_*, _convflight_*, _altitude-*).
+viewer/scripts/_*.play
+
 # build artifacts
 __pycache__/
 *.pyc
