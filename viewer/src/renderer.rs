@@ -323,6 +323,442 @@ struct GpuTile {
     season_bucket: u32,
 }
 
+/// Per-key CPU tile lifecycle trace behind `TRI_STREAM_DEBUG`.
+///
+/// The shared sink gives renderer and Rayon events one monotonic clock and
+/// serializes each JSON object onto one stderr line. When the env variable is
+/// absent this entire state is `None`; the production scheduling branches
+/// below retain their original bodies.
+#[derive(Clone)]
+struct StreamDebug {
+    shared: Arc<std::sync::Mutex<StreamDebugState>>,
+    legacy_interval_frames: u64,
+}
+
+struct StreamDebugState {
+    origin: std::time::Instant,
+    next_seq: u64,
+    next_episode: u64,
+    open_missing: HashMap<TileKey, u64>,
+    first_exact_seen: HashSet<TileKey>,
+    active_workers: HashSet<(TileKey, u64)>,
+    gap_blocked: HashMap<TileKey, &'static str>,
+}
+
+impl StreamDebug {
+    fn from_env() -> Option<Self> {
+        let raw = std::env::var_os("TRI_STREAM_DEBUG")?;
+        // Preserve the standing `TRI_STREAM_DEBUG=1` behavior (300-frame
+        // legacy dumps). Any other positive integer is an explicit interval.
+        let parsed = raw.to_string_lossy().trim().parse::<u64>().ok();
+        let legacy_interval_frames = match parsed {
+            Some(frames) if frames > 1 => frames,
+            _ => 300,
+        };
+        let debug = Self {
+            shared: Arc::new(std::sync::Mutex::new(StreamDebugState {
+                origin: std::time::Instant::now(),
+                next_seq: 0,
+                next_episode: 1,
+                open_missing: HashMap::new(),
+                first_exact_seen: HashSet::new(),
+                active_workers: HashSet::new(),
+                gap_blocked: HashMap::new(),
+            })),
+            legacy_interval_frames,
+        };
+        debug.emit(serde_json::json!({
+            "event": "stream_debug_start",
+            "legacy_interval_frames": legacy_interval_frames,
+            "summary_interval_frames": legacy_interval_frames.min(60),
+            "clock": "renderer_monotonic",
+        }));
+        Some(debug)
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, StreamDebugState> {
+        self.shared
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    fn emit_locked(
+        state: &mut StreamDebugState,
+        mut value: serde_json::Value,
+        at: std::time::Instant,
+    ) {
+        let elapsed = at
+            .checked_duration_since(state.origin)
+            .unwrap_or_default();
+        let object = value
+            .as_object_mut()
+            .expect("stream debug events are JSON objects");
+        object.insert("stream_lifecycle".into(), serde_json::json!(1));
+        object.insert("seq".into(), serde_json::json!(state.next_seq));
+        object.insert(
+            "t_us".into(),
+            serde_json::json!(elapsed.as_micros().min(u64::MAX as u128) as u64),
+        );
+        state.next_seq = state.next_seq.wrapping_add(1);
+        eprintln!("{value}");
+    }
+
+    fn emit(&self, value: serde_json::Value) {
+        let at = std::time::Instant::now();
+        let mut state = self.lock();
+        Self::emit_locked(&mut state, value, at);
+    }
+
+    fn key_value(key: TileKey) -> serde_json::Value {
+        serde_json::json!({
+            "key": format!(
+                "f{}L{}({},{}){}",
+                key.face,
+                key.level,
+                key.ix,
+                key.iy,
+                if key.deep { "D" } else { "" }
+            ),
+            "face": key.face,
+            "level": key.level,
+            "ix": key.ix,
+            "iy": key.iy,
+            "deep": key.deep,
+        })
+    }
+
+    fn key_event(event: &'static str, key: TileKey) -> serde_json::Value {
+        let mut value = Self::key_value(key);
+        value
+            .as_object_mut()
+            .unwrap()
+            .insert("event".into(), serde_json::json!(event));
+        value
+    }
+
+    fn legacy_due(&self, frame: u64) -> bool {
+        frame.is_multiple_of(self.legacy_interval_frames)
+    }
+
+    fn summary_due(&self, frame: u64) -> bool {
+        // Lifecycle summaries are at least 1 Hz at the harness's fixed 60 Hz.
+        // A requested shorter interval is honored; a longer legacy interval
+        // does not make the required 1 Hz JSON summary coarser.
+        frame.is_multiple_of(self.legacy_interval_frames.min(60))
+    }
+
+    fn retain_wanted_missing(&self, wanted: &[TileKey]) {
+        let wanted: HashSet<TileKey> = wanted.iter().copied().collect();
+        let mut state = self.lock();
+        state.open_missing.retain(|key, _| wanted.contains(key));
+        state.gap_blocked.retain(|key, _| wanted.contains(key));
+    }
+
+    fn missing(
+        &self,
+        frame: u64,
+        key: TileKey,
+        covered: bool,
+        gap_rank: Option<usize>,
+        on_screen: bool,
+        projected_px_area: f64,
+    ) {
+        let at = std::time::Instant::now();
+        let mut state = self.lock();
+        if state.open_missing.contains_key(&key) {
+            return;
+        }
+        let episode = state.next_episode;
+        state.next_episode = state.next_episode.wrapping_add(1);
+        state.open_missing.insert(key, episode);
+        let mut value = Self::key_event("missing", key);
+        let object = value.as_object_mut().unwrap();
+        object.insert("frame".into(), serde_json::json!(frame));
+        object.insert("episode".into(), serde_json::json!(episode));
+        object.insert("covered".into(), serde_json::json!(covered));
+        object.insert("gap_rank".into(), serde_json::json!(gap_rank));
+        object.insert("on_screen".into(), serde_json::json!(on_screen));
+        object.insert(
+            "projected_px_area".into(),
+            serde_json::json!(projected_px_area),
+        );
+        Self::emit_locked(&mut state, value, at);
+    }
+
+    fn admit(
+        &self,
+        frame: u64,
+        key: TileKey,
+        epoch: u64,
+        source: &'static str,
+        pending_total: usize,
+        productive_total: usize,
+    ) {
+        let at = std::time::Instant::now();
+        let mut state = self.lock();
+        state.gap_blocked.remove(&key);
+        let mut value = Self::key_event("admit", key);
+        let object = value.as_object_mut().unwrap();
+        object.insert("frame".into(), serde_json::json!(frame));
+        object.insert("epoch".into(), serde_json::json!(epoch));
+        object.insert("source".into(), serde_json::json!(source));
+        object.insert("pending_total".into(), serde_json::json!(pending_total));
+        object.insert(
+            "productive_total".into(),
+            serde_json::json!(productive_total),
+        );
+        Self::emit_locked(&mut state, value, at);
+    }
+
+    fn worker_start(&self, key: TileKey, epoch: u64, admit_frame: u64) {
+        let at = std::time::Instant::now();
+        let mut state = self.lock();
+        state.active_workers.insert((key, epoch));
+        let mut value = Self::key_event("worker_start", key);
+        let object = value.as_object_mut().unwrap();
+        object.insert("epoch".into(), serde_json::json!(epoch));
+        object.insert("admit_frame".into(), serde_json::json!(admit_frame));
+        Self::emit_locked(&mut state, value, at);
+    }
+
+    fn worker_done(
+        &self,
+        key: TileKey,
+        epoch: u64,
+        admit_frame: u64,
+        build_ms: f64,
+        vertex_count: usize,
+        index_count: usize,
+        mesh_bytes: u64,
+    ) {
+        let at = std::time::Instant::now();
+        let mut state = self.lock();
+        state.active_workers.remove(&(key, epoch));
+        let mut value = Self::key_event("worker_done", key);
+        let object = value.as_object_mut().unwrap();
+        object.insert("epoch".into(), serde_json::json!(epoch));
+        object.insert("admit_frame".into(), serde_json::json!(admit_frame));
+        object.insert("build_ms".into(), serde_json::json!(build_ms));
+        object.insert("vertex_count".into(), serde_json::json!(vertex_count));
+        object.insert("index_count".into(), serde_json::json!(index_count));
+        object.insert("mesh_bytes".into(), serde_json::json!(mesh_bytes));
+        Self::emit_locked(&mut state, value, at);
+    }
+
+    fn received(
+        &self,
+        frame: u64,
+        key: TileKey,
+        epoch: u64,
+        bucket: u32,
+        pending_match: bool,
+        season_match: bool,
+        moving_drop: bool,
+    ) {
+        let mut value = Self::key_event("received", key);
+        let object = value.as_object_mut().unwrap();
+        object.insert("frame".into(), serde_json::json!(frame));
+        object.insert("epoch".into(), serde_json::json!(epoch));
+        object.insert("season_bucket".into(), serde_json::json!(bucket));
+        object.insert("pending_match".into(), serde_json::json!(pending_match));
+        object.insert("season_match".into(), serde_json::json!(season_match));
+        object.insert("moving_drop".into(), serde_json::json!(moving_drop));
+        self.emit(value);
+    }
+
+    fn first_exact_draw(&self, frame: u64, key: TileKey) {
+        let at = std::time::Instant::now();
+        let mut state = self.lock();
+        let episode = state.open_missing.remove(&key);
+        if episode.is_none() && !state.first_exact_seen.insert(key) {
+            return;
+        }
+        state.first_exact_seen.insert(key);
+        state.gap_blocked.remove(&key);
+        let mut value = Self::key_event("first_exact_draw", key);
+        let object = value.as_object_mut().unwrap();
+        object.insert("frame".into(), serde_json::json!(frame));
+        object.insert("episode".into(), serde_json::json!(episode.unwrap_or(0)));
+        Self::emit_locked(&mut state, value, at);
+    }
+
+    fn gap_blocked(
+        &self,
+        frame: u64,
+        key: TileKey,
+        gap_rank: usize,
+        reason: &'static str,
+        pending_total: usize,
+        pending_limit: usize,
+        productive_total: usize,
+        productive_limit: usize,
+        admitted_this_frame: usize,
+        budget: usize,
+    ) {
+        let at = std::time::Instant::now();
+        let mut state = self.lock();
+        if state.gap_blocked.get(&key) == Some(&reason) {
+            return;
+        }
+        state.gap_blocked.insert(key, reason);
+        let mut value = Self::key_event("gap_blocked", key);
+        let object = value.as_object_mut().unwrap();
+        object.insert("frame".into(), serde_json::json!(frame));
+        object.insert("gap_rank".into(), serde_json::json!(gap_rank));
+        object.insert("reason".into(), serde_json::json!(reason));
+        object.insert("pending_total".into(), serde_json::json!(pending_total));
+        object.insert("pending_limit".into(), serde_json::json!(pending_limit));
+        object.insert(
+            "productive_total".into(),
+            serde_json::json!(productive_total),
+        );
+        object.insert(
+            "productive_limit".into(),
+            serde_json::json!(productive_limit),
+        );
+        object.insert(
+            "admitted_this_frame".into(),
+            serde_json::json!(admitted_this_frame),
+        );
+        object.insert("budget".into(), serde_json::json!(budget));
+        Self::emit_locked(&mut state, value, at);
+    }
+
+    fn evict(
+        &self,
+        frame: u64,
+        key: TileKey,
+        reason: &'static str,
+        live_wanted: bool,
+        last_used: u64,
+        bytes: u64,
+    ) {
+        let mut value = Self::key_event("evict", key);
+        let object = value.as_object_mut().unwrap();
+        object.insert("frame".into(), serde_json::json!(frame));
+        object.insert("reason".into(), serde_json::json!(reason));
+        object.insert("live_wanted".into(), serde_json::json!(live_wanted));
+        object.insert("last_used".into(), serde_json::json!(last_used));
+        object.insert(
+            "last_used_age".into(),
+            serde_json::json!(frame.saturating_sub(last_used)),
+        );
+        object.insert("mesh_bytes".into(), serde_json::json!(bytes));
+        self.emit(value);
+    }
+
+    fn summary(&self, mut value: serde_json::Value) {
+        let at = std::time::Instant::now();
+        let mut state = self.lock();
+        let productive_active = state
+            .active_workers
+            .iter()
+            .filter(|(key, _)| key.deep || key.level >= 11)
+            .count();
+        value.as_object_mut().unwrap().insert(
+            "productive_workers_active".into(),
+            serde_json::json!(productive_active),
+        );
+        Self::emit_locked(&mut state, value, at);
+    }
+}
+
+/// Conservative screen-impact estimate for a terrain tile. The trace uses a
+/// projected bounding box of the cube-sphere corners (plus center), clipped to
+/// the viewport; terrain height is intentionally ignored because the result is
+/// a priority-scale approximation, not a pixel-coverage raster.
+fn stream_projected_tile_area(
+    key: TileKey,
+    camera_position_km: DVec3,
+    radius_km: f64,
+    view_proj: glam::DMat4,
+    viewport: (u32, u32),
+) -> (bool, f64) {
+    let (u0, v0, size) = key.uv_range();
+    let uv = [
+        (u0, v0),
+        (u0 + size, v0),
+        (u0, v0 + size),
+        (u0 + size, v0 + size),
+        (u0 + size * 0.5, v0 + size * 0.5),
+    ];
+    let mut min_x = f64::INFINITY;
+    let mut max_x = f64::NEG_INFINITY;
+    let mut min_y = f64::INFINITY;
+    let mut max_y = f64::NEG_INFINITY;
+    let mut in_front = false;
+    let mut surface_visible = false;
+    for (u, v) in uv {
+        let direction = crate::planet::face_dir(key.face as usize, u, v);
+        let surface = direction * radius_km;
+        surface_visible |= direction.dot(camera_position_km - surface) > 0.0;
+        let relative = surface - camera_position_km;
+        let clip = view_proj * relative.extend(1.0);
+        if clip.w > 1e-9 {
+            in_front = true;
+            let ndc = clip.truncate() / clip.w;
+            min_x = min_x.min(ndc.x);
+            max_x = max_x.max(ndc.x);
+            min_y = min_y.min(ndc.y);
+            max_y = max_y.max(ndc.y);
+        }
+    }
+    if !in_front || !surface_visible {
+        return (false, 0.0);
+    }
+    let clipped_min_x = min_x.max(-1.0);
+    let clipped_max_x = max_x.min(1.0);
+    let clipped_min_y = min_y.max(-1.0);
+    let clipped_max_y = max_y.min(1.0);
+    if clipped_max_x <= clipped_min_x || clipped_max_y <= clipped_min_y {
+        return (false, 0.0);
+    }
+    let width_px = (clipped_max_x - clipped_min_x) * viewport.0 as f64 * 0.5;
+    let height_px = (clipped_max_y - clipped_min_y) * viewport.1 as f64 * 0.5;
+    (true, width_px * height_px)
+}
+
+fn spawn_stream_tile_build(
+    debug: Option<StreamDebug>,
+    tx: mpsc::Sender<(TileKey, u64, u32, TileMesh)>,
+    planet: Arc<Planet>,
+    key: TileKey,
+    epoch: u64,
+    season: crate::weather::StructuralSeason,
+    exagg: f64,
+    admit_frame: u64,
+) {
+    if let Some(debug) = debug {
+        rayon::spawn(move || {
+            debug.worker_start(key, epoch, admit_frame);
+            let build_start = std::time::Instant::now();
+            let mesh = build_tile_at_season(&planet, key, exagg, season);
+            let build_ms = build_start.elapsed().as_secs_f64() * 1000.0;
+            let vertex_count = mesh.vertices.len();
+            let index_count = mesh.indices.len();
+            let mesh_bytes = (vertex_count * std::mem::size_of::<Vertex>()
+                + index_count * std::mem::size_of::<u32>())
+                as u64;
+            debug.worker_done(
+                key,
+                epoch,
+                admit_frame,
+                build_ms,
+                vertex_count,
+                index_count,
+                mesh_bytes,
+            );
+            let _ = tx.send((key, epoch, season.bucket, mesh));
+        });
+    } else {
+        // This is the pre-instrumentation production closure verbatim.
+        rayon::spawn(move || {
+            let mesh = build_tile_at_season(&planet, key, exagg, season);
+            let _ = tx.send((key, epoch, season.bucket, mesh));
+        });
+    }
+}
+
 /// VRAM ceiling for cached chunk meshes: past it, least-recently-used chunks
 /// are dropped regardless of age. Keep a full teleport's upload headroom
 /// above the retained cache: eviction happens after streaming results land,
@@ -475,6 +911,9 @@ pub struct Renderer {
     /// set exceeds the budget reaches a rotating equilibrium (tiles land,
     /// get shed, get re-requested forever) and the view never sharpens.
     live_wanted: std::collections::HashSet<TileKey>,
+    /// None in production. When present, all tile lifecycle events share the
+    /// sink's monotonic origin and debug-only per-key episode state.
+    stream_debug: Option<StreamDebug>,
     tile_tx: mpsc::Sender<(TileKey, u64, u32, TileMesh)>,
     tile_rx: mpsc::Receiver<(TileKey, u64, u32, TileMesh)>,
     /// PERF.md item 2: per-segment GPU timing behind TRI_GPU_TIMERS=1.
@@ -1181,6 +1620,7 @@ impl Renderer {
             last_live_position_km: DVec3::ZERO,
             burst_until_frame: 0,
             live_wanted: std::collections::HashSet::new(),
+            stream_debug: StreamDebug::from_env(),
             tile_tx: ttx,
             tile_rx: trx,
             gpu_timers: gpu_timers_init,
@@ -2005,17 +2445,41 @@ impl Renderer {
             // A completed refinement for the cover we just left is no
             // longer worth a GPU allocation. Retire its epoch and drop the
             // CPU mesh; in-flight work remains bounded by the same caps.
-            while let Ok((k, epoch, _, _)) = self.tile_rx.try_recv() {
-                if self.tile_pending.get(&k) == Some(&epoch) {
+            while let Ok((k, epoch, bucket, _mesh)) = self.tile_rx.try_recv() {
+                let pending_match = self.tile_pending.get(&k) == Some(&epoch);
+                if let Some(debug) = &self.stream_debug {
+                    debug.received(
+                        self.frame_counter,
+                        k,
+                        epoch,
+                        bucket,
+                        pending_match,
+                        bucket == structural_season.bucket,
+                        true,
+                    );
+                }
+                if pending_match {
                     self.tile_pending.remove(&k);
                 }
             }
         } else {
             while let Ok((k, epoch, bucket, mesh)) = self.tile_rx.try_recv() {
-                if self.tile_pending.get(&k) == Some(&epoch) {
+                let pending_match = self.tile_pending.get(&k) == Some(&epoch);
+                if let Some(debug) = &self.stream_debug {
+                    debug.received(
+                        self.frame_counter,
+                        k,
+                        epoch,
+                        bucket,
+                        pending_match,
+                        bucket == structural_season.bucket,
+                        false,
+                    );
+                }
+                if pending_match {
                     self.tile_pending.remove(&k);
                     if bucket != structural_season.bucket
-                        && std::env::var_os("TRI_STREAM_DEBUG").is_some()
+                        && self.stream_debug.is_some()
                     {
                         eprintln!(
                             "STREAMDBG DROP f{}L{}({},{}) built-bucket {} != now {}",
@@ -2082,13 +2546,34 @@ impl Renderer {
                 let epoch = self.tile_epoch;
                 self.tile_epoch = self.tile_epoch.wrapping_add(1);
                 self.tile_pending.insert(key, epoch);
+                if let Some(debug) = &self.stream_debug {
+                    let productive_total = self
+                        .tile_pending
+                        .keys()
+                        .filter(|pending| pending.deep || pending.level >= 11)
+                        .count();
+                    debug.admit(
+                        self.frame_counter,
+                        key,
+                        epoch,
+                        "stale",
+                        self.tile_pending.len(),
+                        productive_total,
+                    );
+                }
                 let tx = self.tile_tx.clone();
                 let planet = Arc::clone(planet);
                 let season = structural_season;
-                rayon::spawn(move || {
-                    let mesh = build_tile_at_season(&planet, key, exagg, season);
-                    let _ = tx.send((key, epoch, season.bucket, mesh));
-                });
+                spawn_stream_tile_build(
+                    self.stream_debug.clone(),
+                    tx,
+                    planet,
+                    key,
+                    epoch,
+                    season,
+                    exagg,
+                    self.frame_counter,
+                );
             }
         }
         let missing: Vec<TileKey> = keys
@@ -2262,6 +2747,49 @@ impl Renderer {
                 }
             }
         }
+        // Debug-only impact/rank snapshot before any build admission. Sorting
+        // a copy preserves the scheduler's existing `covered_missing` order
+        // and lets `missing` precede `admit` on the shared clock.
+        let stream_debug_gaps = if let Some(debug) = &self.stream_debug {
+            debug.retain_wanted_missing(&keys);
+            let direction = camera.local_direction();
+            let mut ranked = covered_missing.clone();
+            ranked.sort_unstable_by(|a, b| {
+                a.level
+                    .cmp(&b.level)
+                    .then_with(|| {
+                        let da = 1.0 - a.center_dir().dot(direction);
+                        let db = 1.0 - b.center_dir().dot(direction);
+                        da.total_cmp(&db)
+                    })
+                    .then_with(|| (a.face, a.ix, a.iy).cmp(&(b.face, b.ix, b.iy)))
+            });
+            let ranks: HashMap<TileKey, usize> = ranked
+                .iter()
+                .enumerate()
+                .map(|(index, key)| (*key, index + 1))
+                .collect();
+            for key in &missing {
+                let (on_screen, projected_px_area) = stream_projected_tile_area(
+                    *key,
+                    cam_pos,
+                    planet.radius_km,
+                    vp,
+                    self.size,
+                );
+                debug.missing(
+                    self.frame_counter,
+                    *key,
+                    covered(&self.cache, key),
+                    ranks.get(key).copied(),
+                    on_screen,
+                    projected_px_area,
+                );
+            }
+            Some(ranked)
+        } else {
+            None
+        };
         let built: Vec<(TileKey, TileMesh)> = {
             use rayon::prelude::*;
             urgent
@@ -2329,8 +2857,10 @@ impl Renderer {
             .count();
         // B-16 diagnosis: dump the pending set periodically so a wedged
         // pipeline (same keys forever) is visible. Dev-only via env.
-        if std::env::var_os("TRI_STREAM_DEBUG").is_some()
-            && self.frame_counter.is_multiple_of(300)
+        if self
+            .stream_debug
+            .as_ref()
+            .is_some_and(|debug| debug.legacy_due(self.frame_counter))
         {
             let mut keys: Vec<String> = self
                 .tile_pending
@@ -2349,8 +2879,10 @@ impl Renderer {
             );
         }
         self.live_wanted = keys.iter().copied().collect();
-        if std::env::var_os("TRI_STREAM_DEBUG").is_some()
-            && self.frame_counter.is_multiple_of(300)
+        if self
+            .stream_debug
+            .as_ref()
+            .is_some_and(|debug| debug.legacy_due(self.frame_counter))
         {
             let uncached: Vec<&TileKey> =
                 keys.iter().filter(|k| !self.cache.contains_key(k)).collect();
@@ -2468,13 +3000,29 @@ impl Renderer {
                     self.tile_epoch = self.tile_epoch.wrapping_add(1);
                     self.tile_pending.insert(key, epoch);
                     productive_pending += usize::from(productive);
+                    if let Some(debug) = &self.stream_debug {
+                        debug.admit(
+                            self.frame_counter,
+                            key,
+                            epoch,
+                            "forecast",
+                            self.tile_pending.len(),
+                            productive_pending,
+                        );
+                    }
                     let tx = self.tile_tx.clone();
                     let planet = Arc::clone(planet);
                     let season = structural_season;
-                    rayon::spawn(move || {
-                        let mesh = build_tile_at_season(&planet, key, exagg, season);
-                        let _ = tx.send((key, epoch, season.bucket, mesh));
-                    });
+                    spawn_stream_tile_build(
+                        self.stream_debug.clone(),
+                        tx,
+                        planet,
+                        key,
+                        epoch,
+                        season,
+                        exagg,
+                        self.frame_counter,
+                    );
                     prefetched += 1;
                 }
             }
@@ -2500,8 +3048,10 @@ impl Renderer {
                 })
                 .then_with(|| (a.face, a.ix, a.iy).cmp(&(b.face, b.ix, b.iy)))
         });
-        if std::env::var_os("TRI_STREAM_DEBUG").is_some()
-            && self.frame_counter.is_multiple_of(300)
+        if self
+            .stream_debug
+            .as_ref()
+            .is_some_and(|debug| debug.legacy_due(self.frame_counter))
         {
             let head: Vec<String> = covered_missing
                 .iter()
@@ -2515,7 +3065,7 @@ impl Renderer {
                 head.join(" ")
             );
         }
-        for key in covered_missing {
+        for (gap_index, key) in covered_missing.iter().copied().enumerate() {
             // B-16 (the actual kill): the forecast loops above can consume
             // the whole live budget EVERY frame (their speculative rings
             // are an endless supply), so the visible gaps under ancestor
@@ -2525,6 +3075,33 @@ impl Renderer {
             if prefetched >= live_budget + 2
                 || self.tile_pending.len() >= live_pending_limit + 2
             {
+                if let Some(debug) = &self.stream_debug {
+                    let reason = if prefetched >= live_budget + 2 {
+                        "admission_budget"
+                    } else {
+                        "pending_limit"
+                    };
+                    // This branch exits the loop, so every remaining key is
+                    // refused by the same condition without being visited.
+                    // Record that once per key instead of leaving the tail's
+                    // refusal implicit.
+                    for (blocked_index, blocked_key) in
+                        covered_missing.iter().copied().enumerate().skip(gap_index)
+                    {
+                        debug.gap_blocked(
+                            self.frame_counter,
+                            blocked_key,
+                            blocked_index + 1,
+                            reason,
+                            self.tile_pending.len(),
+                            live_pending_limit + 2,
+                            productive_pending,
+                            caps.productive.min(live_pending_limit) + 2,
+                            prefetched,
+                            live_budget + 2,
+                        );
+                    }
+                }
                 break;
             }
             let productive = key.deep || key.level >= 11;
@@ -2535,6 +3112,20 @@ impl Renderer {
                 && productive_pending
                     >= caps.productive.min(live_pending_limit) + 2
             {
+                if let Some(debug) = &self.stream_debug {
+                    debug.gap_blocked(
+                        self.frame_counter,
+                        key,
+                        gap_index + 1,
+                        "productive_cap",
+                        self.tile_pending.len(),
+                        live_pending_limit + 2,
+                        productive_pending,
+                        caps.productive.min(live_pending_limit) + 2,
+                        prefetched,
+                        live_budget + 2,
+                    );
+                }
                 continue;
             }
             if self.cache.contains_key(&key) || self.tile_pending.contains_key(&key) {
@@ -2544,13 +3135,29 @@ impl Renderer {
             self.tile_epoch = self.tile_epoch.wrapping_add(1);
             self.tile_pending.insert(key, epoch);
             productive_pending += usize::from(productive);
+            if let Some(debug) = &self.stream_debug {
+                debug.admit(
+                    self.frame_counter,
+                    key,
+                    epoch,
+                    "covered_gap",
+                    self.tile_pending.len(),
+                    productive_pending,
+                );
+            }
             let tx = self.tile_tx.clone();
             let planet = Arc::clone(planet);
             let season = structural_season;
-            rayon::spawn(move || {
-                let mesh = build_tile_at_season(&planet, key, exagg, season);
-                let _ = tx.send((key, epoch, season.bucket, mesh));
-            });
+            spawn_stream_tile_build(
+                self.stream_debug.clone(),
+                tx,
+                planet,
+                key,
+                epoch,
+                season,
+                exagg,
+                self.frame_counter,
+            );
             prefetched += 1;
         }
         // The original immediate-parent fallback remains useful once the
@@ -2588,13 +3195,29 @@ impl Renderer {
                 self.tile_epoch = self.tile_epoch.wrapping_add(1);
                 self.tile_pending.insert(parent, epoch);
                 productive_pending += usize::from(productive);
+                if let Some(debug) = &self.stream_debug {
+                    debug.admit(
+                        self.frame_counter,
+                        parent,
+                        epoch,
+                        "parent",
+                        self.tile_pending.len(),
+                        productive_pending,
+                    );
+                }
                 let tx = self.tile_tx.clone();
                 let planet = Arc::clone(planet);
                 let season = structural_season;
-                rayon::spawn(move || {
-                    let mesh = build_tile_at_season(&planet, parent, exagg, season);
-                    let _ = tx.send((parent, epoch, season.bucket, mesh));
-                });
+                spawn_stream_tile_build(
+                    self.stream_debug.clone(),
+                    tx,
+                    planet,
+                    parent,
+                    epoch,
+                    season,
+                    exagg,
+                    self.frame_counter,
+                );
                 prefetched += 1;
             }
         }
@@ -2715,6 +3338,84 @@ impl Renderer {
             resolved.retain(|k| !has_live_ancestor(k));
             resolved
         };
+        if let (Some(debug), Some(gaps)) = (&self.stream_debug, &stream_debug_gaps)
+            && debug.summary_due(self.frame_counter)
+        {
+            let uncached: Vec<TileKey> = self
+                .live_wanted
+                .iter()
+                .copied()
+                .filter(|key| !self.cache.contains_key(key))
+                .collect();
+            let mut on_screen_missing_px_area = 0.0f64;
+            let gap_ranks: HashMap<TileKey, usize> = gaps
+                .iter()
+                .enumerate()
+                .map(|(index, key)| (*key, index + 1))
+                .collect();
+            let mut on_screen_missing_keys = Vec::new();
+            for key in &uncached {
+                let (on_screen, area) = stream_projected_tile_area(
+                    *key,
+                    cam_pos,
+                    planet.radius_km,
+                    vp,
+                    self.size,
+                );
+                if on_screen {
+                    on_screen_missing_px_area += area;
+                    let mut item = StreamDebug::key_value(*key);
+                    let object = item.as_object_mut().unwrap();
+                    object.insert("projected_px_area".into(), serde_json::json!(area));
+                    object.insert(
+                        "gap_rank".into(),
+                        serde_json::json!(gap_ranks.get(key).copied()),
+                    );
+                    on_screen_missing_keys.push(item);
+                }
+            }
+            let gap_missing = gaps
+                .iter()
+                .filter(|key| !self.cache.contains_key(key))
+                .count();
+            let gap_pending = gaps
+                .iter()
+                .filter(|key| {
+                    !self.cache.contains_key(key) && self.tile_pending.contains_key(key)
+                })
+                .count();
+            let gap_unadmitted = gaps
+                .iter()
+                .filter(|key| {
+                    !self.cache.contains_key(key) && !self.tile_pending.contains_key(key)
+                })
+                .count();
+            let exact_selected_draws = keys
+                .iter()
+                .filter(|key| self.live_wanted.contains(key))
+                .count();
+            debug.summary(serde_json::json!({
+                "event": "summary",
+                "frame": self.frame_counter,
+                "wanted": self.live_wanted.len(),
+                "uncached": uncached.len(),
+                "covered_missing": gap_missing,
+                "on_screen_missing": on_screen_missing_keys.len(),
+                "on_screen_missing_px_area": on_screen_missing_px_area,
+                "on_screen_missing_keys": on_screen_missing_keys,
+                "gap_pending": gap_pending,
+                "gap_unadmitted": gap_unadmitted,
+                "exact_selected_draws": exact_selected_draws,
+                "pending_total": self.tile_pending.len(),
+                "productive_pending_total": productive_pending,
+                "stream_level": self.stream_level,
+                "latitude_deg": camera.lat.to_degrees(),
+                "longitude_deg": camera.lon.to_degrees(),
+                "altitude_km": camera.altitude_km,
+                "yaw_deg": camera.yaw.to_degrees(),
+                "pitch_deg": camera.pitch.to_degrees(),
+            }));
+        }
 
         // near the ground, stream voxel chunks around the camera footprint:
         // finished background builds land this frame, missing chunks are
@@ -3357,6 +4058,12 @@ impl Renderer {
         // production remains bit-identical at zero.
         let lod_ring_debug = std::env::var_os("TRI_LOD_RING_DEBUG").is_some();
         for (slot, key) in all_keys.enumerate().take(terrain_slots) {
+            if let Some(debug) = &self.stream_debug
+                && let DrawKey::Tile(tile_key) = key
+                && self.live_wanted.contains(&tile_key)
+            {
+                debug.first_exact_draw(self.frame_counter, tile_key);
+            }
             let tile = match key {
                 DrawKey::Tile(k) => self.cache.get_mut(&k).unwrap(),
                 DrawKey::Chunk(k) => self.chunk_cache.get_mut(&k).unwrap(),
@@ -3792,7 +4499,26 @@ impl Renderer {
     fn evict(&mut self) {
         let cutoff = self.frame_counter.saturating_sub(120);
         if self.cache.len() > 1500 {
-            self.cache.retain(|_, t| t.last_used >= cutoff);
+            if let Some(debug) = self.stream_debug.clone() {
+                let frame = self.frame_counter;
+                let live_wanted = &self.live_wanted;
+                self.cache.retain(|key, tile| {
+                    let keep = tile.last_used >= cutoff;
+                    if !keep {
+                        debug.evict(
+                            frame,
+                            *key,
+                            "count1500",
+                            live_wanted.contains(key),
+                            tile.last_used,
+                            tile.bytes,
+                        );
+                    }
+                    keep
+                });
+            } else {
+                self.cache.retain(|_, t| t.last_used >= cutoff);
+            }
         }
         if self.moon_cache.len() > 2400 {
             self.moon_cache.retain(|_, t| t.last_used >= cutoff);
@@ -3865,7 +4591,18 @@ impl Renderer {
             let over = total - TILE_VRAM_BUDGET;
             let shed = ((over / (48 << 20)) as usize + 1) * 8;
             for (_, k) in old.into_iter().take(shed.min(64)) {
-                self.cache.remove(&k);
+                if let Some(tile) = self.cache.remove(&k)
+                    && let Some(debug) = &self.stream_debug
+                {
+                    debug.evict(
+                        self.frame_counter,
+                        k,
+                        "gentle",
+                        self.live_wanted.contains(&k),
+                        tile.last_used,
+                        tile.bytes,
+                    );
+                }
             }
             return;
         }
@@ -3905,7 +4642,26 @@ impl Renderer {
             }
         }
         let before = self.cache.len();
-        self.cache.retain(|k, _| keep.contains(k));
+        if let Some(debug) = self.stream_debug.clone() {
+            let frame = self.frame_counter;
+            let live_wanted = &self.live_wanted;
+            self.cache.retain(|key, tile| {
+                let retain = keep.contains(key);
+                if !retain {
+                    debug.evict(
+                        frame,
+                        *key,
+                        "hard",
+                        live_wanted.contains(key),
+                        tile.last_used,
+                        tile.bytes,
+                    );
+                }
+                retain
+            });
+        } else {
+            self.cache.retain(|k, _| keep.contains(k));
+        }
         let evicted = before - self.cache.len();
         // B-10 tripwire: a mass eviction is the prime suspect for tiles
         // vanishing mid-session (Austin's raw -> raw_2 staircase). Unreprod-
