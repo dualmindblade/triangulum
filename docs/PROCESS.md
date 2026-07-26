@@ -118,6 +118,31 @@ Bounded, with explicit done-criteria, written *before* dispatch:
 - **Explicit permission to reject the mission's own premise.** Missions here
   have been wrong before, and the best outcomes came from agents that measured
   the premise and refuted it. Say so in the spec.
+- **Mark which claims in the spec are VERIFIED and which are assumptions the
+  agent should check.** Learned the hard way (2026-07-26): a spec asserted
+  some reel poses were "known-good" on the strength of their names, and two of
+  them turned out to contain nothing at all (B-20). Confident wrong statements
+  in a spec cost more than vague ones, because the agent trusts them.
+
+### Dispatch checklist
+
+Four things bite every worktree mission. Put them in the spec:
+
+1. **The worktree is NOT at current main.** A dispatched agent's worktree is
+   cut from the commit the coordinator's session *started* at, so it lacks
+   everything merged since — including the CLAUDE.md files and any tool the
+   spec tells it to read. Either merge main into the worktree at dispatch, or
+   tell the agent to do so first. (Symptom when missed: an agent reports that
+   tracked files "are untracked in git". They are not; its worktree is stale.)
+2. **A fresh worktree has no game assets** — `viewer/assets/*.bin` is
+   gitignored (~170 MB). Tell it to **copy**, never symlink or junction: a
+   recursive delete through a junction destroys the originals, which cost
+   ~1.5 h of generation.
+3. **Examples are not built by a bare `cargo build`.** Say
+   `cargo build --release --example play` explicitly.
+4. **Do not end a turn waiting on a background process.** Agents that finish
+   by "waiting for a monitor to fire" simply stop. If a mission must wait, it
+   polls directly.
 
 ---
 
