@@ -37,3 +37,4 @@ tunnel-run.err
 
 # per-machine Claude Code settings (permissions differ per operator)
 .claude/settings.local.json
+.claude/worktrees/
