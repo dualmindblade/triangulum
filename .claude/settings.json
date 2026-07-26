@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(viewer/target/release/examples/play.exe *)",
+      "Bash(./target/release/examples/play.exe *)"
+    ]
+  }
+}
