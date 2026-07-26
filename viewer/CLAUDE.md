@@ -82,8 +82,8 @@ see `docs/PROCESS.md`.
 | perf reel | `python scripts/perf_reel.py` | frame cost vs blessed baseline |
 | sky reel | `python scripts/sky_reel.py` | sky/atmosphere appearance |
 | sync diff | `python scripts/sync_diff.py` | mesh↔voxel agreement (`sea_calib` must stay 0.0%) |
-| census | `cargo run --release --example census` | water/terrain discontinuities at planet scale |
-| colcensus | `cargo run --release --example colcensus` | block-truth water; sees cave/film water samplers miss |
+| census | `cargo run --release --example census` (planet-wide; `-- --at LAT LON --radius KM` for one site) | water/terrain discontinuities at planet scale |
+| colcensus | `cargo run --release --example colcensus -- LAT LON [RADIUS_KM]` (site-local; **requires coordinates**) | block-truth water; sees cave/film water samplers miss |
 
 Reels use the same convention: exit **0** clean, **3** findings to review,
 `--accept` to bless. Blessing is a human decision — an agent may *propose* a
