@@ -9,50 +9,6 @@ are `teleport LAT LON [ALT_KM]` viewer args at `--exagg 1` unless noted.
 
 ## OPEN
 
-### B-21 Count-1500 eviction sweep ignores the wanted set
-Found by Sol's R-1 audit 2026-07-26, re-verified by the coordinator in
-source. `evict()` (renderer.rs:3792-3796) runs
-`if self.cache.len() > 1500 { self.cache.retain(|_, t| t.last_used >=
-cutoff) }` with **no `live_wanted` check**. HUNT 2's wanted-set
-protection was added only to the LATER gentle VRAM shed
-(renderer.rs:3838-3842, `t.last_used < protected &&
-!self.live_wanted.contains(k)`) — the count sweep never got it.
-WHY IT LIKELY MATTERS FOR B-16: that pose's wanted set is ~1540 and its
-settled draw count 1543, so the 1500 threshold is directly in range at
-exactly the symptom site. The ancestor-family rule suppresses cached
-siblings from the drawn set while one child is missing; suppressed
-siblings do not refresh `last_used`, so after 120 frames the count sweep
-can drop tiles that are still WANTED. A slow final child then lands
-after its siblings were discarded, perpetuating the ancestor stand-in —
-i.e. the blur. The count sweep emits NO eviction-storm log, which is
-exactly why HUNT 4's probes could not see it.
-Confidence: HIGH on the code defect, MEDIUM that it is active in B-16
-(not proved in either archived run — needs the lifecycle trace, B-22).
-
-### B-22 Streaming has no lifecycle instrumentation, so build cost cannot be attributed
-Sol R-1 2026-07-26. The reason B-16 has been re-diagnosed three times is
-that no probe can distinguish waiting from working: `tile_pending` is set
-BEFORE `rayon::spawn` (renderer.rs:2543-2552), so "pending for seconds"
-conflates Rayon queue time with `build_tile_at_season` execution time and
-is NOT a build-duration measurement. Completions carry no timestamps and
-the count-1500 eviction path is silent. `TRI_GPU_TIMERS` measures the
-render pass, not CPU tile construction.
-CONSEQUENCE: HUNT 4's "the remaining tail is build cost" was an
-INFERENCE, not a measurement, and redirecting the work to B-4c was
-premature. Also unmeasured: that "heavyweight frozen-water L11" is the
-cost centre at all — at 3.05 km every terrain tile builds the same
-33x33 grid, and the frozen branch changes colour/payload rather than
-adding ice geometry (terrain.rs:1885-1908).
-FIX: extend `TRI_STREAM_DEBUG` to emit one JSONL event per key against a
-single monotonic clock — `missing` (with gap rank, on_screen, projected
-area), `admit` (with source: forecast/covered_gap/parent/stale),
-`worker_start` inside the Rayon closure, `worker_done` (build ms, vertex/
-index counts, bytes), `received`, `first_exact_draw`, and `evict` from
-EVERY path with reason and whether the key was in `live_wanted`. Plus a
-1 Hz summary. Insertion points: renderer.rs 2450-2554, 2013-2040,
-2606-2717, 3792-3924. Observability only — must not change ordering or
-caps. This is the prerequisite for closing B-16 honestly.
-
 ### B-19 Irregular boundaries staircase onto a 15-35 m lattice at 0.5-1 km
 Found by the V-2 altitude ladder 2026-07-26 (not by eye — the instrument
 found it on its first run). EVERY irregular boundary class — river bank,
@@ -177,6 +133,31 @@ generated scripts/_convflight_ice_session.play with TRI_POSE_LIVE=1
 TRI_RAW_CAPTURE=1 TRI_STREAM_DEBUG=1. Next: find HUNT 3's remaining
 refusing condition on those eight keys, and audit why cached-but-
 undrawn tiles do not enter the selected set.
+HUNT 6 / ATTRIBUTED, NOT RESOLVED (2026-07-26, A-1 lifecycle trace):
+B-22's single-clock per-key trace refutes HUNT 4's build-duration
+attribution on this run. At the first full h3 sample, all 100 on-screen
+missing keys eventually drew; mean `T_total` was 23.523 s, partitioned
+as 22.731 s UNADMITTED, 0.336 ms Rayon queue, 31.679 ms build, and
+759.778 ms land/swap. Unadmitted time was 96.63% of aggregate total and
+dominated every key, including all 69 keys above 10,000 projected px.
+Five productive slots stayed occupied: this is admission scheduling
+under the five-slot cap, not long tile construction. HUNT 3's eight
+keys no longer remain at the head through h3: all draw by frame 4944.
+Their named refusal is `productive_cap` for all eight; three also hit
+`admission_budget`. HUNT 1's standing claim also does not hold for the
+visual cohort: 100/100 accepted arrivals emit `first_exact_draw`.
+B-21 WAS active: the count-1500 path evicted 68 wanted tiles over the
+pre trace, including four of the eight keys, which were built twice.
+After wanted-set protection, wanted count evictions are 0, those four
+duplicate builds disappear, first-h3 uncached improves 254->48, and the
+23 matched visual keys spend 4.89 s less time unadmitted. But the
+ordinary pre-fix h3 run unexpectedly converged only at its final 45 s
+sample; post-fix and final deep-gate h3 both converged at 8 s. There is
+NO before/after verdict flip, so A-1 does not claim B-21 fixed B-16.
+The historically 6-for-6 STUCK specimen was clean in all three A-1 h3
+runs and is evidently intermittent/cliff-sensitive. B-16 stays open;
+the remaining measured tail is still admission-dominated. Evidence:
+`docs/missions/A1-lifecycle-findings.md` and `A1-evidence/`.
 REPRO IS SEASON-SENSITIVE (found by V-1, 2026-07-26): the heavyweight
 frozen-water tile load at this pose depends on the season implied by the
 weather clock. The hunt scripts pin `weather time 555.111` and the
@@ -185,10 +166,9 @@ convergence reel inherits it — **if someone "cleans up" that constant to
 stops guarding anything.
 NOW GATED BOTH WAYS: `convergence_reel.py` carries this pose as
 `b16_ice_hold` (COLD, by teleport — passes) and `convergence_flight.py`
-carries it as `ice_session` h3 (WARM, by replayed descent — STUCK). The
-pair IS the finding: identical pose and binary, opposite verdicts.
-Whenever this bug is worked, BOTH lanes are the gate; the cold one alone
-reports success.
+carries it as `ice_session` h3 (WARM, by replayed descent — historically
+STUCK, but clean in A-1). The pair remains the gate because its divergence
+is the historical finding; the cold lane alone cannot close B-16.
 ORIGINAL FIX DIRECTION: admission must prioritize the tiles actually
 COVERED BY ANCESTOR in the drawn set (the visible gaps) — e.g. reserve half
 the productive slots for coarsest-missing keys, or sort by
@@ -723,6 +703,29 @@ texturing conversation with Andrew.
 
 
 ## FIXED
+
+### B-22 Streaming lifecycle attribution missing — FIXED 9d08bc6 (A-1)
+`TRI_STREAM_DEBUG` now emits per-key JSONL against one monotonic origin:
+missing/admit/Rayon start/done/received/first exact draw/every terrain
+eviction, plus 1 Hz cohort summaries and a deduplicated refusal-branch
+event. `TRI_STREAM_DEBUG=60` selects a 60-frame interval while bare `=1`
+keeps the old 300-frame text cadence. With the variable absent, three
+settled captures before/after are byte-identical. The first decisive
+B-16 trace partitions 100 on-screen gaps as 96.63% unadmitted, 0.0014%
+Rayon queue, 0.1347% build, and 3.23% land/swap: scheduling is still
+involved, specifically admission under the five-slot productive cap.
+Evidence and analyzer: `docs/missions/A1-lifecycle-findings.md`.
+
+### B-21 Count-1500 eviction sweep ignores wanted set — FIXED (A-1 commit 2)
+The terrain count sweep now retains every current `live_wanted` key.
+The identical moon-cache hole was fixed in the same commit with a
+current `live_moon_wanted` set. B-22 proves the path was reachable:
+before the fix it evicted 68 wanted keys over the ice flight, including
+four of HUNT 3's eight keys, forcing four duplicate builds. After:
+wanted count evictions 0, duplicate eight-key builds 0, first-h3
+uncached 254->48, and matched visual keys spend 4.89 s less time
+unadmitted. The ordinary h3 verdict was clean both before and after, so
+this closes the real eviction defect but does not close B-16.
 
 ### B-18 LOD-ring tint seams on gradient landscapes + voxel handoff — FIXED fb97a33 (lodcolor)
 

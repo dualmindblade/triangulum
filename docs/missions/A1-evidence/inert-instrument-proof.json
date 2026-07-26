@@ -1,0 +1,38 @@
+{
+  "comparison": "mission base 74cb703 vs instrumentation commit 9d08bc6",
+  "environment": {
+    "TRI_STREAM_DEBUG": "unset",
+    "script": "viewer/scripts/b16-repro2.play",
+    "capture_mode": "settled",
+    "base_directory": "viewer/interchange/runs/a1-inert-base",
+    "instrumented_directory": "viewer/interchange/runs/a1-inert-commit1"
+  },
+  "captures": [
+    {
+      "name": "b16_t3.png",
+      "base_bytes": 711779,
+      "instrumented_bytes": 711779,
+      "base_sha256": "4441C707B2D5542DEDDD9DAF651CF8394ABFCDA4391C9994A1CE080A8B27A02E",
+      "instrumented_sha256": "4441C707B2D5542DEDDD9DAF651CF8394ABFCDA4391C9994A1CE080A8B27A02E",
+      "byte_identical": true
+    },
+    {
+      "name": "b16_t13.png",
+      "base_bytes": 711779,
+      "instrumented_bytes": 711779,
+      "base_sha256": "4441C707B2D5542DEDDD9DAF651CF8394ABFCDA4391C9994A1CE080A8B27A02E",
+      "instrumented_sha256": "4441C707B2D5542DEDDD9DAF651CF8394ABFCDA4391C9994A1CE080A8B27A02E",
+      "byte_identical": true
+    },
+    {
+      "name": "b16_t33.png",
+      "base_bytes": 711779,
+      "instrumented_bytes": 711779,
+      "base_sha256": "4441C707B2D5542DEDDD9DAF651CF8394ABFCDA4391C9994A1CE080A8B27A02E",
+      "instrumented_sha256": "4441C707B2D5542DEDDD9DAF651CF8394ABFCDA4391C9994A1CE080A8B27A02E",
+      "byte_identical": true
+    }
+  ],
+  "archive": "inert-settled-captures.zip",
+  "perf_note": "The final, commit-1, and untouched-base perf controls all reproduced the same inherited mountain/moon flags. See gate-perf-reel*.log; neither A-1 commit caused them."
+}

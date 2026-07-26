@@ -1,0 +1,6 @@
+pose              t_conv  res_1st  res_end  tailrat sim/wall
+b16_ice_hold        15.0     3.42     0.00     0.14     0.56
+forest_ground        4.0     5.87     0.00     0.00     0.55
+mountain_mid         0.5     0.89     0.00     0.00     0.50
+plains_walk          0.5     0.55     0.00     0.00     0.56
+CONVERGENCE REEL: all 4 poses clean

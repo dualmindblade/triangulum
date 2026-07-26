@@ -1,0 +1,12 @@
+  forest_ground   avg   31.83  p95   34.83  min  28.45  max    36.09
+  plains_walk     avg   26.62  p95   31.86  min  23.74  max    31.88
+  mountain_mid    avg   32.18  p95   34.87  min  28.30  max    48.94
+  ocean_storm     avg   19.20  p95   20.91  min  16.27  max    30.73
+  orbit           avg   18.96  p95   19.65  min  16.90  max    41.63
+  moon_surface    avg   21.55  p95   23.18  min  20.40  max    23.57
+  moon_orbit      avg    3.15  p95    3.52  min   2.91  max     3.66
+  ascent_sweep    avg   31.66  p95   34.34  min  28.88  max    35.10
+PERF REEL: 3 regression(s):
+  mountain_mid: avg 26.14 -> 32.18 ms
+  moon_surface: avg 15.40 -> 21.55 ms
+  moon_orbit: avg 2.30 -> 3.15 ms

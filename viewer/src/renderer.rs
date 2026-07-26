@@ -911,6 +911,10 @@ pub struct Renderer {
     /// set exceeds the budget reaches a rotating equilibrium (tiles land,
     /// get shed, get re-requested forever) and the view never sharpens.
     live_wanted: std::collections::HashSet<TileKey>,
+    /// Moon counterpart to `live_wanted`. The moon's count-triggered age
+    /// sweep had the same live-set hole as terrain, so retain every tile
+    /// selected for the current frame even when its last exact use is old.
+    live_moon_wanted: std::collections::HashSet<TileKey>,
     /// None in production. When present, all tile lifecycle events share the
     /// sink's monotonic origin and debug-only per-key episode state.
     stream_debug: Option<StreamDebug>,
@@ -1620,6 +1624,7 @@ impl Renderer {
             last_live_position_km: DVec3::ZERO,
             burst_until_frame: 0,
             live_wanted: std::collections::HashSet::new(),
+            live_moon_wanted: std::collections::HashSet::new(),
             stream_debug: StreamDebug::from_env(),
             tile_tx: ttx,
             tile_rx: trx,
@@ -2318,6 +2323,7 @@ impl Renderer {
         } else {
             Vec::new()
         };
+        self.live_moon_wanted = moon_keys.iter().copied().collect();
         let missing_moon: Vec<TileKey> = moon_keys
             .iter()
             .filter(|key| !self.moon_cache.contains_key(key))
@@ -4503,7 +4509,7 @@ impl Renderer {
                 let frame = self.frame_counter;
                 let live_wanted = &self.live_wanted;
                 self.cache.retain(|key, tile| {
-                    let keep = tile.last_used >= cutoff;
+                    let keep = tile.last_used >= cutoff || live_wanted.contains(key);
                     if !keep {
                         debug.evict(
                             frame,
@@ -4517,11 +4523,15 @@ impl Renderer {
                     keep
                 });
             } else {
-                self.cache.retain(|_, t| t.last_used >= cutoff);
+                let live_wanted = &self.live_wanted;
+                self.cache
+                    .retain(|key, tile| tile.last_used >= cutoff || live_wanted.contains(key));
             }
         }
         if self.moon_cache.len() > 2400 {
-            self.moon_cache.retain(|_, t| t.last_used >= cutoff);
+            let live_moon_wanted = &self.live_moon_wanted;
+            self.moon_cache
+                .retain(|key, tile| tile.last_used >= cutoff || live_moon_wanted.contains(key));
         }
         // sized for --patch 2.0 (a ~1 km disc is ~1600 chunks)
         if self.chunk_cache.len() > 4000 {
