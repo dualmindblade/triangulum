@@ -9,6 +9,53 @@ are `teleport LAT LON [ALT_KM]` viewer args at `--exagg 1` unless noted.
 
 ## OPEN
 
+### B-19 Irregular boundaries staircase onto a 15-35 m lattice at 0.5-1 km
+Found by the V-2 altitude ladder 2026-07-26 (not by eye — the instrument
+found it on its first run). EVERY irregular boundary class — river bank,
+lake shore, biome ecotone, snowline — collapses from healthy voxel-scale
+dither onto a 15-35 m lattice in the 0.5-1 km altitude window, then
+blurs out above ~1.5 km. Measured pitch: river_bank 3.4 m -> 10.3 m
+between 300 m and 500 m; ecotone 10.6 m -> 35.4 m between 700 m and
+1 km. This is a DIRECT violation of Andrew's B-17 art bar ("all
+irregular boundaries must read as natural curves at every altitude"),
+which was ledgered fixed at c9cb081 — that fix addressed range/LOD tint
+and far-field curves; this band is nearer and was never measured.
+Includes the polygonal pond shores visible in a routine smoke render.
+EVIDENCE: docs/missions/V2-evidence/specimen_1km_staircase.png (200 m
+healthy vs 1 km sawtooth, side by side), ladder_*.png contact sheets,
+report.json pitch numbers.
+REPRO: `python scripts/altitude_ladder.py` from viewer/ (66 s); brackets
+via `--rungs`/`--tag`. The lint flags it automatically below ~1 km.
+NOT YET DIAGNOSED — no root cause proposed. The band sits between the
+voxel near-field and the far mesh, so the LOD/geomorph handoff and the
+per-pixel shore/biome fields are the obvious suspects; TRANSITIONS.md is
+the contract. Andrew has final say on how natural is natural enough.
+
+### B-20 Two blessed world-reel poses guard nothing
+Found by V-2 2026-07-26, independently re-verified by the coordinator
+with `probe` and by looking at the blessed frames.
+- `lake_archi` (16.601 -12.222 @3.0) is a FEATURELESS BLUE RECTANGLE.
+  Probes at the pose and ±0.05-0.08 deg are all `lake=true`, water
+  84.5 m, ground 51-62 m — fully submerged, no shore anywhere in frame.
+- `coast_beach` (8.097 -35.673 @0.06) is DRY HIGHLAND GRASSLAND at
+  923-963 m with no water within several km. No coast, no beach.
+Both are BLESSED, so they pass on every merge and have been reporting
+green for the lake-shore and coastal classes they are named for while
+containing neither. 2 of 29 poses (7%) of the world reel guard nothing.
+Worse, `coast_beach`'s blessed frame shows visible terracing contour
+rings — the reel certified an artefact as correct by blessing it. That
+is inherent to change-detection (the docstring says so: "a change
+detector, not a quality metric"), but it means BLESSING NEEDS A
+CONTENT CHECK, not just a human glance.
+FIX DIRECTION: (a) re-aim or replace both poses; (b) add a cheap
+content assertion per pose so a reel pose must CONTAIN its class —
+`probe` already returns water/lake/koppen in milliseconds, so the reel
+can assert its own premise at generation time. (b) is the systemic fix
+and would have caught this on day one.
+ESCAPED-GATE: nothing verifies that a gate is pointed at what it claims
+to guard. Same class of hole as the perf reel warming before measuring
+(PERF.md item 1). Suspect the other reels' pose tables too.
+
 ### B-16 Blurry mesh never settles in some areas (ice); storm on P
 Austin/Andrew 2026-07-23: around certain areas (ice especially) the
 live view stays blurry indefinitely — redraw never converges; pressing
