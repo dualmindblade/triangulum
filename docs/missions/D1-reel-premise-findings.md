@@ -54,7 +54,8 @@ the check reports **a fraction of the frame**. `water>=0.05` means "at least
 5% of the frame is over a water surface", which is directly what "the pose
 contains the class" ought to mean, and it needs no arbitrary radius.
 
-15,552 probes for the whole 28-pose Neisor table in **2.7 s**.
+16,128 grid cells over the 28-pose Neisor table -> **15,168 probes**
+(960 rays leave the planet and are counted as sky) in **2.8 s**.
 
 Deliberate approximations, stated in the code so nobody mistakes this for a
 renderer: the ground is a sphere at the camera's datum, so **relief and
@@ -502,7 +503,7 @@ nobody carried it across.
 ### Surprises
 
 - **`probe` is absurdly cheap.** 41,316 probes in ~30 s including process
-  start, and 15,552 in 2.7 s. V-2 said so and I still under-budgeted it.
+  start, and 15,168 in 2.8 s. V-2 said so and I still under-budgeted it.
   This changes what is worth building: an exhaustive planet sweep is a
   30-second operation, and I used one to find frozen lakes rather than
   reasoning about where they ought to be. Whatever documents `probe` should

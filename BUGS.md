@@ -135,7 +135,7 @@ AMENDED 2026-07-26 by D-1. Three corrections to the entry below:
 FIXED: `world_reel.py` now casts a uniform 32x18 SCREEN grid through
 each pose's camera, probes every ground hit, and evaluates a per-pose
 premise BEFORE rendering — so every fraction it asserts is a fraction of
-the frame. 15,552 probes, 2.7 s. A failing premise aborts the reel with
+the frame. 15,168 probes, 2.8 s. A failing premise aborts the reel with
 the premise text, the measured value and the failing term. There is
 deliberately no opt-out flag. `--check-pose NAME,LAT,LON,ALT,YAW,PITCH,
 PREMISE[,SEASON]` scouts a candidate before it is ever rendered.
