@@ -50,8 +50,8 @@
 //!   weather season FRAC           make the next shot use this year phase
 //!   probe LAT LON                 dump sampler + column truth at a point
 //!                                 into the transcript (h, water, lake/pond
-//!                                 levels, river, cave water) — the census
-//!                                 probe without leaving the run
+//!                                 levels, river, cave water, koppen) — the
+//!                                 census probe without leaving the run
 //!   log TEXT...                   annotate the transcript
 //!
 //! Navigation is deliberately absolute-first: scripts teleport to
@@ -88,6 +88,23 @@ fn focused_edits<'a>(camera: &Camera, neisor: &'a Edits, moon: &'a Edits) -> &'a
     match camera.body {
         triangulum_viewer::orbits::BodyId::Moon => moon,
         _ => neisor,
+    }
+}
+
+/// Koppen class codes in the baked id order (`planetgen/biomes.py::KOPPEN`).
+/// The bake stores one u8 per face texel; `255` is the "no class" sentinel
+/// (ocean, and some dry land — see `planet.rs::koppen`).
+const KOPPEN_CODES: [&str; 30] = [
+    "Af", "Am", "Aw", "BWh", "BWk", "BSh", "BSk", "Csa", "Csb", "Csc", "Cwa", "Cwb", "Cwc", "Cfa",
+    "Cfb", "Cfc", "Dsa", "Dsb", "Dsc", "Dsd", "Dwa", "Dwb", "Dwc", "Dwd", "Dfa", "Dfb", "Dfc",
+    "Dfd", "ET", "EF",
+];
+
+fn koppen_code(id: u8) -> &'static str {
+    if id == 255 {
+        "--"
+    } else {
+        KOPPEN_CODES.get(id as usize).copied().unwrap_or("??")
     }
 }
 
@@ -1091,8 +1108,13 @@ fn main() -> anyhow::Result<()> {
                         "-".into()
                     }
                 };
+                // the domain-warped class the surface materials actually use
+                // (planet.rs::koppen), NOT the raw raster texel — this is the
+                // same call `write_state` puts in the JSON sidecar, so the
+                // transcript and the sidecar can never disagree
+                let kop = planet.koppen(pf, pu, pv);
                 trace!(
-                    "[{}] probe {:.5} {:.5}: h={:.1}m water={} lake={} frozen={} annual={:.2}C seasonal={:.2}C lake_lvl={} pond_lvl={} riv hw={:.1}m wet={:.2} | col ground={} water={} cave_water={}",
+                    "[{}] probe {:.5} {:.5}: h={:.1}m water={} lake={} frozen={} koppen={}/{} precip={:.0}mm annual={:.2}C seasonal={:.2}C lake_lvl={} pond_lvl={} riv hw={:.1}m wet={:.2} | col ground={} water={} cave_water={}",
                     ln + 1,
                     f(1)?,
                     f(2)?,
@@ -1100,6 +1122,9 @@ fn main() -> anyhow::Result<()> {
                     fmt_lvl(s.water_km),
                     s.lake,
                     s.frozen,
+                    kop,
+                    koppen_code(kop),
+                    s.precip,
                     s.temp_c,
                     s.seasonal_temp_c,
                     fmt_lvl(s.lake_level_km),
