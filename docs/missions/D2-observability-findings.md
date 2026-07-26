@@ -326,7 +326,7 @@ than the scripts feeding it.
 | `06-gates-before.txt` / `06-gates-after.txt` | suites 8/8 and world reel 29/29 clean, both sides. |
 | `07-koppen-table-crosscheck.txt` | `play.rs::KOPPEN_CODES` == `planetgen/biomes.py::KOPPEN`. |
 | `08-koppen-vs-raw-raster.txt` | probe's koppen vs an independent Python read of `face_*.bin`. |
-| `09-pick-to-probe.play` / `.log` | The composition the mission asked for, end to end: pixel → coordinates → `probe` → asserts that pass. |
+| `09-pick-to-probe.play` / `.BEFORE.log` / `.AFTER.log` | The composition the mission asked for, end to end: pixel → coordinates → `probe` → asserts that pass. Self-checking: BEFORE exits 1, AFTER exits 0 with every assert OK. |
 
 The `BEFORE` logs were produced by a binary built from `74cb703`'s
 `play.rs` in this worktree, not by reasoning about the diff.
