@@ -31,11 +31,19 @@ Metrics per pose:
                   (and stays there through the end of the window)
   residual_final  mean |delta| at the last sample — the late checkpoint;
                   a pose that never converges keeps this large forever
-  progress        residual_final / residual_first — a STUCK pose (the
-                  pre-fix B-16 selection freeze) stays near 1.0
+  residual_ratio  residual_final / residual_first — RISES as things get
+                  worse (1.0 = no improvement at all). Reported, not gated:
+                  it hangs on two endpoint samples. See tail_ratio.
+  tail_ratio      mean of the curve's last third / mean of its middle third.
+                  This is what STUCK gates on: a draining pose declines
+                  between them wherever the window ends, a pinned one does
+                  not (pinned ~= 1.0).
+  stuck           the STUCK verdict itself, carried into the baseline so a
+                  pose that is KNOWN pinned does not re-flag every merge —
+                  only a pose that becomes newly pinned is a finding.
 
 Findings (exit 3):
-  STUCK           large final residual AND no meaningful progress across
+  STUCK           large final residual AND a tail that is not draining across
                   the window. Needs NO baseline: catches the B-16 class
                   on day one.
   vs accepted     once blessed (--accept), t_converge / residual_final
@@ -98,13 +106,28 @@ CONVERGE_EPS = 1.0
 
 # STUCK = the day-one B-16 detector: still far from settled at the end of
 # the window (mean residual OR changed-pixel fraction — low-contrast ice
-# blur keeps the mean small while 8% of pixels stay wrong) AND barely
-# better than the first sample. Post-fix b16_ice_hold measures progress
-# 0.57-0.64 (draining); the pre-fix selection freeze pinned the drawn set
-# (flat curve, progress ~1.0, residual ~3.4, frac ~0.079).
+# blur keeps the mean small while 8% of pixels stay wrong) AND not actually
+# draining.
+#
+# "Not draining" is measured as a TAIL TREND, not a first-vs-last ratio.
+# Why (Austin's review, 2026-07-26): the real b16 curve is FLAT at
+# 3.420 -> 3.367 across 0.5-25 s and then falls off a cliff to 1.964 at the
+# single last sample. A first/last ratio therefore reported 0.574 ("healthy,
+# draining") off ONE data point — measured over 0.5-25 s the same pose reads
+# 0.985 and would have fired STUCK. That makes the verdict on our flagship
+# specimen depend on whether a cliff happens to land inside the window, which
+# varies with machine speed and load. A gate that flips on hardware is a gate
+# people learn to ignore (see world_reel's grid lint, demoted for exactly
+# this).
+#
+# The tail trend compares the last third of the curve against the middle
+# third: a slowly-draining pose declines wherever you look, a pinned one does
+# not. Robust to where the window ends. Named RESIDUAL_RATIO, not "progress",
+# because the value RISES as things get WORSE and the old name inverted its
+# own meaning.
 STUCK_RESIDUAL = 3.0
 STUCK_FRAC = 0.04
-STUCK_PROGRESS = 0.80
+STUCK_TAIL_RATIO = 0.97  # last-third mean >= 97% of middle-third mean = pinned
 
 # Baseline drift tolerances. Derived from the two-run noise measurement in
 # the V-1 findings doc (live arrivals are wall-clock, so per-pose numbers
@@ -221,6 +244,16 @@ def measure(run_root: Path, name: str) -> dict | None:
             t_conv = SAMPLES_S[i]
             break
     first, final = deltas[0], deltas[-1]
+    # Tail trend: last third vs middle third of the curve. A draining pose
+    # declines between them; a pinned one does not. Unlike final/first this
+    # does not hinge on a single endpoint sample (see STUCK_TAIL_RATIO).
+    n = len(deltas)
+    third = max(1, n // 3)
+    mid_third = deltas[n - 2 * third:n - third]
+    last_third = deltas[n - third:]
+    mid_mean = sum(mid_third) / len(mid_third) if mid_third else 0.0
+    last_mean = sum(last_third) / len(last_third) if last_third else 0.0
+    tail_ratio = (last_mean / mid_mean) if mid_mean > 1e-9 else 0.0
     ref_draws = shot_draws(ref_dir / "run.log")
     live_draws = shot_draws(live_dir / "run.log")
     return {
@@ -229,7 +262,11 @@ def measure(run_root: Path, name: str) -> dict | None:
         "residual_first": round(first, 3),
         "residual_final": round(final, 3),
         "changed_frac_final": round(curve[-1][2], 4),
-        "progress": round(final / first, 3) if first > 1e-9 else 0.0,
+        # rises as things get WORSE; 1.0 = pinned, <1 = draining
+        "residual_ratio": round(final / first, 3) if first > 1e-9 else 0.0,
+        "tail_ratio": round(tail_ratio, 3),
+        "tail_mid_mean": round(mid_mean, 3),
+        "tail_last_mean": round(last_mean, 3),
         "settled_draws": ref_draws.get(sample_name(SAMPLES_S[-1])),
         "live_draws": [live_draws.get(sample_name(s)) for s in SAMPLES_S],
     }
@@ -261,6 +298,7 @@ def main():
         "pose_hz": POSE_HZ, "weather_time_s": WEATHER_TIME_S,
     }, "poses": {}}
     findings = []
+    known_stuck = []   # pinned poses already blessed as pinned
 
     for name, lat, lon, alt, yaw, pitch in POSES:
         row = {}
@@ -298,19 +336,39 @@ def main():
                     (SAMPLES_S[-1] - SAMPLES_S[0]) / span, 2)
         report["poses"][name] = row
 
-        if ((row["residual_final"] > STUCK_RESIDUAL
-                or row["changed_frac_final"] > STUCK_FRAC)
-                and row["progress"] > STUCK_PROGRESS):
+        row["stuck"] = bool(
+            (row["residual_final"] > STUCK_RESIDUAL
+             or row["changed_frac_final"] > STUCK_FRAC)
+            and row["tail_ratio"] > STUCK_TAIL_RATIO)
+
+    base = (json.loads(accepted_p.read_text()).get("poses", {})
+            if accepted_p.exists() else {})
+
+    # STUCK, baseline-aware. A pose pinned across the whole window is the
+    # B-16 signature and fires on day one with no baseline. But once a
+    # KNOWN-slow pose has been blessed as pinned, re-flagging it on every
+    # merge is exactly the cry-wolf failure that got world_reel's grid lint
+    # demoted — so a pose that was already stuck at baseline is reported as
+    # known, not as a finding. A pose that becomes NEWLY pinned always
+    # flags, which is the regression we actually care about.
+    for name, row in report["poses"].items():
+        if not row.get("stuck"):
+            continue
+        detail = (f"residual {row['residual_final']} "
+                  f"(frac {row['changed_frac_final']}) after "
+                  f"{SAMPLES_S[-1]:.0f}s sim, tail not draining "
+                  f"(last third {row['tail_last_mean']} vs middle third "
+                  f"{row['tail_mid_mean']}, ratio {row['tail_ratio']})")
+        if base.get(name, {}).get("stuck"):
+            known_stuck.append(f"{name}: still pinned as blessed — {detail}")
+        else:
             findings.append(
-                f"{name}: STUCK — residual {row['residual_final']} "
-                f"(frac {row['changed_frac_final']}) after "
-                f"{SAMPLES_S[-1]:.0f}s sim with progress {row['progress']} "
+                f"{name}: STUCK — {detail} "
                 f"(the B-16 signature: live view is not approaching settled)")
 
     # baseline drift (numbers, perf_reel-style: the frames bless themselves,
     # the SPEED is what gets accepted)
-    if accepted_p.exists():
-        base = json.loads(accepted_p.read_text()).get("poses", {})
+    if base:
         for name, row in report["poses"].items():
             b = base.get(name)
             if not b or "residual_final" not in row:
@@ -331,7 +389,7 @@ def main():
     current_p.write_text(json.dumps(report, indent=1), encoding="utf-8")
 
     print(f"{'pose':16s} {'t_conv':>7s} {'res_1st':>8s} {'res_end':>8s} "
-          f"{'progress':>8s} {'sim/wall':>8s}")
+          f"{'tailrat':>8s} {'sim/wall':>8s}")
     for name, *_ in POSES:
         row = report["poses"].get(name, {})
         if "residual_final" not in row:
@@ -340,7 +398,10 @@ def main():
         tc = row["t_converge_s"]
         print(f"{name:16s} {tc if tc is not None else '>' + format(SAMPLES_S[-1], '.0f'):>7} "
               f"{row['residual_first']:8.2f} {row['residual_final']:8.2f} "
-              f"{row['progress']:8.2f} {row.get('sim_per_wall', float('nan')):8.2f}")
+              f"{row['tail_ratio']:8.2f} {row.get('sim_per_wall', float('nan')):8.2f}")
+
+    for k in known_stuck:
+        print(f"  known-pinned (blessed, not a finding): {k}")
 
     if findings:
         print(f"CONVERGENCE REEL: {len(findings)} finding(s) to review:")
