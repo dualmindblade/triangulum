@@ -93,8 +93,9 @@ personally review, which is its own kind of verification.
 2. **Keep it sound.** Systemic render issues (seams, popping, LOD
    inconsistency) get fixed at the root. Cosmetic ones go on a list — **three
    similar reports promote a cosmetic issue to systemic.**
-3. **Keep it fun to return to.** Every shift ships one visible thing the two
-   of them can walk around in.
+
+There is no quota on visible progress. A shift may be entirely refactoring,
+tooling or infrastructure, and that is a perfectly good shift.
 
 Art-direction calls belong to Andrew and live in `DECISIONS.md`. Engineering
 priority calls live in `BUGS.md`.
@@ -224,18 +225,28 @@ commits them.** Three rules keep those files healthy:
 
 ---
 
-## 10. Rhythm
+## 10. There is no fixed rhythm
 
-Andrew is present on weekends and gates anything about how the game looks.
-So:
+Shifts happen when Austin comes back to the project, which is irregular —
+three in a week or ten. **Do not assume continuity between shifts.** The
+handoff is what carries the thread, which is why §1 puts reading it first.
 
-- **Weekdays** — systemic, performance, and infrastructure work: everything
-  that tools can verify without waiting on a person.
-- **Weekends** — art-directed passes, where his verdict is the gate.
+Austin and Andrew both pull from the repo and play the game directly at
+various times through the week, on their own schedule, and talk to each other
+independently of any shift. Two consequences:
 
-Contact sheets, trailers and feature clips should land **Friday evening**, so
-they are waiting for him rather than blocking on him. Every major feature drop
-ships a short clip rendered through the harness.
+- **Main must always be pullable and playable.** They may pull at any moment
+  without warning. Never leave main half-migrated or mid-refactor — work
+  lands as a completed merge that stands on its own, or it stays on its
+  branch. This matters more than any deadline would.
+- **Art deliverables are produced when the feature lands, not timed to a
+  day.** Contact sheets, feature clips and trailer material go into the tree
+  and wait there for whenever Andrew looks. Every major feature drop ships a
+  short clip rendered through the harness.
+
+Andrew gates anything about how the game looks, and his verdict arrives when
+it arrives. Work that needs it should be *parked pending his call*, never
+blocked in a way that stalls a whole lane.
 
 ---
 
@@ -243,10 +254,14 @@ ships a short clip rendered through the harness.
 
 Currently 2-4 concurrent missions. The rule for adding more:
 
-- **Do not add agents until typical tasks close without Austin loading the
-  game.** Agent count is not the constraint; verification is.
+- **Do not add agents until typical tasks close without *requiring* Austin to
+  load the game.** Agent count is not the constraint; verification is. (He
+  plays it anyway, often — that is the point of building it. The test is
+  whether work can close without him, not whether he shows up.)
 - Add one at a time. **Stop when Austin becomes the queue** — idle agents
   waiting on him, or him rubber-stamping evidence he has not really read.
 
 The honest signal that this process is working is not throughput. It is that
-bugs stop being discovered by flying around.
+field-flying stops being the *first* place bugs are found. When Austin or
+Andrew still catch something, that is not a failure of the process — it is a
+gate that does not exist yet (§8).
