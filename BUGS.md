@@ -332,9 +332,17 @@ other missions were rendering) and its raw traces stretched the replay to
 background builders far more wall-clock per sim second, which flatters
 convergence — the exact bias V-1 documented. sim/wall 0.67 in its final
 gate vs 0.81 idle.
-NOT YET CLOSED, deliberately: one clean run per arm. Before B-16 is
-declared fixed it wants repeats, and it is now worth running on Austin's
-faster machine (that was blocked on B-22's trace, which now exists).
+CONFIRMED AGAIN on final merged main (all four missions combined):
+h3 converged at 8.0 s to residual 0.000 a second time, and the COLD lane
+improved too — `b16_ice_hold` t_converge 30.0 -> 15.0 s, tail_ratio
+0.798 -> 0.20. Running tally on the specimen: STUCK 7/7 without B-21
+(V-3 x5, the shift-2 stock baseline, the commit-1-only arm); CONVERGED
+3/3 with it (tri-a1 verification, merged main, plus A-1's own final
+gate). No counter-example either way.
+NOT YET CLOSED, deliberately: this pose, this machine, this recording.
+Before B-16 is declared fixed it wants a different ice recording and a
+second machine — and Austin's faster-machine run is now worth doing,
+having been blocked on B-22's trace, which now exists.
 CAVEAT: hold 2 (4.7 s) remains STUCK in both instrumented arms at an
 oddly reproducible 2.78, vs 1.68 on stock. h2 has now read 3.10 / 1.68 /
 2.78 / 2.78 / clean across operators — it is too short to support a tail
