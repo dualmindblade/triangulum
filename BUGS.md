@@ -106,18 +106,45 @@ productive-cap starvation of visible gaps) are FIXED. Remaining
 speed-up belongs to the B-4c cold-build campaign + auditing why the
 pose wants 1540 tiles. Austin/Andrew: confirm in-game that stuck
 areas now sharpen progressively (fast start, ~minute tail in ice).
+HUNT 5 / NOT RESOLVED (2026-07-26, V-3 recorded-flight lane, stock
+120995b): the fix holds only from a COLD start. Same pose, same
+binary, same machine, same hour — reached by TELEPORT it converges to
+a byte-identical 0.000 in 30 s (convergence_reel b16_ice_hold, exit
+0); reached by REPLAYING Austin's own flight into it (descent from
+6733 km) it is PINNED: residual 4.267 -> 4.247 across 45 s of held
+sim, 15.5% of pixels wrong, drawn tiles moving 12 in 45 s and FROZEN
+at 1165/1540 for the last 36 s of wall clock (375 tiles never
+arrive). Five independent replays: residual magnitude swings 2.6-4.3
+but the pinned verdict and tail_ratio 0.998-0.999 are five for five.
+Matches Austin's report that
+the symptom persists on his faster machine. TRI_STREAM_DEBUG over the
+hold: wanted 1540 constant, uncached 429->402 in 2700 frames (~0.6/s,
+oscillating not trending), pending pinned at 4-5 = the admission cap
+(caps.productive 3 + HUNT 3's 2-slot reserve) so only five builds are
+ever in flight regardless of core count; zero DROPs, zero eviction
+storms; and the head of the uncached list is the SAME EIGHT KEYS HUNT
+3 gave up on (f4L11 2002-2005 x 1652-1653). The 27 tiles that do land
+never enter the drawn set, which is HUNT 1's "arrivals land in cache
+but SELECTION never swaps" still standing. So the residual is NOT
+build cost: the pipeline is capped, not saturated. Repro (~4 min):
+python viewer/scripts/convergence_flight.py --flight ice_session
+(exit 3, hold 2 and hold 3 STUCK); for the trace, re-run the
+generated scripts/_convflight_ice_session.play with TRI_POSE_LIVE=1
+TRI_RAW_CAPTURE=1 TRI_STREAM_DEBUG=1. Next: find HUNT 3's remaining
+refusing condition on those eight keys, and audit why cached-but-
+undrawn tiles do not enter the selected set.
 REPRO IS SEASON-SENSITIVE (found by V-1, 2026-07-26): the heavyweight
 frozen-water tile load at this pose depends on the season implied by the
 weather clock. The hunt scripts pin `weather time 555.111` and the
 convergence reel inherits it — **if someone "cleans up" that constant to
 0 the slow specimen quietly stops being slow** and the gate silently
 stops guarding anything.
-NOW GATED: `viewer/scripts/convergence_reel.py` carries this pose as
-`b16_ice_hold`. Post-fix it reads residual 1.96-2.19 with progress
-0.57-0.64 (draining, correctly not flagged); pre-fix the signature was a
-flat curve at progress ~1.0. The cold-start B-16 CLASS is now a standing
-gate; the original accumulated-session trigger is NOT (see that mission's
-escaped-gate analysis — it needs a recorded-flight lane).
+NOW GATED BOTH WAYS: `convergence_reel.py` carries this pose as
+`b16_ice_hold` (COLD, by teleport — passes) and `convergence_flight.py`
+carries it as `ice_session` h3 (WARM, by replayed descent — STUCK). The
+pair IS the finding: identical pose and binary, opposite verdicts.
+Whenever this bug is worked, BOTH lanes are the gate; the cold one alone
+reports success.
 ORIGINAL FIX DIRECTION: admission must prioritize the tiles actually
 COVERED BY ANCESTOR in the drawn set (the visible gaps) — e.g. reserve half
 the productive slots for coarsest-missing keys, or sort by
