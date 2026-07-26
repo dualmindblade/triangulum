@@ -1,0 +1,38 @@
+{
+ "vertex_spacing_m": {
+  "L10": 415.15,
+  "L11": 207.57,
+  "L12": 103.79,
+  "L13": 51.89,
+  "L14": 25.95,
+  "L15": 12.97,
+  "L16": 6.49,
+  "L17": 3.24
+ },
+ "rows": [
+  {
+   "site": "river_bank",
+   "alt_km": 1.0,
+   "centre_owner": "L15",
+   "unmatched_frac": 0.0,
+   "composition": {
+    "chunk": 0.0891,
+    "L14": 0.2722,
+    "L15": 0.6387
+   },
+   "png": "interchange\\runs\\_x1-lodL16\\river_bank_1km.png"
+  },
+  {
+   "site": "ecotone",
+   "alt_km": 1.0,
+   "centre_owner": "L14",
+   "unmatched_frac": 0.0,
+   "composition": {
+    "chunk": 0.067,
+    "L13": 0.0245,
+    "L14": 0.9085
+   },
+   "png": "interchange\\runs\\_x1-lodL16\\ecotone_1km.png"
+  }
+ ]
+}

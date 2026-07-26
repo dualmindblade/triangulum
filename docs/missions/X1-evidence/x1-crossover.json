@@ -1,0 +1,146 @@
+{
+ "vertex_spacing_m": {
+  "L10": 415.15,
+  "L11": 207.57,
+  "L12": 103.79,
+  "L13": 51.89,
+  "L14": 25.95,
+  "L15": 12.97,
+  "L16": 6.49,
+  "L17": 3.24
+ },
+ "rows": [
+  {
+   "site": "lake_shore",
+   "alt_km": 0.56,
+   "centre_owner": "chunk",
+   "unmatched_frac": 0.0,
+   "composition": {
+    "chunk": 0.2968,
+    "L14": 0.7032
+   },
+   "png": "interchange\\runs\\_x1-crossover\\lake_shore_0p56km.png"
+  },
+  {
+   "site": "lake_shore",
+   "alt_km": 0.58,
+   "centre_owner": "chunk",
+   "unmatched_frac": 0.0,
+   "composition": {
+    "chunk": 0.2784,
+    "L14": 0.7216
+   },
+   "png": "interchange\\runs\\_x1-crossover\\lake_shore_0p58km.png"
+  },
+  {
+   "site": "lake_shore",
+   "alt_km": 0.6,
+   "centre_owner": "chunk",
+   "unmatched_frac": 0.0,
+   "composition": {
+    "chunk": 0.2638,
+    "L14": 0.7362
+   },
+   "png": "interchange\\runs\\_x1-crossover\\lake_shore_0p6km.png"
+  },
+  {
+   "site": "lake_shore",
+   "alt_km": 0.62,
+   "centre_owner": "chunk",
+   "unmatched_frac": 0.0,
+   "composition": {
+    "chunk": 0.2464,
+    "L14": 0.7536
+   },
+   "png": "interchange\\runs\\_x1-crossover\\lake_shore_0p62km.png"
+  },
+  {
+   "site": "lake_shore",
+   "alt_km": 0.64,
+   "centre_owner": "chunk",
+   "unmatched_frac": 0.0,
+   "composition": {
+    "chunk": 0.2321,
+    "L14": 0.7679
+   },
+   "png": "interchange\\runs\\_x1-crossover\\lake_shore_0p64km.png"
+  },
+  {
+   "site": "lake_shore",
+   "alt_km": 0.66,
+   "centre_owner": "chunk",
+   "unmatched_frac": 0.0,
+   "composition": {
+    "chunk": 0.2196,
+    "L14": 0.7804
+   },
+   "png": "interchange\\runs\\_x1-crossover\\lake_shore_0p66km.png"
+  },
+  {
+   "site": "river_bank",
+   "alt_km": 0.56,
+   "centre_owner": "chunk",
+   "unmatched_frac": 0.0,
+   "composition": {
+    "chunk": 0.2939,
+    "L14": 0.7061
+   },
+   "png": "interchange\\runs\\_x1-crossover\\river_bank_0p56km.png"
+  },
+  {
+   "site": "river_bank",
+   "alt_km": 0.58,
+   "centre_owner": "chunk",
+   "unmatched_frac": 0.0,
+   "composition": {
+    "chunk": 0.2785,
+    "L14": 0.7215
+   },
+   "png": "interchange\\runs\\_x1-crossover\\river_bank_0p58km.png"
+  },
+  {
+   "site": "river_bank",
+   "alt_km": 0.6,
+   "centre_owner": "L14",
+   "unmatched_frac": 0.0,
+   "composition": {
+    "chunk": 0.2638,
+    "L14": 0.7362
+   },
+   "png": "interchange\\runs\\_x1-crossover\\river_bank_0p6km.png"
+  },
+  {
+   "site": "river_bank",
+   "alt_km": 0.62,
+   "centre_owner": "L14",
+   "unmatched_frac": 0.0,
+   "composition": {
+    "chunk": 0.2496,
+    "L14": 0.7504
+   },
+   "png": "interchange\\runs\\_x1-crossover\\river_bank_0p62km.png"
+  },
+  {
+   "site": "river_bank",
+   "alt_km": 0.64,
+   "centre_owner": "L14",
+   "unmatched_frac": 0.0,
+   "composition": {
+    "chunk": 0.2374,
+    "L14": 0.7626
+   },
+   "png": "interchange\\runs\\_x1-crossover\\river_bank_0p64km.png"
+  },
+  {
+   "site": "river_bank",
+   "alt_km": 0.66,
+   "centre_owner": "L14",
+   "unmatched_frac": 0.0,
+   "composition": {
+    "chunk": 0.2241,
+    "L14": 0.7759
+   },
+   "png": "interchange\\runs\\_x1-crossover\\river_bank_0p66km.png"
+  }
+ ]
+}
