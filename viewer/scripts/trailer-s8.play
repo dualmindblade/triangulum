@@ -1,0 +1,10 @@
+mode fly
+weather time 0
+weather pin 0.10 0.0
+teleport 9.79546 107.60747 0.085
+look 84.75 -6
+wait 3
+dwell 1.5
+glide 9.7955 107.6105 0.075 84.75 -4 5
+dwell 1.5
+glide 9.80 107.615 2.5 60 -18 5

@@ -1,0 +1,9 @@
+# Never-settles + eviction storm repro (Austin photo pose, ice country)
+mode fly
+weather time 554.373
+teleport 37.037 122.505 2.62
+look -149 -80
+bench 60
+bench 60
+bench 60
+bench 60

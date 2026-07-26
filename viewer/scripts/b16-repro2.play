@@ -1,0 +1,10 @@
+mode fly
+weather time 554.373
+teleport 37.037 122.505 2.62
+look -149 -80
+bench 90
+shot b16_t3
+bench 300
+shot b16_t13
+bench 600
+shot b16_t33

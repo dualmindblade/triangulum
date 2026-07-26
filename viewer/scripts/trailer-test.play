@@ -1,0 +1,7 @@
+# glide smoke: 2s over the waterfall approach
+mode fly
+weather time 349
+teleport 9.79546 107.60747 0.080
+look 84.75 -8
+wait 2
+glide 9.79546 107.60950 0.075 84.75 -5 2

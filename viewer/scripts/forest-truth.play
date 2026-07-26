@@ -1,0 +1,8 @@
+mode fly
+weather time 349
+teleport -0.906 -67.804 0.45
+look -210 -25
+wait 1
+shot forest_t349_early
+wait 15
+shot forest_t349_plus15s

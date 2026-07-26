@@ -1,0 +1,21 @@
+# B-13: white-staircase water at mesh range. Fall site + plain desert reach
+# at two altitudes each; suspect = B-9 water-carry feather at coarse LOD.
+mode fly
+weather time 0
+weather pin 0.10 0.0
+teleport 9.795 107.607 1.5
+look 60 -40
+wait 3
+shot b13_fall_15km
+teleport 9.795 107.607 3.0
+look 60 -50
+wait 3
+shot b13_fall_3km
+teleport 15.156 -13.819 1.5
+look 0 -50
+wait 3
+shot b13_plain_15km
+teleport 15.156 -13.819 3.0
+look 0 -60
+wait 3
+shot b13_plain_3km
