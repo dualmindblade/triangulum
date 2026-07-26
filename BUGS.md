@@ -9,6 +9,50 @@ are `teleport LAT LON [ALT_KM]` viewer args at `--exagg 1` unless noted.
 
 ## OPEN
 
+### B-21 Count-1500 eviction sweep ignores the wanted set
+Found by Sol's R-1 audit 2026-07-26, re-verified by the coordinator in
+source. `evict()` (renderer.rs:3792-3796) runs
+`if self.cache.len() > 1500 { self.cache.retain(|_, t| t.last_used >=
+cutoff) }` with **no `live_wanted` check**. HUNT 2's wanted-set
+protection was added only to the LATER gentle VRAM shed
+(renderer.rs:3838-3842, `t.last_used < protected &&
+!self.live_wanted.contains(k)`) — the count sweep never got it.
+WHY IT LIKELY MATTERS FOR B-16: that pose's wanted set is ~1540 and its
+settled draw count 1543, so the 1500 threshold is directly in range at
+exactly the symptom site. The ancestor-family rule suppresses cached
+siblings from the drawn set while one child is missing; suppressed
+siblings do not refresh `last_used`, so after 120 frames the count sweep
+can drop tiles that are still WANTED. A slow final child then lands
+after its siblings were discarded, perpetuating the ancestor stand-in —
+i.e. the blur. The count sweep emits NO eviction-storm log, which is
+exactly why HUNT 4's probes could not see it.
+Confidence: HIGH on the code defect, MEDIUM that it is active in B-16
+(not proved in either archived run — needs the lifecycle trace, B-22).
+
+### B-22 Streaming has no lifecycle instrumentation, so build cost cannot be attributed
+Sol R-1 2026-07-26. The reason B-16 has been re-diagnosed three times is
+that no probe can distinguish waiting from working: `tile_pending` is set
+BEFORE `rayon::spawn` (renderer.rs:2543-2552), so "pending for seconds"
+conflates Rayon queue time with `build_tile_at_season` execution time and
+is NOT a build-duration measurement. Completions carry no timestamps and
+the count-1500 eviction path is silent. `TRI_GPU_TIMERS` measures the
+render pass, not CPU tile construction.
+CONSEQUENCE: HUNT 4's "the remaining tail is build cost" was an
+INFERENCE, not a measurement, and redirecting the work to B-4c was
+premature. Also unmeasured: that "heavyweight frozen-water L11" is the
+cost centre at all — at 3.05 km every terrain tile builds the same
+33x33 grid, and the frozen branch changes colour/payload rather than
+adding ice geometry (terrain.rs:1885-1908).
+FIX: extend `TRI_STREAM_DEBUG` to emit one JSONL event per key against a
+single monotonic clock — `missing` (with gap rank, on_screen, projected
+area), `admit` (with source: forecast/covered_gap/parent/stale),
+`worker_start` inside the Rayon closure, `worker_done` (build ms, vertex/
+index counts, bytes), `received`, `first_exact_draw`, and `evict` from
+EVERY path with reason and whether the key was in `live_wanted`. Plus a
+1 Hz summary. Insertion points: renderer.rs 2450-2554, 2013-2040,
+2606-2717, 3792-3924. Observability only — must not change ordering or
+caps. This is the prerequisite for closing B-16 honestly.
+
 ### B-19 Irregular boundaries staircase onto a 15-35 m lattice at 0.5-1 km
 Found by the V-2 altitude ladder 2026-07-26 (not by eye — the instrument
 found it on its first run). EVERY irregular boundary class — river bank,
