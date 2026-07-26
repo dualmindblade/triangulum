@@ -1,0 +1,15 @@
+=== verify.sh (suites) ===
+  physics-regressions    PASS
+  water-regressions      PASS
+  lake-regressions       PASS
+  flooded-caves          PASS
+  invariant-survey       PASS
+  auto-survey            PASS
+  camera-controls        PASS
+  solar-system           PASS
+all suites green
+verify_exit=0
+
+=== world reel ===
+REEL: all 29 poses clean (lint ok, no unexplained change)
+reel_exit=0

@@ -1,0 +1,6 @@
+[    0.000] # TRI_LOG_WALLCLOCK t0 = 1785099802.609856 unix_s
+[    1.490] [2] mode fly
+[    1.490] [3] weather time 554.373000
+[    1.490] [4] posehz 10 -> 6 sim tick(s) per pose
+[    1.490] [5] pose #1 ANCHOR sim_ticks 0 t 0.0000s -> lat 13.000000 lon -4.900000 alt 6.00000 km yaw 170.0 pitch -35.0 | 6 ticks/pose live false render false (later poses are silent)
+[    1.494] run complete -> interchange/runs/d2e3w

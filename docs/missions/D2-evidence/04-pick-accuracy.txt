@@ -1,0 +1,37 @@
+PICK ACCURACY  24 poses, 384 picks analysed  -> C:\code\tri-d2\viewer\interchange\pick-accuracy.json
+  A aim round-trip miss       median    0.064 m  max    0.096 m
+  B ray vs independent calc   median   0.0103 m  max   0.0124 m
+    (same, radial component)  median   0.0039 m  max   0.0059 m
+  C picked point off surface  median    0.000 m  max    1.000 m
+  D water/terrain vs the pixel 378/384 agree (98.4%)
+      pick said water    at lake_shore_5km (639.5,359.5); pixel is not-blue
+      pick said water    at lake_shore_5km (640,360); pixel is not-blue
+      pick said water    at lake_shore_20km (639.5,359.5); pixel is not-blue
+      pick said water    at lake_shore_20km (640,360); pixel is not-blue
+      pick said water    at lake_shore_100km (639.5,359.5); pixel is not-blue
+      pick said water    at lake_shore_100km (640,360); pixel is not-blue
+    desert_0p05km            aim    0.048 m (bound +-   1.60 m)  ray  0.0111 m  surf   0.000 m
+    desert_0p2km             aim    0.076 m (bound +-   1.60 m)  ray  0.0109 m  surf   0.000 m
+    desert_100km             aim    0.021 m (bound +-   1.60 m)  ray  0.0103 m  surf   0.000 m
+    desert_1km               aim    0.068 m (bound +-   1.60 m)  ray  0.0093 m  surf   0.000 m
+    desert_20km              aim    0.085 m (bound +-   1.60 m)  ray  0.0098 m  surf   1.000 m
+    desert_5km               aim    0.030 m (bound +-   1.60 m)  ray  0.0116 m  surf   0.000 m
+    lake_shore_0p05km        aim    0.062 m (bound +-   1.50 m)  ray  0.0120 m  surf   0.000 m
+    lake_shore_0p2km         aim    0.076 m (bound +-   1.50 m)  ray  0.0111 m  surf   0.000 m
+    lake_shore_100km         aim    0.077 m (bound +-   1.50 m)  ray  0.0105 m  surf   0.000 m
+    lake_shore_1km           aim    0.045 m (bound +-   1.40 m)  ray  0.0096 m  surf   0.000 m
+    lake_shore_20km          aim    0.077 m (bound +-   1.40 m)  ray  0.0097 m  surf   0.000 m
+    lake_shore_5km           aim    0.068 m (bound +-   1.40 m)  ray  0.0078 m  surf   1.000 m
+    river_bank_0p05km        aim    0.046 m (bound +-   1.40 m)  ray  0.0098 m  surf   0.000 m
+    river_bank_0p2km         aim    0.066 m (bound +-   1.40 m)  ray  0.0099 m  surf   1.000 m
+    river_bank_100km         aim    0.060 m (bound +-   1.50 m)  ray  0.0104 m  surf   0.000 m
+    river_bank_1km           aim    0.000 m (bound +-   1.40 m)  ray  0.0106 m  surf   1.000 m
+    river_bank_20km          aim    0.076 m (bound +-   1.50 m)  ray  0.0107 m  surf   0.000 m
+    river_bank_5km           aim    0.046 m (bound +-   1.50 m)  ray  0.0124 m  surf   0.000 m
+    snowline_0p05km          aim    0.048 m (bound +-   1.50 m)  ray  0.0120 m  surf   1.000 m
+    snowline_0p2km           aim    0.075 m (bound +-   1.40 m)  ray  0.0084 m  surf   0.000 m
+    snowline_100km           aim    0.096 m (bound +-   1.50 m)  ray  0.0086 m  surf   0.000 m
+    snowline_1km             aim    0.054 m (bound +-   1.50 m)  ray  0.0103 m  surf   1.000 m
+    snowline_20km            aim    0.074 m (bound +-   1.50 m)  ray  0.0100 m  surf   1.000 m
+    snowline_5km             aim    0.048 m (bound +-   1.50 m)  ray  0.0096 m  surf   1.000 m
+PICK: clean

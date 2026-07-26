@@ -1,0 +1,54 @@
+# D-2: pick's degenerate cases, named and exercised.
+mode fly
+weather pin 0.10 0.0
+weather time 0
+
+log ===== 1. TERRAIN vs WATER in the same frame (pond_country, world reel pose)
+teleport -0.798 -67.941 0.150
+look 40 -35
+shot degen_pond
+pick 639.5 359.5
+pick 200 620
+pick 1100 300
+
+log ===== 2. SKY: the ray clears every body
+look 40 40
+pick 639.5 359.5
+pick 0 0
+
+log ===== 3. HORIZON: sweeping pitch through the horizon dip from 300 km
+log ===== (dip = acos(R/(R+h)) = 15.13 deg, so -14 is sky and -16 is ground)
+teleport 0 20 300
+look 0 -14
+pick 639.5 359.5
+look 0 -15
+pick 639.5 359.5
+look 0 -15.2
+pick 639.5 359.5
+look 0 -16
+pick 639.5 359.5
+look 0 -20
+pick 639.5 359.5
+look 0 -40
+pick 639.5 359.5
+look 0 -85
+pick 639.5 359.5
+
+log ===== 4. MOON: focus it and pick its disc, then land and pick the ground
+focus moon
+pick 639.5 359.5
+pick 300 200
+pick 20 20
+moonland 10 25 0 -20
+pick 639.5 500
+log ===== 5. SUN
+focus sun
+pick 639.5 359.5
+
+log ===== 6. EYE AT OR BELOW THE SURFACE (freecam driven underground)
+focus neisor
+teleport -0.798 -67.941 0.100
+look 40 -35
+focus free
+hold ctrl 3
+pick 639.5 359.5

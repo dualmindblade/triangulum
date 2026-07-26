@@ -1,0 +1,7 @@
+[9] mode fly
+[10] weather pin cover 0.10 precip 0.00
+[11] weather time 0.000000
+[12] teleport -> lat -0.798000 lon -67.941000 alt 0.15000 km
+[13] look yaw 40 pitch -35
+[14] shot compose_pond (1043 draws) at lat -0.798000 lon -67.941000 alt 0.15000 yaw 40 pitch -35
+[16] # ===== 1. the pixel that LOOKS like water

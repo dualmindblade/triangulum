@@ -1,0 +1,39 @@
+[9] mode fly
+[10] weather pin cover 0.10 precip 0.00
+[11] weather time 0.000000
+[12] teleport -> lat -0.798000 lon -67.941000 alt 0.15000 km
+[13] look yaw 40.0000 pitch -35.0000
+[14] shot compose_pond (1043 draws) at lat -0.798000 lon -67.941000 alt 0.15000 yaw 40 pitch -35
+[16] # ===== 1. the pixel that LOOKS like water
+[17] pick 250 600: hit=neisor lat=-0.7970641 lon=-67.9411678 dist=0.20605km elev=45.77deg err=+-1.7m surface=water z=116.60m vis=116.6m solid=114.6m koppen=0/Af | col=1.49m bracket=0.50m evals=82
+[18] # ===== probe at exactly the coordinates `pick` returned
+[19] probe -0.79706 -67.94117: h=114.0m water=115.5m lake=false frozen=false koppen=0/Af precip=11583mm annual=28.18C seasonal=28.18C lake_lvl=- pond_lvl=115.5m riv hw=0.5m wet=1.00 | col ground=113 water=115 cave_water=-
+[20] # ===== and assert the world agrees, from the column those coordinates land in
+[21] teleport -> lat -0.797064 lon -67.941168 alt 0.00250 km
+[22] assert OK: has_water == true (actual true)
+[23] assert OK: water_surface_km ~ 0.1166 (actual 0.116600)
+[24] assert OK: surface_height_km ~ 0.1146 (actual 0.114600)
+[26] # ===== 2. the pixel that LOOKS like forest floor
+[27] teleport -> lat -0.798000 lon -67.941000 alt 0.15000 km
+[28] look yaw 40.0000 pitch -35.0000
+[29] pick 1150 250: hit=neisor lat=-0.7976829 lon=-67.9379000 dist=0.49448km elev=17.74deg err=+-3.9m surface=terrain z=113.60m vis=113.6m solid=113.6m koppen=0/Af | col=1.49m bracket=0.50m evals=113
+[30] # ===== probe at exactly the coordinates `pick` returned
+[31] probe -0.79768 -67.93790: h=112.8m water=- lake=false frozen=false koppen=0/Af precip=11635mm annual=28.19C seasonal=28.19C lake_lvl=- pond_lvl=- riv hw=0.5m wet=1.00 | col ground=112 water=- cave_water=-
+[32] teleport -> lat -0.797683 lon -67.937900 alt 0.00250 km
+[33] assert OK: has_water == false (actual false)
+[34] assert OK: surface_height_km ~ 0.1136 (actual 0.113600)
+[36] # ===== 3. the round trip, self-checked inside the harness: pick the centre
+[37] # ===== pixel, teleport to the coordinates it returned, and assert the world
+[38] # ===== there is what `pick` said it was (water at 115.6 m over ground 114.6).
+[39] teleport -> lat -0.798000 lon -67.941000 alt 0.15000 km
+[40] look yaw 40.0000 pitch -35.0000
+[41] pick 639.5 359.5: hit=neisor lat=-0.7969240 lon=-67.9400971 dist=0.25917km elev=35.00deg err=+-2.2m surface=water z=115.60m vis=115.6m solid=114.6m koppen=0/Af | col=1.49m bracket=0.50m evals=87
+[42] teleport -> lat -0.796924 lon -67.940097 alt 0.00250 km
+[43] assert OK: has_water == true (actual true)
+[44] assert OK: water_surface_km ~ 0.1156 (actual 0.115600)
+[45] assert OK: surface_height_km ~ 0.1146 (actual 0.114600)
+[46] # ===== for the record, not asserted: altitude_ladder.py's `lake_shore`
+[47] # ===== target is -0.79691 -67.94009, derived independently by V-2 by
+[48] # ===== inverting this projection in Python. That is 2.4 m from the
+[49] # ===== coordinates `pick` just returned for the centre of the same pose.
+run complete -> interchange/runs/d2e9

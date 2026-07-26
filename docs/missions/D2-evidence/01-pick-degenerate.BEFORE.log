@@ -1,0 +1,7 @@
+[2] mode fly
+[3] weather pin cover 0.10 precip 0.00
+[4] weather time 0.000000
+[6] # ===== 1. TERRAIN vs WATER in the same frame (pond_country, world reel pose)
+[7] teleport -> lat -0.798000 lon -67.941000 alt 0.15000 km
+[8] look yaw 40 pitch -35
+[9] shot degen_pond (1043 draws) at lat -0.798000 lon -67.941000 alt 0.15000 yaw 40 pitch -35

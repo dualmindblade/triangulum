@@ -1,0 +1,49 @@
+# D-2 done-criterion, end to end: point at a pixel, get coordinates back,
+# hand them to `probe`, and let the harness ASSERT that what is there matches
+# what the pixel shows. A failing assert exits the run non-zero, so this file
+# is self-checking: it cannot pass by being read charitably.
+#
+# Frame: <run>/compose_pond.png -- the world reel `pond_country` pose.
+#   pixel  (250,600) renders RGB (21,44,63)  = blue over red  -> water
+#   pixel (1150,250) renders RGB (17,46,16)  = green          -> forest floor
+mode fly
+weather pin 0.10 0.0
+weather time 0
+teleport -0.798 -67.941 0.150
+look 40 -35
+shot compose_pond
+
+log ===== 1. the pixel that LOOKS like water
+pick 250 600
+log ===== probe at exactly the coordinates `pick` returned
+probe -0.7970641 -67.9411678
+log ===== and assert the world agrees, from the column those coordinates land in
+teleport -0.7970641 -67.9411678 0.0025
+assert has_water true
+assert water_surface_km ~ 0.1166 0.0015
+assert surface_height_km ~ 0.1146 0.0015
+
+log ===== 2. the pixel that LOOKS like forest floor
+teleport -0.798 -67.941 0.150
+look 40 -35
+pick 1150 250
+log ===== probe at exactly the coordinates `pick` returned
+probe -0.7976829 -67.9379000
+teleport -0.7976829 -67.9379000 0.0025
+assert has_water false
+assert surface_height_km ~ 0.1136 0.0015
+
+log ===== 3. the round trip, self-checked inside the harness: pick the centre
+log ===== pixel, teleport to the coordinates it returned, and assert the world
+log ===== there is what `pick` said it was (water at 115.6 m over ground 114.6).
+teleport -0.798 -67.941 0.150
+look 40 -35
+pick 639.5 359.5
+teleport -0.7969240 -67.9400971 0.0025
+assert has_water true
+assert water_surface_km ~ 0.1156 0.0011
+assert surface_height_km ~ 0.1146 0.0011
+log ===== for the record, not asserted: altitude_ladder.py's `lake_shore`
+log ===== target is -0.79691 -67.94009, derived independently by V-2 by
+log ===== inverting this projection in Python. That is 2.4 m from the
+log ===== coordinates `pick` just returned for the centre of the same pose.

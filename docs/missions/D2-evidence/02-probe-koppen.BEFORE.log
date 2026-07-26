@@ -1,0 +1,17 @@
+[4] # ===== world reel `desert` pose (0.870 -89.800) -- expect an arid B class
+[5] probe 0.87000 -89.80000: h=829.2m water=- lake=false frozen=false annual=2.28C seasonal=2.28C lake_lvl=- pond_lvl=- riv hw=142.4m wet=0.00 | col ground=829 water=- cave_water=-
+[6] # ===== world reel `jungle` pose (-0.906 -67.804) -- expect tropical A
+[7] probe -0.90600 -67.80400: h=22.6m water=- lake=false frozen=false annual=28.40C seasonal=28.40C lake_lvl=- pond_lvl=- riv hw=0.0m wet=0.00 | col ground=22 water=- cave_water=-
+[8] # ===== world reel `frozen_lake` (51.180 85.830) and `sea_ice` (83.997 40.220)
+[9] probe 51.18000 85.83000: h=370.0m water=- lake=false frozen=false annual=2.55C seasonal=2.55C lake_lvl=- pond_lvl=- riv hw=0.0m wet=0.00 | col ground=370 water=- cave_water=-
+[10] probe 83.99700 40.22000: h=-6.0m water=0.0m lake=false frozen=true annual=-15.31C seasonal=-15.31C lake_lvl=- pond_lvl=- riv hw=0.0m wet=0.00 | col ground=-6 water=0 cave_water=-
+[11] # ===== the koppen letter must track the temperature the same probe prints:
+[12] # ===== EF (ice cap) needs sub-zero, A classes need warm and wet
+[13] probe 12.77885 20.00000: h=1324.6m water=- lake=false frozen=false annual=-1.50C seasonal=-1.50C lake_lvl=- pond_lvl=- riv hw=0.0m wet=0.00 | col ground=1324 water=- cave_water=-
+[14] probe 6.43318 20.00000: h=1444.1m water=- lake=false frozen=false annual=1.95C seasonal=1.95C lake_lvl=- pond_lvl=- riv hw=0.0m wet=0.00 | col ground=1444 water=- cave_water=-
+[15] # ===== altitude_ladder.py's `ecotone` site: a desert->rainforest edge.
+[16] # ===== koppen is the DOMAIN-WARPED class; temp/precip are UNWARPED, so at a
+[17] # ===== class edge they legitimately disagree. Away from edges they do not.
+[18] probe 10.76433 81.17593: h=2429.0m water=- lake=false frozen=false annual=9.21C seasonal=9.21C lake_lvl=- pond_lvl=- riv hw=0.0m wet=0.00 | col ground=2429 water=- cave_water=-
+[19] probe 10.90000 81.60000: h=194.7m water=- lake=false frozen=false annual=20.32C seasonal=20.32C lake_lvl=- pond_lvl=- riv hw=0.0m wet=0.00 | col ground=194 water=- cave_water=-
+run complete -> interchange/runs/d2e2b
