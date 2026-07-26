@@ -1,0 +1,151 @@
+Per-table pose audit - D-1, 2026-07-26
+======================================================================
+Instrument: world_reel.py's premise footprint (a uniform 32x18 SCREEN
+grid cast through each pose's own camera onto the local ground datum,
+one `probe` per cell). Every fraction below is a fraction of the frame.
+Raw output: pose-table-audit-raw.txt.
+
+Two caveats stated up front, because they change how to read this:
+  - the model ignores relief and occlusion, so it is OPTIMISTIC: it can
+    pass a pose whose class is hidden behind a ridge. It cannot pass one
+    whose class is absent.
+  - `probe` returns no koppen today, so "is this really savanna/jungle/
+    taiga/ecotone" is NOT checkable by anything here. Where a verdict
+    below says "sound", it means "contains what the probe can see", not
+    "the biome is right".
+
+----------------------------------------------------------------------
+perf_reel.py SCENARIOS (8)                        VERDICT: ONE IS DEAD
+----------------------------------------------------------------------
+forest_ground  -0.906 -67.804 @0.094   land 0.575  water 0.148  h 2..36 m
+      sound (same pose as world reel `jungle`). Cannot verify "forest".
+plains_walk    19.674  35.265 @0.010   land 0.403  water 0.153  sky 0.444
+      sound. h 41-63 m over 22 m of relief, dry at the aim point
+      (probe at the camera: h=61.6 m, no water). The 44% sky is just
+      pitch -5. My first premise (`land>=0.80`) was wrong, not the pose.
+mountain_mid   47.861  14.399 @0.592   land 0.616  LAKE 0.384  h -1..12 m
+      *** DEAD. This is not a mountain. It is a lakeshore at 3 m
+      elevation - 38% of the frame is open water. Probe at the camera:
+      h=2.9 m, adjacent lake surface 1.6 m, annual 1.25 C. The rendered
+      frame (world reel calls the SAME pose `taiga`) is a treeless green
+      plain meeting a large body of water with a sand beach.
+      Consequence: the perf reel's "build-heavy mountain" cost profile
+      is measuring a flat shoreline, so whatever cost class it was
+      chosen for is not covered by anything.
+ocean_storm    20.633 127.615 @8.0     water 1.000  lake 1.000
+      sound as a WATER-heavy perf scenario, but the name is wrong: this
+      is an inland lake (`lake=true`, surface 191-216 m), not ocean. It
+      is world reel's `inland_sea`. Cosmetic; the workload is right.
+orbit          30.000  40.000 @250     water 1.000  h -6 m  d_med 312 km
+      sound.
+ascent_sweep   64.120 -46.429 @0.05/0.8/10
+      *** HAS NO `look` LINE. Orientation is therefore the harness
+      default, measured from a `state` sidecar as yaw 0.0 / pitch 0.0 -
+      a dead-horizon shot due north, ~50% sky at every rung. That may
+      well be fine for a streaming benchmark, but it is implicit: any
+      future change to the default camera silently re-poses this
+      scenario. Measured at the real default: land 0.50/0.50/0.44,
+      frozen 0.50/0.50/0.44, h 149-205 / 132-242 / 49-1327 m.
+
+----------------------------------------------------------------------
+convergence_reel.py POSES (4)     VERDICT: THE LOAD-BEARING ONE IS SOUND
+----------------------------------------------------------------------
+b16_ice_hold   41.519 122.511 @3.05    land 1.000  FROZEN 1.000  h 1303-1459 m
+      SOUND, and this is the one that matters. Probe at the pose:
+      h=1393.2 m, frozen=true, annual -4.61 C. It is genuinely in an ice
+      region, which is what B-16 needs it to be. NOT re-aimed, not
+      touched - flagged as fine, per the mission's instruction.
+forest_ground  identical to perf_reel's - sound.
+mountain_mid   identical to perf_reel's - *** DEAD, same finding.
+plains_walk    identical to perf_reel's - sound.
+
+----------------------------------------------------------------------
+sky_reel.py POSES (5)                     VERDICT: SOUND - AND AHEAD OF US
+----------------------------------------------------------------------
+The class here is the SKY, so a ground probe says nothing about it, and
+the footprint model is the wrong instrument by construction. Two checks
+that ARE valid:
+
+1. sky_reel ALREADY ASSERTS ITS OWN PREMISE, and has all along. Its
+   `lint()` is a presence check per pose - sun disc >= 80 px above 250,
+   setting sun >= 30 px above 240, moon disc >= 60 px above 120, stars
+   >= 40 points. That is exactly the invariant this mission was asked to
+   invent for the world reel, done in pixel space at lint time. It is
+   the only reel that had it. Worth saying out loud, since the handoff's
+   suspicion was that the other tables were "probably as rotten".
+2. The sun geometry is self-consistent, checked by hand:
+     sun_zenith    camera (10.0, 0.0)   sun (10.0, 0.0)    -> 0 deg, overhead
+     sunset_west   camera (10.0, 91.0)  sun (10.0, 0.0)    -> 91 deg, at/just under the horizon
+     dusk_gradient camera (10.0, 95.0)  sun (10.0, 0.0)    -> 95 deg, civil dusk
+     moon_zenith   camera (-9.5, 176.9) sun (10.0, 0.0)    -> ~177 deg, deep night
+     night_stars   same camera, look 120/35               -> deep night
+   Every pose is in the lighting regime its name claims.
+Ground under the cameras, for the record: sun_zenith / moon_zenith /
+night_stars look UP (pitch +75, +75, +35) so the frame is 100% sky;
+sunset_west and dusk_gradient sit over ocean at h -6 m.
+
+----------------------------------------------------------------------
+convergence_flight.py FLIGHTS (3)                       VERDICT: SOUND
+----------------------------------------------------------------------
+Not a pose table - these are recorded flights, and their "premise" is
+the recording. The two pose claims they do make both hold:
+  ice_session   terminal hold 41.519 122.511 @3.05 -> frozen 1.000,
+                h 1303-1459 m. It is the ice region it says it is.
+  descent_land  recording ends at 32.339515 35.519818 @0.255 ->
+                land 1.000, h 2 m. A landing on ground, as claimed.
+  rec002_survey is an untracked local recording; not present here, not
+                audited.
+
+----------------------------------------------------------------------
+altitude_ladder.py SITES (6)          VERDICT: 5 SOUND, 1 NEEDS A LOOK
+----------------------------------------------------------------------
+V-2 chose these with a probe scout, and it shows - the water sites are
+all genuinely on a land/water transition:
+  lake_shore   -0.79691 -67.94009  water 0.071 land 0.929 river 0.986
+               probe at target: h=113.2 m, pond surface 114.7 m. On the
+               waterline. sound.
+  river_bank   15.02469  17.65934  river 1.000  water 0.311
+               probe at target: river hw 71.9 m, wet 1.00. sound.
+  ocean_coast  15.10556 150.92017  water 0.379 land 0.622  h -1.3..2.0 m
+               probe at target: h=-1.1 m, water surface 0.0 m. Exactly
+               on the waterline. sound - I reused this site for the
+               re-aimed `coast_beach`.
+  sand_patch   12.19894 -44.82774  land 1.000
+               correct: it is a sand/grass boundary, which `probe`
+               cannot see at all. Unverifiable, not wrong.
+  ecotone      10.76433  81.17593  land 1.000  h 2206-3909 m
+               unverifiable without koppen. V-2 documented the koppen
+               edge (98 -> 9386 mm/yr) from planetgen data.
+  snowline    -12.30741 107.18103  *** SUSPECT, not condemned.
+               The SITES comment calls it a "tropical 3.2 km massif".
+               The target point is at h=361.9 m, annual -2.96 C,
+               frozen=FALSE. A 120-probe transect out to 9 km N-S and
+               6.5 km E-W finds the NEAREST frozen ground 12.1 km away
+               at 1453 m. So the sampler's freeze boundary is 12 km
+               from the aim point, which the 0.05/0.2/1 km rungs cannot
+               possibly contain.
+               WHAT I DID NOT VERIFY: whether the renderer paints a
+               visible snow line by elevation independently of the
+               sampler's `frozen` flag. V-2 reported this site reading
+               at all seven rungs, which suggests it does. If so the
+               site is fine and only its comment is wrong. Someone who
+               owns the snow shading should settle it; I am not going to
+               claim a site is dead on a flag that may not drive the
+               pixels.
+
+----------------------------------------------------------------------
+SUMMARY
+----------------------------------------------------------------------
+The handoff's suspicion ("the other reels' pose tables are probably as
+rotten as the world reel's") is PARTLY right and mostly wrong.
+  - 1 genuinely dead pose outside the world reel: `mountain_mid`, and it
+    is dead in TWO tables (perf_reel and convergence_reel) because they
+    share the coordinates.
+  - 1 implicit-orientation pose: perf_reel's `ascent_sweep`.
+  - 1 misnamed but functional pose: perf_reel's `ocean_storm` (a lake).
+  - 1 site with a wrong comment and an unsettled question: the ladder's
+    `snowline`.
+  - sky_reel is not merely sound, it already had the premise check this
+    mission was asked to invent.
+  - convergence_reel's `b16_ice_hold` - the one the mission said to flag
+    rather than touch - is sound.

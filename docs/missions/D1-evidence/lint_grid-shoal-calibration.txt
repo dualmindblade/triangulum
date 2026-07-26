@@ -1,0 +1,24 @@
+lint_grid water mask - calibration against `probe` truth
+================================================================
+Truth: a screen cell is WATER if world_reel's own footprint probe
+reports a finite water surface at that cell's ground point. Cells are
+40x40 px on the 32x18 premise grid, over all 28 Neisor reel frames as currently rendered.
+
+  old:  (b > g + 8) & (b > 80)
+  new:  ((b > g + 8) | (b > r + 20)) & (b > 80)
+
+  old  precision 0.9764  recall 0.8133   tp 4098  fp 99  fn 941  tn 10030
+  new  precision 0.9787  recall 0.9752   tp 4914  fp 107  fn 125  tn 10022
+  total ground cells judged: 15168
+  cells the OLD mask saw that the NEW mask drops: 0
+  newly-seen WATER cells: 816   mean rgb [124. 158. 164.]   (turquoise shoal / pale cold water)
+
+per-pose recall on probe-water cells (old -> new), poses that changed:
+  lake_archi             0.975 -> 0.982   (285 water cells)
+  coast_beach            0.000 -> 0.978   (138 water cells)
+  taiga                  0.000 -> 0.964   (221 water cells)
+  groves                 0.800 -> 0.822   (45 water cells)
+  orbital_coast          0.792 -> 0.951   (288 water cells)
+  frozen_lake_summer     0.000 -> 0.998   (420 water cells)
+
+Poses whose recall is unchanged are omitted; none went down.

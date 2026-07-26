@@ -9,6 +9,47 @@ are `teleport LAT LON [ALT_KM]` viewer args at `--exagg 1` unless noted.
 
 ## OPEN
 
+### B-23 perf/convergence `mountain_mid` is a lakeshore at 3 m elevation
+Found by D-1 2026-07-26 with the world-reel premise check pointed at the
+other pose tables. `mountain_mid` (47.861 14.399 @0.592, look -49 -62)
+appears in BOTH `perf_reel.py` SCENARIOS and `convergence_reel.py`
+POSES. It is not a mountain: the screen footprint measures land 0.616,
+LAKE 0.384, terrain -1.0 to 11.6 m, annual 1.24 C. Probe at the camera:
+h=2.9 m, adjacent lake surface 1.6 m. The rendered frame — the world
+reel shoots the SAME coordinates as `taiga` — is a treeless green plain
+meeting a large body of water with a sand beach.
+CONSEQUENCE: the perf reel's build-heavy "mountain" cost profile is
+measuring a flat shoreline, so that cost class is covered by nothing,
+and the convergence reel's mountain convergence case likewise.
+NOT RE-AIMED BY D-1 deliberately: re-aiming invalidates a blessed perf
+baseline, and A-1 owned the perf gate that shift. Needs a perf-lane
+mission that re-aims it and re-blesses in one step.
+RELATED: the world reel's `taiga` at the same coordinates is
+climatically boreal (1.24 C) so a temperature premise passes on a frame
+showing no taiga at all — the honest limit of a koppen-free check.
+Flagged in the pose table; a coverage judgement, not a tooling fix.
+ALSO IN perf_reel.py, same audit, lower severity: `ascent_sweep` sets no
+`look` line, so its orientation is the harness default (measured from a
+`state` sidecar: yaw 0, pitch 0 — a dead-horizon shot, ~50% sky), which
+means a future change to the camera default silently re-poses a blessed
+perf scenario; and `ocean_storm` (20.633 127.615) is an inland LAKE
+(`lake=true`, surface 191-216 m), not ocean — workload right, name wrong.
+EVIDENCE: docs/missions/D1-evidence/pose-table-audit.txt
+
+### B-24 altitude_ladder `snowline` site is 12 km from any frozen ground
+Found by D-1 2026-07-26. `altitude_ladder.py`'s SITES comment calls
+`snowline` (-12.30741 107.18103) a "tropical 3.2 km massif". The target
+point probes at h=361.9 m, annual -2.96 C, frozen=FALSE. A 120-probe
+transect out to 9 km N-S and 6.5 km E-W finds the nearest frozen ground
+12.1 km away at 1453 m — far outside what the 0.05/0.2/1 km rungs can
+frame.
+NOT CONFIRMED DEAD: I did not verify whether the renderer paints a
+visible snow line by elevation independently of the sampler's `frozen`
+flag. V-2 reported this site reading at all seven rungs, which suggests
+it does — in which case only the SITES comment is wrong and the site is
+fine. Whoever owns the snow shading should settle it. Low priority.
+EVIDENCE: docs/missions/D1-evidence/pose-table-audit.txt
+
 ### B-21 Count-1500 eviction sweep ignores the wanted set
 Found by Sol's R-1 audit 2026-07-26, re-verified by the coordinator in
 source. `evict()` (renderer.rs:3792-3796) runs
@@ -75,9 +116,37 @@ voxel near-field and the far mesh, so the LOD/geomorph handoff and the
 per-pixel shore/biome fields are the obvious suspects; TRANSITIONS.md is
 the contract. Andrew has final say on how natural is natural enough.
 
-### B-20 Two blessed world-reel poses guard nothing
-Found by V-2 2026-07-26, independently re-verified by the coordinator
-with `probe` and by looking at the blessed frames.
+### B-20 Blessed world-reel poses guard nothing — TOOLING FIXED (D-1), AWAITING BLESS
+AMENDED 2026-07-26 by D-1. Three corrections to the entry below:
+- it was FOUR poses, not two. `frozen_lake` and `frozen_lake_summer`
+  (51.180 85.830 @0.3) are a dry green plain at 373-409 m with NO water
+  and NO ice in frame. Found by the new premise check on its first run.
+  4 of 29 = 14% of the world reel guarded nothing.
+- `coast_beach`'s terracing rings are NOT an artefact and the reel did
+  not certify one. A 200-point transect shows the sampler height field
+  smooth (mean step 0.097 m per 2 m) while the INTEGER column tops step
+  by exactly 1 m on a 2.78 deg slope — a contour every 20.6 m. Decisive
+  A/B: the same pose with `voxels off` renders the identical terrain
+  with no rings at all. It is the documented 1 m voxel lattice
+  (viewer/CLAUDE.md), not the F-5 shading bug returning. Parked for
+  Andrew as an art question only.
+- `probe` does NOT return koppen (D-2 is adding it), so five biome poses
+  carry only PARTIAL premises and `ecotone_corner` carries none.
+FIXED: `world_reel.py` now casts a uniform 32x18 SCREEN grid through
+each pose's camera, probes every ground hit, and evaluates a per-pose
+premise BEFORE rendering — so every fraction it asserts is a fraction of
+the frame. 15,552 probes, 2.7 s. A failing premise aborts the reel with
+the premise text, the measured value and the failing term. There is
+deliberately no opt-out flag. `--check-pose NAME,LAT,LON,ALT,YAW,PITCH,
+PREMISE[,SEASON]` scouts a candidate before it is ever rendered.
+All four poses re-aimed with probe proof; `gentle_terrace` added to keep
+the F-5 terracing class covered after `coast_beach` moved. The four
+re-aimed poses NEED FRESH BLESSED FRAMES (Austin, gate 2) — proposed
+with per-pose reasons in docs/missions/D1-reel-premise-findings.md.
+See also B-23 (mountain_mid) and B-24 (snowline) from the same audit.
+
+Original entry, found by V-2 2026-07-26, independently re-verified by
+the coordinator with `probe` and by looking at the blessed frames.
 - `lake_archi` (16.601 -12.222 @3.0) is a FEATURELESS BLUE RECTANGLE.
   Probes at the pose and ±0.05-0.08 deg are all `lake=true`, water
   84.5 m, ground 51-62 m — fully submerged, no shore anywhere in frame.

@@ -1,0 +1,18 @@
+coast_beach OLD aim (8.097 -35.673) - terracing transect
+================================================================
+200 probes, 2 m apart, due east from the camera position.
+
+float sampler h (m): 923.00 923.10 923.30 923.40 923.50 923.60 923.70 923.80 923.90 924.00 924.10 924.20 924.30 924.40 924.60 924.70 924.80 925.00 925.10 925.10 925.20 925.20 925.40 925.50 ...
+integer column top : 923 923 923 923 923 923 923 923 923 923 924 924 924 924 924 924 924 924 925 925 925 925 925 925 ...
+
+h range        : 923.00 .. 942.40 m  (rise 19.40 m over 400 m)
+per-2m step    : mean 0.0970  min -0.1000  max 0.2000  stdev 0.0793
+distinct float h values : 141 of 201  (smooth at the 0.1 m trace resolution)
+distinct integer column tops : 20  ->  923..942, every step exactly 1 m
+mean slope     : 48.50 m/km = 2.78 deg
+1 m contour every 20.6 m horizontally  <- the ring spacing in the frame
+
+VERDICT: the sampler height field is smooth; the rings are the 1 m
+voxel column tops on a gentle slope. See terracing_voxels_ON.png vs
+terracing_voxels_OFF.png - the SAME pose with the voxel near-field
+disabled renders the identical terrain with no rings at all.
