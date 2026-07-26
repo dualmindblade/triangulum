@@ -1,0 +1,5 @@
+REEL: all 29 poses clean (lint ok, no unexplained change)
+
+real	1m58.210s
+user	0m0.000s
+sys	0m0.015s

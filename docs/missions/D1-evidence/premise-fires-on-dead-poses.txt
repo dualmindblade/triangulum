@@ -1,0 +1,45 @@
+pose                      sky  water   land   lake  river frozen    h_min    h_max   t_min    d_med  premise
+lake_archi_OLD          0.000  1.000  0.000  1.000  0.000  0.000     50.5     54.2    4.54     3.90  lake>=0.10 & land>=0.10
+coast_beach_OLD         0.056  0.000  0.944  0.000  0.000  0.000    896.9    991.9    8.36     0.13  water>=0.05 & land>=0.10 & h_min<=5
+frozen_lake_OLD         0.000  0.000  1.000  0.000  0.000  0.000    372.9    408.7    2.55     0.47  water>=0.10 & frozen>=0.05
+lake_archi_NEW          0.000  0.495  0.505  0.495  0.000  0.000     70.1     94.4    4.60     3.90  lake>=0.10 & land>=0.10
+coast_beach_NEW         0.056  0.240  0.705  0.000  0.000  0.000     -2.1      2.0   26.69     0.13  water>=0.05 & land>=0.10 & h_min<=5
+frozen_lake_NEW         0.000  0.729  0.271  0.729  0.000  1.000    253.7    264.4   -4.39     0.47  water>=0.10 & frozen>=0.05
+frozen_lake_summer_OLD  0.000  0.000  1.000  0.000  0.000  0.000    372.9    408.7   12.31     0.47  water>=0.10
+frozen_lake_summer_NEW  0.000  0.729  0.271  0.729  0.000  0.000    253.7    264.4   -2.09     0.47  water>=0.10
+
+========================================================================
+PREMISE FAILURE: 4 pose(s) do NOT contain the class they are named for.
+A reel pose that does not contain its class reports green forever
+and guards nothing (BUGS.md B-20). Nothing was rendered.
+========================================================================
+
+  lake_archi_OLD
+    premise : lake>=0.10 & land>=0.10
+    measured: sky=0.0 water=1.0 land=0.0 lake=1.0 river=0.0 frozen=0.0
+              h=50.5..54.2 m  temp=4.54..4.55 C  dist_med=3.902 km
+    FAILED  : land>=0.10  [measured land=0.0]
+
+  coast_beach_OLD
+    premise : water>=0.05 & land>=0.10 & h_min<=5
+    measured: sky=0.0556 water=0.0 land=0.9444 lake=0.0 river=0.0 frozen=0.0
+              h=896.9..991.9 m  temp=8.36..8.43 C  dist_med=0.133 km
+    FAILED  : water>=0.05  [measured water=0.0]
+    FAILED  : h_min<=5  [measured h_min=896.9]
+
+  frozen_lake_OLD
+    premise : water>=0.10 & frozen>=0.05
+    measured: sky=0.0 water=0.0 land=1.0 lake=0.0 river=0.0 frozen=0.0
+              h=372.9..408.7 m  temp=2.55..2.58 C  dist_med=0.469 km
+    FAILED  : water>=0.10  [measured water=0.0]
+    FAILED  : frozen>=0.05  [measured frozen=0.0]
+
+  frozen_lake_summer_OLD
+    premise : water>=0.10
+    measured: sky=0.0 water=0.0 land=1.0 lake=0.0 river=0.0 frozen=0.0
+              h=372.9..408.7 m  temp=12.31..12.33 C  dist_med=0.469 km
+    FAILED  : water>=0.10  [measured water=0.0]
+
+Re-aim the pose (scout candidates with --check-pose, which probes
+without rendering) or correct its premise - and say which, in the
+findings doc. Do not delete the premise to make this go away.

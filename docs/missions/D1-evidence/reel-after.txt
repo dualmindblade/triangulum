@@ -1,0 +1,10 @@
+PREMISE: 27/30 poses proved their own class; 3 carry no probe-expressible premise (see the table in world_reel.py)
+REEL: 4 finding(s) to review:
+  lake_archi: CHANGED vs accepted (mean 37.809, frac 0.5153)
+  coast_beach: CHANGED vs accepted (mean 67.82, frac 0.9658)
+  frozen_lake: CHANGED vs accepted (mean 137.859, frac 1.0)
+  frozen_lake_summer: CHANGED vs accepted (mean 101.261, frac 1.0)
+
+real	2m6.118s
+user	0m0.015s
+sys	0m0.000s

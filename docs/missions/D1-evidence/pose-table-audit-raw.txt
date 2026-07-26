@@ -1,0 +1,102 @@
+
+########## perf_reel.py SCENARIOS
+pose                      sky  water   land   lake  river frozen    h_min    h_max   t_min    d_med  premise
+forest_ground           0.278  0.148  0.575  0.000  0.000  0.000      2.0     35.8   28.36     0.24  land>=0.50
+plains_walk             0.444  0.153  0.403  0.000  0.000  0.000     41.2     63.0   24.96     0.03  land>=0.80
+mountain_mid            0.000  0.384  0.616  0.384  0.000  0.000     -1.0     11.6    1.24     0.81  h_min>=800
+ocean_storm             0.000  1.000  0.000  1.000  0.000  0.000    191.8    215.9    3.38    10.14  water>=0.50
+orbit                   0.000  1.000  0.000  0.000  0.000  0.000     -6.0     -6.0   21.88   312.39  dist_med_km>=100
+ascent_sweep_0p05       0.389  0.000  0.611  0.000  0.000  0.611    150.1    204.2  -10.35     0.16  - (no probe-expressible premise)
+ascent_sweep_0p8        0.389  0.000  0.611  0.000  0.000  0.611    131.6    269.7  -11.77     2.57  - (no probe-expressible premise)
+ascent_sweep_10         0.444  0.000  0.556  0.000  0.000  0.556     45.8   1360.8  -14.59    29.05  - (no probe-expressible premise)
+
+========================================================================
+PREMISE FAILURE: 2 pose(s) do NOT contain the class they are named for.
+A reel pose that does not contain its class reports green forever
+and guards nothing (BUGS.md B-20). Nothing was rendered.
+========================================================================
+
+  plains_walk
+    premise : land>=0.80
+    measured: sky=0.4444 water=0.1528 land=0.4028 lake=0.0 river=0.0 frozen=0.0
+              h=41.2..63.0 m  temp=24.96..24.96 C  dist_med=0.033 km
+    FAILED  : land>=0.80  [measured land=0.4028]
+
+  mountain_mid
+    premise : h_min>=800
+    measured: sky=0.0 water=0.3837 land=0.6163 lake=0.3837 river=0.0 frozen=0.0
+              h=-1.0..11.6 m  temp=1.24..1.25 C  dist_med=0.812 km
+    FAILED  : h_min>=800  [measured h_min=-1.0]
+
+Re-aim the pose (scout candidates with --check-pose, which probes
+without rendering) or correct its premise - and say which, in the
+findings doc. Do not delete the premise to make this go away.
+
+########## convergence_reel.py POSES
+pose                      sky  water   land   lake  river frozen    h_min    h_max   t_min    d_med  premise
+b16_ice_hold            0.000  0.000  1.000  0.000  0.000  1.000   1303.4   1458.6   -4.67     4.02  frozen>=0.20
+forest_ground           0.278  0.148  0.575  0.000  0.000  0.000      2.0     35.8   28.36     0.24  land>=0.50
+mountain_mid            0.000  0.384  0.616  0.384  0.000  0.000     -1.0     11.6    1.24     0.81  h_min>=800
+plains_walk             0.444  0.153  0.403  0.000  0.000  0.000     41.2     63.0   24.96     0.03  land>=0.80
+
+========================================================================
+PREMISE FAILURE: 2 pose(s) do NOT contain the class they are named for.
+A reel pose that does not contain its class reports green forever
+and guards nothing (BUGS.md B-20). Nothing was rendered.
+========================================================================
+
+  mountain_mid
+    premise : h_min>=800
+    measured: sky=0.0 water=0.3837 land=0.6163 lake=0.3837 river=0.0 frozen=0.0
+              h=-1.0..11.6 m  temp=1.24..1.25 C  dist_med=0.812 km
+    FAILED  : h_min>=800  [measured h_min=-1.0]
+
+  plains_walk
+    premise : land>=0.80
+    measured: sky=0.4444 water=0.1528 land=0.4028 lake=0.0 river=0.0 frozen=0.0
+              h=41.2..63.0 m  temp=24.96..24.96 C  dist_med=0.033 km
+    FAILED  : land>=0.80  [measured land=0.4028]
+
+Re-aim the pose (scout candidates with --check-pose, which probes
+without rendering) or correct its premise - and say which, in the
+findings doc. Do not delete the premise to make this go away.
+
+########## sky_reel.py POSES (ground under the camera; the CLASS is the sky)
+pose                      sky  water   land   lake  river frozen    h_min    h_max   t_min    d_med  premise
+sun_zenith              1.000    nan    nan    nan    nan    nan      nan      nan     nan      nan  - (no probe-expressible premise)
+sunset_west             0.556  0.444  0.000  0.000  0.000  0.000     -6.0     -6.0   28.19     0.20  - (no probe-expressible premise)
+dusk_gradient           0.667  0.333  0.000  0.000  0.000  0.000     -6.0     -6.0   28.31     0.26  - (no probe-expressible premise)
+moon_zenith             1.000    nan    nan    nan    nan    nan      nan      nan     nan      nan  - (no probe-expressible premise)
+night_stars             1.000    nan    nan    nan    nan    nan      nan      nan     nan      nan  - (no probe-expressible premise)
+  -> every premise above holds
+
+########## convergence_flight.py FLIGHTS (terminal hold pose of the B-16 specimen)
+pose                      sky  water   land   lake  river frozen    h_min    h_max   t_min    d_med  premise
+ice_session_hold        0.000  0.000  1.000  0.000  0.000  1.000   1303.4   1458.6   -4.67     4.02  frozen>=0.20
+descent_land_end        0.056  0.944  0.000  0.000  0.000  0.000     -6.0     -6.0   26.02     0.58  - (no probe-expressible premise)
+  -> every premise above holds
+
+########## altitude_ladder.py SITES (nadir-ish footprint over each target)
+pose                      sky  water   land   lake  river frozen    h_min    h_max   t_min    d_med  premise
+lake_shore              0.000  0.071  0.929  0.000  0.986  0.000    107.7    118.9   28.18     0.29  water>=0.02 & land>=0.02
+river_bank              0.000  0.311  0.689  0.000  1.000  0.000    841.6    903.2    2.88     0.29  river>=0.05
+ocean_coast             0.000  0.379  0.622  0.000  0.000  0.000     -1.3      2.0   26.70     0.29  water>=0.02 & land>=0.02
+sand_patch              0.000  0.000  1.000  0.000  0.000  0.000     49.1     56.0   26.89     0.29  land>=0.90
+snowline                0.000  0.000  1.000  0.000  0.000  0.000    355.3    891.0   -3.07     1.46  frozen>=0.05 & land>=0.50
+ecotone                 0.000  0.000  1.000  0.000  0.000  0.000   2205.9   3908.5    7.22     7.32  - (no probe-expressible premise)
+
+========================================================================
+PREMISE FAILURE: 1 pose(s) do NOT contain the class they are named for.
+A reel pose that does not contain its class reports green forever
+and guards nothing (BUGS.md B-20). Nothing was rendered.
+========================================================================
+
+  snowline
+    premise : frozen>=0.05 & land>=0.50
+    measured: sky=0.0 water=0.0 land=1.0 lake=0.0 river=0.0 frozen=0.0
+              h=355.3..891.0 m  temp=-3.07..-2.57 C  dist_med=1.463 km
+    FAILED  : frozen>=0.05  [measured frozen=0.0]
+
+Re-aim the pose (scout candidates with --check-pose, which probes
+without rendering) or correct its premise - and say which, in the
+findings doc. Do not delete the premise to make this go away.
