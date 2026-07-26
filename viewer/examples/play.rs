@@ -8,55 +8,165 @@
 //!   cargo run --release --example play -- SCRIPT.play [--out DIR]
 //!       [--exagg N] [--patch N] [--size WxH]
 //!
+//! `cargo build --release` does NOT build examples. Build this one explicitly
+//! (`cargo build --release --example play`) or you will test a stale binary.
+//!
 //! Output: a run directory (default interchange/runs/<script-stem>/) with
 //! NAME.png frames, NAME.json state sidecars, and run.log (the transcript).
+//! `glide`/`dwell`/`pose`+TRI_POSE_RENDER write numbered frames into
+//! <run>/frames/ instead, numbered across the whole script so ffmpeg
+//! assembles one continuous timeline.
+//!
+//! **THIS HEADER IS THE AUTHORITATIVE COMMAND LIST** — `viewer/CLAUDE.md`
+//! points at it. A command that is not listed here is a bug in this comment.
 //!
 //! Script commands (one per line, `#` comments):
+//!
+//! ---- placement (absolute-first: scripts teleport to coordinates and set
+//!      exact view angles; relative movement exists to exercise the physics,
+//!      not to find places) ------------------------------------------------
 //!   teleport LAT LON [ALT_KM]     absolute jump (fly mode), like the T key
 //!   moonpose LAT LON ALT YAW PITCH body-local focused-moon flyby/orbit pose
 //!   moonland LAT LON [YAW PITCH]  teleport to lunar columns in walk mode
-//!   moonprobe LAT LON              select a body-local direction for moon
+//!                                 (aliases: `moonteleport`,
+//!                                 `teleport-to-moon-surface`)
+//!   moonprobe LAT LON             select a body-local direction for the moon
 //!                                 surface-height/albedo assertions
 //!   look YAW PITCH                absolute view angles, degrees
 //!   turn DYAW DPITCH              relative view change, degrees
-//!   mode walk|fly                 like G / F
+//!   roll DEGREES                  freecam-only view-axis roll, degrees
+//!   mode walk|fly                 like G / F (needs neisor or moon focus)
+//!   focus neisor|moon|sun|free    switch the camera state machine
+//!
+//! ---- time, motion and measurement ---------------------------------------
 //!   hold KEYS SECONDS             movement keys held for a duration at a
 //!                                 fixed 60 Hz timestep; freecam also accepts
 //!                                 q/e roll and space/ctrl vertical motion
 //!   tap space|lmb|rmb|r           jump / break / place / torch
-//!   focus neisor|moon|sun|free    switch the camera state machine
-//!   roll DEGREES                  set freecam roll numerically
 //!   wait SECONDS                  time passes with no input (gravity acts)
-//!   shot NAME                     render a frame (waits for streaming) +
-//!                                 write NAME.json state sidecar
-//!   state NAME                    state sidecar only, no frame
-//!   assert FIELD OP VALUE         check a state value; any failure makes the
-//!                                 run exit non-zero (self-checking scripts).
-//!                                 FIELD: grounded, underwater, mode, has_water,
-//!                                 alt_km, radius_km, ground_km, support_below_km,
-//!                                 water_surface_km, ceiling_above_km,
-//!                                 vert_vel_mps, lat_deg, lon_deg, yaw_deg,
-//!                                 pitch_deg, block_width_height_ratio.
-//!                                 OP: == != < <= > >= or ~ (approx,
-//!                                 optional 4th token = tolerance). VALUE: a
-//!                                 number, true/false, walk/fly, or `none`.
+//!   posehz HZ                     sample rate of the `pose` lines that
+//!                                 follow (in-game F10 recordings are 10 Hz);
+//!                                 default 10 Hz = 6 sim ticks per pose
+//!   pose LAT LON ALT YAW PITCH    ONE sample of a recorded session: set the
+//!                                 exact pose, advance the world clock by the
+//!                                 sample interval. Deliberately near-silent
+//!                                 (a recording is hundreds of lines): only
+//!                                 the FIRST pose traces, as a "sim started
+//!                                 here" anchor. See TRI_POSE_LIVE /
+//!                                 TRI_POSE_RENDER below.
+//!   glide LAT LON ALT YAW PITCH SECONDS
+//!                                 smooth eased camera move from the current
+//!                                 pose, recording every output frame (30
+//!                                 fps) as a SETTLED capture. Altitude
+//!                                 interpolates geometrically, so descents
+//!                                 from orbit spend their time near the
+//!                                 ground. World time advances at real rate.
+//!   dwell SECONDS                 the same recorder without moving
+//!   bench N                       render N frames at the current pose with
+//!                                 no capture readback; prints avg/p95/min/max
+//!                                 draw wall time (plus the GPU-timer summary
+//!                                 when TRI_GPU_TIMERS is set). **`bench` does
+//!                                 NOT advance sim_ticks** — it hands the
+//!                                 streamer real wall time without moving the
+//!                                 world clock, which is exactly what you want
+//!                                 for "let it settle, then measure".
+//!
+//! ---- world state --------------------------------------------------------
 //!   sun LAT LON                   pin the sun. WARNING: this is a GLOBAL sun
 //!                                 direction — far-longitude teleports then
 //!                                 render at NIGHT. OMIT sun for surveys: the
 //!                                 default lights every location at local noon.
+//!   sun physical|live             release the pin; the sun goes back to the
+//!                                 orbital solution for the current clock
 //!   weather off|live              disable/enable the deterministic field
 //!   weather pin COVER PRECIP      pin visible intensity (both 0..1)
 //!   weather time T_S              seek absolute weather/orbital game time
 //!   weather season FRAC           make the next shot use this year phase
+//!   stream 0|1|2                  live detail-streaming calibration
+//!                                 (0 strict, 1 balanced, 2 eager); mirrors
+//!                                 the window app's F9 cycle
+//!   voxels on|off                 master switch for the voxel near-field.
+//!                                 `off` renders the pure heightfield mesh,
+//!                                 which is what sync_diff.py diffs against
+//!
+//! ---- output and inspection ----------------------------------------------
+//!   shot NAME                     render a SETTLED frame (waits for
+//!                                 streaming to drain) + NAME.json sidecar
+//!   state NAME                    state sidecar only, no frame
 //!   probe LAT LON                 dump sampler + column truth at a point
 //!                                 into the transcript (h, water, lake/pond
 //!                                 levels, river, cave water, koppen) — the
 //!                                 census probe without leaving the run
+//!   pick PX PY                    the inverse of `probe`: ray-cast the
+//!                                 camera ray through screen pixel (PX,PY)
+//!                                 and report the lat/lon it lands on, with a
+//!                                 stated horizontal error bound. Feed the
+//!                                 coordinates straight back to `probe`.
+//!                                 Reports `hit=sky` when the ray clears every
+//!                                 body, and picks the moon/sun when one of
+//!                                 them is nearer along the ray. See the
+//!                                 `pick` arm for the full accuracy contract.
 //!   log TEXT...                   annotate the transcript
+//!   assert FIELD [OP] VALUE       check a state value; any failure makes the
+//!                                 run exit non-zero (self-checking scripts).
+//!                                 OP: == != < <= > >= or ~ (approx, optional
+//!                                 4th token = tolerance, default 0.01).
+//!                                 OP may be omitted for an implicit `==`.
+//!                                 VALUE: a number, true/false, a string, or
+//!                                 the null literal `none`.
+//!                                 FIELD is one of:
+//!                                   pose/camera — mode, body, alt_km,
+//!                                     radius_km, ground_km, lat_deg, lon_deg,
+//!                                     yaw_deg, pitch_deg, roll_deg, focus_id,
+//!                                     camera_x_km, camera_y_km, camera_z_km,
+//!                                     focus_distance_km, focus_alignment
+//!                                   physics — grounded, underwater,
+//!                                     vert_vel_mps, gravity_mps2,
+//!                                     clearance_m, support_below_km,
+//!                                     ceiling_above_km, neighbor_ceiling_km,
+//!                                     surface_height_km
+//!                                   water — has_water, water_surface_km,
+//!                                     frozen
+//!                                   clock/sky — solar_time_s, season_frac,
+//!                                     season_bucket, seasonal_temp_c,
+//!                                     sun_x_km, sun_y_km, sun_z_km,
+//!                                     moon_x_km, moon_y_km, moon_z_km,
+//!                                     solar_occlusion, lunar_shadow
+//!                                   columns/edits — column_ground_block,
+//!                                     column_natural_ground_block,
+//!                                     column_step_max, column_step_pos_i,
+//!                                     column_step_neg_i, column_step_pos_j,
+//!                                     column_step_neg_j, column_edit_blocks,
+//!                                     edit_count, edit_total_blocks,
+//!                                     edited_water_count,
+//!                                     block_width_height_ratio
+//!                                   vegetation — broadleaf_r, broadleaf_g,
+//!                                     broadleaf_b
+//!                                   moon — column_albedo, lunar_material,
+//!                                     moon_surface_height_km,
+//!                                     moon_surface_albedo (the last two read
+//!                                     the direction set by `moonprobe`)
 //!
-//! Navigation is deliberately absolute-first: scripts teleport to
-//! coordinates and set exact view angles; relative movement exists to
-//! exercise the physics, not to find places.
+//! Environment variables this harness reads directly:
+//!   TRI_POSE_LIVE=1     `pose` draws its full tick cadence of LIVE frames
+//!                       (the streaming scheduler runs exactly as in
+//!                       gameplay) instead of advancing silently. Settled
+//!                       captures hide streaming bugs; live replay does not.
+//!   TRI_RAW_CAPTURE=1   `shot` captures EXACTLY the single in-flight frame:
+//!                       one draw, no settle, no drain. **Composes with
+//!                       TRI_POSE_LIVE** — together they are the complete
+//!                       live-frame sampler the convergence reel is built on.
+//!   TRI_POSE_RENDER=1   `pose` also records a settled frame per sample
+//!                       (glide-style) into <run>/frames/, so any recorded
+//!                       session renders straight to video.
+//!   TRI_LOG_WALLCLOCK=1 prefix every run.log line with `[+SECONDS]` since
+//!                       process start, and emit one absolute unix-time
+//!                       anchor line first. OFF by default, because run.log
+//!                       is byte-identical across runs and several tools diff
+//!                       it. stdout is never prefixed.
+//! The renderer's own diagnostics (TRI_STREAM_DEBUG, TRI_GPU_TIMERS,
+//! TRI_LOD_RING_DEBUG, TRI_NO_IMPOSTORS, TRI_NO_MORPH, ...) are listed in
+//! `viewer/CLAUDE.md` and work here unchanged.
 
 use std::io::Write as IoWrite;
 use std::sync::Arc;
@@ -106,6 +216,211 @@ fn koppen_code(id: u8) -> &'static str {
     } else {
         KOPPEN_CODES.get(id as usize).copied().unwrap_or("??")
     }
+}
+
+/// The height a PIXEL actually shows: the solid walkable top, or the open
+/// water surface when the column carries standing water above it.
+///
+/// `surface_height_km` alone is the *walkable* surface, which on a lake is the
+/// bed — marching against it would make `pick` report the lakebed for a pixel
+/// that plainly shows water. Flooded caves (an underground pool capped by
+/// rock) are deliberately excluded: `at_km = INFINITY` suppresses that branch
+/// of `water_surface_km`. A frozen sheet is solid ice, so it comes back as
+/// terrain, not water — the same rule every other world query uses.
+fn visible_surface_km(
+    body: &dyn VoxelBody,
+    edits: &Edits,
+    dir: glam::DVec3,
+    exagg: f64,
+) -> (f64, bool) {
+    let solid = surface_height_km(body, edits, dir, exagg);
+    match water_surface_km(body, edits, dir, f64::INFINITY, exagg) {
+        Some(w) if w > solid => (w, true),
+        _ => (solid, false),
+    }
+}
+
+/// One `pick` result against one body.
+struct PickHit {
+    /// distance from the eye along the ray, km
+    t_km: f64,
+    /// body-local unit direction of the hit (what `probe`/`col_ctx` want)
+    dir: glam::DVec3,
+    lat_deg: f64,
+    lon_deg: f64,
+    /// height of the INTERSECTION ITSELF above the body radius, km. Equal to
+    /// `surface_km` when the ray crossed the surface inside a column; LOWER
+    /// when it struck the SIDE of a column (a cliff, a step between
+    /// neighbours), which is where the two legitimately differ.
+    z_km: f64,
+    /// visible surface height of the column the hit landed in (km,
+    /// exaggerated, incl. patch lift)
+    surface_km: f64,
+    water: bool,
+    /// angle between the ray and the LOCAL HORIZONTAL PLANE at the hit, deg.
+    /// 90 = straight down, 0 = grazing. This is what sets the error bound.
+    elev_deg: f64,
+    /// the coarse step that bracketed the crossing, m — the marcher's own
+    /// resolution, reported so a reader can see it rather than trust it
+    bracket_m: f64,
+    steps: u32,
+    /// the eye was already at/below the visible surface (cave, underwater)
+    eye_submerged: bool,
+}
+
+/// Terrain never leaves this shell, so the ray only has to be marched inside
+/// it. Neisor's relief is ~5 km; 30 km is generous and only costs a slightly
+/// longer bracket. `--exagg` multiplies terrain height, so it scales.
+const PICK_SHELL_KM: f64 = 30.0;
+/// Coarse-march bounds. The step is a fraction of the current radial
+/// clearance, so it is kilometres out in space and sub-metre near the ground.
+const PICK_STEP_FRAC: f64 = 0.35;
+const PICK_MIN_STEP_KM: f64 = 0.0005;
+const PICK_MAX_STEP_KM: f64 = 2.0;
+const PICK_MAX_STEPS: u32 = 400_000;
+
+/// What a march found. `Budget` is kept distinct from `Miss` on purpose: a
+/// silently-truncated ray reported as "sky" would be exactly the kind of
+/// quiet wrong answer this command must not give.
+enum PickOutcome {
+    Hit(PickHit),
+    Miss,
+    Budget,
+}
+
+/// March the camera ray against a body's VISIBLE surface and return the first
+/// crossing. `center_km` is the body's position in the render frame (Neisor is
+/// at the origin; the moon rides its orbit).
+///
+/// Two phases: an adaptive coarse march that brackets the first sign change of
+/// `|p| - (R + surface)`, then 60 bisections, which pins `t` far below the
+/// column lattice pitch. The remaining error is not the bisection — it is the
+/// surface model (see `PickHit::elev_deg`), which is what the caller reports.
+fn march_body(
+    body: &dyn VoxelBody,
+    edits: &Edits,
+    center_km: glam::DVec3,
+    eye_km: glam::DVec3,
+    ray: glam::DVec3,
+    exagg: f64,
+) -> PickOutcome {
+    let o = eye_km - center_km;
+    let r = body.radius_km();
+    let shell = PICK_SHELL_KM * exagg.max(1.0);
+    let r_out = r + shell;
+    let r_in = (r - shell).max(1.0);
+
+    // bracket: the ray only matters between the outer shell's entry and
+    // either its exit or the inner shell's entry (past which all is solid)
+    let b = o.dot(ray);
+    let disc = b * b - (o.length_squared() - r_out * r_out);
+    if disc <= 0.0 {
+        return PickOutcome::Miss; // clears the body entirely
+    }
+    let s = disc.sqrt();
+    let t_exit = -b + s;
+    if t_exit <= 0.0 {
+        return PickOutcome::Miss; // body is behind the camera
+    }
+    let t0 = (-b - s).max(0.0);
+    let mut t1 = t_exit;
+    let disc_in = b * b - (o.length_squared() - r_in * r_in);
+    if disc_in > 0.0 {
+        let t_solid = -b - disc_in.sqrt();
+        if t_solid > 0.0 {
+            t1 = t1.min(t_solid);
+        }
+    }
+
+    let evals = std::cell::Cell::new(0u32);
+    let clearance = |t: f64| {
+        evals.set(evals.get() + 1);
+        let p = o + ray * t;
+        let rr = p.length();
+        rr - (r + visible_surface_km(body, edits, p / rr, exagg).0)
+    };
+
+    let f0 = clearance(t0);
+    let (t_lo, t_hi, bracket_km, submerged) = if f0 <= 0.0 {
+        // eye already at/below the visible surface: a cave, or underwater
+        (t0, t0, 0.0, true)
+    } else {
+        let mut t = t0;
+        let mut f_prev = f0;
+        let mut found = None;
+        let mut budget = false;
+        loop {
+            if evals.get() >= PICK_MAX_STEPS {
+                budget = true;
+                break;
+            }
+            let step = (f_prev * PICK_STEP_FRAC).clamp(PICK_MIN_STEP_KM, PICK_MAX_STEP_KM);
+            let tn = (t + step).min(t1);
+            let fn_ = clearance(tn);
+            if fn_ <= 0.0 {
+                found = Some((t, tn, tn - t));
+                break;
+            }
+            if tn >= t1 {
+                break;
+            }
+            t = tn;
+            f_prev = fn_;
+        }
+        match found {
+            Some((a, c, w)) => (a, c, w, false),
+            None if budget => return PickOutcome::Budget,
+            None => return PickOutcome::Miss,
+        }
+    };
+
+    // bisect the bracket. 60 halvings of a <=2 km bracket is ~1e-15 km.
+    let mut lo = t_lo;
+    let mut hi = t_hi;
+    for _ in 0..60 {
+        if hi - lo <= 0.0 {
+            break;
+        }
+        let mid = 0.5 * (lo + hi);
+        if clearance(mid) <= 0.0 {
+            hi = mid;
+        } else {
+            lo = mid;
+        }
+    }
+    let t_hit = hi;
+    let p = o + ray * t_hit;
+    let dir = p.normalize();
+    let z_km = p.length() - r;
+    let (surface_km, water) = visible_surface_km(body, edits, dir, exagg);
+    // the local surface normal is taken as radial: terrain slope is NOT
+    // modelled here, which is exactly why the error bound below is stated
+    let elev = (-ray.dot(dir)).clamp(-1.0, 1.0).asin().to_degrees();
+    PickOutcome::Hit(PickHit {
+        t_km: t_hit,
+        dir,
+        lat_deg: dir.z.clamp(-1.0, 1.0).asin().to_degrees(),
+        lon_deg: dir.y.atan2(dir.x).to_degrees(),
+        z_km,
+        surface_km,
+        water,
+        elev_deg: elev,
+        bracket_m: bracket_km * 1000.0,
+        steps: evals.get(),
+        eye_submerged: submerged,
+    })
+}
+
+/// Nearest positive ray/sphere hit — used for the Sun, which has no columns.
+fn sphere_hit_km(center_km: glam::DVec3, radius_km: f64, eye_km: glam::DVec3, ray: glam::DVec3) -> Option<f64> {
+    let o = eye_km - center_km;
+    let b = o.dot(ray);
+    let disc = b * b - (o.length_squared() - radius_km * radius_km);
+    if disc < 0.0 {
+        return None;
+    }
+    let s = disc.sqrt();
+    [-b - s, -b + s].into_iter().find(|t| *t > 0.0)
 }
 
 fn main() -> anyhow::Result<()> {
@@ -164,11 +479,32 @@ fn main() -> anyhow::Result<()> {
     let dir = out_dir.unwrap_or_else(|| format!("{interchange}/runs/{stem}"));
     std::fs::create_dir_all(&dir)?;
     let mut logf = std::fs::File::create(format!("{dir}/run.log"))?;
+    // TRI_LOG_WALLCLOCK=1: prefix every run.log line with elapsed wall seconds
+    // and lead with one absolute unix-time anchor, so a Python driver can line
+    // its own timestamps up with the transcript instead of correlating stdout
+    // against frame_counter in a separate stderr stream (V-3). OFF by default:
+    // run.log is byte-identical across runs and several tools diff it. stdout
+    // is never prefixed — it stays the plain live stream.
+    let wall_t0 = std::env::var_os("TRI_LOG_WALLCLOCK").map(|_| std::time::Instant::now());
+    if wall_t0.is_some() {
+        let unix_s = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs_f64())
+            .unwrap_or(0.0);
+        let _ = writeln!(logf, "[    0.000] # TRI_LOG_WALLCLOCK t0 = {unix_s:.6} unix_s");
+    }
     macro_rules! trace {
         ($($t:tt)*) => {{
             let line = format!($($t)*);
             println!("{line}");
-            let _ = writeln!(logf, "{line}");
+            match &wall_t0 {
+                Some(t0) => {
+                    let _ = writeln!(logf, "[{:9.3}] {line}", t0.elapsed().as_secs_f64());
+                }
+                None => {
+                    let _ = writeln!(logf, "{line}");
+                }
+            }
         }};
     }
 
@@ -396,6 +732,11 @@ fn main() -> anyhow::Result<()> {
     let mut rec_frame: u64 = 0;
     // session replay cadence: sim ticks advanced per `pose` line (posehz N)
     let mut pose_ticks: u64 = 6;
+    // `pose` stays silent — a recording is hundreds of lines — but the FIRST
+    // one traces, as the "sim started here" anchor. Without it a wall-clock
+    // driver waits forever for a trace line that never comes (V-1), and a
+    // recorded flight has no landmark tying its samples to the transcript.
+    let mut pose_count: u64 = 0;
     // TRI_POSE_LIVE=1: each pose draws its full tick cadence of LIVE frames
     // (streaming scheduler runs exactly as in gameplay — settled captures
     // would hide streaming bugs like B-16). Offscreen target built lazily.
@@ -581,13 +922,18 @@ fn main() -> anyhow::Result<()> {
             "look" => {
                 camera.yaw = f(1)?.to_radians();
                 camera.pitch = f(2)?.to_radians().clamp(-1.50, 1.50);
-                trace!("[{}] look yaw {:.0} pitch {:.0}", ln + 1, f(1)?, f(2)?);
+                // 4 decimals, not 0: generators aim to 5 (altitude_ladder.py),
+                // and at whole-degree precision `look 0 -15` and
+                // `look 0 -15.2` produced IDENTICAL transcript lines for two
+                // poses 140 km apart on the ground. A transcript that cannot
+                // distinguish two poses is not a transcript.
+                trace!("[{}] look yaw {:.4} pitch {:.4}", ln + 1, f(1)?, f(2)?);
             }
             "turn" => {
                 camera.yaw += f(1)?.to_radians();
                 camera.pitch = (camera.pitch + f(2)?.to_radians()).clamp(-1.50, 1.50);
                 trace!(
-                    "[{}] turn -> yaw {:.0} pitch {:.0}",
+                    "[{}] turn -> yaw {:.4} pitch {:.4}",
                     ln + 1,
                     camera.yaw.to_degrees(),
                     camera.pitch.to_degrees()
@@ -812,11 +1158,35 @@ fn main() -> anyhow::Result<()> {
             "posehz" => {
                 let hz = f(1)?.clamp(1.0, 60.0);
                 pose_ticks = (60.0 / hz).round().max(1.0) as u64;
+                // once per script in practice (F10 recordings emit exactly
+                // one), so tracing it costs nothing and the cadence is the
+                // number every time-domain reader needs first
+                trace!(
+                    "[{}] posehz {hz} -> {pose_ticks} sim tick(s) per pose",
+                    ln + 1
+                );
             }
             "pose" => {
                 ps.teleport(&planet, &edits, &mut camera, f(1)?, f(2)?, Some(f(3)?), exagg);
                 camera.yaw = f(4)?.to_radians();
                 camera.pitch = f(5)?.to_radians().clamp(-1.50, 1.50);
+                pose_count += 1;
+                if pose_count == 1 {
+                    trace!(
+                        "[{}] pose #1 ANCHOR sim_ticks {} t {:.4}s -> lat {:.6} lon {:.6} alt {:.5} km yaw {:.1} pitch {:.1} | {} ticks/pose live {} render {} (later poses are silent)",
+                        ln + 1,
+                        sim_ticks,
+                        sim_ticks as f64 * DT,
+                        f(1)?,
+                        f(2)?,
+                        f(3)?,
+                        f(4)?,
+                        f(5)?,
+                        pose_ticks,
+                        std::env::var_os("TRI_POSE_LIVE").is_some(),
+                        std::env::var_os("TRI_POSE_RENDER").is_some(),
+                    );
+                }
                 if std::env::var_os("TRI_POSE_LIVE").is_some() {
                     let view = live_target.get_or_insert_with(|| {
                         let tex = renderer.device.create_texture(&wgpu::TextureDescriptor {
@@ -1143,6 +1513,203 @@ fn main() -> anyhow::Result<()> {
                         c.cave_water.to_string()
                     },
                 );
+            }
+            // pick PX PY — the INVERSE of `probe`: point at a pixel in a
+            // frame this script rendered and get the ground coordinates back,
+            // so "this looks wrong at (640,360)" becomes a lat/lon you can
+            // hand straight to `probe`, `colcensus`, or a new .play script.
+            //
+            // WHAT IT MARCHES, and therefore what it can be wrong about:
+            //  * the VISIBLE surface — solid column top, or the open-water
+            //    plane when a column carries standing water. Frozen sheets
+            //    read as terrain (they are solid ice), flooded caves are
+            //    ignored (rock is above them).
+            //  * TREES, ROCKS AND IMPOSTORS ARE NOT GEOMETRY HERE. A pixel on
+            //    a canopy returns the ground under the canopy. So do clouds
+            //    and every other sky effect: `pick` sees through all of it.
+            //  * the column lattice, not the LOD mesh. Far from the camera the
+            //    renderer draws the mesh, which can disagree with the column
+            //    truth by about a block (that divergence is what sync_diff.py
+            //    measures). The reported error bound carries that block.
+            // The bound is `half a column + one block / tan(elevation angle)`:
+            // near-nadir picks are sub-metre, grazing picks are honestly
+            // labelled as bad. A pick with no stated error is a trap, so this
+            // one always states it.
+            //
+            // READING THE HEIGHTS. `z=` is the intersection's own height, `vis=`
+            // the visible top of the column it landed in, `solid=` that
+            // column's walkable top. z == vis means the ray came down through
+            // the surface inside a column; z < vis means it struck the SIDE of
+            // one (a cliff, or the step between neighbours), and the returned
+            // lat/lon is then a point ON that column boundary — re-probing it
+            // can legitimately land in either neighbour. That ambiguity is a
+            // column wide, which is why the error bound always carries half a
+            // column even for a nadir pick.
+            "pick" => {
+                let (fw, fh) = renderer.size;
+                let (px, py) = (f(1)?, f(2)?);
+                anyhow::ensure!(
+                    px.is_finite()
+                        && py.is_finite()
+                        && px >= 0.0
+                        && py >= 0.0
+                        && px < fw as f64
+                        && py < fh as f64,
+                    "line {}: pick PX PY must lie inside the {}x{} frame",
+                    ln + 1,
+                    fw,
+                    fh
+                );
+                // exactly the pre-render alignment `shot` performs, so `pick`
+                // reads the pose a capture on this line would render
+                renderer.set_render_time_s(sim_ticks as f64 * DT);
+                let solar = renderer.solar_state(camera.position(), planet.radius_km);
+                camera_rig.realign(solar, &mut camera);
+
+                // Build the ray by INVERTING THE RENDERER'S OWN MATRIX instead
+                // of re-deriving the frustum. camera.rs's view-projection is
+                // camera-relative (the view matrix has no translation), so
+                // unprojecting NDC z = 1 — the near plane, which is where
+                // reversed-Z puts it — yields a point on the ray directly.
+                // The reversed-Z / infinite-far depth mapping never enters it:
+                // a pixel's DIRECTION is a function of fov, aspect and the
+                // view basis alone. Doing it this way means `pick` cannot
+                // drift from camera.rs the way a copied frustum would.
+                let aspect = fw as f64 / fh as f64;
+                let surface_altitude = triangulum_viewer::camera::nearest_surface_altitude_km(
+                    &camera,
+                    solar,
+                    &renderer.solar_tuning,
+                    planet.radius_km,
+                );
+                let vp = camera.view_proj_for_surface_altitude(aspect, surface_altitude);
+                let ndc_x = (px + 0.5) / fw as f64 * 2.0 - 1.0;
+                let ndc_y = 1.0 - (py + 0.5) / fh as f64 * 2.0;
+                let unproj = vp.inverse() * glam::DVec4::new(ndc_x, ndc_y, 1.0, 1.0);
+                let ray = (unproj.truncate() / unproj.w).normalize();
+                let eye = camera.position();
+                let ray_lat = ray.z.clamp(-1.0, 1.0).asin().to_degrees();
+                let ray_lon = ray.y.atan2(ray.x).to_degrees();
+
+                let seasonal = SeasonalPlanet::new(
+                    Arc::clone(&planet),
+                    renderer.structural_season(&planet),
+                );
+                let mut budget = false;
+                let mut best: Option<(&'static str, PickHit)> = None;
+                for (name, outcome) in [
+                    (
+                        "neisor",
+                        march_body(&seasonal, &edits, glam::DVec3::ZERO, eye, ray, exagg),
+                    ),
+                    (
+                        "moon",
+                        march_body(&moon_body, &moon_edits, solar.moon_km, eye, ray, exagg),
+                    ),
+                ] {
+                    match outcome {
+                        PickOutcome::Hit(hit) => {
+                            if best.as_ref().is_none_or(|(_, b)| hit.t_km < b.t_km) {
+                                best = Some((name, hit));
+                            }
+                        }
+                        PickOutcome::Budget => budget = true,
+                        PickOutcome::Miss => {}
+                    }
+                }
+                // the Sun has no columns: a plain sphere, reported as such
+                let sun_t = sphere_hit_km(
+                    solar.sun_km,
+                    renderer
+                        .solar_tuning
+                        .radius_km(triangulum_viewer::orbits::BodyId::Sun, planet.radius_km),
+                    eye,
+                    ray,
+                );
+                let sun_first =
+                    sun_t.is_some_and(|t| best.as_ref().is_none_or(|(_, b)| t < b.t_km));
+                let warn = if budget {
+                    " WARNING=step-budget-exhausted-may-not-be-first-surface"
+                } else {
+                    ""
+                };
+
+                if sun_first {
+                    trace!(
+                        "[{}] pick {px} {py}: hit=sun dist={:.0}km ray_lat={ray_lat:.6} ray_lon={ray_lon:.6}{warn}",
+                        ln + 1,
+                        sun_t.unwrap_or(f64::NAN)
+                    );
+                } else if let Some((body_name, hit)) = best {
+                    let on_neisor = body_name == "neisor";
+                    let (hit_body, hit_edits): (&dyn VoxelBody, &Edits) = if on_neisor {
+                        (&seasonal, &edits)
+                    } else {
+                        (&moon_body, &moon_edits)
+                    };
+                    let solid_km = surface_height_km(hit_body, hit_edits, hit.dir, exagg);
+                    // exact local column pitch, so the lattice term in the
+                    // error bound is measured rather than assumed (voxels are
+                    // gnomonic-anisotropic, ~1.0-1.7 m)
+                    let (cf, ci, cj) =
+                        triangulum_viewer::voxel::column_id_body(hit_body, hit.dir);
+                    let c0 = triangulum_viewer::voxel::dir_of_column_body(
+                        hit_body, cf as usize, ci, cj,
+                    );
+                    let (nf, ni, nj) = triangulum_viewer::voxel::canonical_column_body(
+                        hit_body,
+                        cf as usize,
+                        ci as i64 + 1,
+                        cj as i64,
+                    );
+                    let c1 = triangulum_viewer::voxel::dir_of_column_body(
+                        hit_body, nf as usize, ni, nj,
+                    );
+                    let col_m = (c1 - c0).length() * hit_body.radius_km() * 1000.0;
+                    let block_m = triangulum_viewer::voxel::VOXEL_KM * 1000.0 * exagg;
+                    let tan_elev = hit.elev_deg.to_radians().tan();
+                    let err_m = if tan_elev > 1e-9 {
+                        col_m * 0.5 + block_m / tan_elev
+                    } else {
+                        f64::INFINITY
+                    };
+                    let err_txt = if err_m.is_finite() && err_m < 1.0e5 {
+                        format!("{err_m:.1}m")
+                    } else {
+                        "GRAZING-unbounded".to_string()
+                    };
+                    let kop = if on_neisor {
+                        let (kf, ku, kv) = face_from_dir(hit.dir);
+                        let k = planet.koppen(kf, ku, kv);
+                        format!("{k}/{}", koppen_code(k))
+                    } else {
+                        "-/-".to_string()
+                    };
+                    trace!(
+                        "[{}] pick {px} {py}: hit={body_name} lat={:.7} lon={:.7} dist={:.5}km elev={:.2}deg err=+-{err_txt} surface={} z={:.2}m vis={:.1}m solid={:.1}m koppen={kop} | col={col_m:.2}m bracket={:.2}m evals={}{}{warn}",
+                        ln + 1,
+                        hit.lat_deg,
+                        hit.lon_deg,
+                        hit.t_km,
+                        hit.elev_deg,
+                        if hit.water { "water" } else { "terrain" },
+                        hit.z_km * 1000.0,
+                        hit.surface_km * 1000.0,
+                        solid_km * 1000.0,
+                        hit.bracket_m,
+                        hit.steps,
+                        if hit.eye_submerged {
+                            " EYE-AT-OR-BELOW-SURFACE"
+                        } else {
+                            ""
+                        },
+                    );
+                } else {
+                    trace!(
+                        "[{}] pick {px} {py}: hit=sky ray_lat={ray_lat:.6} ray_lon={ray_lon:.6} | no body along this ray (sky/space; clouds and impostors are not geometry){warn}",
+                        ln + 1
+                    );
+                }
             }
             // voxels on | off — master switch for the voxel near-field.
             // `off` renders the pure heightfield mesh (no chunks, no hole
