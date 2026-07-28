@@ -80,9 +80,19 @@ comment for the authoritative command list.** Runs land in
 Run from `viewer/` unless noted. Which ones apply depends on blast radius —
 see `docs/PROCESS.md`.
 
+**`verify.sh` lives at `viewer/scripts/verify.sh`, not the repo root**, and on
+this machine bare `bash` may resolve to a WSL shim with no distribution. If it
+does, invoke Git's bash as a *login* shell (it needs `dirname` on PATH):
+`"C:\Program Files\Git\bin\bash.exe" -lc 'cd /c/code/triangulum/viewer && ./scripts/verify.sh'`
+
+**The blessed baselines these gates compare against are tracked in git**
+(`viewer/interchange/*/accepted*`). A worktree therefore has them; you only
+need to copy `viewer/assets/`. `--accept` produces a reviewable diff — which
+is why blessing stays a human decision.
+
 | Gate | Command | Guards |
 |---|---|---|
-| suites | `bash scripts/verify.sh` (repo root) | physics/geometry invariants, 8 asserting suites |
+| suites | `bash scripts/verify.sh` | physics/geometry invariants, 8 asserting suites |
 | world reel | `python scripts/world_reel.py` | pixel changes vs blessed poses, + VOID/GRID lint |
 | perf reel | `python scripts/perf_reel.py` | frame cost vs blessed baseline |
 | convergence reel | `python scripts/convergence_reel.py` | **time-domain**: does the live view actually reach the settled one, and how fast. Self-blessing — the settled frame is its own reference |

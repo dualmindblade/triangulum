@@ -52,7 +52,15 @@ you are doing deliberate archaeology; it is large and mostly historical.
 - Windows, PowerShell 5.1. The Bash tool is usually easier. Embedded double
   quotes in PS here-strings get mangled — keep commit messages free of `"`.
 - Kill stale `triangulum-viewer` / `play` processes before a build, or the
-  linker fails on a locked binary.
+  linker fails on a locked binary. **When other missions share the machine,
+  kill only processes you started** — a blanket kill destroys another
+  mission's measurement run, and the victim just gets a truncated capture
+  with no clue why.
+- **Timing gates need the machine to themselves.** The perf reel and both
+  convergence lanes measure wall-clock, so anything else rendering corrupts
+  them. Run them alone; if one flags, re-run it standalone before believing
+  it. Pixel gates (world/sky reel, altitude ladder) capture settled frames
+  and are safe to overlap.
 - Licensed MIT, deliberately: the game stays free.
 
 ## Working agreements

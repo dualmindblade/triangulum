@@ -88,6 +88,17 @@ timestamp queries, item 2).
 
 ## Instruments
 
+**The perf reel needs a cold, idle machine.** Do not chain it after another
+reel: measured 2026-07-26, chaining it directly after the world reel inflated
+the scenarios that ran first and produced a clean gate failure — `plains_walk`
+avg 24.65 -> 33.82, p95 30.14 -> 46.67, a 37% "regression" with zero Rust
+changed (`git diff 120995b..HEAD -- viewer/src/` empty). The elevation decayed
+through the run (+4.6%, +30%, +6.3%, then ~2%) and a standalone re-run was
+clean at 26.02 / 31.25. **Run it alone, first; if it flags, re-run it
+standalone before believing it.** Same blind-spot family as item 1's
+"the perf reel warms before measuring", inverted — there the gate was too
+generous, here too harsh.
+
 perf_reel.py (contract), b4-ascent-fast / b4-descent-fast /
 b4-descent-fly .play (transition hitches; TRI_RAW_CAPTURE=1),
 TRI_NO_IMPOSTORS=1 (isolate enumeration cost), tile_cost example

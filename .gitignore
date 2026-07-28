@@ -14,6 +14,31 @@ viewer/interchange/*
 !viewer/interchange/tint_*.png
 !viewer/interchange/v7_*.png
 
+# EXCEPTION: the blessed gate baselines ARE tracked (Austin, 2026-07-28).
+# They are the references every visual gate compares against, and they encode
+# accumulated human blessing decisions. Untracked, they existed only on one
+# machine: a fresh clone had no working gates, and every dispatched worktree
+# mission silently degraded to "everything looks new" until the coordinator
+# hand-copied them in. Tracking them also makes `--accept` produce a
+# reviewable diff, which is what a human decision ought to leave behind.
+# Only the `accepted` references are tracked - `current.json` and the run
+# directories stay session-local.
+!viewer/interchange/reel/
+viewer/interchange/reel/*
+!viewer/interchange/reel/accepted/
+!viewer/interchange/skyreel/
+viewer/interchange/skyreel/*
+!viewer/interchange/skyreel/accepted/
+!viewer/interchange/perfreel/
+viewer/interchange/perfreel/*
+!viewer/interchange/perfreel/accepted.json
+!viewer/interchange/convreel/
+viewer/interchange/convreel/*
+!viewer/interchange/convreel/accepted.json
+!viewer/interchange/convflight/
+viewer/interchange/convflight/*
+!viewer/interchange/convflight/accepted.json
+
 # reel/ladder-generated .play scripts (_perf_*, _conv_*, _convflight_*,
 # _altitude-*): written fresh on every run, so they are outputs, not
 # sources. The leading underscore marks them - never hand-edit these.
