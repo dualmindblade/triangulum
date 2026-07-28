@@ -9,6 +9,37 @@ rebakes, bug ordering) live in BUGS.md, not here.
 
 ## Open
 
+### D-18 Boundary naturalness in the 0.5-4 km band (BUGS.md B-19)
+Andrew reviewed the V-2 ladder sheets and the X-1 MAX_LEVEL triptychs
+(2026-07-28, relayed by Austin). **Provisional read: the MAX_LEVEL 16
+frames are probably acceptable for a settled visual — but even there the
+look could likely be improved.** Not a final verdict; discussion pending.
+
+Austin's framing, which is the useful one: the smooth border treatment
+that ponds and lakes get at close range (`V2-evidence/ladder_lake_shore.png`,
+50-200 m rungs) is what he wants river banks and other "straight"/smooth
+boundaries to have at range too. Open question he raised: **can other
+techniques get there instead of ramping resolution?**
+
+Why this is a real art question and not just an engineering one: raising
+MAX_LEVEL reduces the staircase's AMPLITUDE but preserves its
+REGULARITY. The L16 frame still shows a periodic beading along the bank.
+Natural boundaries are irregular, and irregularity has to be added
+deliberately — it does not emerge from more vertices. So "how much
+resolution" and "how much irregularity" are two separate dials and
+Andrew owns the second one.
+
+Andrew already owns a working instance of the second dial: the
+`COAST_RANGE_CURVE_*` knobs in `shader.wgsl` (B-17) bend the shore
+contour with a world-anchored residual, and they are labelled "Andrew's
+range-curve knobs" in the source. They are gated to camera altitude
+>= 12 km, so the band in question gets none of it.
+
+DEFAULT UNTIL DECIDED: ships as-is (MAX_LEVEL 14, staircase present).
+WAITING ON THIS: the B-19 fix mission's target — whether it aims at
+sub-lattice edge reconstruction, at irregularity, at resolution, or at
+some mix. See the engineering options in BUGS.md B-19.
+
 ### D-1 The rim dial (TRANSITIONS C)
 How visible should the mesh->voxel boundary be? The 07-09 verdict said
 err seamless "unless it introduces more complications", and the program
