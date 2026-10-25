@@ -87,6 +87,38 @@ function Start-Game {
     [pscustomobject]@{ Process = $proc; Hwnd = [IntPtr]::Zero }
 }
 
+# A signed int as the unsigned word mouse_event takes (two's complement).
+function U32([int]$v) { [BitConverter]::ToUInt32([BitConverter]::GetBytes($v), 0) }
+
+function Attach-Game {
+    # A game started earlier (by Start-Game in another PowerShell), by id:
+    # each step of a long session can be its own command.
+    param([int]$Id, [string]$Title = 'Triangulum')
+    $g = [pscustomobject]@{ Process = (Get-Process -Id $Id); Hwnd = [IntPtr]::Zero }
+    $g.Hwnd = [TriWin]::Find([uint32]$Id, $Title)
+    if ($g.Hwnd -eq [IntPtr]::Zero) { throw "process $Id has no window titled $Title" }
+    $g
+}
+
+function Look-Game {
+    # Relative mouse motion (the game turns when it has captured the mouse).
+    param($Game, [int]$DX, [int]$DY, [int]$Steps = 10)
+    for ($i = 0; $i -lt $Steps; $i++) {
+        [TriWin]::mouse_event(0x0001, (U32 ([int]($DX / $Steps))), (U32 ([int]($DY / $Steps))), 0, [UIntPtr]::Zero)
+        Start-Sleep -Milliseconds 20
+    }
+    Start-Sleep -Milliseconds 100
+}
+
+function Scroll-Game {
+    # The mouse wheel at a point (notches; positive scrolls up).
+    param($Game, [int]$X, [int]$Y, [int]$Notches)
+    Move-GameMouse $Game $X $Y
+    Start-Sleep -Milliseconds 60
+    [TriWin]::mouse_event(0x0800, 0, 0, (U32 ($Notches * 120)), [UIntPtr]::Zero)
+    Start-Sleep -Milliseconds 150
+}
+
 function Wait-GameWindow {
     param($Game, [int]$TimeoutSec = 120, [string]$Title = 'Triangulum')
     $t = [Diagnostics.Stopwatch]::StartNew()
@@ -170,6 +202,9 @@ function Send-GameText {
 function Save-GameShot {
     # The client area as it is on screen now (the window must be in front).
     param($Game, [string]$Path)
+    # .NET resolves relative paths against the process's directory, not
+    # PowerShell's location.
+    if (-not [IO.Path]::IsPathRooted($Path)) { $Path = Join-Path (Get-Location).Path $Path }
     $o = Get-GameOrigin $Game
     $bmp = New-Object System.Drawing.Bitmap $o.Width, $o.Height
     $g = [System.Drawing.Graphics]::FromImage($bmp)

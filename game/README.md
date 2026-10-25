@@ -4,8 +4,8 @@ The new engine: a planet-sized cube-sphere voxel world you can walk on, dig
 into, build on and come back to. This is the M2b state: walk, fly, dig,
 build, save, the July sky and lighting (M1c), planetgen's lakes and rivers
 as water at rest (M2-hydro), and the simulation: sand and gravel fall
-(M2a), water flows by Andrew's 256-level rule (M2b), and Andrew's look
-panel (M3a).
+(M2a), water flows by Andrew's 256-level rule (M2b), Andrew's look
+panel (M3a), and new blocks with textures painted in the game (M3b).
 
 ## For Andrew: the look panel
 
@@ -25,7 +25,8 @@ everything you change shows straight away.
   water colour* keeps the sea seen from high up matching.
 - **Blocks**: every block's colour. Tick *faces* to give a block its own
   top, sides and bottom. Grass is green on top and dirt on the sides and
-  bottom, so a tunnel under grass has a dirt ceiling.
+  bottom, so a tunnel under grass has a dirt ceiling. Here you also add
+  blocks, choose what keys 1 to 9 hold, and paint textures (below).
 - **Distance detail**: how much detail far-away land keeps. Higher looks
   better and costs speed.
 - **Terrain**: roughness, landforms and how tall the mountains are
@@ -51,6 +52,76 @@ the files in a text editor; the game notices within half a second.
 panel, to `game/out/look/`, with a `.json` file beside it that lists every
 look value, the time of day and where you stood. Send both, and whoever
 gets them sees what you saw and can rebuild your look.
+
+### Adding a block
+
+1. Press **F1**, open **Blocks**, and click **Add a block...**.
+2. Type a name ("red brick"; the file calls it `red_brick`), pick its
+   colour, and choose **solid** (stays where you put it) or **falls like
+   sand**. Click **Add block**.
+3. The new block is at the bottom of the list, opened, ready to paint.
+   Under *Hotbar*, pick a key and click **Put it there**. Close the panel
+   (F1), press that key, and right-click to build with it.
+
+The block is written to `blocks.json` straight away, so a world that holds
+it always finds it. Blocks are never deleted (your world may hold some):
+tick **hidden** to take one off the hotbar list instead. Its colours and
+texture are kept with *Save look*, like every other block's.
+
+**Changing a block.** Click its name in the list. You can rename the blocks
+you added (the old name is kept in the file, so saves and replays that know
+it still work); the blocks the game ships with keep their names, because
+the world generator finds them by name. You can switch a block between
+*solid* and *falls like sand*: the panel tells you what that does first (it
+changes the game's rules: your world keeps working, blocks of that kind
+already in the world fall only when something next to them changes, and
+replays recorded before will show a difference).
+
+Every block you add is solid. See-through blocks (glass, leaves) and new
+liquids aren't in the game yet.
+
+**The hotbar.** *Hotbar: what keys 1 to 9 hold* has a box per key. Choose a
+block for each; *Back to the default hotbar* puts the shipped one back.
+It is saved in `blocks.json` at once and comes back next time you play.
+
+### Painting a texture
+
+Click a block's name, and under **Texture**:
+
+- **Paint** chooses which faces you paint: *every face*, or just the *top*,
+  the *sides* or the *bottom*.
+- **Start from the block's colour** gives you a 16 x 16 picture of the
+  block's colour to paint on. **Import PNG...** takes any PNG picture (a
+  photo, a drawing): it is cut to a square and made 16 x 16. You can also
+  drop a PNG file on the game window.
+- Paint with **Pencil** (click or drag), **Fill** (fills the patch of one
+  colour you click) and **Pick colour** (takes a pixel's colour; a right
+  click does that with any tool). Click the colour box to choose a colour;
+  colours you used appear beside it. **Undo** (or Ctrl+Z) takes back a
+  change.
+- Every change shows on the blocks in the world at once, and on the
+  hotbar.
+- **Try an example**: three placeholder pictures (stone, dirt, grass top)
+  show what a texture looks like; one click puts one on the faces you
+  chose. Painting on an example makes your own copy, so the example stays
+  as it is.
+- **Remove texture** puts those faces back to their colour.
+
+Far away a texture shows its average colour, so a textured block looks the
+same from a distance as a flat one of that colour.
+
+**Saving and sharing textures.** *Save look* writes your pictures as PNG
+files into `game/assets/textures/` (named after the block, like
+`red_brick.png`) and puts their names in `blocks.json`. To share, commit and
+push `blocks.json`, `look.json` and the `textures` folder, or send them.
+You can also paint a texture in any paint program: open its PNG from
+`game/assets/textures/`, save it, and the game shows the change within a
+second while it runs.
+
+**Texture size** is one setting, `"texture_size": 16` near the top of
+`blocks.json`. 32 gives finer pictures; that choice is yours to make (it is
+on the list of open decisions). Pictures of another size are resized when
+the game reads them, so changing it later keeps your textures.
 
 ## Running
 
@@ -280,6 +351,84 @@ without the panel, into `out/look/look-<UTC time>.png` with a JSON sidecar
 (the tidied look, every block's face colours, terrain, time, and the
 session state); `--screenshot` writes the same sidecar.
 
+## Blocks and textures (M3b)
+
+The registry (`src/world/blocks.rs`) changes while the game runs. It holds
+its definitions behind a lock and the four flags the hot loops read
+(solid, liquid, gravity, replaceable) as one relaxed atomic load each, with
+room for every id, so the world, the mesher threads, the simulation and the
+player see a new block or a changed flag at once, and an id past the end
+reads as air-like instead of panicking. `blocks.json` gains:
+
+- `texture` (every face), `top_texture`, `side_texture`, `bottom_texture`:
+  PNG files relative to the `textures/` folder beside blocks.json (no `..`,
+  no drive); `texture_size` at the top (16; a power of two, 4 to 256).
+- `hidden` (off the hotbar list; blocks are never deleted), `was` (former
+  names, oldest first) and `hotbar` at the top (nine block names).
+
+Ids are append-only. A rename keeps the old name in `was`, and
+`Registry::id` answers to former names. The panel writes structural
+changes (a new block, a rename, falling, hiding, the hotbar) at once with
+`blocks::save_defs`, which updates names and flags and appends whole
+entries, leaving colours and textures on disk alone; *Save look* writes
+colours and textures (`blocks::save_look`) after writing the painted PNGs.
+Hot reload merges the file into the running registry
+(`Registry::merge_file`): new blocks, renames that list the old name in
+`was`, falling, hiding, the hotbar and the texture size apply live; a file
+that renumbers or drops a block, or changes solid, liquid or replaceable, is
+refused with the reason.
+
+**Saves and replays across a new block.** A save's header lists (id, name)
+for the blocks it knew; the check accepts a registry that extends it, and a
+saved name may be a block's current name or one in its `was`
+(`world/save.rs`, the header check and `extend_header_blocks`, which adds
+blocks appended since to the header on the next save, so every id a chunk
+can hold has its name there). The simulation's rules digest hashes each
+block's first name and flags; `Sim::state_hash` covers the rules of the
+blocks the state can hold (up to the highest id the generator places, an
+edited chunk holds or a falling block is), so appending a block changes no
+hash and a replay recorded before plays back exactly
+(`src/compat_tests.rs`). Changing whether a block falls does change the
+hash: replays recorded before report a difference, as they should. The
+save's simulation note compares against every prefix of the registry
+(`sim::rules_extend`). The game, not the harness, uses the file's hotbar
+(`--play` and replays keep theirs); changing the hotbar, or a block's
+falling, ends a replay recording first, as a terrain preview does.
+
+**Textures** (`src/render/textures.rs`): a `Picture` is size x size RGBA8,
+sRGB as in the PNG, made opaque (blocks are solid). Any PNG is cut to its
+middle square and resampled to `texture_size`: repeated pixel for pixel
+when smaller, area-averaged in linear light when larger. `TextureSet` maps
+files to layers of one `Rgba8UnormSrgb` texture array, keeps each layer's
+average colour, and polls the files round robin (four a frame) for hot
+reload; a missing file leaves its faces flat and is noticed when it
+appears. The renderer uploads every mip level, built on the CPU by 2 x 2
+averages in linear light, so the 1 x 1 level is the average colour; the
+sampler is nearest up close and linear between mip levels. The colour
+table's alpha is the layer a face samples, or -1 for its flat colour, and
+the colour is then the texture's average (the HUD swatch). The shader
+(`render/shader.wgsl`) computes texture coordinates in blocks along the
+face, so a texture tiles once per block on a greedy quad and on a coarse
+voxel alike, and every face reads unmirrored from outside (sides with
+their top up); `fs_main` takes the derivatives first and samples with
+`textureSampleGrad` only for a textured face, so a flat face's colour
+math is exactly the old one (frames with no textures match the pre-M3b
+build bit for bit).
+
+The panel's Blocks section is `src/workshop/blocks_panel.rs`; the pixel
+editor is `src/workshop/editor.rs`. Painting writes the editor's picture
+into the face's own file: a face showing an example, or a file another
+block or face also uses, gets a new file named after the block (copy on
+write). *Import PNG...* opens the Windows file dialog (the `rfd` crate) on
+a thread; a PNG dropped on the window imports too.
+
+`TRIANGULUM_PANEL_BLOCK=stone` (with `TRIANGULUM_PANEL_SECTION=blocks` and
+`--panel`) opens a block's details for screenshots.
+`game/tools/make_example_textures.py` writes the example pictures, and with
+`--every-block DIR` a copy of blocks.json with every solid block textured
+(each picture averaging to its face's colour) for the bench and the far
+look checks. `game/tools/window.ps1` drives the real window (below).
+
 Evidence scripts: `scripts/m3a-tunnel.play` digs a tunnel and a shaft
 under grass (asserts the blocks, shoots the ceiling and walls);
 `scripts/m3a-look.play` shoots the sky from 1.5 km, the hills at night,
@@ -438,6 +587,9 @@ header.json      format version (3), generator version, body id, the
                  world's identity (seed, block size, H, sea level, N,
                  vertical scale, roughness), the projection and its table's
                  SHA-256, the bake's content SHA-256, the block-id table
+                 (M3b: blocks added to blocks.json later are appended to
+                 it on the next save; a renamed block answers to the old
+                 name through "was")
 commit.json      the current generation: which file holds each chunk, the
                  simulation state file, and a SHA-256 for every one of them
 chunks/*.gN.chunk  one LOD-0 chunk each, in full (ids and water levels,
@@ -477,6 +629,34 @@ Coarse LODs rebuild from edited data: a coarse voxel shows the topmost
 solid block in it when that block was placed by an edit (a one-block bridge
 stays visible from kilometres away), becomes air when the whole voxel was
 dug out, and otherwise keeps the generator's value.
+
+## Driving the real window (M3b)
+
+`game/tools/window.ps1` drives the game's window from PowerShell, for what
+the harness can't reach (the panel, file dialogs, the app's hotbar):
+
+```powershell
+. game\tools\window.ps1
+$g = Start-Game -Arguments '--save saves/_live --blocks out/live/blocks.json --size 1600x900' -Log out\live\game.log
+Wait-GameWindow $g
+Send-GameKey $g F1                  # keys by System.Windows.Forms.Keys name
+Click-Game $g 820 163               # client pixels, read off a screenshot
+Drag-Game $g 740 300 1220 300
+Send-GameText $g 'red brick'        # into a focused text field
+Scroll-Game $g 1100 600 -5
+Look-Game $g 0 200                  # relative mouse motion (when captured)
+Save-GameShot $g out\live\01.png  # the client area, as on screen
+Stop-Game $g                        # Q (save and quit); kills only if stuck
+```
+
+`Attach-Game PID` picks up a game started by an earlier command, so a long
+session can be one command per step (save the id from `Start-Game`). It
+makes PowerShell DPI aware, finds the window by process id, and taps Alt
+before `SetForegroundWindow` so Windows lets it take focus. Screenshots
+copy the screen, so the game must be in front and nothing else on top;
+never copy the whole screen (a file dialog or another window may show
+private files). Point `--save`, `--blocks` and `--look-file` at scratch
+copies so a session never writes the real look files.
 
 ## The bench
 
@@ -540,6 +720,11 @@ digs a trench from the bank with the region one chunk wide, and checks the
 trench fills, the river inside the chunk keeps its water, and water flows
 in from the generated river upstream and out into it downstream, counted.
 All three must pass.
+
+`scripts/m3b-hotbar.play` (run with `--blocks scripts/m3b-look/blocks.json`)
+builds a wall of the painted `clay_brick` block from the M3b session on key
+1, checks its blocks, and shoots it near, at 300 m and at 1 km (where it
+shows the picture's average colour).
 
 `scripts/m2c-replay.play` goes to its sites with `find`, records a replay
 with the same recorder F10 uses (a sand collapse, digging at a river bank,
@@ -655,6 +840,21 @@ shorter than a frame still counts. Several need the bake at
 `cargo test --release -- --ignored water_stress --nocapture` (a 2,000-cell
 pour and a 10,000-cell dam break, with the per-tick cost).
 
+Blocks and textures (M3b): `blocks.json` with textures round-trips
+(written, read back, idempotent, back to the shipped file when the
+textures go), adding, renaming, falling and hiding write the file and merge
+back, contradictory flags and textures outside the folder are refused, PNG
+decoding, resampling (crisp up, averaged down, cut to the middle square),
+mips averaging in linear light, fill, undo, a texture file changed on disk
+reloading into its layer and the colour table (and a missing file loading
+when it appears), painting an example making the block's own copy, Save
+look writing the PNGs and blocks.json, a blocks.json edited on disk
+bringing a new block in live and a renumbering one refused, the panel's
+add, rename, fall and hotbar requests through a real session, and
+(`src/compat_tests.rs`) a save and a replay made before a block was added
+still loading and playing back exactly after it, live and after a restart,
+while a block that now falls is still caught.
+
 The look (M3a): look.json's round trip (defaults written and read back,
 partial files, unknown and out-of-range fields refused, the shipped file
 is the M1 look), blocks.json's round trip (the shipped file rewritten from
@@ -674,7 +874,7 @@ generation cost before and after (`profile_hydro_chunks`), find the evidence
 sites (`hydro_places`) and print the water model at a column
 (`hydro_probe`, with `HYDRO_PROBE="face i j"`).
 
-## Known gaps (M2b, M3a)
+## Known gaps (M2b, M3a, M3b)
 
 - Grass and dry grass have dirt sides everywhere, so the natural terrace
   steps on grassy hills now show as brown risers (dark green before), near
@@ -683,8 +883,13 @@ sites (`hydro_places`) and print the water model at a column
 - Underground is still lit like the surface: *Light in shadow* brightens or
   darkens tunnels and the night alike. Darkness underground needs skylight
   data (M3 or later).
-- Hot reload of blocks.json applies colours only; a new block, a renamed
-  one or a changed flag needs a restart (the panel says so).
+- Hot reload of blocks.json applies colours, textures, new blocks,
+  renames (listed in `was`), falling, hiding and the hotbar live; a change
+  to solid, liquid or replaceable needs a restart (the panel says so).
+- Blocks are drawn solid: no see-through blocks yet (glass, leaves would
+  need a cut-out drawing pass), and the water rules know one liquid, so the
+  panel adds only solid blocks. Water has no texture.
+- The pixel editor has no line, rectangle or mirror tools, and no redo.
 - A terrain preview keeps the world's height and sea level. At 1/8 the
   deepest ocean (about 1,380 m down) reaches below the bottom of the
   default world (512 m below the sea); 1/8 is normally run with

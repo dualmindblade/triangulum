@@ -114,6 +114,7 @@ impl Workshop {
         self.bui.editor.open(None);
         if let Some(id) = id {
             self.bui.rename = self.blocks[id as usize].name.clone();
+            self.bui.scroll_to = true;
         }
     }
 
@@ -216,12 +217,15 @@ impl Workshop {
 
     fn ui_block(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, id: BlockId) {
         let d = self.blocks[id as usize].clone();
-        ui.heading(format!("{} (block {id})", d.label()));
-        let shipped = self.shipped.iter().any(|n| d.answers_to(n));
+        let heading = ui.heading(format!("{} (block {id})", d.label()));
+        if std::mem::take(&mut self.bui.scroll_to) {
+            heading.scroll_to_me(Some(egui::Align::Min));
+        }
+        let shipped = self.fixed.contains(&id);
         egui::Grid::new("block-details").num_columns(2).spacing([14.0, 8.0]).show(ui, |ui| {
             ui.label("Name");
             if shipped {
-                ui.label(weak(format!("{} (it ships with the game: the world generator and the scripts find it by this name)", d.name)));
+                ui.label(format!("{} (fixed)", d.name)).on_hover_text("The world generator (and the scripts) find this block by its name, so it keeps it. Blocks you add can be renamed.");
             } else {
                 ui.horizontal(|ui| {
                     ui.add(egui::TextEdit::singleline(&mut self.bui.rename).desired_width(180.0));
@@ -316,8 +320,7 @@ impl Workshop {
     /// the sides' when they don't).
     pub(super) fn shown_file(&self, id: BlockId, face: usize) -> Option<String> {
         let cur = self.textures[id as usize].faces();
-        let f = if face >= 3 { if cur[0] == cur[1] && cur[1] == cur[2] { cur[1] } else { cur[1] } } else { cur[face] };
-        f.map(str::to_string)
+        cur[if face >= 3 { 1 } else { face }].map(str::to_string)
     }
 
     /// The file to paint the chosen faces into: the one they show, when
@@ -481,7 +484,8 @@ impl Workshop {
         #[cfg(windows)]
         {
             let (tx, rx) = mpsc::channel();
-            let dir = self.texset.dir.clone();
+            // The dialog needs a full path to open in the textures folder.
+            let dir = std::path::absolute(&self.texset.dir).unwrap_or_else(|_| self.texset.dir.clone());
             std::thread::spawn(move || {
                 let r = rfd::FileDialog::new().set_title("Import a picture for the block").add_filter("PNG picture", &["png"]).set_directory(dir).pick_file();
                 let _ = tx.send(r);

@@ -101,6 +101,8 @@ struct BlocksUi {
     rename: String,
     /// A falling change waiting for "Yes".
     confirm_falls: Option<(BlockId, bool)>,
+    /// Scroll the panel to the block's details (it was just picked).
+    scroll_to: bool,
     hotbar_slot: usize,
     editor: editor::PixelEditor,
     /// The file the editor's picture came from, if any.
@@ -121,6 +123,7 @@ impl Default for BlocksUi {
             add_error: None,
             rename: String::new(),
             confirm_falls: None,
+            scroll_to: false,
             hotbar_slot: 0,
             editor: editor::PixelEditor::default(),
             editing: None,
@@ -173,9 +176,9 @@ pub struct Workshop {
     table_dirty: bool,
     /// The example pictures in textures/examples/ (file, picture).
     examples: Vec<(String, Picture)>,
-    /// Blocks the game ships with: the generator, the scripts and the
-    /// tools find them by name, so their names are fixed.
-    shipped: Vec<String>,
+    /// Blocks the world generator finds by name (and the scripts and tools
+    /// with it): their names are fixed.
+    fixed: Vec<BlockId>,
     requests: Vec<Request>,
     /// What keys 1-9 hold, as the panel last set them.
     hotbar: Vec<BlockId>,
@@ -224,6 +227,12 @@ impl Workshop {
         // A --lod-factor on the command line wins over the file for this run.
         w.look.detail.lod_factor = engine.lod.factor;
         w.hotbar = engine.hotbar.clone();
+        w.fixed = engine.generator.block_ids();
+        // Evidence screenshots: `TRIANGULUM_PANEL_BLOCK=stone` opens that
+        // block's details and texture editor.
+        if let Some(id) = std::env::var("TRIANGULUM_PANEL_BLOCK").ok().and_then(|n| w.registry.id(&n).ok()) {
+            w.select(Some(id));
+        }
         w
     }
 
@@ -255,7 +264,6 @@ impl Workshop {
         let watches = [FileWatch::new(st.look_path.clone()), FileWatch::new(st.blocks_path.clone()), FileWatch::new(st.world_path.clone())];
         let texset = TextureSet::for_registry(&registry, textures::dir_for(&st.blocks_path));
         let examples = load_examples(&texset);
-        let shipped_names = Registry::parse(SHIPPED_BLOCKS).map(|r| r.defs().into_iter().map(|d| d.name).collect()).unwrap_or_default();
         let textures_now = registry.textures();
         let hotbar = registry.default_hotbar();
         let _ = &names;
@@ -283,7 +291,7 @@ impl Workshop {
             gpu_textures: false,
             table_dirty: true,
             examples,
-            shipped: shipped_names,
+            fixed: Vec::new(),
             requests: Vec::new(),
             hotbar,
             bui: BlocksUi::default(),
@@ -471,8 +479,7 @@ impl Workshop {
                     match self.registry.add(BlockDef::new_solid(&name, BlockColours::flat(colour), falls)) {
                         Ok(id) => {
                             self.refresh_blocks();
-                            self.bui.selected = Some(id);
-                            self.bui.rename = name.clone();
+                            self.select(Some(id));
                             self.bui.add_label.clear();
                             self.bui.add_open = false;
                             self.bui.add_error = None;
@@ -488,6 +495,10 @@ impl Workshop {
                     let old = self.registry.name(id);
                     match self.registry.rename(id, &new) {
                         Ok(()) => {
+                            // The hotbar in the file names it by its new name too.
+                            if let Some(h) = self.registry.hotbar_names() {
+                                self.registry.set_hotbar_names(Some(h.into_iter().map(|n| if n == old { new.clone() } else { n }).collect()));
+                            }
                             self.refresh_blocks();
                             let saved = self.write_defs();
                             self.note(match saved {
@@ -1012,6 +1023,7 @@ impl Workshop {
             .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-12.0, 12.0))
             .default_width(590.0)
             .min_width(560.0)
+            .max_width(640.0)
             .default_height(height)
             .min_height(height.min(900.0))
             .max_height(height)
@@ -1577,6 +1589,12 @@ mod tests {
         assert_eq!(back.id("brick").unwrap(), brick, "the old name still answers");
         assert!(back.has_gravity(brick));
         assert_eq!(back.saved_hotbar().unwrap().unwrap()[0], brick);
+        // A later rename renames it on the hotbar in the file too.
+        w.requests.push(Request::Rename(brick, "fire_brick".into()));
+        w.apply_requests(&mut s);
+        let back = Registry::load(&path.to_string_lossy()).unwrap();
+        assert_eq!(back.hotbar_names().unwrap()[0], "fire_brick");
+        assert_eq!(back.def(brick).was, vec!["brick".to_string(), "red_brick".to_string()]);
         // Back to the default hotbar: the key goes from the file too.
         w.requests.push(Request::Hotbar(None));
         w.apply_requests(&mut s);

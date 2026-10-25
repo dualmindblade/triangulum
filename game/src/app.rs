@@ -342,7 +342,7 @@ impl App {
             mode: if p.mode == Mode::Walk { "walk".into() } else { "fly".into() },
             on_ground: p.on_ground,
             in_water: p.in_water,
-            hotbar: engine.hotbar.iter().map(|&id| (engine.registry.def(id).name.clone(), engine.registry.colour(id))).collect(),
+            hotbar: engine.hotbar.iter().map(|&id| (engine.registry.def(id).label(), engine.registry.colour(id))).collect(),
             hotbar_tex: Vec::new(),
             selected: p.selected,
             outline,

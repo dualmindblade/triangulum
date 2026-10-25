@@ -498,10 +498,12 @@ impl Registry {
 
     /// The first eight solid blocks by id and then the first liquid (water on
     /// key 9, M2b): what keys 1-9 place unless the file's hotbar or
-    /// `--hotbar` says otherwise. Hidden blocks are left out.
+    /// `--hotbar` says otherwise. Fixed whatever is hidden (the play
+    /// scripts press 1-9 expecting it); new blocks come after the shipped
+    /// ones, so they never move it.
     pub fn default_hotbar(&self) -> Vec<BlockId> {
         let defs = self.defs.read().unwrap();
-        let mut hb: Vec<BlockId> = defs.list.iter().filter(|d| d.solid && !d.hidden && !d.name.starts_with("unused_")).map(|d| d.id).take(8).collect();
+        let mut hb: Vec<BlockId> = defs.list.iter().filter(|d| d.solid && !d.name.starts_with("unused_")).map(|d| d.id).take(8).collect();
         if let Some(l) = defs.list.iter().find(|d| d.liquid) {
             hb.push(l.id);
         }
@@ -1095,7 +1097,11 @@ mod tests {
         assert!(r.has_gravity(brick));
         assert!(r.set_falls(0, true).is_err(), "air cannot fall");
         r.set_hidden(r.id("marker_red").unwrap(), true).unwrap();
-        assert!(!r.default_hotbar().contains(&r.id("marker_red").unwrap()));
+        // Hiding never moves the default hotbar (the play scripts press 1-9).
+        let default = r.default_hotbar();
+        r.set_hidden(1, true).unwrap();
+        assert_eq!(r.default_hotbar(), default);
+        r.set_hidden(1, false).unwrap();
         r.set_hotbar_names(Some(vec!["red_brick".into(), "stone".into(), "water".into()]));
 
         let written = defs_into_text(&text, &r).unwrap();
