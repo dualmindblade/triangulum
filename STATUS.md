@@ -58,8 +58,11 @@
   around a coverage tree that never overlaps or leaves gaps. On an idle
   machine the 60 s test flight runs at **1,447 fps average, 602 fps for the
   worst 1% of frames, worst frame 5.7 ms**; at 1/8, which ran at 14 fps,
-  it's now 964 / 381 fps. Also a sneak key (Ctrl while walking), and water
-  surfaces that meet between detail levels.
+  it's now 964 / 381 fps. Also a sneak key (Ctrl while walking).
+  (Correction: I first wrote that water surfaces now meet between detail
+  levels. Astra's second review showed that fix only covers vertices; the
+  edges between them can still be up to 23 m apart, far out. It's on the
+  hardening list.)
 
 **M1 is feature-complete.** The last step is yours: play it and tell me what
 feels wrong.
@@ -86,6 +89,11 @@ cargo run --release -- --vscale 0.05                                    # 1/20
 cargo run --release -- --vscale 0.125 --height 4096 --sea-level 1536    # 1/8
 cargo run --release -- --block-size 0.5 --n 262144 --height 4096 --sea-level 1024 --vscale 0.05 --save saves/half   # half-metre blocks
 ```
+
+**Two cautions until the save fixes land (in progress):** don't press F
+(hide water) and then edit near the ocean, because that can save the ocean
+as dry land; and don't combine `--play` with `--save` pointing at your real
+save, because the harness clears that folder.
 
 Hold Ctrl while walking to sneak: you won't walk off edges, so you can
 back out over a gap and place blocks under you. Known issues: ripple
