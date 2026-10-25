@@ -30,7 +30,7 @@ fn template() -> (Arc<Engine>, String) {
         config.bake = BAKE.into();
         let registry = Arc::new(Registry::load(&format!("{root}/assets/blocks.json")).unwrap());
         let bake: Arc<dyn crate::worldgen::bake::Bake> = Arc::new(crate::worldgen::bake::open(BAKE).expect("world bake"));
-        let sha = save::bake_identity(BAKE).unwrap();
+        let sha = bake.identity().expect("the bake has an identity").to_string();
         let engine = Engine::build(config, registry, bake, Arc::new(EditStore::new()), LodParams { factor: 5.0, max_inflight: 4 }, MeshOptions { split: true, ao: true }, 2, false, Vec::new(), false).unwrap();
         (Arc::new(engine), sha)
     })
@@ -196,6 +196,34 @@ fn record_then_replay_gives_the_same_state() {
     assert_eq!(pose_text(&back.player), pose_text(&s.player), "the player ends exactly where it did");
     assert_eq!(back.sky.seconds.to_bits(), s.sky.seconds.to_bits());
     let _ = std::fs::remove_file(&summary.path);
+}
+
+/// M2-hardening changed what the simulation does at the edge of the active
+/// region, so a replay names the rules it was recorded under
+/// (`sim::RULES_VERSION`) and one recorded under other rules (an M2c file
+/// has none: version 1) is refused with the reason, not played into a
+/// divergence.
+#[test]
+fn a_replay_recorded_under_other_simulation_rules_is_refused() {
+    let mut s = fresh(None);
+    let path = temp("rules");
+    s.start_recording(&path, "rules").unwrap();
+    drive(&mut s, &timeline()[..3], 30, |_| STEP);
+    s.stop_recording().unwrap();
+    let mut rep = read(&path).unwrap();
+    assert_eq!(rep.header.sim_rules, crate::sim::RULES_VERSION);
+    let (t, sha) = template();
+    let block = t.planet.block_size;
+    let template_session = Session::new(t, Player::new(DVec3::X * 1e7, 0.0, 0.0, Mode::Fly, block), None, sha, Sim::new(SimConfig::default()));
+    assert!(compatibility(&template_session, &rep.header).is_ok());
+    // An M2c file: no sim_rules in its header.
+    let text = serde_json::to_string(&rep.header).unwrap().replace(&format!("\"sim_rules\":{},", crate::sim::RULES_VERSION), "");
+    assert!(!text.contains("sim_rules"));
+    rep.header = serde_json::from_str(&text).unwrap();
+    assert_eq!(rep.header.sim_rules, 1);
+    let err = compatibility(&template_session, &rep.header).unwrap_err();
+    assert!(err.contains("simulation rules version 1 vs"), "{err}");
+    let _ = std::fs::remove_file(&path);
 }
 
 #[test]

@@ -81,6 +81,9 @@ pub struct World {
     pub registry: Arc<Registry>,
     pub edits: Arc<EditStore>,
     natural: Mutex<NaturalCache>,
+    /// Unique per `World` (and so per generator it was built with): what
+    /// the edit store's "equals the natural chunk" answers are kept for.
+    id: u64,
 }
 
 /// Natural chunks kept for physics, evicted oldest-first one at a time.
@@ -94,7 +97,14 @@ struct NaturalCache {
 
 impl World {
     pub fn new(generator: Arc<Generator>, registry: Arc<Registry>, edits: Arc<EditStore>) -> Self {
-        Self { planet: generator.planet, generator, registry, edits, natural: Mutex::new(NaturalCache::default()) }
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        let id = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        Self { planet: generator.planet, generator, registry, edits, natural: Mutex::new(NaturalCache::default()), id }
+    }
+
+    /// This world's unique id (`World::new`).
+    pub fn id(&self) -> u64 {
+        self.id
     }
 
     pub fn water_id(&self) -> BlockId {
@@ -107,15 +117,23 @@ impl World {
         if let Some(c) = self.natural.lock().unwrap().map.get(&key) {
             return c.clone();
         }
-        let c = Arc::new(self.generator.generate(key).chunk);
+        self.remember_natural(key, Arc::new(self.generator.generate(key).chunk))
+    }
+
+    /// Put a generator's LOD-0 chunk in the cache (oldest out first) and
+    /// return the cached one. `generate` feeds it the chunks it makes for
+    /// the streamer anyway, so the simulation and physics near the player
+    /// rarely generate one themselves (a cache of a pure function: what is
+    /// in it changes only how fast, never what).
+    fn remember_natural(&self, key: ChunkKey, c: Arc<Chunk>) -> Arc<Chunk> {
         let mut g = self.natural.lock().unwrap();
+        if let Some(existing) = g.map.get(&key) {
+            return existing.clone();
+        }
         if g.map.len() >= NATURAL_CACHE_MAX {
             if let Some(old) = g.order.pop_front() {
                 g.map.remove(&old);
             }
-        }
-        if let Some(existing) = g.map.get(&key) {
-            return existing.clone();
         }
         g.order.push_back(key);
         g.map.insert(key, c.clone());
@@ -250,9 +268,17 @@ impl World {
     /// together with the placement and the units that found no room (a
     /// solid ceiling): those are lost, and the caller counts them.
     pub fn displace_writes(&self, bp: BlockPos) -> (Vec<(BlockPos, BlockId, Option<u8>)>, u32) {
+        self.displace_writes_within(bp, |_| true).expect("no cell is out of bounds")
+    }
+
+    /// `displace_writes` for a writer confined to some cells (the
+    /// simulation, to its active region: review 3 #7): None when the water
+    /// would have to rise into a cell `allowed` refuses before it finds
+    /// room or a ceiling.
+    pub fn displace_writes_within(&self, bp: BlockPos, allowed: impl Fn(BlockPos) -> bool) -> Option<(Vec<(BlockPos, BlockId, Option<u8>)>, u32)> {
         let (id, level) = self.block_and_level_at(bp);
         if !self.registry.is_liquid(id) || level == 0 {
-            return (Vec::new(), 0);
+            return Some((Vec::new(), 0));
         }
         let water = self.water_id();
         let mut remaining = level as u32;
@@ -267,6 +293,9 @@ impl World {
             if cap == 0 {
                 continue;
             }
+            if !allowed(up) {
+                return None;
+            }
             let d = remaining.min(cap);
             out.push((up, water, Some((ul as u32 + d) as u8)));
             remaining -= d;
@@ -274,7 +303,7 @@ impl World {
                 break;
             }
         }
-        (out, remaining)
+        Some((out, remaining))
     }
 
     /// The generator's chunk as dense ids and water levels: what an edited
@@ -446,6 +475,9 @@ impl World {
     /// levels; a coarse chunk's water is full wherever its voxel is water.
     pub fn generate(&self, key: ChunkKey) -> Generated {
         let mut g = self.generator.generate(key);
+        if key.lod == 0 {
+            self.remember_natural(key, Arc::new(g.chunk.clone()));
+        }
         if self.edits.is_empty() {
             return g;
         }

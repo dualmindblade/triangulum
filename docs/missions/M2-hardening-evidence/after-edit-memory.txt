@@ -1,0 +1,42 @@
+warning: variable does not need to be mutable
+    --> src\stream.rs:1783:13
+     |
+1783 |         let mut drain = |c: &mut Coverage, gpu: &mut FakeGpu, wants: &mut Vec<Want>| {
+     |             ----^^^^^
+     |             |
+     |             help: remove this `mut`
+     |
+     = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: field `colours_buf` is never read
+   --> src\render\mod.rs:128:5
+    |
+111 | pub struct Renderer {
+    |            -------- field in this struct
+...
+128 |     colours_buf: wgpu::Buffer,
+    |     ^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `triangulum` (bin "triangulum" test) generated 2 warnings (run `cargo fix --bin "triangulum" -p triangulum --tests` to apply 1 suggestion)
+    Finished `release` profile [optimized + debuginfo] target(s) in 0.46s
+     Running unittests src\main.rs (target\release\deps\triangulum-b50a41b5327e5812.exe)
+
+running 1 test
+test sim::tests::edit_memory_and_costs_by_edited_chunks ...    100 dry chunks:   10.8 KiB each (1 MB), made in 159 ms; state hash 16 ms (again 13 ms); first tick 0.8 ms; refocus avg 0.562 ms worst 0.579 ms with 100 frozen chunks; sim snapshot 0.0 ms, 13 KB
+        the edit store's own count: 16.0 KiB of ids and levels per chunk
+   100 wet chunks:   40.0 KiB each (4 MB), made in 161 ms; state hash 18 ms (again 15 ms); first tick 0.7 ms; refocus avg 0.576 ms worst 0.588 ms with 100 frozen chunks; sim snapshot 0.0 ms, 13 KB
+        the edit store's own count: 48.0 KiB of ids and levels per chunk
+  1000 dry chunks:   16.8 KiB each (17 MB), made in 1618 ms; state hash 148 ms (again 120 ms); first tick 2.3 ms; refocus avg 0.563 ms worst 0.573 ms with 1000 frozen chunks; sim snapshot 0.2 ms, 135 KB
+        the edit store's own count: 16.0 KiB of ids and levels per chunk
+  1000 wet chunks:   51.3 KiB each (53 MB), made in 1614 ms; state hash 176 ms (again 144 ms); first tick 2.2 ms; refocus avg 0.565 ms worst 0.577 ms with 1000 frozen chunks; sim snapshot 0.3 ms, 135 KB
+        the edit store's own count: 48.0 KiB of ids and levels per chunk
+ 10000 dry chunks:   17.8 KiB each (182 MB), made in 17031 ms; state hash 17594 ms (again 1206 ms); first tick 19.3 ms; refocus avg 0.562 ms worst 0.581 ms with 10000 frozen chunks; sim snapshot 2.5 ms, 1350 KB
+        the edit store's own count: 16.0 KiB of ids and levels per chunk
+ 10000 wet chunks:   51.5 KiB each (527 MB), made in 17349 ms; state hash 18248 ms (again 1489 ms); first tick 19.7 ms; refocus avg 0.572 ms worst 0.591 ms with 10000 frozen chunks; sim snapshot 2.8 ms, 1350 KB
+        the edit store's own count: 48.0 KiB of ids and levels per chunk
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 150 filtered out; finished in 86.96s
+

@@ -449,13 +449,19 @@ sim.gN.bin       the simulation: tick, update queue, frozen updates, blocks
                  that exact region) and a digest of the block rules
 ```
 
-A save is one snapshot: a generation's files are written and synced first
-and `commit.json` is switched last by rename, so a crash mid-save leaves
-the previous generation whole (files the commit does not name are
-leftovers and are ignored, then removed by the next save). Every file is
-checked against its digest, every chunk against the world's bounds and the
-block table, before anything is installed. Dirty chunks are acknowledged
-only once their generation is committed, so a failed write is retried.
+A save is one snapshot: a generation's files are written and flushed to
+the disk first, then their folders, and `commit.json` is switched last by
+a write-through rename (it returns only once the rename is on the disk),
+so a crash or a power cut mid-save leaves the previous generation whole
+(files the commit does not name are leftovers and are ignored, then
+removed by the next save). The previous generation's files are removed
+only after the new commit is on the disk, and a flush that fails fails the
+save (it is retried). Every file is checked against its digest, every
+chunk against the world's bounds and the block table, before anything is
+installed. Dirty chunks are acknowledged only once their generation is
+committed, so a failed write is retried. A save folder with a
+`commit.json` but no `header.json` is damaged, not empty: it is refused
+with a message instead of loading as an untouched world.
 
 Edits are saved a couple of seconds after you stop editing (at the latest
 15 s after the first unsaved edit) and when you quit. A save whose header
@@ -467,11 +473,12 @@ them only changes the terrain around them. Hiding water (F) is a view
 setting and never reaches generation, so an edit made with water hidden
 keeps the water in the saved chunk.
 
-The bake's identity is a SHA-256 of its rasters' contents, cached in
-`content.sha256.json` beside the bake and recomputed (a few seconds) when a
-raster's size or time changes, combined with the SHA-256 of `hydro.bin`
-when the bake has one. Saves made before the lakes and rivers (generator
-version 2) are refused.
+The bake's identity is a SHA-256 of the bytes the game loaded: meta.json,
+the six rasters in full and `hydro.bin` when the bake has one, hashed while
+they are parsed (about 0.25 s more at start-up on a CPU with SHA
+instructions, about 2 s without). Nothing is cached: the old
+`content.sha256.json` beside the bake is no longer read or written. Saves
+made before the lakes and rivers (generator version 2) are refused.
 
 Coarse LODs rebuild from edited data: a coarse voxel shows the topmost
 solid block in it when that block was placed by an edit (a one-block bridge

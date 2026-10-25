@@ -157,7 +157,7 @@ fn chunk_digest(key: ChunkKey, e: &Edited) -> u64 {
     d.u64(key.cx as u64);
     d.u64(key.cy as u64);
     d.u64(key.cz as u64);
-    d.u16s(&e.ids);
+    d.u16s(&e.ids.to_dense());
     match &e.water {
         Some(l) if l.iter().any(|&x| x != 0) => {
             d.u64(1);
@@ -607,6 +607,10 @@ pub struct Header {
     pub note: String,
     pub world: save::Identity,
     pub generator_version: u32,
+    /// `sim::RULES_VERSION` of the recording build (absent: 1). Other rules
+    /// would not reproduce the session, so another version is refused.
+    #[serde(default = "rules_v1")]
+    pub sim_rules: u32,
     pub bake_sha256: String,
     pub hotbar: Vec<String>,
     pub hide_water: bool,
@@ -631,6 +635,10 @@ pub struct Header {
     /// is self-contained).
     pub save_ref: Option<String>,
     pub files: Vec<FileEntry>,
+}
+
+fn rules_v1() -> u32 {
+    1
 }
 
 fn counters_of(s: &crate::sim::SimStats) -> BTreeMap<String, u64> {
@@ -812,6 +820,7 @@ impl Recorder {
             note: note.to_string(),
             world: save::Identity::of(&s.engine.config),
             generator_version: save::GENERATOR_VERSION,
+            sim_rules: crate::sim::RULES_VERSION,
             bake_sha256: s.bake_sha256.clone(),
             hotbar: s.engine.hotbar.iter().map(|&id| reg.def(id).name.clone()).collect(),
             hide_water: s.engine.hide_water,
@@ -1169,10 +1178,13 @@ pub fn compatibility(template: &Session, h: &Header) -> Result<(), String> {
     if h.generator_version != save::GENERATOR_VERSION {
         bad.push(format!("generator version {} vs {}", h.generator_version, save::GENERATOR_VERSION));
     }
+    if h.sim_rules != crate::sim::RULES_VERSION {
+        bad.push(format!("simulation rules version {} vs {} (a build with other water and falling rules would not reproduce it; play it with the build that recorded it)", h.sim_rules, crate::sim::RULES_VERSION));
+    }
     if h.bake_sha256 != template.bake_sha256 {
         bad.push(format!("bake {}.. vs {}.. (copy the bake it was recorded with, or re-bake)", &h.bake_sha256[..h.bake_sha256.len().min(12)], &template.bake_sha256[..template.bake_sha256.len().min(12)]));
     }
-    if bad.is_empty() { Ok(()) } else { Err(format!("this replay was recorded in a different world (recorded vs here: {})", bad.join("; "))) }
+    if bad.is_empty() { Ok(()) } else { Err(format!("this replay was recorded in a different world or under other rules (recorded vs here: {})", bad.join("; "))) }
 }
 
 /// A session at the replay's start, playing in `scratch` (wiped first;

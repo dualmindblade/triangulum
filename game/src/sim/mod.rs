@@ -28,9 +28,14 @@
 //! `SimConfig::radius_m` of the player are active; it is recomputed when the
 //! player crosses a chunk border. An update whose chunk is not active is
 //! moved to `frozen` under its chunk and comes back into the queue, due now,
-//! when that chunk is active again; it is never dropped and it is saved. A
-//! falling block outside the region hangs where it is. Rendering never
-//! decides any of this: the region is a function of the player's position.
+//! when that chunk is active again; it is never dropped and it is saved.
+//! When chunks join the region, both cells of every neighbour pair across
+//! their sides that could move water and is not as generated are woken
+//! too (review 3 #3: water at rest against the old edge used to stay there).
+//! A falling block outside the region hangs where it is, and one inside
+//! never moves into, lands in or displaces water into a chunk outside: it
+//! waits at the edge (review 3 #7). Rendering never decides any of this:
+//! the region is a function of the player's position.
 //!
 //! Falling blocks. A block whose definition has `gravity` and whose cell
 //! below is `replaceable` (air, water) leaves the grid and becomes a
@@ -54,6 +59,14 @@ use glam::DVec3;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::time::Instant;
 pub use water::Boundary;
+
+/// The version of the simulation's rules: what a replay recorded with this
+/// build expects them to do. A replay names it and a build with other rules
+/// refuses to play it rather than diverge. 1: M2a to M2c. 2: M2-hardening
+/// (review 3): a region that grows wakes both sides of the pairs it takes
+/// in (#3), a steady throughflow at the boundary stays scheduled (#9), and
+/// falling blocks wait at the region's edge (#7).
+pub const RULES_VERSION: u32 = 2;
 
 /// Simulation rate.
 pub const TICK_HZ: u32 = 20;
@@ -98,13 +111,20 @@ struct Overlay {
     /// Cells water fell into this tick: one whose own lower neighbour also
     /// received a fall is the middle of a moving column and waits too.
     fell_into: FastSet<PosKey>,
+    /// Cells that exchanged water with the boundary this tick but ended
+    /// where they started: they run again next tick (review 3 #9).
+    exchanged: FastSet<PosKey>,
     /// Units moved this tick (falls, spreads, boundary flows).
     moved: u64,
 }
 
 /// The canonical position key the queue sorts by: face, i, j, k packed so
 /// that integer order is lexicographic order. N up to 2^20 columns, H up to
-/// 2^16 layers.
+/// 2^16 layers; `Planet::try_new` refuses larger worlds at startup (review 3
+/// #10), so no key aliases another. The key is body-local: a `Sim` is one
+/// body's simulation (Neisor's; its frozen chunk keys carry the body), and
+/// another body (M4's vehicles, on their own grid) gets its own `Sim` and
+/// its own key space rather than a body field here.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub struct PosKey(pub u64);
 
@@ -375,6 +395,8 @@ pub struct SimStats {
     /// Cost of the last active-region recompute.
     pub refocus_us: u32,
     pub refocuses: u64,
+    /// Neighbour pairs woken because the region grew over them (review 3 #3).
+    pub pairs_woken: u64,
     /// Water (M2b), all in level units (255 = one full cell).
     /// Units moved by the rule (falls, spreads, boundary flows).
     pub water_moved: u64,
@@ -449,6 +471,9 @@ pub struct Sim {
     /// A restored focus: the next tick computes the region here first,
     /// as it was when the state was saved.
     pending_focus: Option<DVec3>,
+    /// `active` is a region computed since `new` or `restore`, so the next
+    /// recompute can tell which chunks joined (`wake_new_pairs`).
+    region_known: bool,
     ghosts: Vec<(Falling, u64)>,
     /// Queue, frozen or falling changed since the last snapshot.
     dirty: bool,
@@ -473,6 +498,7 @@ impl Sim {
             focus_chunk: None,
             focus_pos: None,
             pending_focus: None,
+            region_known: false,
             ghosts: Vec::new(),
             dirty: false,
             stats: SimStats::default(),
@@ -509,6 +535,7 @@ impl Sim {
         self.focus_chunk = None;
         self.focus_pos = None;
         self.pending_focus = snap.focus;
+        self.region_known = false;
         self.ghosts.clear();
         self.overlay = Overlay::default();
         self.dirty = false;
@@ -749,50 +776,63 @@ impl Sim {
             h.update(&f.vel.to_bits().to_le_bytes());
         }
         // Only chunks whose content differs from the generator's: an edited
-        // chunk equal to its natural one is the same world.
-        let no_water = |l: &Option<Vec<u8>>| l.as_ref().is_none_or(|v| v.iter().all(|&x| x == 0));
-        let chunks: Vec<_> = edits
-            .snapshot_full()
-            .into_iter()
-            .filter(|c| {
-                let n = world.natural(c.key);
-                if n.to_dense() != c.ids {
-                    return true;
-                }
+        // chunk equal to its natural one is the same world. Whether it is
+        // is kept per chunk until the chunk changes (the comparison
+        // regenerates the natural chunk), and no chunk is copied (review 2
+        // #17: this cloned every edited chunk, 96 KiB each).
+        let no_water = |l: Option<&[u8]>| l.is_none_or(|v| v.iter().all(|&x| x == 0));
+        let mut differing: Vec<ChunkKey> = Vec::new();
+        let generator = world.id();
+        edits.for_each_sorted(|key, e| {
+            let equal = e.natural_eq(generator).unwrap_or_else(|| {
+                let n = world.natural(key);
+                let ids_equal = (0..crate::world::chunk::VOXELS).all(|v| e.id(v) == n.get(v / 1024, (v / 32) % 32, v % 32));
                 let nw = n.water_dense();
-                match (no_water(&c.water), no_water(&nw)) {
-                    (true, true) => false,
-                    (false, false) => c.water != nw,
-                    _ => true,
-                }
-            })
-            .collect();
-        h.update(&(chunks.len() as u64).to_le_bytes());
+                let equal = ids_equal
+                    && match (no_water(e.water.as_deref()), no_water(nw.as_deref())) {
+                        (true, true) => true,
+                        (false, false) => e.water == nw,
+                        _ => false,
+                    };
+                e.set_natural_eq(generator, equal);
+                equal
+            });
+            if !equal {
+                differing.push(key);
+            }
+        });
+        h.update(&(differing.len() as u64).to_le_bytes());
         let mut buf = Vec::with_capacity(crate::world::chunk::VOXELS * 2);
-        for c in &chunks {
-            let ck = c.key;
-            h.update(&[ck.body, ck.face, ck.lod]);
-            h.update(&ck.cx.to_le_bytes());
-            h.update(&ck.cy.to_le_bytes());
-            h.update(&ck.cz.to_le_bytes());
-            buf.clear();
-            for id in &c.ids {
-                buf.extend_from_slice(&id.to_le_bytes());
-            }
-            h.update(&buf);
-            match &c.water {
-                Some(levels) if !no_water(&c.water) => {
-                    h.update(&[1]);
-                    h.update(levels);
+        for ck in differing {
+            edits.with_edited(ck, |e| {
+                h.update(&[ck.body, ck.face, ck.lod]);
+                h.update(&ck.cx.to_le_bytes());
+                h.update(&ck.cy.to_le_bytes());
+                h.update(&ck.cz.to_le_bytes());
+                buf.clear();
+                for v in 0..crate::world::chunk::VOXELS {
+                    buf.extend_from_slice(&e.id(v).to_le_bytes());
                 }
-                _ => h.update(&[0]),
-            }
+                h.update(&buf);
+                match &e.water {
+                    Some(levels) if !no_water(Some(levels)) => {
+                        h.update(&[1]);
+                        h.update(levels);
+                    }
+                    _ => h.update(&[0]),
+                }
+            });
         }
         hex(&h.finish())
     }
 
     /// Recompute the active region when the player has moved to another
-    /// chunk, and wake the frozen updates of chunks that are active now.
+    /// chunk, wake the frozen updates of chunks that are active now, and
+    /// (review 3 #3) wake both sides of every neighbour pair the change of
+    /// membership put inside the region (`wake_new_pairs`). The first
+    /// region after `new` or `restore` has nothing to compare with: a
+    /// restored state gets back the region it was saved with, and nothing
+    /// in it ran under other boundaries since.
     fn refocus(&mut self, world: &World, focus: DVec3) {
         let planet = &world.planet;
         let here = World::chunk_of(planet.block_of_pos(focus)).0;
@@ -802,7 +842,7 @@ impl Sim {
         let t0 = Instant::now();
         self.focus_chunk = Some(here);
         self.focus_pos = Some(focus);
-        self.active.clear();
+        let previous = std::mem::take(&mut self.active);
         let r = self.config.radius_m;
         let c = CHUNK as i64;
         let span = (r / (c as f64 * planet.block_size)).ceil() as i64 + 1;
@@ -830,17 +870,161 @@ impl Sim {
                 }
             }
         }
-        let woken: Vec<ChunkKey> = self.frozen.keys().filter(|k| self.active.contains(k)).copied().collect();
-        for k in woken {
-            if let Some(es) = self.frozen.remove(&k) {
+        // The chunks that joined. Frozen updates only ever sit under
+        // chunks outside the region, so only these can have any (review 2
+        // #17: this used to scan every frozen chunk on the planet).
+        let mut joined: Vec<ChunkKey> = self.active.iter().filter(|k| !previous.contains(k)).copied().collect();
+        joined.sort_unstable();
+        for k in &joined {
+            if let Some(es) = self.frozen.remove(k) {
                 for (key, _) in es {
                     self.queue.insert((self.tick, key));
                 }
                 self.dirty = true;
             }
         }
+        if self.region_known {
+            self.wake_new_pairs(world, &joined);
+        }
+        self.region_known = true;
         self.stats.refocus_us = t0.elapsed().as_micros() as u32;
         self.stats.refocuses += 1;
+    }
+
+    /// Review 3 #3. A cell beside a chunk outside the region ran its rule
+    /// against the boundary (`Sim::boundary_cell`): air there is a wall, and
+    /// the outside is never written. When that chunk joins the region the
+    /// pair is under the full rule, but only the outside cell had an update
+    /// waiting (frozen), and an empty cell cannot pull water: water that had
+    /// come to rest against the old edge stayed there, an invisible dam.
+    /// So for every pair of face neighbours across the side of a chunk that
+    /// joined, both now in the region, both cells are scheduled now when
+    /// the pair could move water (both replaceable, and their levels differ
+    /// or the upper one could fall into the lower) and at least one of the
+    /// two is not as the generator made it. A pair exactly as generated is
+    /// left alone: an untouched river stays held at its generated levels
+    /// (DESIGN.md) however the region moves, and a side between two
+    /// unedited chunks is skipped without looking at its cells.
+    fn wake_new_pairs(&mut self, world: &World, joined: &[ChunkKey]) {
+        if joined.is_empty() || world.edits.is_empty() {
+            return;
+        }
+        let reg = world.registry.clone();
+        let c = CHUNK as i64;
+        let joined_set: FastSet<ChunkKey> = joined.iter().copied().collect();
+        let mut woken = 0u64;
+        // What a chunk's side can hold, without generating it where the
+        // generator's footprint bounds already say: an unedited chunk that
+        // is all rock has nothing to move, one that is all air can only
+        // take water from the other side (generating a natural chunk costs
+        // about 1.7 ms; the bounds about 80 us per column of chunks).
+        #[derive(Clone, Copy, PartialEq)]
+        enum Holds {
+            Edited { wet: bool },
+            Air,
+            Rock,
+            Natural,
+        }
+        let mut bounds: FastMap<crate::grid::FootprintKey, (f64, f64)> = FastMap::default();
+        let mut holds = |k: ChunkKey| -> Holds {
+            if let Some(wet) = world.edits.with_edited(k, |e| e.wet_cells() > 0) {
+                return Holds::Edited { wet };
+            }
+            let range = *bounds.entry(k.footprint()).or_insert_with(|| world.generator.footprint_height_range_m(k.footprint()));
+            match world.generator.classify_in(k, range) {
+                crate::worldgen::ChunkClass::Air => Holds::Air,
+                crate::worldgen::ChunkClass::Enclosed => Holds::Rock,
+                crate::worldgen::ChunkClass::Mixed => Holds::Natural,
+            }
+        };
+        for &b in joined {
+            let (i0, j0, k0) = b.origin_blocks();
+            let (i0, j0, k0) = (i0 as i64, j0 as i64, k0 as i64);
+            // The six sides: a step (di, dj, dk) and the cells of b on that side.
+            for (di, dj, dk) in [(-1i64, 0i64, 0i64), (1, 0, 0), (0, -1, 0), (0, 1, 0), (0, 0, -1), (0, 0, 1)] {
+                let side_cell = |u: i64, v: i64| -> (i64, i64, i64) {
+                    let at = |d: i64, a: i64| if d < 0 { 0 } else if d > 0 { c - 1 } else { a };
+                    if di != 0 {
+                        (at(di, 0), u, v)
+                    } else if dj != 0 {
+                        (u, at(dj, 0), v)
+                    } else {
+                        (u, v, at(dk, 0))
+                    }
+                };
+                // The chunk across this side (through a face edge if need be).
+                let (x, y, z) = side_cell(c / 2, c / 2);
+                let Some(probe) = world.resolve_block(b.face, i0 + x + di, j0 + y + dj, k0 + z + dk) else { continue };
+                let n = World::chunk_of(probe).0;
+                if !self.active.contains(&n) {
+                    continue;
+                }
+                // A side between two chunks that both joined is seen from both: once.
+                if joined_set.contains(&n) && n < b {
+                    continue;
+                }
+                // Both as generated (the common case): held, and nothing to look at.
+                if !world.edits.contains(b) && !world.edits.contains(n) {
+                    continue;
+                }
+                let (hb, hn) = (holds(b), holds(n));
+                match (hb, hn) {
+                    // Rock on one side: nothing on this side is replaceable.
+                    (Holds::Rock, _) | (_, Holds::Rock) => continue,
+                    // Both as generated: held, whatever the water does there.
+                    (Holds::Air | Holds::Natural, Holds::Air | Holds::Natural) => continue,
+                    // Air beside a dry edited chunk: nothing to move.
+                    (Holds::Air, Holds::Edited { wet: false }) | (Holds::Edited { wet: false }, Holds::Air) => continue,
+                    _ => {}
+                }
+                // An all-air side is read as air without generating it. With
+                // one side edited and the other as generated, a pair to wake
+                // needs a changed cell on the edited side, so that side is
+                // read first and the other side's natural chunk is generated
+                // only when there is one.
+                let air = (world.generator.blocks.air, 0u8);
+                let read = |bp: BlockPos, all_air: bool| if all_air { air } else { world.block_and_level_at(bp) };
+                let (b_air, n_air) = (hb == Holds::Air, hn == Holds::Air);
+                let (b_ed, n_ed) = (matches!(hb, Holds::Edited { .. }), matches!(hn, Holds::Edited { .. }));
+                for u in 0..c {
+                    for v in 0..c {
+                        let (x, y, z) = side_cell(u, v);
+                        let p = BlockPos { face: b.face, i: (i0 + x) as u32, j: (j0 + y) as u32, k: (k0 + z) as u32 };
+                        let Some(q) = world.resolve_block(b.face, i0 + x + di, j0 + y + dj, k0 + z + dk) else { continue };
+                        if !self.active.contains(&World::chunk_of(q).0) {
+                            continue;
+                        }
+                        // The changed side of the pair, then the other.
+                        let (first, second, first_air, second_air) = if b_ed { (p, q, b_air, n_air) } else { (q, p, n_air, b_air) };
+                        let fc = read(first, first_air);
+                        if !reg.is_replaceable(fc.0) {
+                            continue;
+                        }
+                        let first_natural = world.natural_cell(first) == fc;
+                        if first_natural && !(b_ed && n_ed) {
+                            continue; // the other side is unedited: the pair is as generated
+                        }
+                        let sc = read(second, second_air);
+                        if !reg.is_replaceable(sc.0) {
+                            continue;
+                        }
+                        let ((_, pl), (_, ql)) = if b_ed { (fc, sc) } else { (sc, fc) };
+                        let (upper, lower) = if dk > 0 { (ql, pl) } else { (pl, ql) };
+                        let moves = pl != ql || (dk != 0 && upper > 0 && lower < water::FULL);
+                        if !moves || (first_natural && world.natural_cell(second) == sc) {
+                            continue;
+                        }
+                        self.queue.insert((self.tick, PosKey::of(p)));
+                        self.queue.insert((self.tick, PosKey::of(q)));
+                        woken += 1;
+                    }
+                }
+            }
+        }
+        if woken > 0 {
+            self.dirty = true;
+            self.stats.pairs_woken += woken;
+        }
     }
 
     /// One tick: absorb changes, advance the clock, drain due updates in
@@ -983,40 +1167,73 @@ impl Sim {
             }
             landed_in = None;
             let free = |k: i64| reg.is_replaceable(world.block_at(BlockPos { face, i, j, k: k as u32 }));
+            // Review 3 #7: a falling block never changes a chunk outside the
+            // region. Its sweep stops at the region's floor, its search for a
+            // free cell above stops at the region's top, and a landing whose
+            // displaced water would have to rise out of the region waits; a
+            // block that waits is left exactly as it was (it moves on when
+            // the region reaches further, as a frozen update does).
+            let inside = |k: i64| self.active.contains(&World::chunk_of(BlockPos { face, i, j, k: k as u32 }).0);
             // Something was built into the cell we are in: settle in the first free cell above.
             if !free(k0) {
-                match (k0 + 1..height).find(|&k| free(k)) {
-                    Some(k) => {
-                        self.land_into(world, f, k, &mut landings);
-                        landed_in = Some(f.column());
+                match (k0 + 1..height).find(|&k| !inside(k) || free(k)) {
+                    Some(k) if inside(k) => {
+                        if self.land_into(world, f, k, &mut landings) {
+                            landed_in = Some(f.column());
+                            self.dirty = true;
+                        } else {
+                            keep.push(f);
+                        }
                     }
-                    None => self.stats.vanished += 1,
+                    Some(_) => keep.push(f),
+                    None => {
+                        self.stats.vanished += 1;
+                        self.dirty = true;
+                    }
                 }
-                self.dirty = true;
                 continue;
             }
-            f.vel = (f.vel - g * TICK_S).max(-terminal);
-            let z1 = f.z + f.vel * TICK_S;
+            let vel = (f.vel - g * TICK_S).max(-terminal);
+            let z1 = f.z + vel * TICK_S;
             let mut k = k0;
             let mut landed = None;
+            let mut floor = false;
             while (k as f64) > z1 {
                 if k == 0 || !free(k - 1) {
                     landed = Some(k);
+                    break;
+                }
+                if !inside(k - 1) {
+                    floor = true;
                     break;
                 }
                 k -= 1;
             }
             match landed {
                 Some(k) => {
-                    self.land_into(world, f, k, &mut landings);
-                    landed_in = Some(f.column());
+                    if self.land_into(world, Falling { vel, ..f }, k, &mut landings) {
+                        landed_in = Some(f.column());
+                        self.dirty = true;
+                    } else {
+                        keep.push(f);
+                    }
+                }
+                None if floor => {
+                    // At the bottom of the lowest cell in the region.
+                    if f.z != k as f64 {
+                        f.z = k as f64;
+                        f.vel = vel;
+                        self.dirty = true;
+                    }
+                    keep.push(f);
                 }
                 None => {
                     f.z = z1;
+                    f.vel = vel;
                     keep.push(f);
+                    self.dirty = true;
                 }
             }
-            self.dirty = true;
         }
         if !landings.is_empty() {
             world.commit_levels(&landings);
@@ -1025,17 +1242,20 @@ impl Sim {
     }
 
     /// Record a landing: the block's write and, when it lands in water, the
-    /// displaced water's writes above it (batched by the caller).
-    fn land_into(&mut self, world: &World, f: Falling, k: i64, batch: &mut Vec<(BlockPos, BlockId, Option<u8>)>) {
+    /// displaced water's writes above it (batched by the caller). False,
+    /// and nothing recorded, when the displaced water would have to rise
+    /// into a chunk outside the region (review 3 #7): the block waits.
+    fn land_into(&mut self, world: &World, f: Falling, k: i64, batch: &mut Vec<(BlockPos, BlockId, Option<u8>)>) -> bool {
+        let bp = BlockPos { face: f.face, i: f.i, j: f.j, k: k as u32 };
+        let Some((displaced, lost)) = world.displace_writes_within(bp, |b| self.active.contains(&World::chunk_of(b).0)) else { return false };
         self.stats.landings += 1;
         self.ghosts.push((Falling { z: k as f64, vel: 0.0, ..f }, self.tick));
-        let bp = BlockPos { face: f.face, i: f.i, j: f.j, k: k as u32 };
-        let (displaced, lost) = world.displace_writes(bp);
         let level = world.water_level_at(bp) as u64;
         self.stats.water_displaced += level - lost as u64;
         self.stats.water_lost += lost as u64;
         batch.push((bp, f.id, None));
         batch.extend(displaced);
+        true
     }
 }
 

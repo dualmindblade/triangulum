@@ -1,0 +1,115 @@
+warning: variable does not need to be mutable
+    --> src\stream.rs:1783:13
+     |
+1783 |         let mut drain = |c: &mut Coverage, gpu: &mut FakeGpu, wants: &mut Vec<Want>| {
+     |             ----^^^^^
+     |             |
+     |             help: remove this `mut`
+     |
+     = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: field `colours_buf` is never read
+   --> src\render\mod.rs:128:5
+    |
+111 | pub struct Renderer {
+    |            -------- field in this struct
+...
+128 |     colours_buf: wgpu::Buffer,
+    |     ^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `triangulum` (bin "triangulum" test) generated 2 warnings (run `cargo fix --bin "triangulum" -p triangulum --tests` to apply 1 suggestion)
+    Finished `release` profile [optimized + debuginfo] target(s) in 0.51s
+     Running unittests src\main.rs (target\release\deps\triangulum-b50a41b5327e5812.exe)
+
+running 1 test
+pour of 2,000 cells: 619 ticks (618 with water moving), worst tick 4.457 ms, average moving tick 3.076 ms (rule 1.147, commit 0.698, absorb 0.861), 8771353 units moved, queued at the end 0
+  tick    2:    4.355 ms (rule   0.490 commit   2.156 absorb   0.414)    3200 water updates    510000 units moved
+  tick    3:    3.303 ms (rule   0.447 commit   2.171 absorb   0.414)    3360 water updates    510000 units moved
+  tick    4:    3.277 ms (rule   0.463 commit   2.130 absorb   0.408)    3360 water updates    510000 units moved
+  tick    5:    3.291 ms (rule   0.458 commit   2.149 absorb   0.405)    3360 water updates    510000 units moved
+  tick    6:    3.282 ms (rule   0.550 commit   2.009 absorb   0.453)    3360 water updates    524356 units moved
+  tick    8:    2.341 ms (rule   0.735 commit   0.699 absorb   0.639)    2845 water updates     48566 units moved
+  tick    9:    2.746 ms (rule   0.787 commit   0.892 absorb   0.760)    3182 water updates     49259 units moved
+  tick   10:    2.874 ms (rule   0.756 commit   0.989 absorb   0.783)    3544 water updates     49762 units moved
+  tick   11:    3.084 ms (rule   0.910 commit   0.964 absorb   0.834)    3752 water updates     46437 units moved
+  tick   12:    3.241 ms (rule   0.932 commit   1.014 absorb   0.918)    3821 water updates     37189 units moved
+  tick   13:    3.331 ms (rule   0.978 commit   0.989 absorb   0.972)    3869 water updates     35261 units moved
+  tick   14:    3.339 ms (rule   0.929 commit   0.992 absorb   0.993)    4118 water updates     33010 units moved
+  tick   15:    3.393 ms (rule   1.013 commit   0.981 absorb   0.976)    4160 water updates     32574 units moved
+  tick   16:    3.363 ms (rule   1.030 commit   0.912 absorb   0.991)    4225 water updates     30362 units moved
+  tick   17:    3.461 ms (rule   1.026 commit   0.933 absorb   1.076)    4224 water updates     32822 units moved
+  tick   18:    3.458 ms (rule   1.033 commit   0.929 absorb   1.043)    4376 water updates     30566 units moved
+  tick   19:    3.668 ms (rule   1.107 commit   0.968 absorb   1.134)    4388 water updates     33021 units moved
+  tick   20:    3.609 ms (rule   1.106 commit   0.918 absorb   1.120)    4465 water updates     30142 units moved
+  tick   21:    3.764 ms (rule   1.171 commit   0.972 absorb   1.144)    4507 water updates     32567 units moved
+  tick   22:    3.696 ms (rule   1.090 commit   0.980 absorb   1.145)    4596 water updates     30802 units moved
+  tick   23:    3.806 ms (rule   1.173 commit   0.976 absorb   1.175)    4536 water updates     30544 units moved
+  tick   24:    3.791 ms (rule   1.154 commit   0.983 absorb   1.174)    4591 water updates     30892 units moved
+  tick   25:    3.840 ms (rule   1.189 commit   0.987 absorb   1.187)    4623 water updates     31079 units moved
+  tick   26:    3.863 ms (rule   1.138 commit   1.035 absorb   1.203)    4663 water updates     30323 units moved
+  tick   27:    4.041 ms (rule   1.232 commit   1.042 absorb   1.269)    4687 water updates     30856 units moved
+  tick   28:    3.893 ms (rule   1.144 commit   1.011 absorb   1.237)    4732 water updates     31409 units moved
+  tick   29:    3.961 ms (rule   1.231 commit   1.008 absorb   1.218)    4700 water updates     29758 units moved
+  tick   30:    3.888 ms (rule   1.148 commit   1.010 absorb   1.232)    4707 water updates     29480 units moved
+  tick   31:    3.995 ms (rule   1.233 commit   1.034 absorb   1.218)    4743 water updates     29109 units moved
+  tick   32:    3.861 ms (rule   1.158 commit   1.000 absorb   1.207)    4710 water updates     28053 units moved
+  tick   33:    4.068 ms (rule   1.257 commit   1.051 absorb   1.259)    4728 water updates     30663 units moved
+  tick   34:    4.009 ms (rule   1.199 commit   1.042 absorb   1.262)    4809 water updates     29411 units moved
+  tick   35:    4.205 ms (rule   1.265 commit   1.126 absorb   1.308)    4780 water updates     31760 units moved
+  tick   36:    4.088 ms (rule   1.191 commit   1.066 absorb   1.321)    4795 water updates     30501 units moved
+  tick   37:    4.086 ms (rule   1.258 commit   1.042 absorb   1.273)    4810 water updates     30898 units moved
+  tick   38:    4.027 ms (rule   1.183 commit   1.035 absorb   1.309)    4792 water updates     28946 units moved
+  tick   39:    4.164 ms (rule   1.305 commit   1.061 absorb   1.277)    4756 water updates     30894 units moved
+  tick   40:    3.959 ms (rule   1.183 commit   1.020 absorb   1.254)    4777 water updates     28981 units moved
+  tick   41:    4.123 ms (rule   1.247 commit   1.064 absorb   1.311)    4769 water updates     31110 units moved
+  tick   42:    4.102 ms (rule   1.205 commit   1.061 absorb   1.320)    4788 water updates     27454 units moved
+pour: second layer levels 41..82, worst tick 4.457 ms
+dam break: the lake's 10,000 cells notified once: 16.344 ms, then at rest
+dam break of 10,000 cells: 4000 ticks (4000 with water moving), worst tick 7.507 ms, average moving tick 4.880 ms (rule 1.988, commit 1.028, absorb 1.340), 65472480 units moved, queued at the end 5768
+  tick   25:    2.210 ms (rule   0.759 commit   0.556 absorb   0.619)    2760 water updates     29500 units moved
+  tick   39:    3.876 ms (rule   1.313 commit   1.028 absorb   1.191)    3620 water updates     53260 units moved
+  tick   43:    3.797 ms (rule   1.356 commit   0.942 absorb   1.143)    3800 water updates     49520 units moved
+  tick   47:    4.033 ms (rule   1.390 commit   1.038 absorb   1.236)    3940 water updates     52560 units moved
+  tick   49:    3.919 ms (rule   1.420 commit   0.968 absorb   1.156)    3940 water updates     47160 units moved
+  tick   50:    3.389 ms (rule   0.890 commit   0.968 absorb   1.163)    3980 water updates     26180 units moved
+  tick   51:    3.817 ms (rule   1.392 commit   0.928 absorb   1.126)    3980 water updates     44920 units moved
+  tick   55:    3.840 ms (rule   1.407 commit   0.945 absorb   1.122)    3940 water updates     43840 units moved
+  tick   57:    3.892 ms (rule   1.428 commit   0.951 absorb   1.129)    4160 water updates     44480 units moved
+  tick   59:    3.945 ms (rule   1.462 commit   0.946 absorb   1.147)    4200 water updates     44760 units moved
+  tick   61:    3.936 ms (rule   1.455 commit   0.943 absorb   1.144)    4220 water updates     45820 units moved
+  tick   63:    4.115 ms (rule   1.418 commit   1.044 absorb   1.268)    4120 water updates     54100 units moved
+  tick   65:    4.059 ms (rule   1.477 commit   0.991 absorb   1.205)    4180 water updates     49640 units moved
+  tick   67:    4.082 ms (rule   1.512 commit   0.986 absorb   1.182)    4300 water updates     46880 units moved
+  tick   69:    4.303 ms (rule   1.572 commit   1.019 absorb   1.301)    4400 water updates     45500 units moved
+  tick   70:    3.823 ms (rule   1.057 commit   1.064 absorb   1.271)    4420 water updates     19500 units moved
+  tick   71:    4.132 ms (rule   1.611 commit   0.943 absorb   1.148)    4560 water updates     44180 units moved
+  tick   73:    4.104 ms (rule   1.508 commit   0.978 absorb   1.218)    4380 water updates     44980 units moved
+  tick   75:    4.179 ms (rule   1.568 commit   0.982 absorb   1.207)    4580 water updates     44860 units moved
+  tick   77:    4.405 ms (rule   1.587 commit   1.076 absorb   1.331)    4480 water updates     54100 units moved
+  tick   78:    3.834 ms (rule   1.014 commit   1.082 absorb   1.315)    4380 water updates     30900 units moved
+  tick   79:    4.310 ms (rule   1.584 commit   1.030 absorb   1.282)    4460 water updates     49840 units moved
+  tick   80:    3.834 ms (rule   1.067 commit   1.064 absorb   1.271)    4560 water updates     24380 units moved
+  tick   81:    4.390 ms (rule   1.628 commit   1.065 absorb   1.278)    4560 water updates     50920 units moved
+  tick   82:    3.860 ms (rule   1.065 commit   1.083 absorb   1.293)    4520 water updates     23380 units moved
+  tick   83:    4.940 ms (rule   1.650 commit   1.162 absorb   1.706)    4620 water updates     55020 units moved
+  tick   84:    4.761 ms (rule   1.475 commit   1.276 absorb   1.471)    4680 water updates     24460 units moved
+  tick   85:    4.950 ms (rule   1.788 commit   1.234 absorb   1.460)    4780 water updates     55260 units moved
+  tick   86:    4.212 ms (rule   1.192 commit   1.156 absorb   1.390)    4820 water updates     25340 units moved
+  tick   87:    4.562 ms (rule   1.678 commit   1.100 absorb   1.348)    4660 water updates     56260 units moved
+  tick   88:    3.992 ms (rule   1.087 commit   1.117 absorb   1.361)    4400 water updates     24980 units moved
+  tick   89:    4.569 ms (rule   1.628 commit   1.138 absorb   1.375)    4540 water updates     55060 units moved
+  tick   90:    4.136 ms (rule   1.129 commit   1.153 absorb   1.414)    4660 water updates     26840 units moved
+  tick   91:    4.856 ms (rule   1.755 commit   1.181 absorb   1.464)    4780 water updates     54560 units moved
+  tick   92:    4.337 ms (rule   1.207 commit   1.204 absorb   1.464)    4920 water updates     26160 units moved
+  tick   93:    4.842 ms (rule   1.750 commit   1.169 absorb   1.460)    4940 water updates     54840 units moved
+  tick   94:    4.442 ms (rule   1.223 commit   1.184 absorb   1.562)    4980 water updates     26860 units moved
+  tick   95:    5.232 ms (rule   1.880 commit   1.312 absorb   1.488)    5020 water updates     54560 units moved
+  tick   96:    4.436 ms (rule   1.259 commit   1.218 absorb   1.477)    5080 water updates     26620 units moved
+  tick   97:    4.856 ms (rule   1.769 commit   1.170 absorb   1.445)    4920 water updates     54420 units moved
+dam break: NOT settled within 4000 ticks; 5768 queued
+test sim::water_tests::water_stress_large_pour_and_dam_break ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 131 filtered out; finished in 24.21s
+
