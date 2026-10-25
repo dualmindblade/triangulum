@@ -48,7 +48,9 @@ with their OK; record the change here with the date.
   biome surfaces, trees, rocks, caves, rivers, lakes, shores, ice.
   See `docs/feature-inventory.md`.
 - Clouds are a sky effect above the world height; they do not shrink 1/70.
-- Time: 24-minute days (one game minute per real second).
+- Time: 24-minute days (one game minute per real second), from Andrew's
+  October vision. His July calendar (7-day lunar month, 3 months per season,
+  84-day year, all adjustable) carries over unless he changes it: to confirm.
 
 ## Water (Andrew)
 

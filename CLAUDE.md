@@ -12,6 +12,9 @@ things look. **Claude (Opus)** leads the agents.
   `output/<world>/planet_data.npz`, is gitignored and takes ~1.5 h to regenerate.
 - `scripts/` — bake scripts that turn planetgen output into engine assets.
 - `viewer/` — the old viewer. Frozen, kept for reference and comparison.
+- `docs/source/` — Austin's and Andrew's own specs and reference images.
+- `docs/feature-inventory.md` — every feature of the old viewer and how it
+  worked; read the section for whatever you are porting.
 - `docs/archive/` — the July docs. Don't read them unless a task says to.
 
 ## Read first
