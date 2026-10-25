@@ -1,8 +1,9 @@
 # Triangulum engine (`game/`)
 
 The new engine: a planet-sized cube-sphere voxel world you can walk on, dig
-into, build on and come back to. This is the M1b state: walk, fly, dig,
-build, save, with the July sky and lighting ported in M1c.
+into, build on and come back to. This is the M2a state: walk, fly, dig,
+build, save, the July sky and lighting (M1c), and the first simulation:
+sand and gravel fall.
 
 ## Running
 
@@ -68,6 +69,8 @@ gravity, a 1.28 m jump and simple buoyancy in water. There is no fall damage.
                       world parameters (defaults in assets/world.json)
 --save DIR            save directory (default saves/<world name>)
 --no-save             neither load nor write a save
+--sim-radius M        active region of the simulation around the player (112)
+--no-sim              start with the simulation off
 --hotbar a,b,c        blocks on keys 1-9 by name (default: the first nine solid blocks)
 --walk | --fly        starting mode
 --hide-water          start with water hidden
@@ -132,25 +135,73 @@ also checks liquid occupancy and byte-identical paused captures.
 the reel selects its own four times. Reversed-Z, the infinite far plane
 and camera-relative vertex positions are preserved.
 
+## The simulation (M2a)
+
+A fixed 20 Hz tick runs on the main thread, every third 60 Hz player step,
+so a scripted session always ticks at the same steps. It is a separate
+clock from the sky's: `[` and `]` speed up the day, not physics. The tick
+drains a block-update queue ordered by (due tick, position) and, through it,
+the first rule: a block whose definition has `"gravity": true` (sand,
+gravel in `assets/blocks.json`) and whose cell below is `"replaceable"`
+(air, water) leaves the grid, falls straight down its own column as a
+moving block under the player's gravity, and lands in the first cell above
+something solid. Removing it notifies the block above, which falls a tick
+later, so digging under a column collapses it in a chain and the column
+lands in order. Every block change, by you or by the simulation, notifies
+its six neighbours across chunk borders and cube-face edges.
+
+Only LOD-0 chunks within `--sim-radius` metres of you (112 by default) are
+simulated; elsewhere the world is frozen. An update due in a frozen chunk
+waits until you come back, and is saved meanwhile; a block falling there
+hangs mid-air until then. Blocks in flight are drawn as cubes and saved
+with the queue, so a quit mid-collapse resumes mid-collapse. Snow does not
+fall (a flag away if Andrew wants it); nothing but sand and gravel does, and
+stone never collapses (Andrew's call).
+
+The stats panel shows the tick, blocks in flight, queued and frozen updates,
+active chunks and the tick cost. Idle ticks cost microseconds; a 5,041-block
+slab in flight costs about a millisecond a tick, with the mass start (68 ms)
+and the landing ticks (5-11 ms) as the known spikes.
+
 ## Saves
 
-Only chunks that changed are saved, whatever changed them, under
-`game/saves/<world>/` (gitignored):
+Only chunks that changed are saved, whatever changed them (you or the
+simulation), under `game/saves/<world>/` (gitignored):
 
 ```
-header.json      format version, generator version, body id, the world's
-                 identity (seed, block size, H, sea level, N, vertical scale,
-                 roughness), the projection and its table's SHA-256, the
-                 bake's SHA-256, the block-id table
-chunks/*.chunk   one LOD-0 chunk each, in full
+header.json      format version (3), generator version, body id, the
+                 world's identity (seed, block size, H, sea level, N,
+                 vertical scale, roughness), the projection and its table's
+                 SHA-256, the bake's content SHA-256, the block-id table
+commit.json      the current generation: which file holds each chunk, the
+                 simulation state file, and a SHA-256 for every one of them
+chunks/*.gN.chunk  one LOD-0 chunk each, in full (ids and water levels),
+                 written in generation N
+sim.gN.bin       the simulation: tick, update queue, frozen updates, blocks
+                 in flight
 ```
+
+A save is one snapshot: a generation's files are written and synced first
+and `commit.json` is switched last by rename, so a crash mid-save leaves
+the previous generation whole (files the commit does not name are
+leftovers and are ignored, then removed by the next save). Every file is
+checked against its digest, every chunk against the world's bounds and the
+block table, before anything is installed. Dirty chunks are acknowledged
+only once their generation is committed, so a failed write is retried.
 
 Edits are saved a couple of seconds after you stop editing (at the latest
 15 s after the first unsaved edit) and when you quit. A save whose header
 does not match the running world is refused at startup with the reasons;
-start with the saved settings or point `--save` somewhere else. Edited
-chunks are authoritative: they are never regenerated, so changing the
-generator around them only changes the terrain around them.
+start with the saved settings or point `--save` somewhere else. Saves from
+before M2a (format 2) are refused the same way. Edited chunks are
+authoritative: they are never regenerated, so changing the generator around
+them only changes the terrain around them. Hiding water (F) is a view
+setting and never reaches generation, so an edit made with water hidden
+keeps the water in the saved chunk.
+
+The bake's identity is a SHA-256 of its rasters' contents, cached in
+`content.sha256.json` beside the bake and recomputed (a few seconds) when a
+raster's size or time changes.
 
 Coarse LODs rebuild from edited data: a coarse voxel shows the topmost
 solid block in it when that block was placed by an edit (a one-block bridge
@@ -191,6 +242,11 @@ and a tunnel, build a stone bridge over the trench, walk across it, save,
 reload, check every edited block, and shoot the bridge from 300 m, 550 m
 and 1 km (LOD 0, 1 and 2). It must pass.
 
+`scripts/m2a-sand.play` is the M2a scenario: tunnel under a column, build a
+sand and gravel tower on it, knock the support out and watch the chain
+collapse land in order; then the same with the simulation paused, resumed,
+saved and reloaded mid-fall. It must pass too.
+
 The command list lives in the header of `src/play.rs`; the ones you will
 use most:
 
@@ -200,10 +256,12 @@ at LAT LON [ALT]         teleport by coordinates
 lookaxis +i -30          face exactly along a lattice axis, pitch in degrees
 aim DI DJ DK             look at a lattice point relative to the feet cell
 hold w,shift 2           hold keys for seconds; tap break|place|jump|g|1..9
+tick N | sim on|off      N simulation ticks (20 Hz); pause or resume it
 shot NAME                settled frame + state; bench N; state NAME
 save | reload            write edits; quit-and-restart from disk
 assert FIELD OP VALUE    position, altitude, on_ground, in_water, crosshair,
-                         block[F,I,J,K], block_rel[DI,DJ,DK], ...
+                         block[F,I,J,K], block_rel[DI,DJ,DK], falling,
+                         falling_rel[DI,DJ], queued, sim_hash, ...
 ```
 
 Writing a script: teleport with `atblock` rather than walking to places,
@@ -218,16 +276,26 @@ cargo test --release
 
 The tests cover the lattice (face-edge transforms at every edge and a
 corner, at LOD 0 and a coarse LOD; configuration validation), chunk
-compression and its byte format, the edit store, saves (round trip,
-mismatched header refused with reasons), edits propagating to coarse LODs
-and to neighbour chunks, and player collision edge cases (resting exactly
-on a floor, walls, jumping onto a step, half-metre blocks, walking across a
-face edge and round a corner, swimming, picking). Several need the bake at
-`C:/code/triangulum/game/assets/world/seed42`.
+compression and its byte format, the edit store (revisions, acknowledged
+saves, water levels), saves (round trip, mismatched header refused with
+reasons, an interrupted save leaving the previous generation whole, damaged
+and out-of-bounds files refused), edits propagating to coarse LODs and to
+neighbour chunks, player collision edge cases (resting exactly on a floor,
+walls, jumping onto a step, half-metre blocks, walking across a face edge
+and round a corner, swimming, picking), and the simulation: neighbour
+notification across chunk and face edges, the chain collapse and the drain
+order, settling above a block built into a fall, frozen updates waiting and
+persisting, and the determinism hash across two runs, rayon pools of 1 and
+8 threads, and a save and reload mid-fall. Several need the bake at
+`C:/code/triangulum/game/assets/world/seed42`. The 5,041-block stress test
+is `cargo test --release -- --ignored stress`.
 
-## Known gaps (M1c)
+## Known gaps (M2a)
 
-- No water simulation or falling blocks (M2).
+- No water simulation yet (M2b); water is still full or absent, though the
+  store and the saves now carry a level per block.
+- Falling blocks pass through each other and through the player; a block
+  that lands in your cell pushes you up.
 - Chunks entirely below every surface (`Enclosed`) are never streamed; one
   that gets edited appears under its coarser parent and refines down to
   LOD 0 over the next frames, so a deep shaft shows its walls coarsely for

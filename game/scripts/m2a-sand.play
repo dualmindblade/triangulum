@@ -1,0 +1,271 @@
+# M2a: falling sand and gravel. Dig under a tower, watch it collapse in a
+# chain and land in order; build another over a gap with the simulation
+# paused, resume it, save and reload mid-fall, and check where everything
+# lands.
+#
+# Terrain-independent in the m1-done.play sense: every height is relative to
+# where the player stands (block_rel, dk 0 = the feet block) and every check
+# is about what the edits and the simulation did. The site is the flat patch
+# east of the m1-done bridge: row J = 57531 (and 57525), columns 107153..
+# 107159, whose ground is level (probed 2026-10-25; a gentler or steeper
+# neighbour would move one aim by a block, nothing else).
+#
+# The trick for "a tower over a gap" without seeing under it: dig a shaft
+# three deep in the neighbouring column S, tunnel one cell along +i into
+# column T at the shaft's two bottom layers, then build the tower on T's
+# untouched surface block and knock that block out from inside the tunnel.
+#
+#   fly mode: "hold space 0.05" rises exactly one layer; aim 0 0 -0.5 at
+#   the block under the feet places into one's own cell (allowed in fly)
+#   tick N: N simulation ticks (20 Hz) with no input; the first sand falls
+#   one tick after the support goes, the next one a tick later, and so on;
+#   a one-layer fall takes six ticks, three layers ten.
+
+# ---- 1. Scene A (S = 107155, T = 107156, J = 57531): shaft, tunnel, tower ----
+atblock 2 107155 57531 2000
+assert mode == walk
+assert on_ground == true
+assert sim_enabled == true
+assert falling == 0
+# the shaft: three blocks straight down
+aim 0 0 -0.5
+tap break
+wait 0.6
+aim 0 0 -0.5
+tap break
+wait 0.6
+aim 0 0 -0.5
+tap break
+wait 0.6
+assert on_ground == true
+assert block_rel[0,0,1] == air
+assert block_rel[0,0,2] == air
+assert block_rel[0,0,-1] != air
+# the tunnel: head cell then feet cell of column T, one along +i
+lookaxis +i 0
+aim 1 0 1.5
+assert crosshair != none
+tap break
+assert block_rel[1,0,1] == air
+aim 1 0 0.5
+tap break
+assert block_rel[1,0,0] == air
+assert block_rel[1,0,2] != air
+assert block_rel[1,0,-1] != air
+# the tower on T's surface: three sand, one gravel (keys 4 and 5)
+atblock 2 107156 57531 2000
+assert block_rel[0,0,-1] != air
+assert block_rel[0,0,-2] == air
+assert block_rel[0,0,-3] == air
+mode fly
+select 4
+assert selected_block == sand
+aim 0 0 -0.5
+tap place
+assert block_rel[0,0,0] == sand
+hold space 0.05
+aim 0 0 -0.5
+tap place
+assert block_rel[0,0,0] == sand
+hold space 0.05
+aim 0 0 -0.5
+tap place
+assert block_rel[0,0,0] == sand
+hold space 0.05
+select 5
+assert selected_block == gravel
+aim 0 0 -0.5
+tap place
+assert block_rel[0,0,0] == gravel
+assert block_rel[0,0,-3] == sand
+tick 5
+assert falling == 0
+assert queued == 0
+mode walk
+# a look at it
+atblock 2 107149 57531 2000
+mode fly
+hold space 0.15
+aim 7 0 -1.0
+shot 01_tower
+mode walk
+
+# ---- 2. knock the surface block out from the tunnel: a chain collapse -------
+atblock 2 107155 57531 2000
+assert block_rel[0,0,-1] != air
+assert block_rel[1,0,0] == air
+lookaxis +i 0
+aim 1 0 2.5
+assert crosshair != none
+assert crosshair != sand
+tap break
+assert block_rel[1,0,2] == air
+assert falling == 0
+tick 1
+assert falling == 1
+assert falling_rel[1,0] == 1
+tick 1
+assert falling == 2
+tick 1
+assert falling == 3
+tick 1
+assert falling == 4
+assert falls == 4
+# mid-fall frames
+mode walk
+atblock 2 107149 57531 2000
+mode fly
+hold space 0.15
+aim 7 0 -1.0
+shot 02_collapse_a
+tick 3
+shot 02_collapse_b
+tick 3
+shot 02_collapse_c
+tick 30
+assert falling == 0
+assert landings == 4
+assert vanished == 0
+assert queued == 0
+shot 02_collapse_d_landed
+mode walk
+# where everything landed: the column drained three layers into the tunnel,
+# sand, sand, sand, gravel from the bottom up, and nothing above
+atblock 2 107156 57531 2000
+assert block_rel[0,0,-1] == gravel
+assert block_rel[0,0,-2] == sand
+assert block_rel[0,0,-3] == sand
+assert block_rel[0,0,-4] == sand
+assert block_rel[0,0,-5] != air
+assert block_rel[0,0,-5] != sand
+assert block_rel[0,0,0] == air
+assert block_rel[0,0,1] == air
+assert block_rel[0,0,2] == air
+# and from the shaft the tunnel is full of sand
+atblock 2 107155 57531 2000
+assert block_rel[1,0,0] == sand
+assert block_rel[1,0,1] == sand
+assert block_rel[0,0,0] == air
+
+# ---- 3. Scene B (S = 107154, T = 107155, J = 57525): paused, then all at once
+atblock 2 107154 57525 2000
+assert on_ground == true
+aim 0 0 -0.5
+tap break
+wait 0.6
+aim 0 0 -0.5
+tap break
+wait 0.6
+aim 0 0 -0.5
+tap break
+wait 0.6
+assert block_rel[0,0,2] == air
+lookaxis +i 0
+aim 1 0 1.5
+tap break
+aim 1 0 0.5
+tap break
+assert block_rel[1,0,0] == air
+assert block_rel[1,0,1] == air
+# deepen the gap: step into the tunnel and dig four more down
+hold w 0.5
+assert block_rel[0,0,2] != air
+aim 0 0 -0.5
+tap break
+wait 0.6
+aim 0 0 -0.5
+tap break
+wait 0.6
+aim 0 0 -0.5
+tap break
+wait 0.6
+aim 0 0 -0.5
+tap break
+wait 0.6
+assert on_ground == true
+assert block_rel[0,0,4] == air
+assert block_rel[0,0,5] == air
+assert block_rel[0,0,6] != air
+sim off
+assert sim_enabled == false
+# the tower on T's surface block
+atblock 2 107155 57525 2000
+assert block_rel[0,0,-1] != air
+assert block_rel[0,0,-2] == air
+mode fly
+select 4
+aim 0 0 -0.5
+tap place
+hold space 0.05
+aim 0 0 -0.5
+tap place
+hold space 0.05
+select 5
+aim 0 0 -0.5
+tap place
+assert block_rel[0,0,0] == gravel
+assert block_rel[0,0,-1] == sand
+assert block_rel[0,0,-2] == sand
+mode walk
+# knock the support out while paused: nothing moves
+atblock 2 107154 57525 2000
+lookaxis +i 0
+aim 1 0 2.5
+assert crosshair != none
+tap break
+assert block_rel[1,0,2] == air
+tick 5
+assert falling == 0
+assert block_rel[1,0,3] == sand
+# resume: every block in the column is notified in the same tick and all three start together
+sim on
+tick 1
+assert falling == 3
+assert falling_rel[1,0] == 3
+tick 1
+assert falling == 3
+# save and reload mid-fall, then let them land
+save
+assert dirty == 0
+reload
+assert falling == 3
+assert sim_tick > 0
+mode walk
+atblock 2 107150 57525 2000
+mode fly
+hold space 0.15
+aim 5 0 -1.0
+shot 03_reloaded_midfall
+tick 40
+assert falling == 0
+assert vanished == 0
+shot 03_reloaded_landed
+mode walk
+# the tower fell seven layers to the bottom of the hole: sand, sand, gravel; air above to the sky
+atblock 2 107155 57525 2000
+assert block_rel[0,0,-1] == gravel
+assert block_rel[0,0,-2] == sand
+assert block_rel[0,0,-3] == sand
+assert block_rel[0,0,-4] != air
+assert block_rel[0,0,-4] != sand
+assert block_rel[0,0,0] == air
+assert block_rel[0,0,1] == air
+assert block_rel[0,0,2] == air
+assert block_rel[0,0,3] == air
+assert block_rel[0,0,4] == air
+# the edits survived the reload too
+atblock 2 107154 57525 2000
+assert block_rel[0,0,0] == air
+assert block_rel[0,0,-1] != air
+assert block_rel[1,0,0] == air
+assert block_rel[1,0,1] == air
+
+# ---- 4. the tick budget at this activity, and the scene from across ---------
+assert tick_ms_avg < 2
+state final
+atblock 2 107149 57528 2000
+mode fly
+hold space 0.25
+aim 7 3 -2.5
+shot 04_both_scenes
+bench 60
