@@ -6,7 +6,7 @@
   "world_height": 2048,
   "sea_level": 512,
   "columns_per_face": 131072,
-  "bake": "C:/code/triangulum/game/assets/world/seed42",
+  "bake": "assets/world/seed42",
   "vertical_scale": null,
   "roughness": 1.0,
   "landform": 1.0

@@ -32,9 +32,52 @@
   with `python scripts/bake_world.py` (about 20 s); check it with
   `python scripts/bake_world_check.py`.
 
+- **M1a** (Fable, verified by Opus, merged): the new engine in `game/`, on
+  the real equal-area grid. On an idle machine the fixed 60 s test flight
+  runs at **633 fps average, 307 fps for the worst 1% of frames, worst
+  single frame 4.8 ms** (the 60 fps target is 16.7 ms). Strata are real
+  blocks; water is translucent. World height costs nothing: 2,048 and
+  4,096 draw identical chunks.
+
+- **M1b** (Fable, verified by Opus, merged): walking, digging, building and
+  saving. The scripted M1 scenario (walk, dig a trench and a tunnel, build a
+  bridge, save, reload, check the blocks, view the bridge from 1 km) passes
+  83 of 83 checks. Six findings from Astra's review are fixed.
+
+## Play it yourself
+
+```
+cd C:\code\triangulum\game
+cargo run --release
+```
+
+You start walking on the hills. Click to capture the mouse (Esc releases).
+WASD walk, Space jump (swim up in water), Shift sprint, G walk/fly, left
+mouse breaks (hold to repeat), right mouse places, 1-9 pick the block, R
+drops you to the ground, F hides water, H hides the HUD, V vsync, P scenic
+places, Q saves and quits. Edits save automatically to `game/saves/Neisor/`.
+
+Try other worlds (each keeps its own save):
+
+```
+cargo run --release -- --vscale 0.05                                    # 1/20
+cargo run --release -- --vscale 0.125 --height 4096 --sea-level 1536    # 1/8
+cargo run --release -- --block-size 0.5 --n 262144 --height 4096 --sea-level 1024 --vscale 0.05 --save saves/half   # half-metre blocks
+```
+
+Known look issues that aren't decisions: flat placeholder lighting (the
+real sky comes in M1c), missing mid-size landforms (being fixed now),
+ripple patterns on distant steep terrain, and oceans that turn grey rock
+from very high up (being fixed now). To bridge a gap you place blocks on a
+face you can see; walking backwards off an edge while placing needs a sneak
+key, coming in M1c.
+
 ## In progress
 
-- M1a engine skeleton (Fable), plus vertical-scale renders for Andrew
+- M1-terrain: ridges, valleys and escarpments, plus four generator bugs
+  from the review, including the far oceans (Opus)
+- M1c-sky: the old viewer's sky, sun and lighting, 24-minute days (Astra)
+- M1c-stream: streaming robustness and finer distant detail (Fable)
 
 ## Waiting on you
 

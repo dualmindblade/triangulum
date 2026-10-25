@@ -5,12 +5,17 @@
 //! Chunks that lie entirely above or below the terrain band of their
 //! footprint (from the bake's min/max pyramid) are never visited, so a
 //! taller world adds no chunks: only the surface shell is ever loaded.
+//!
+//! Jobs read blocks through `World` (generator + edits). Every chunk carries
+//! a revision that edits bump; a result from an older revision is rejected
+//! and the chunk regenerated, so a late generation never overwrites an edit.
+//! Edited chunks live in the world's edit store, not here: render residency
+//! and authoritative state are separate.
 
 use crate::grid::{CHUNK, ChunkKey, FastMap, FastSet, FootprintKey, Planet};
 use crate::mesh::{MeshData, MeshOptions, mesh_chunk};
 use crate::render::{DrawRecord, GpuMesh, Renderer};
-use crate::world::{Chunk, ChunkStore, Registry};
-use crate::worldgen::Generator;
+use crate::world::{Registry, World};
 use glam::{DVec3, Mat4, Vec3, Vec4};
 
 use std::sync::Arc;
@@ -32,8 +37,9 @@ pub struct LoadedChunk {
 
 struct JobResult {
     mesh: MeshData,
-    chunk: Arc<Chunk>,
     gen_us: u32,
+    /// The chunk's revision when the job was dispatched.
+    rev: u32,
 }
 
 #[derive(Default, Clone, Debug)]
@@ -49,8 +55,12 @@ pub struct StreamStats {
     pub culled_frustum: usize,
     pub fallback_draws: usize,
     pub dropped_results: u64,
+    pub stale_results: u64,
     pub uploaded_this_frame: usize,
     pub alloc_failures: u64,
+    /// Meshes waiting for room in the quad arena.
+    pub awaiting_upload: usize,
+    pub remeshed: u64,
     pub traverse_ms: f64,
     pub recv_ms: f64,
     pub cull_ms: f64,
@@ -63,16 +73,23 @@ pub struct Timing {
     pub samples: Vec<Vec<(u32, u32)>>,
 }
 
+/// Meshes that found no room in the arena are kept this long before being
+/// dropped (they come back through the normal pending path afterwards).
+const MAX_AWAITING_UPLOAD: usize = 512;
+
 pub struct Streamer {
-    pub generator: Arc<Generator>,
+    pub world: Arc<World>,
     pub registry: Arc<Registry>,
     pub params: LodParams,
     pub mesh_opts: MeshOptions,
     range_cache: FastMap<FootprintKey, (f64, f64)>,
     pub loaded: FastMap<ChunkKey, LoadedChunk>,
     geom_cache: FastMap<ChunkKey, (DVec3, f64)>,
-    pub chunks: ChunkStore,
     inflight: FastSet<ChunkKey>,
+    /// Revision per chunk; absent = 0. Bumped by every invalidation.
+    rev: FastMap<ChunkKey, u32>,
+    /// Finished meshes the arena could not take yet (retried after frees).
+    awaiting: Vec<JobResult>,
     tx: Sender<JobResult>,
     rx: Receiver<JobResult>,
     desired: Vec<(ChunkKey, f64)>,
@@ -85,21 +102,23 @@ pub struct Streamer {
 }
 
 impl Streamer {
-    pub fn new(generator: Arc<Generator>, registry: Arc<Registry>, params: LodParams, mesh_opts: MeshOptions) -> Self {
+    pub fn new(world: Arc<World>, registry: Arc<Registry>, params: LodParams, mesh_opts: MeshOptions) -> Self {
         let (tx, rx) = channel();
+        let generator = &world.generator;
         let planet = generator.planet;
         let land_min_m = generator.bake.land_min_km() as f64 * 1000.0 * generator.vscale;
         let occluder_radius = planet.radius + land_min_m.min(0.0) - generator.height_margin_m();
         Self {
-            generator,
+            world,
             registry,
             params,
             mesh_opts,
             range_cache: FastMap::default(),
             loaded: FastMap::default(),
             geom_cache: FastMap::default(),
-            chunks: ChunkStore::default(),
             inflight: FastSet::default(),
+            rev: FastMap::default(),
+            awaiting: Vec::new(),
             tx,
             rx,
             desired: Vec::new(),
@@ -113,18 +132,20 @@ impl Streamer {
     }
 
     pub fn planet(&self) -> &Planet {
-        &self.generator.planet
+        &self.world.planet
     }
 
+    /// Nothing in flight, nothing waiting for the arena, no edits pending,
+    /// and every desired chunk resident.
     pub fn settled(&self) -> bool {
-        self.inflight.is_empty() && self.desired.iter().all(|(k, _)| self.loaded.contains_key(k))
+        self.inflight.is_empty() && self.awaiting.is_empty() && self.world.edits.pending_invalidations() == 0 && self.desired.iter().all(|(k, _)| self.loaded.contains_key(k))
     }
 
     fn height_range(&mut self, fp: FootprintKey) -> (f64, f64) {
         if let Some(r) = self.range_cache.get(&fp) {
             return *r;
         }
-        let r = self.generator.footprint_height_range_m(fp);
+        let r = self.world.generator.footprint_height_range_m(fp);
         self.range_cache.insert(fp, r);
         r
     }
@@ -195,8 +216,57 @@ impl Streamer {
         }
     }
 
-    /// One streaming step: decide the desired set, ingest finished jobs,
-    /// dispatch new ones, free stale chunks, and build the draw lists.
+    fn current_rev(&self, key: ChunkKey) -> u32 {
+        self.rev.get(&key).copied().unwrap_or(0)
+    }
+
+    /// Start a generate + mesh job for `key` at its current revision.
+    fn dispatch(&mut self, key: ChunkKey) {
+        if !self.inflight.insert(key) {
+            return;
+        }
+        let rev = self.current_rev(key);
+        let world = self.world.clone();
+        let registry = self.registry.clone();
+        let opts = self.mesh_opts;
+        let tx = self.tx.clone();
+        rayon::spawn(move || {
+            let g = world.generate(key);
+            let mesh = mesh_chunk(&g, &registry, &world.planet, opts);
+            let _ = tx.send(JobResult { mesh, gen_us: g.gen_us, rev });
+        });
+    }
+
+    /// Upload a finished mesh; when the arena is full the result waits.
+    fn install(&mut self, res: JobResult, gpu: &mut Renderer) {
+        let key = res.mesh.key;
+        let m = &res.mesh;
+        let mesh = if m.opaque.is_empty() && m.water.is_empty() {
+            None
+        } else {
+            match gpu.add_mesh(&m.opaque, &m.water, &m.grid) {
+                Some(up) => Some(up),
+                None => {
+                    self.stats.alloc_failures += 1;
+                    if self.awaiting.len() < MAX_AWAITING_UPLOAD {
+                        self.awaiting.push(res);
+                    }
+                    return;
+                }
+            }
+        };
+        self.stats.uploaded_this_frame += 1;
+        let loaded = LoadedChunk { mesh, origin: m.origin, center: m.center, radius: m.radius };
+        if let Some(old) = self.loaded.insert(key, loaded) {
+            if let Some(gm) = old.mesh {
+                gpu.free_mesh(gm);
+            }
+        }
+    }
+
+    /// One streaming step: decide the desired set, apply edits, ingest
+    /// finished jobs, dispatch new ones, free stale chunks, and build the
+    /// draw lists.
     pub fn update(&mut self, cam: DVec3, view_proj: Mat4, gpu: &mut Renderer, opaque: &mut Vec<DrawRecord>, water: &mut Vec<DrawRecord>) {
         let t0 = std::time::Instant::now();
         let planet = *self.planet();
@@ -219,6 +289,20 @@ impl Streamer {
         self.desired_set.extend(self.desired.iter().map(|(k, _)| *k));
         let t1 = std::time::Instant::now();
 
+        // 1b. Edits: bump revisions and remesh what is resident. A chunk in
+        // flight will come back stale and be re-dispatched then.
+        for key in self.world.edits.take_invalidated() {
+            *self.rev.entry(key).or_insert(0) += 1;
+            if self.inflight.contains(&key) {
+                continue;
+            }
+            self.awaiting.retain(|r| r.mesh.key != key);
+            if self.loaded.contains_key(&key) || self.desired_set.contains(&key) {
+                self.stats.remeshed += 1;
+                self.dispatch(key);
+            }
+        }
+
         // 2. Ingest results.
         self.stats.uploaded_this_frame = 0;
         while let Ok(res) = self.rx.try_recv() {
@@ -228,28 +312,19 @@ impl Streamer {
             if lod < 16 {
                 self.timing.samples[lod].push((res.gen_us, res.mesh.mesh_us));
             }
-            if !self.desired_set.contains(&key) {
+            let wanted = self.desired_set.contains(&key) || self.loaded.contains_key(&key);
+            if res.rev != self.current_rev(key) {
+                self.stats.stale_results += 1;
+                if wanted {
+                    self.dispatch(key);
+                }
+                continue;
+            }
+            if !wanted {
                 self.stats.dropped_results += 1;
                 continue;
             }
-            let m = &res.mesh;
-            let mesh = if m.opaque.is_empty() && m.water.is_empty() {
-                None
-            } else {
-                let up = gpu.add_mesh(&m.opaque, &m.water, &m.grid);
-                if up.is_none() {
-                    self.stats.alloc_failures += 1;
-                }
-                up
-            };
-            self.stats.uploaded_this_frame += 1;
-            let loaded = LoadedChunk { mesh, origin: m.origin, center: m.center, radius: m.radius };
-            if let Some(old) = self.loaded.insert(key, loaded) {
-                if let Some(gm) = old.mesh {
-                    gpu.free_mesh(gm);
-                }
-            }
-            self.chunks.insert(key, res.chunk);
+            self.install(res, gpu);
         }
         let t2 = std::time::Instant::now();
 
@@ -258,6 +333,7 @@ impl Streamer {
         let mut render_marked: FastSet<ChunkKey> = FastSet::default();
         let mut pending: Vec<(ChunkKey, f64)> = Vec::new();
         let mut fallback_draws = 0usize;
+        let awaiting_keys: FastSet<ChunkKey> = self.awaiting.iter().map(|r| r.mesh.key).collect();
         for &(key, dist) in &self.desired {
             if self.loaded.contains_key(&key) {
                 if render_marked.insert(key) {
@@ -265,7 +341,7 @@ impl Streamer {
                 }
                 continue;
             }
-            if !self.inflight.contains(&key) {
+            if !self.inflight.contains(&key) && !awaiting_keys.contains(&key) {
                 pending.push((key, dist));
             }
             // Nearest loaded ancestor…
@@ -323,7 +399,17 @@ impl Streamer {
                     gpu.free_mesh(gm);
                 }
             }
-            self.chunks.remove(&k);
+        }
+        // 4b. Retry meshes that found no room, now that stale ones are freed.
+        if !self.awaiting.is_empty() {
+            let waiting = std::mem::take(&mut self.awaiting);
+            for res in waiting {
+                let key = res.mesh.key;
+                if !self.desired_set.contains(&key) || res.rev != self.current_rev(key) {
+                    continue;
+                }
+                self.install(res, gpu);
+            }
         }
 
         // 5. Dispatch nearest-first.
@@ -331,16 +417,7 @@ impl Streamer {
         self.stats.pending = pending.len();
         let room = self.params.max_inflight.saturating_sub(self.inflight.len());
         for &(key, _) in pending.iter().take(room) {
-            self.inflight.insert(key);
-            let generator = self.generator.clone();
-            let registry = self.registry.clone();
-            let opts = self.mesh_opts;
-            let tx = self.tx.clone();
-            rayon::spawn(move || {
-                let g = generator.generate(key);
-                let mesh = mesh_chunk(&g, &registry, &generator.planet, opts);
-                let _ = tx.send(JobResult { mesh, chunk: Arc::new(g.chunk), gen_us: g.gen_us });
-            });
+            self.dispatch(key);
         }
 
         // 6. Draw lists: frustum cull in camera-relative space; opaque front
@@ -384,6 +461,7 @@ impl Streamer {
         self.stats.desired = self.desired.len();
         self.stats.loaded = self.loaded.len();
         self.stats.inflight = self.inflight.len();
+        self.stats.awaiting_upload = self.awaiting.len();
         self.stats.drawn_per_lod = per_lod;
         self.stats.loaded_per_lod = loaded_per_lod;
         self.stats.drawn = opaque.len();
@@ -402,7 +480,7 @@ impl Streamer {
                 gpu.free_mesh(gm);
             }
         }
-        self.chunks = ChunkStore::default();
+        self.awaiting.clear();
     }
 
     /// Chunks at CHUNK granularity: how many desired chunks per LOD.

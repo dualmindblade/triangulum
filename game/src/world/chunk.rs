@@ -121,7 +121,59 @@ impl Chunk {
         self.palette.len() * 2 + self.packed.len() * 8 + self.water.as_ref().map_or(0, |w| w.len())
     }
 
-    /// Canonical byte serialisation (for determinism tests and, later, saves).
+    /// Inverse of `to_bytes`.
+    pub fn from_bytes(b: &[u8]) -> Result<Self, String> {
+        let mut at = 0usize;
+        let take = |at: &mut usize, n: usize| -> Result<&[u8], String> {
+            let s = b.get(*at..*at + n).ok_or_else(|| format!("chunk bytes truncated at {}", *at))?;
+            *at += n;
+            Ok(s)
+        };
+        let bits = take(&mut at, 1)?[0];
+        if bits > 16 {
+            return Err(format!("chunk palette width {bits} bits is impossible"));
+        }
+        let plen = u16::from_le_bytes(take(&mut at, 2)?.try_into().unwrap()) as usize;
+        let mut palette = Vec::with_capacity(plen);
+        for _ in 0..plen {
+            palette.push(u16::from_le_bytes(take(&mut at, 2)?.try_into().unwrap()));
+        }
+        if palette.is_empty() || (bits == 0 && palette.len() != 1) || (bits > 0 && palette.len() > (1usize << bits)) {
+            return Err(format!("chunk palette of {} entries does not fit {bits} bits", palette.len()));
+        }
+        let words = if bits == 0 { 0 } else { (VOXELS * bits as usize).div_ceil(64) };
+        let mut packed = Vec::with_capacity(words);
+        for _ in 0..words {
+            packed.push(u64::from_le_bytes(take(&mut at, 8)?.try_into().unwrap()));
+        }
+        let water = match take(&mut at, 1)?[0] {
+            0 => None,
+            1 => Some(take(&mut at, VOXELS)?.to_vec().into_boxed_slice()),
+            f => return Err(format!("bad water flag {f}")),
+        };
+        if at != b.len() {
+            return Err(format!("{} trailing bytes after chunk", b.len() - at));
+        }
+        let c = Self { palette, bits, packed, water };
+        // Every packed index must address the palette.
+        if bits > 0 {
+            let mask = (1u64 << bits) - 1;
+            for v in 0..VOXELS {
+                let bit = v * bits as usize;
+                let (w, off) = (bit / 64, bit % 64);
+                let mut x = c.packed[w] >> off;
+                if off + bits as usize > 64 {
+                    x |= c.packed[w + 1] << (64 - off);
+                }
+                if (x & mask) as usize >= c.palette.len() {
+                    return Err(format!("voxel {v} indexes palette entry {} of {}", x & mask, c.palette.len()));
+                }
+            }
+        }
+        Ok(c)
+    }
+
+    /// Canonical byte serialisation (for determinism tests and saves).
     pub fn to_bytes(&self) -> Vec<u8> {
         let mut out = Vec::new();
         out.push(self.bits);
@@ -212,5 +264,30 @@ mod tests {
         assert_eq!(c.to_dense(), ids);
         let bytes = c.to_bytes();
         assert_eq!(bytes, Chunk::from_dense(&ids, None).to_bytes());
+    }
+
+    #[test]
+    fn bytes_round_trip_and_reject_damage() {
+        let mut ids = vec![0u16; VOXELS];
+        for (v, id) in ids.iter_mut().enumerate() {
+            *id = [0u16, 1, 3, 8][(v / 7) % 4];
+        }
+        let mut water = vec![0u8; VOXELS];
+        water[100] = 255;
+        for c in [Chunk::from_dense(&ids, Some(&water)), Chunk::from_dense(&ids, None), Chunk::uniform(7)] {
+            let back = Chunk::from_bytes(&c.to_bytes()).unwrap();
+            assert_eq!(back, c);
+        }
+        let bytes = Chunk::from_dense(&ids, None).to_bytes();
+        assert!(Chunk::from_bytes(&bytes[..bytes.len() - 5]).is_err(), "truncated");
+        let mut extra = bytes.clone();
+        extra.push(0);
+        assert!(Chunk::from_bytes(&extra).is_err(), "trailing bytes");
+        let mut bad = bytes.clone();
+        bad[3] = 0xFF; // damage the first palette entry's bytes: still decodes (palette is data)...
+        assert!(Chunk::from_bytes(&bad).is_ok());
+        bad[1] = 1; // ...but a palette length that the indices overrun does not
+        bad[2] = 0;
+        assert!(Chunk::from_bytes(&bad).is_err(), "indices beyond the palette");
     }
 }
