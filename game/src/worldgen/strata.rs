@@ -28,6 +28,21 @@ pub struct GeoHint {
     pub hardness: f32,
 }
 
+/// Per-column memo for `Strata::rock_at_cached`.
+#[derive(Clone, Copy, Debug)]
+pub struct RockCache {
+    pair: i64,
+    split: f64,
+    bed: i64,
+    id: BlockId,
+}
+
+impl Default for RockCache {
+    fn default() -> Self {
+        Self { pair: i64::MIN, split: 0.0, bed: i64::MIN, id: 0 }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct Strata {
     /// Sedimentary beds a layer can be, cycled by hash.
@@ -78,6 +93,34 @@ impl Strata {
             + self.warp_amp_m * gradient_noise(p / self.warp_wl_m + DVec3::splat(2.9), self.seed.wrapping_add(2))
     }
 
+    /// `rock_at` for consecutive voxels of one column: the bed split and
+    /// the bed's rock are hashed once per pair and once per bed instead of
+    /// per voxel. Same result as `rock_at`.
+    #[inline]
+    pub fn rock_at_cached(&self, elev_m: f64, col_off: f64, geo: GeoHint, cache: &mut RockCache) -> BlockId {
+        if let Some(b) = self.basalt
+            && geo.volcanic > 0.5
+        {
+            return b;
+        }
+        let f = (elev_m + col_off) / self.block_m;
+        let pair = (f / self.pair_blocks).floor();
+        let pi = pair as i64;
+        if pi != cache.pair {
+            cache.pair = pi;
+            cache.split = 2.0 + hash01(pi, 3, -11, self.seed) * (self.pair_blocks - 4.0);
+            cache.bed = i64::MIN;
+        }
+        let local = f - pair * self.pair_blocks;
+        let bed = pi * 2 + (local >= cache.split) as i64;
+        if bed != cache.bed {
+            cache.bed = bed;
+            let pick = (hash01(bed, 17, -31, self.seed) * self.beds.len() as f64) as usize;
+            cache.id = self.beds[pick.min(self.beds.len() - 1)];
+        }
+        cache.id
+    }
+
     /// Rock block at elevation `elev_m` (above sea level) in a column with
     /// offset `col_off` from `column_offset_m`.
     #[inline]
@@ -100,6 +143,19 @@ impl Strata {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cached_rock_lookup_matches_the_plain_one() {
+        let s = Strata::new(vec![10, 11, 12, 13, 14], 1.0, 90_569.0, 42);
+        for col in 0..50 {
+            let off = col as f64 * 3.77 - 40.0;
+            let mut cache = RockCache::default();
+            for z in -300..300 {
+                let e = z as f64 * 0.5 + 0.25;
+                assert_eq!(s.rock_at_cached(e, off, GeoHint::default(), &mut cache), s.rock_at(e, off, GeoHint::default()));
+            }
+        }
+    }
 
     #[test]
     fn beds_are_2_to_6_blocks_and_fold_gently() {
