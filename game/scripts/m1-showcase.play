@@ -1,0 +1,264 @@
+# M1 showcase, part 1 of 2 (the default world, vertical scale 1/70).
+# Records four clips (run alone: into out/play/m1-showcase/) that
+# scripts/showcase.py joins with the 1/8 clip (m1-showcase-vscale8.play),
+# captions and title cards:
+#
+#   python game/scripts/showcase.py       # from the repo root: everything, about 4 min
+#
+# Each clip is a `record` ... `stop` pair. Cinematic flights use settled
+# frames (every frame drained of streaming, so they show what the world
+# converges to, not pop-in); the hands-on clip runs live at real time with
+# the HUD, as a player sees it. The asserts make the build sequence
+# self-checking, as m1-done.play does. Captions are cues in the clips.
+
+# ---- 10. orbit, then down through the atmosphere into the highest range ----
+# The highest summit (lat 69.11 lon 122.16) at golden hour. The approach line
+# A (69.26, 116.10) -> peak runs east along the range.
+mode fly
+at 69.26 116.10 360
+sun 5
+at 66.07003 83.42356 320000
+look 78 -80
+recmode settle
+hud off
+record 10_orbit_descent.mp4 30
+caption Neisor from orbit: a whole planet, 181 km across
+caption +6 Down through the atmosphere at golden hour
+caption +15.5 Over the highest range (vertical scale 1/70)
+key 5 67.45373 90.63977 160000 - -76
+key 10 68.63641 100.29988 30000 - -52
+key 14 69.16336 108.97137 3500 - -22
+key 17 69.26193 113.95610 600 - -10
+key 19.5 69.26 116.10 360 - -7
+key 22.5 69.23489 118.06273 340 - -6
+fly path
+stop
+
+# ---- 20. a river valley at dawn: sunrise time-lapse ------------------------
+at 1.2611 119.6921 150
+sun -5 am
+skyspeed 7
+look 148 -9
+record 20_river_sunrise.mp4 30
+caption Down a river valley at dawn (time-lapse, 7x)
+key 2.3 0.9545 119.7801 140 152 -9
+key 4.6 0.6491 119.7801 132 146 -9
+key 7.1 0.3430 119.9560 126 148 -9
+key 9.3 0.0381 119.9560 120 140 -8
+fly
+stop
+skyspeed 0
+
+# ---- 30. walk, dig a trench, bridge it, dig down and tunnel ----------------
+# Face 2, row J = 57519, on flat hills: ground top layer 556 (feet 557) for
+# i 107161..107172. Trench: i 107166..107168, j 57518..57520, layers 556
+# and 555. Bridge: snow blocks (white, so it reads from far away) at layer
+# 556, j = J, i 107166..107168, placed by sneaking backwards to the edge.
+# Shaft at i 107164 (layers 556..554), then
+# a tunnel along -i (i 107163..107161, layers 554-555, roof 556 untouched).
+mode walk
+atblock 2 107162 57519 2000
+assert block_rel[0,0,-1] == grass
+assert k == 557
+column 4 0
+column 6 0
+column 8 0
+lookaxis +i -8
+sun 9
+select 6
+assert selected_block == snow
+hud on
+recmode live
+settle
+record 30_hands_on.mp4 30
+caption Walk on Neisor: every metre a block
+pan 1.4 turn -40 -2
+pan 1.6 turn 40 2
+hold w 0.767
+wait 0.15
+assert fi ~ 107165.5 0.2
+assert k == 557
+assert on_ground == true
+# -- the trench: top layer, near to far
+caption Dig a trench
+pan 0.5 aim 1 0 -0.5
+tap break
+assert block_rel[1,0,-1] == air
+pan 0.15 aim 1 -1 -0.5
+tap break
+assert block_rel[1,-1,-1] == air
+pan 0.15 aim 1 1 -0.5
+tap break
+assert block_rel[1,1,-1] == air
+pan 0.15 aim 2 0 -0.5
+tap break
+assert block_rel[2,0,-1] == air
+pan 0.15 aim 2 -1 -0.5
+tap break
+assert block_rel[2,-1,-1] == air
+pan 0.15 aim 2 1 -0.5
+tap break
+assert block_rel[2,1,-1] == air
+pan 0.15 aim 3 0 -0.5
+tap break
+assert block_rel[3,0,-1] == air
+pan 0.15 aim 3 -1 -0.5
+tap break
+assert block_rel[3,-1,-1] == air
+pan 0.15 aim 3 1 -0.5
+tap break
+assert block_rel[3,1,-1] == air
+# -- second layer (aimed 1.25 out so the ray clears the edge block)
+pan 0.2 aim 1.25 0 -1.5
+tap break
+assert block_rel[1,0,-2] == air
+pan 0.15 aim 1.25 -1 -1.5
+tap break
+assert block_rel[1,-1,-2] == air
+pan 0.15 aim 1.25 1 -1.5
+tap break
+assert block_rel[1,1,-2] == air
+pan 0.15 aim 2 0 -1.5
+tap break
+assert block_rel[2,0,-2] == air
+pan 0.15 aim 2 -1 -1.5
+tap break
+assert block_rel[2,-1,-2] == air
+pan 0.15 aim 2 1 -1.5
+tap break
+assert block_rel[2,1,-2] == air
+pan 0.15 aim 3 0 -1.5
+tap break
+assert block_rel[3,0,-2] == air
+pan 0.15 aim 3 -1 -1.5
+tap break
+assert block_rel[3,-1,-2] == air
+pan 0.15 aim 3 1 -1.5
+tap break
+assert block_rel[3,1,-2] == air
+assert block_rel[1,0,-3] != air
+wait 0.3
+# -- the bridge: turn round, sneak back to the edge, place against its side
+caption Build a bridge: sneak to the edge, place, step back
+pan 1.3 lookaxis -i 5
+hold s,ctrl 1.2
+assert i == 107166
+assert on_ground == true
+pan 0.5 aim -0.5 0 -0.5
+assert crosshair == grass
+tap place
+assert block_rel[0,0,-1] == snow
+wait 0.2
+hold s,ctrl 1.2
+assert i == 107167
+pan 0.3 aim -0.5 0 -0.5
+assert crosshair == snow
+tap place
+assert block_rel[0,0,-1] == snow
+wait 0.2
+hold s,ctrl 1.2
+assert i == 107168
+pan 0.3 aim -0.5 0 -0.5
+assert crosshair == snow
+tap place
+assert block_rel[0,0,-1] == snow
+assert block_rel[1,0,-1] == grass
+assert block_rel[0,1,-1] == air
+assert block_rel[0,-1,-1] == air
+wait 0.2
+# -- walk back across it
+caption ...and walk across it
+pan 0.8 lookaxis -i -28
+hold w 0.967
+wait 0.15
+assert on_ground == true
+assert i == 107164
+assert fi ~ 107164.5 0.25
+# -- dig straight down three blocks, then a tunnel under the grass
+caption Dig down, then tunnel
+pan 0.5 aim 0 0 -0.5
+tap break
+wait 0.45
+assert k == 556
+pan 0.2 aim 0 0 -0.5
+tap break
+wait 0.45
+pan 0.2 aim 0 0 -0.5
+tap break
+wait 0.45
+assert k == 554
+assert on_ground == true
+pan 0.4 aim -1 0 1.5
+tap break
+assert block_rel[-1,0,1] == air
+pan 0.2 aim -1 0 0.5
+tap break
+assert block_rel[-1,0,0] == air
+pan 0.2 lookaxis -i 0
+hold w 0.5
+assert i == 107163
+pan 0.2 aim -1 0 1.5
+tap break
+assert block_rel[-1,0,1] == air
+pan 0.2 aim -1 0 0.5
+tap break
+assert block_rel[-1,0,0] == air
+pan 0.2 lookaxis -i 0
+hold w 0.5
+assert i == 107162
+pan 0.2 aim -1 0 1.5
+tap break
+assert block_rel[-1,0,1] == air
+pan 0.2 aim -1 0 0.5
+tap break
+assert block_rel[-1,0,0] == air
+pan 0.2 lookaxis -i 0
+hold w 0.5
+assert i == 107161
+assert block_rel[0,0,2] != air
+# -- back through the tunnel to the shaft, and up at the sky
+pan 0.7 lookaxis +i 0
+hold w 0.75
+wait 0.1
+assert i == 107164
+assert k == 554
+pan 1.2 lookaxis +i 80
+wait 0.8
+stop
+hud off
+
+# ---- 40. saved, reloaded, and seen from far away; dusk into night ----------
+save
+assert dirty == 0
+reload
+assert edits >= 1
+assert block[2,107166,57519,556] == snow
+assert block[2,107167,57519,556] == snow
+assert block[2,107168,57519,556] == snow
+assert block[2,107167,57518,555] == air
+assert block[2,107162,57519,554] == air
+recmode settle
+mode fly
+target 2 107167 57519 556
+keyrel 0.0167 7 -j 3.5
+fly none target
+sun 9
+skyspeed 3
+record 40_pullback_night.mp4 30
+caption Saved and reloaded: the bridge is still there...
+keyrel 2 30 -j 12
+keyrel 4.2 200 -j 50
+keyrel 7 1000 -j 130
+fly target
+state pullback_1km
+caption ...zoomed in from 1 km, drawn with the coarser blocks used out there
+zoom 2 3
+wait 1.5
+caption Dusk into night: 24-minute days (time-lapse, 15x)
+skyspeed 15
+zoom 1.5 60
+# west, where the sun went down (azimuth about -79), then up to the stars
+pan 2.5 turn -70 10
+pan 2 turn 0 30
+stop
+skyspeed 0

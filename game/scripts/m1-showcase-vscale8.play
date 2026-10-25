@@ -1,0 +1,23 @@
+# M1 showcase, part 2 of 2: the same highest range at vertical scale 1/8,
+# which Andrew is still considering. Run in its own world:
+#
+#   --vscale 0.125 --height 4096 --sea-level 1536
+#
+# (scripts/showcase.py runs it). At 1/8 the range is a plateau at 1.0-1.2 km
+# with a steep western flank down to ~600 m at lon 114; the flight comes in
+# low from the west and climbs over the flank, golden hour behind it.
+mode fly
+at 69.2 117.0 1500
+sun 5
+at 69.2 112.5 850
+look 90 -4
+recmode settle
+hud off
+record 50_vscale8.mp4 30
+caption Vertical scale 1/8 (under consideration): the same highest range
+key 2.5 69.2 115.0 960 92 -5
+key 5.0 69.2 117.0 1170 92 -6
+key 7.5 69.2 119.0 1320 95 -7
+key 9.5 69.2 120.6 1360 98 -8
+fly
+stop

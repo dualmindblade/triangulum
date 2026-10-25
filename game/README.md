@@ -117,8 +117,9 @@ cave skylight propagation need additional terrain data.
 
 For repeatable stills, use `--time 17:30 --time-scale 0`. Existing
 `--bench`, `--shots` and `--play` renders hold the initial sky time while
-streaming/reading back frames; the play harness does not yet advance the
-sky on its simulation steps. A dedicated settled evidence reel seeks the
+streaming/reading back frames; the play harness advances the sky on its
+simulation steps only when a script asks (`skyspeed`, see Video below), and
+`skytime` / `sun` seek it. A dedicated settled evidence reel seeks the
 same clock explicitly for noon, golden hour (+5° sun), dusk (−3°) and night:
 
 ```
@@ -270,6 +271,38 @@ assert FIELD OP VALUE    position, altitude, on_ground, in_water, crosshair,
 Writing a script: teleport with `atblock` rather than walking to places,
 probe the terrain with `column DI DJ` first, and target blocks with `aim`
 (or `lookaxis` with a computed pitch) so a run is deterministic.
+
+## Video
+
+The harness also records video (commands in the "video" section of the
+`src/play.rs` header; the code is `src/play/video.rs`). Between `record
+FILE` and `stop`, every 60 Hz step of a script is a video tick, and frames
+are piped as raw RGBA into ffmpeg, which writes H.264. Nothing else is written
+to disk. `fly` moves the camera smoothly through `key`s, `pan` turns the
+view, `sun` and `skyspeed` set and run the sky clock, `zoom` changes the
+field of view, and `caption` places caption cues. `recmode settle` settles
+every frame before writing it (clean: what the world converges to, with
+pop-in between frames hidden); `recmode live` streams and renders once per
+step at real time, as a player sees it. ffmpeg must be on PATH, or set
+`TRIANGULUM_FFMPEG`.
+
+The M1 showcase (`docs/media/m1-showcase.mp4`) re-renders with one command
+from the repo root (about 4 minutes on the 2060 machine, needs ffmpeg and ffprobe):
+
+```
+python game/scripts/showcase.py
+```
+
+It runs `scripts/m1-showcase.play` and `scripts/m1-showcase-vscale8.play` at
+1080p into `game/out/showcase/clips/`, then adds title and end cards,
+crossfades and captions. It writes the full-quality master
+`game/out/showcase/m1-showcase-1080p.mp4`, the 720p repo copy (kept under
+15 MB) and review stills in `docs/media/m1-showcase-stills/`. If the world
+or the engine changes under the scripts, their asserts (the build sequence
+is checked block by block, as in `m1-done.play`) or the `fly` ground check
+fail the run, and `showcase.py` stops before assembling anything. Fix the
+script, using `column` and `state` to probe, and run it again.
+`--skip-render` re-assembles existing clips (to retime captions or cards).
 
 ## Tests
 

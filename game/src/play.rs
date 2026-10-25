@@ -83,6 +83,61 @@
 //!                           or block[F,I,J,K]  the block at lattice coords
 //!                           or block_rel[DI,DJ,DK]  relative to the feet block
 //!                           or falling_rel[DI,DJ]  blocks in flight in that column
+//!
+//! ---- video (play/video.rs) ------------------------------------------
+//!   record FILE [FPS]       start writing FILE (H.264 .mp4 under the out
+//!                           directory, via ffmpeg on PATH or
+//!                           TRIANGULUM_FFMPEG) at FPS (30): from now on
+//!                           every 60 Hz step (hold, wait, tap jump, fly,
+//!                           pan) is a video tick, and every 60/FPS-th tick
+//!                           writes a frame. The first frame is written at once.
+//!   stop                    finish the file; reports frames, size and
+//!                           settle timeouts (an error if any frame timed out)
+//!   caption [+S] TEXT...    a caption cue from this frame (or S seconds of
+//!                           video later, to place cues inside a fly) until
+//!                           the next cue ("caption -" ends it); written on stop as
+//!                           FILE.captions.json [{start, end, text}] for the
+//!                           editor (scripts/showcase.py burns them in)
+//!   recmode settle|live     settle (default): drain streaming before each
+//!                           written frame, as `shot` does. live: one
+//!                           streaming update + render per tick, paced to
+//!                           real time (what a 60 fps player sees)
+//!   hud on|off              draw the game HUD (crosshair, block outline,
+//!                           hotbar; no stats) on written frames (default off)
+//!   settle                  drain streaming at the current pose (pre-warm)
+//!   skytime HH:MM           local solar time at the eye's longitude
+//!   sun ELEV [am|pm]        seek the clock to when the sun is ELEV degrees
+//!                           above the horizon here (pm: afternoon, default)
+//!   skyspeed F              sky clock speed on every step, game s per s
+//!                           (default 0: the sky holds, as before)
+//!   target FACE I J K | rel DI DJ DK | ll LAT LON ALT | off
+//!                           a look-at point: a block centre, a point
+//!                           relative to the feet cell (as aim), or lat/lon/alt
+//!   key T LAT LON ALT [HEADING PITCH]
+//!                           a camera key T seconds after the current pose,
+//!                           eye ALT metres above sea level; "-" or an
+//!                           omitted angle repeats the previous key's
+//!   keyrel T DIST BEARING HEIGHT [HEADING PITCH]
+//!                           a key DIST m from the target along BEARING
+//!                           (degrees from north, or +i -i +j -j there),
+//!                           HEIGHT m above the target
+//!   fly [ease|in|out|none] [keys|path|target]
+//!                           move the eye through the keys (cubic Hermite;
+//!                           direction on the sphere, altitude in log
+//!                           space), easing in/out (default both), looking
+//!                           by the keys' angles, along the path (keys'
+//!                           pitch), or at the target; leaves fly mode on.
+//!                           Fails if the eye comes within 1 m of the ground
+//!   pan SECONDS look H P | turn DH DP | lookaxis AXIS P | aim DI DJ DK | target
+//!                           turn the view smoothly to where that command
+//!                           would point it, stepping with no input
+//!   fov DEGREES             vertical field of view of recorded frames (60).
+//!                           Level of detail follows distance only, so a
+//!                           narrow view shows far terrain as it is drawn there
+//!   zoom SECONDS DEGREES    change the field of view smoothly, stepping
+//!                           with no input
+
+mod video;
 
 use crate::bench::Harness;
 use crate::grid::BlockPos;
@@ -110,6 +165,7 @@ struct Run {
     last_bench: serde_json::Value,
     last_stream: serde_json::Value,
     out: String,
+    video: video::Video,
 }
 
 impl Run {
@@ -124,6 +180,7 @@ impl Run {
         let n = (seconds * 60.0).round().max(0.0) as usize;
         for _ in 0..n {
             self.session.step(&input, STEP);
+            self.video_tick();
         }
     }
 
@@ -467,7 +524,7 @@ pub fn run_play(session: Session, opts: PlayOptions) -> i32 {
     let _ = std::fs::create_dir_all(&opts.out);
     let engine = session.engine.clone();
     let harness = Harness::new(engine, opts.width, opts.height, &opts.out, opts.backend.as_deref());
-    let mut run = Run { session, harness, log: String::new(), failed: 0, asserts: 0, last_bench: serde_json::Value::Null, last_stream: serde_json::Value::Null, out: opts.out.clone() };
+    let mut run = Run { session, harness, log: String::new(), failed: 0, asserts: 0, last_bench: serde_json::Value::Null, last_stream: serde_json::Value::Null, out: opts.out.clone(), video: video::Video::default() };
     run.say(format!("play {} -> {}", opts.script, opts.out));
     let t0 = Instant::now();
     let mut errors = 0usize;
@@ -649,7 +706,11 @@ pub fn run_play(session: Session, opts: PlayOptions) -> i32 {
             },
             "log" => {}
             "assert" => run.assert(args, line_no),
-            other => bad(&mut run, &format!("unknown command {other}")),
+            other => match run.video_command(other, args) {
+                Some(Ok(())) => {}
+                Some(Err(e)) => bad(&mut run, &e),
+                None => bad(&mut run, &format!("unknown command {other}")),
+            },
         }
     }
     match run.session.save_now() {
