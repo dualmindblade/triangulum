@@ -1,0 +1,16 @@
+{
+  "checks": 8,
+  "divergence": null,
+  "end_sha": [
+    "e44f83d5de16442c18eeafdc66cf86d21b8d24ef592821b8c3dbe390e23d082d",
+    "e44f83d5de16442c18eeafdc66cf86d21b8d24ef592821b8c3dbe390e23d082d"
+  ],
+  "ended": true,
+  "errors": [],
+  "matched": 8,
+  "notes": [],
+  "ok": true,
+  "replay": "out/play/m2c-replay/m2c-river.replay",
+  "steps": 468,
+  "warnings": []
+}

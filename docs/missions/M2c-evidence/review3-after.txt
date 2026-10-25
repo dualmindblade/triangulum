@@ -1,0 +1,9 @@
+test sim::tests::snapshot_bytes_round_trip_and_reject_damage ... ok
+test world::save::tests::a_save_image_installs_and_loads_like_the_store_it_came_from ... ok
+test sim::tests::a_reload_keeps_the_active_region_it_was_computed_for ... ok
+test sim::tests::the_hash_covers_the_simulation_settings ... ok
+test sim::water_tests::water_waits_for_its_period_and_the_period_is_in_the_hash ... ok
+test sim::water_tests::a_write_that_changes_nothing_leaves_no_chunk_and_no_trace_in_the_hash ... ok
+test sim::tests::the_hash_is_the_same_across_rayon_pools_of_one_and_eight_threads ... ok
+test sim::tests::the_hash_is_the_same_across_a_save_and_a_reload_in_the_middle ... ok
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 117 filtered out; finished in 3.67s

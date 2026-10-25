@@ -86,6 +86,20 @@ impl Inner {
         }
     }
 
+    /// Undo `index` (a chunk that turned out not to be edited).
+    fn unindex(&mut self, key: ChunkKey) {
+        let mut anc = key;
+        for _ in 0..INDEX_LODS {
+            anc = anc.parent().expect("lod < 63");
+            if let Some(v) = self.under.get_mut(&anc) {
+                v.retain(|k| *k != key);
+                if v.is_empty() {
+                    self.under.remove(&anc);
+                }
+            }
+        }
+    }
+
     fn mark_dirty(&mut self, key: ChunkKey) {
         let now = Instant::now();
         self.dirty.insert(key);
@@ -232,6 +246,8 @@ impl EditStore {
     pub fn commit(&self, writes: &[Write], mut natural: impl FnMut(ChunkKey) -> (Vec<BlockId>, Option<Vec<u8>>), liquid: impl Fn(BlockId) -> bool) -> Vec<bool> {
         let mut g = self.inner.write().unwrap();
         let mut out = Vec::with_capacity(writes.len());
+        // Chunks this commit materialised from the generator.
+        let mut fresh: Vec<ChunkKey> = Vec::new();
         for w in writes {
             debug_assert_eq!(w.key.lod, 0);
             if !g.chunks.contains_key(&w.key) {
@@ -242,12 +258,21 @@ impl EditStore {
                 }
                 g.chunks.insert(w.key, Edited { ids, water, rev: 0 });
                 g.index(w.key);
+                fresh.push(w.key);
             }
             let changed = g.write(w, liquid(w.id));
             if changed {
                 g.mark_dirty(w.key);
             }
             out.push(changed);
+        }
+        // A chunk no write changed is the generator's chunk: keep none of
+        // it (review 3 #6: it would be in the state hash but never saved).
+        for key in fresh {
+            if g.chunks.get(&key).is_some_and(|e| e.rev == 0) {
+                g.chunks.remove(&key);
+                g.unindex(key);
+            }
         }
         out
     }
@@ -375,10 +400,14 @@ mod tests {
         let key = ChunkKey::neisor(1, 0, 3, 4, 5);
         let natural = || vec![1u16; VOXELS];
         assert!(!s.set(key, 0, 0, 0, 1, natural), "same block is not a change");
-        assert_eq!(s.len(), 1, "the chunk becomes authoritative on first touch");
+        // Review 3 #6: a write that changes nothing leaves no chunk behind
+        // (it used to become authoritative on first touch, unsaved).
+        assert_eq!(s.len(), 0, "an unchanged chunk is not edited");
         assert_eq!(s.dirty_count(), 0);
-        assert_eq!(s.revision(key), Some(0));
+        assert_eq!(s.revision(key), None);
+        assert!(!s.any_under(key.parent().unwrap()), "and not indexed");
         assert!(s.set(key, 0, 0, 0, 0, natural));
+        assert_eq!(s.len(), 1);
         assert_eq!(s.get(key, 0, 0, 0), Some(0));
         assert_eq!(s.get(key, 0, 0, 1), Some(1));
         assert_eq!(s.revision(key), Some(1));

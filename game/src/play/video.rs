@@ -32,8 +32,6 @@ pub struct Video {
     fps: f64,
     settle: bool,
     hud: bool,
-    /// Sky clock speed on simulation steps (game seconds per second); 0 holds the sky.
-    timescale: f64,
     /// Look-at point for `fly ... target`, `keyrel` and `pan ... target`.
     target: Option<DVec3>,
     keys: Vec<Key>,
@@ -41,6 +39,8 @@ pub struct Video {
     /// Settle timeouts and the worst settle, for the transcript.
     settle_timeouts: usize,
     settle_worst_s: f64,
+    /// The most blocks in flight any written frame drew (review 3 #13).
+    falling_drawn_max: usize,
     /// Vertical field of view of recorded frames, degrees (the game's is 60).
     /// Level of detail follows distance only, so a narrow view at 1 km shows
     /// the coarse world as it is drawn there, magnified.
@@ -49,7 +49,7 @@ pub struct Video {
 
 impl Default for Video {
     fn default() -> Self {
-        Self { enc: None, fps: 30.0, settle: true, hud: false, timescale: 0.0, target: None, keys: Vec::new(), last_tick: Instant::now(), settle_timeouts: 0, settle_worst_s: 0.0, fov: 60.0 }
+        Self { enc: None, fps: 30.0, settle: true, hud: false, target: None, keys: Vec::new(), last_tick: Instant::now(), settle_timeouts: 0, settle_worst_s: 0.0, falling_drawn_max: 0, fov: 60.0 }
     }
 }
 
@@ -197,6 +197,7 @@ impl Run {
             },
             "settle" => {
                 let cam = self.video_camera();
+                self.sync_falling();
                 let (secs, frames, ok) = self.harness.settle(&cam, Duration::from_secs(240));
                 self.say(format!("  settled in {secs:.1} s / {frames} frames{}; {} draws", if ok { "" } else { " TIMEOUT" }, self.harness.streamer.stats.drawn));
                 Ok(())
@@ -204,8 +205,7 @@ impl Run {
             "skytime" => match args.first().map(|s| crate::sky::parse_hour(s)) {
                 Some(Ok(hour)) => {
                     let pos = self.session.player.eye();
-                    let sky = &mut self.harness.gpu.sky;
-                    sky.clock.seconds = sky.settings.starting_seconds(hour, pos.y.atan2(pos.x));
+                    self.session.sky.seconds = self.harness.gpu.sky.settings.starting_seconds(hour, pos.y.atan2(pos.x));
                     let (elev, az) = self.sun_here();
                     self.say(format!("  local solar time {hour:.3} h: sun {elev:.2} deg above the horizon, azimuth {az:.1}"));
                     Ok(())
@@ -222,7 +222,8 @@ impl Run {
             },
             "skyspeed" => match num(0) {
                 Some(v) if (0.0..=100_000.0).contains(&v) => {
-                    self.video.timescale = v;
+                    // The session's clock: it advances on every step (M2c).
+                    self.session.sky.speed = v;
                     Ok(())
                 }
                 _ => Err("skyspeed F (0 holds the sky)".into()),
@@ -270,16 +271,14 @@ impl Run {
         Some(r)
     }
 
-    /// Called once per simulation step: advances the sky clock and, while
-    /// recording, renders and writes frames.
+    /// Called once per simulation step (the session advanced the sky clock
+    /// with it): while recording, renders and writes frames.
     pub(super) fn video_tick(&mut self) {
-        if self.video.timescale != 0.0 {
-            self.harness.gpu.sky.clock.seconds += STEP * self.video.timescale;
-        }
         let Some(enc) = &mut self.video.enc else { return };
         enc.ticks += 1;
         let due = (enc.ticks as f64 * self.video.fps / 60.0 + 1e-9).floor() as u64 >= enc.written;
         let cam = self.video_camera();
+        self.sync_falling();
         if self.video.settle {
             if due {
                 self.settle_for_video(&cam);
@@ -337,11 +336,13 @@ impl Run {
         self.video.fps = fps;
         self.video.settle_timeouts = 0;
         self.video.settle_worst_s = 0.0;
+        self.video.falling_drawn_max = 0;
         self.video.last_tick = Instant::now();
         self.video.enc = Some(Encoder { child, stdin, path: path.clone(), ticks: 0, written: 0, t0: Instant::now(), captions: Vec::new(), write_failed: false });
         self.say(format!("  recording {w}x{h} at {fps} fps ({}) -> {path}", if self.video.settle { "settled frames" } else { "live, real-time paced" }));
         // The first frame is the pose the recording starts at.
         let cam = self.video_camera();
+        self.sync_falling();
         if self.video.settle {
             self.settle_for_video(&cam);
         } else {
@@ -378,6 +379,13 @@ impl Run {
             self.video.settle_timeouts
         );
         self.say(msg);
+        let mut m = match std::mem::take(&mut self.last_stream) {
+            serde_json::Value::Object(m) => m,
+            _ => Default::default(),
+        };
+        m.insert("video_frames".into(), enc.written.into());
+        m.insert("video_falling_drawn_max".into(), self.video.falling_drawn_max.into());
+        self.last_stream = serde_json::Value::Object(m);
         if enc.write_failed {
             return Err(format!("frames were lost: the pipe to ffmpeg broke while writing {}", enc.path));
         }
@@ -405,6 +413,7 @@ impl Run {
             }
         }
         enc.written += 1;
+        self.video.falling_drawn_max = self.video.falling_drawn_max.max(self.harness.falling.len());
     }
 
     /// The game HUD without the stats panel: crosshair, block outline, hotbar.
@@ -427,7 +436,7 @@ impl Run {
     fn sun_here(&self) -> (f64, f64) {
         let sky = &self.harness.gpu.sky;
         let eye = self.session.player.eye();
-        let to_sun = (sky.settings.at(sky.clock.seconds).sun - eye / self.session.engine.planet.radius).normalize();
+        let to_sun = (sky.settings.at(self.session.sky.seconds).sun - eye / self.session.engine.planet.radius).normalize();
         let (north, east, up) = Camera::local_frame(eye);
         (to_sun.dot(up).asin().to_degrees(), to_sun.dot(east).atan2(to_sun.dot(north)).to_degrees())
     }
@@ -438,7 +447,7 @@ impl Run {
         let eye = self.session.player.eye();
         let lon = eye.y.atan2(eye.x);
         let radius = self.session.engine.planet.radius;
-        let sky = &mut self.harness.gpu.sky;
+        let sky = &self.harness.gpu.sky;
         let at = |hour: f64| {
             let t = sky.settings.starting_seconds(hour, lon);
             let sun = sky.settings.at(t).sun;
@@ -461,7 +470,7 @@ impl Run {
         }
         let hour = 0.5 * (lo + hi);
         let (_, t) = at(hour);
-        sky.clock.seconds = t;
+        self.session.sky.seconds = t;
         let (e, az) = self.sun_here();
         self.say(format!("  sun {e:.2} deg, azimuth {az:.1}, at local solar {hour:.3} h (clock {t:.2} s)"));
         Ok(())
@@ -585,7 +594,7 @@ impl Run {
         };
         let n = (end * 60.0).round() as usize;
         let engine = self.session.engine.clone();
-        self.session.set_mode(Mode::Fly);
+        let _ = self.session.apply(crate::session::Action::SetMode(Mode::Fly));
         let mut min_agl = f64::MAX;
         let mut prev_path_heading = self.session.player.heading;
         for step in 1..=n {
@@ -607,11 +616,19 @@ impl Run {
             };
             let up = eye.normalize();
             min_agl = min_agl.min(eye.length() - planet.radius - engine.ground(up));
-            let pl = &mut self.session.player;
-            pl.pos = eye - up * EYE_M;
-            pl.vel = DVec3::ZERO;
-            pl.heading = heading;
-            pl.pitch = pitch.clamp(-1.55, 1.55);
+            // The camera is keyed, but the world goes on: every frame is one
+            // step of the session (the simulation ticks, the sky turns),
+            // as for `hold`, `pan` and `zoom` (review 3 #13). The pose is
+            // pinned again after the step so the path is exactly the keys'.
+            let pin = |pl: &mut crate::player::Player| {
+                pl.pos = eye - up * EYE_M;
+                pl.vel = DVec3::ZERO;
+                pl.heading = heading;
+                pl.pitch = pitch.clamp(-1.55, 1.55);
+            };
+            pin(&mut self.session.player);
+            self.session.step(&Input::default(), STEP);
+            pin(&mut self.session.player);
             self.video_tick();
         }
         let (lat, lon) = crate::grid::Planet::lat_lon_deg(self.session.player.eye());

@@ -33,10 +33,16 @@
 //!   year-days must equal 4 * months-per-season * lunar-month-days
 //!   [ slows time, ] speeds time (0, 0.1, 1, 10, 60, 600, 3600x)
 //!   --sky-reel --out DIR  (settled 1080p sky comparison, four poses/four times)
+//! Replays (M2c): F10 in the game records one to game/replays/
+//!   --replay FILE         play it headless, check it, report the first divergence
+//!   --shot-at STEP        (with --replay, repeatable; STEP or "end") a settled shot there
+//!   --watch               (with --replay) play it in the window at real time instead
+//!   --record-replay FILE  (the game) start recording at launch, as F10 does; Q, closing or --exit-after stops it
 
 pub mod app;
 pub mod bench;
 pub mod camera;
+pub mod controls;
 pub mod engine;
 pub mod grid;
 pub mod landform_shots;
@@ -45,6 +51,7 @@ pub mod mesh;
 pub mod play;
 pub mod player;
 pub mod render;
+pub mod replay;
 pub mod session;
 pub mod sha256;
 pub mod sim;
@@ -126,6 +133,10 @@ struct Args {
     backend: Option<String>,
     screenshot: Option<String>,
     exit_after: Option<f64>,
+    replay: Option<String>,
+    shot_at: Vec<String>,
+    watch: bool,
+    record_replay: Option<String>,
 }
 
 fn parse_args() -> Args {
@@ -190,6 +201,10 @@ fn parse_args() -> Args {
         backend: None,
         screenshot: None,
         exit_after: None,
+        replay: None,
+        shot_at: Vec::new(),
+        watch: false,
+        record_replay: None,
     };
     let mut it = std::env::args().skip(1);
     while let Some(k) = it.next() {
@@ -268,6 +283,10 @@ fn parse_args() -> Args {
             "--backend" => a.backend = Some(val()),
             "--screenshot" => a.screenshot = Some(val()),
             "--exit-after" => a.exit_after = Some(val().parse().unwrap()),
+            "--replay" => a.replay = Some(val()),
+            "--shot-at" => a.shot_at.push(val()),
+            "--watch" => a.watch = true,
+            "--record-replay" => a.record_replay = Some(val()),
             "--help" | "-h" => {
                 println!("{}", include_str!("main.rs").lines().take_while(|l| l.starts_with("//!")).map(|l| l.trim_start_matches("//!").trim_start_matches(' ')).collect::<Vec<_>>().join("\n"));
                 std::process::exit(0);
@@ -313,6 +332,12 @@ fn main() {
     if let Some(v) = args.vscale { config.vertical_scale = Some(v); }
     if let Some(v) = args.roughness { config.roughness = v; }
     if let Some(v) = args.landform { config.landform = v; }
+    // A replay plays in the world and under the sky it was recorded with (M2c).
+    let replay = args.replay.as_ref().map(|p| replay::read(Path::new(p)).unwrap_or_else(|e| fail(&e)));
+    if let Some(r) = &replay {
+        replay::apply_world(&r.header, &mut config, &mut sky_settings).unwrap_or_else(|e| fail(&e));
+        sky_settings.validate().unwrap_or_else(|e| fail(&e));
+    }
 
     let t0 = std::time::Instant::now();
     let registry = Arc::new(Registry::load(&args.blocks).unwrap_or_else(|e| fail(&e)));
@@ -324,7 +349,7 @@ fn main() {
     // Saves: load before the engine exists so a mismatch refuses early.
     let tools = args.bench || args.shots || args.find_places || args.probe || args.sky_reel;
     let edits = Arc::new(EditStore::new());
-    let save_dir = if args.no_save || tools {
+    let save_dir = if args.no_save || tools || replay.is_some() {
         None
     } else if let Some(script) = &args.play {
         let stem = Path::new(script).file_stem().and_then(|s| s.to_str()).unwrap_or("play").to_string();
@@ -394,7 +419,11 @@ fn main() {
     let ephemeris = sky_settings.at(seconds);
     let (sun_lat, sun_lon) = grid::Planet::lat_lon_deg(ephemeris.sun);
     println!("sky: absolute {seconds:.6}s, local start {:.2}h, speed {}x, day {}s, lunar month {}d, {} months/season, year {}d; sun lat {sun_lat:.6} lon {sun_lon:.6}", args.time, args.time_scale, sky_settings.day_length_s, sky_settings.lunar_month_days, sky_settings.months_per_season, sky_settings.year_days);
-    sky::install(sky::Startup { settings: sky_settings, radius: p.radius, clock: sky::Clock { seconds, speed: args.time_scale } });
+    let clock = match &replay {
+        Some(r) => r.header.clock().unwrap_or_else(|e| fail(&e)),
+        None => sky::Clock { seconds, speed: args.time_scale },
+    };
+    sky::install(sky::Startup { settings: sky_settings, radius: p.radius, clock });
     let out = |default: &str| args.out.clone().unwrap_or_else(|| format!("{root}/{default}"));
     if args.sky_reel {
         render::reel::run(engine, &out("out/m1c-sky/engine"), args.backend.as_deref());
@@ -509,11 +538,17 @@ fn main() {
     if args.water_period == 0 {
         fail("--water-period must be at least 1 tick");
     }
-    let sim = Session::load_sim(save_dir.as_ref(), sim::SimConfig { radius_m: args.sim_radius, enabled: !args.no_sim, water_period: args.water_period }).unwrap_or_else(|e| fail(&e));
+    let sim = Session::load_sim(save_dir.as_ref(), sim::SimConfig { radius_m: args.sim_radius, enabled: !args.no_sim, water_period: args.water_period }, &registry).unwrap_or_else(|e| fail(&e));
     println!("simulation: {} Hz tick, {} m active radius{}; resumed at tick {} with {} queued, {} frozen, {} falling", sim::TICK_HZ, args.sim_radius, if args.no_sim { " (off)" } else { "" }, sim.tick(), sim.queued(), sim.frozen_count(), sim.falling().len());
     let mut session = Session::new(engine.clone(), Player::new(dir * (p.radius + alt_asl.unwrap_or(ground + 2.0)), heading, pitch, if walk { Mode::Walk } else { Mode::Fly }, p.block_size), save_dir, bake_sha, sim);
+    session.sky = clock;
     if walk {
         session.teleport(dir, None);
+    }
+    if let Some(r) = replay {
+        let stem = Path::new(args.replay.as_deref().unwrap_or("replay")).file_stem().and_then(|s| s.to_str()).unwrap_or("replay").to_string();
+        let opts = play::ReplayOptions { out: out(&format!("out/replay/{stem}")), name: stem, shots: args.shot_at, watch: args.watch, width: args.width, height: args.win_height, backend: args.backend, vsync: args.vsync, screenshot: args.screenshot.clone(), exit_after: args.exit_after };
+        std::process::exit(play::run_replay(session, r, opts));
     }
 
     if let Some(script) = args.play {
@@ -521,5 +556,5 @@ fn main() {
         let code = play::run_play(session, play::PlayOptions { script, out: out(&format!("out/play/{stem}")), width: args.width, height: args.win_height, backend: args.backend });
         std::process::exit(code);
     }
-    app::run(session, app::AppOptions { width: args.width, height: args.win_height, vsync: args.vsync, backend: args.backend, screenshot: args.screenshot, exit_after: args.exit_after });
+    app::run(session, app::AppOptions { width: args.width, height: args.win_height, vsync: args.vsync, backend: args.backend, screenshot: args.screenshot, exit_after: args.exit_after, record: args.record_replay });
 }

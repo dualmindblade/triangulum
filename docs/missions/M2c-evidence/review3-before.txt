@@ -1,0 +1,55 @@
+
+failures:
+
+---- sim::tests::the_hash_covers_the_simulation_settings stdout ----
+
+thread 'sim::tests::the_hash_covers_the_simulation_settings' (11288) panicked at src\sim\tests.rs:453:9:
+assertion `left != right` failed: radius is in the hash
+  left: "568c9b8a3b2aaba6c5a1ae153bc817955e4ff2871da1526b1f758743f12fcd2b"
+ right: "568c9b8a3b2aaba6c5a1ae153bc817955e4ff2871da1526b1f758743f12fcd2b"
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- sim::water_tests::water_waits_for_its_period_and_the_period_is_in_the_hash stdout ----
+
+thread 'sim::water_tests::water_waits_for_its_period_and_the_period_is_in_the_hash' (26320) panicked at src\sim\water_tests.rs:714:5:
+assertion `left != right` failed: the same state under another period hashes differently
+  left: "97a75efa4db463d415c4a3fcf7c5d471314533c8753aac56aae6782bf1f52083"
+ right: "97a75efa4db463d415c4a3fcf7c5d471314533c8753aac56aae6782bf1f52083"
+
+---- sim::tests::a_reload_keeps_the_active_region_it_was_computed_for stdout ----
+
+thread 'sim::tests::a_reload_keeps_the_active_region_it_was_computed_for' (25312) panicked at src\sim\tests.rs:420:5:
+the scenario needs a region that depends on the focus: 2 from the edge, 3 from the middle
+
+---- sim::water_tests::a_write_that_changes_nothing_leaves_no_chunk_and_no_trace_in_the_hash stdout ----
+
+thread 'sim::water_tests::a_write_that_changes_nothing_leaves_no_chunk_and_no_trace_in_the_hash' (15520) panicked at src\sim\water_tests.rs:405:5:
+assertion `left == right` failed: a write that changed nothing leaves no edited chunk behind
+  left: 2
+ right: 0
+
+
+failures:
+    sim::tests::a_reload_keeps_the_active_region_it_was_computed_for
+    sim::tests::the_hash_covers_the_simulation_settings
+    sim::water_tests::a_write_that_changes_nothing_leaves_no_chunk_and_no_trace_in_the_hash
+    sim::water_tests::water_waits_for_its_period_and_the_period_is_in_the_hash
+
+test result: FAILED. 0 passed; 4 failed; 0 ignored; 0 measured; 121 filtered out; finished in 2.71s
+
+error: test failed, to rerun pass `--bin triangulum`
+---- sim::tests::a_reload_keeps_the_active_region_it_was_computed_for stdout ----
+
+thread 'sim::tests::a_reload_keeps_the_active_region_it_was_computed_for' (14380) panicked at src\sim\tests.rs:437:5:
+assertion `left == right` failed: the restored region is the saved one
+  left: 3
+ right: 2
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    sim::tests::a_reload_keeps_the_active_region_it_was_computed_for
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 124 filtered out; finished in 1.35s
+
+error: test failed, to rerun pass `--bin triangulum`

@@ -29,8 +29,9 @@ use crate::grid::WorldConfig;
 use crate::look::{self, FileWatch, Look, Terrain};
 use crate::player::Mode;
 use crate::render::Renderer;
-use crate::session::Session;
+use crate::session::{Action, Session};
 use crate::sim::Sim;
+use crate::sky::Clock;
 use crate::sim::draw::FallingDraws;
 use crate::sky::Settings;
 use crate::stream::Streamer;
@@ -221,17 +222,19 @@ impl Workshop {
             self.last_poll = now;
             self.poll_files();
         }
-        // Time of day and its speed.
+        // Time of day and its speed: the session's sky clock, set as an
+        // input (a replay records it, as it does [ and ]).
         let lon = session.player.pos.y.atan2(session.player.pos.x);
         if let Some(h) = self.set_hour.take() {
-            gpu.sky.clock.seconds = seek_hour(&gpu.sky.settings, gpu.sky.clock.seconds, lon, h);
+            let seconds = seek_hour(&gpu.sky.settings, session.sky.seconds, lon, h);
+            let _ = session.apply(Action::Sky(Clock { seconds, speed: session.sky.speed }));
         }
-        if let Some(s) = self.set_speed.take() {
-            gpu.sky.clock.speed = s;
+        if let Some(speed) = self.set_speed.take() {
+            let _ = session.apply(Action::Sky(Clock { seconds: session.sky.seconds, speed }));
         }
         if self.open {
-            self.hour_now = local_hour(&gpu.sky.settings, gpu.sky.clock.seconds, lon);
-            self.speed_now = gpu.sky.clock.speed;
+            self.hour_now = local_hour(&gpu.sky.settings, session.sky.seconds, lon);
+            self.speed_now = session.sky.speed;
         }
         // The look and the distance detail.
         if self.look_applied.as_ref() != Some(&self.look) {
@@ -368,6 +371,7 @@ impl Workshop {
             }
         };
         engine.hotbar = base.hotbar.clone();
+        self.stop_recording(session);
         if self.home.is_none() {
             // Leave the real world saved: unsaved edits (or simulation
             // changes) go to disk now, and nothing reaches its save until
@@ -400,6 +404,7 @@ impl Workshop {
         self.terrain = self.terrain_home;
         self.terrain_moved = None;
         let Some(h) = self.home.take() else { return };
+        self.stop_recording(session);
         let hide_water = session.engine.hide_water;
         session.engine = h.engine;
         session.save = h.save;
@@ -411,6 +416,17 @@ impl Workshop {
         self.swap_world(session, streamer, falling, gpu);
         self.terrain_running = self.terrain_home;
         self.note("Back in your world: saving is on again.");
+    }
+
+    /// A replay (M2c) cannot cross a change of world: one being recorded
+    /// ends, saved, before the world is swapped.
+    fn stop_recording(&mut self, session: &mut Session) {
+        if session.recording() {
+            match session.stop_recording() {
+                Ok(s) => self.note(format!("Replay recording stopped and saved to {} (a replay cannot cross a terrain change).", s.path.display())),
+                Err(e) => self.note(format!("Replay recording stopped: {e}")),
+            }
+        }
     }
 
     /// Drop every chunk of the old world and stream the session's engine;
@@ -536,9 +552,9 @@ impl Workshop {
                 "preview_world": self.previewing(),
             },
             "time": {
-                "local_hour": local_hour(&gpu.sky.settings, gpu.sky.clock.seconds, session.player.pos.y.atan2(session.player.pos.x)),
-                "speed": gpu.sky.clock.speed,
-                "clock_seconds": gpu.sky.clock.seconds,
+                "local_hour": local_hour(&gpu.sky.settings, session.sky.seconds, session.player.pos.y.atan2(session.player.pos.x)),
+                "speed": session.sky.speed,
+                "clock_seconds": session.sky.seconds,
             },
             "world": session.engine.config.name,
             "state": session.state(),

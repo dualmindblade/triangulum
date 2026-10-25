@@ -1,0 +1,11 @@
+ASSERT FAILED (line 43): no field sky_seconds
+  flew 1 keys over 1.00 s; lowest eye 2.0 m above the ground; now at lat -4.577032 lon 117.474487 alt 59.0 m
+  recorded 31 frames (1.03 s of video) to C:\Users\Austin\AppData\Local\Temp\claude\C--code-triangulum\d342b492-b4e1-4ca0-aed0-a98693098744\scratchpad\main-src\game/out/play/m2c-video-driver/m2c-fly.mp4 (0.7 MB) in 3.9 s wall; settle worst 2.49 s, timeouts 0
+ASSERT FAILED (line 51): sim_tick == 21, actual 1
+ASSERT FAILED (line 53): landings == 1, actual 0
+ASSERT FAILED (line 54): no field video_falling_drawn_max
+ASSERT FAILED (line 55): no field sky_speed
+ASSERT FAILED (line 57): no field sky_seconds
+ASSERT FAILED (line 63): block_rel[1,0,0] == sand, actual air
+ASSERT FAILED (line 64): block_rel[1,0,1] == air, actual sand
+done in 4.0 s: 21 asserts, 8 failed, 0 errors

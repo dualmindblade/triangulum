@@ -71,4 +71,6 @@ game/target/
 game/assets/world/
 game/saves/
 game/out/
+# replays recorded with F10 (send them; don't commit them)
+game/replays/
 crates/*/target/

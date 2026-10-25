@@ -1,0 +1,32 @@
+# The windowed app's own recording path (App::frame -> Controls -> Session -> Recorder),
+# started with --record-replay (the same toggle F10 calls), stopped by --exit-after,
+# then played back headless and in the window. Verbatim console output (2026-10-25).
+
+$ triangulum --bake .../seed42 --save saves/_apptest-vsync --record-replay out/app/vsync.replay --exit-after 8 --screenshot out/app/vsync.png
+recording a replay to out/app/vsync.replay (F10 stops)
+screenshot saved to out/app/vsync.png
+replay saved to out/app/vsync.replay (414 steps = 6.9 s, 7 checks, 0.0 MB; play it with --replay)
+
+$ triangulum --bake .../seed42 --save saves/_apptest-free --no-vsync --time-scale 600 --record-replay out/app/free.replay --exit-after 8 --screenshot out/app/free.png
+replay saved to out/app/free.replay (422 steps = 7.0 s, 8 checks, 0.0 MB; play it with --replay)
+
+$ triangulum --bake .../seed42 --replay out/app/vsync.replay
+replay out/app/vsync.replay: recorded 20261025-155404 UTC by triangulum 0.1.0 (recorded in the app (F10)); 414 steps (6.9 s), 9 events, 3 snapshot files (1.5 KB), 0 edited chunks at the start
+replayed 414 steps (6.9 s), 9 events; 7 of 7 checks matched; the end state hash matches (a775f530c982662a..)
+replay OK: the session reproduced exactly
+exit 0
+
+$ triangulum --bake .../seed42 --replay out/app/free.replay
+replay out/app/free.replay: recorded 20261025-155427 UTC by triangulum 0.1.0 (recorded in the app (F10)); 422 steps (7.0 s), 10 events, 3 snapshot files (1.5 KB), 0 edited chunks at the start
+replayed 422 steps (7.0 s), 10 events; 8 of 8 checks matched; the end state hash matches (da2a2bfe660a59d6..)
+replay OK: the session reproduced exactly
+exit 0
+
+$ triangulum --bake .../seed42 --replay out/app/free.replay --watch --exit-after 12 --screenshot out/app/watch.png
+replayed 422 steps (7.0 s), 10 events; 8 of 8 checks matched; the end state hash matches (da2a2bfe660a59d6..)
+replay OK: the session reproduced exactly
+screenshot saved to out/app/watch.png
+exit 0
+
+# Recorder cost (cargo test --release -- --ignored replay_cost --nocapture):
+400 edited chunks: start recording 79.3 ms (1844 KB file); a check 4.45 ms cold, 0.085 ms with nothing changed

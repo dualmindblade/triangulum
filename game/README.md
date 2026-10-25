@@ -104,6 +104,7 @@ mode when higher; `--walk` and `--fly` force it.
 | V | vsync on / off |
 | [ / ] | slow / speed up time (0, 0.1, 1, 10, 60, 600, 3600×) |
 | F1 | the look panel (frees the mouse while open) |
+| F10 | start / stop recording a replay (below) |
 | Q | save and quit |
 
 The HUD shows the targeted block (with an outline around it), the hotbar,
@@ -112,6 +113,46 @@ and how many chunks are edited and unsaved.
 
 The player is a 0.6 × 1.8 m box, eyes at 1.62 m, reach 6 m, with radial
 gravity, a 1.28 m jump and simple buoyancy in water. There is no fall damage.
+
+## Reporting a bug: press F10 (M2c)
+
+When something looks or behaves wrong, record it:
+
+1. Press **F10**. The window title says `REC replay`, and the stats panel
+   (H) names the file. (It saves your game first.)
+2. Do the thing again, or just keep playing until it happens.
+3. Press **F10** again to stop. Quitting with Q or closing the window
+   also stops it, and if the game crashes the file keeps everything up to
+   the last second.
+4. Send the file. It is in **`game/replays/`**, named after the world and
+   the time, for example `game/replays/Neisor-20261025-154807.replay`.
+   Attach it to a message or drop it into the shared folder with a line
+   about what went wrong and roughly when ("about 20 s in, the water
+   climbed the wall"). The file is the whole bug: it holds the world as it
+   was when you pressed F10 and every key, click and mouse move after it.
+   It does not hold your save, so you keep playing as usual.
+
+A replay usually takes a few kilobytes per minute plus the edited part of
+your world (a few kilobytes per chunk you changed).
+
+Playing one back (what an agent does with your file):
+
+```
+cargo run --release -- --replay game/replays/Neisor-20261025-154807.replay
+cargo run --release -- --replay FILE --shot-at 600 --shot-at end   # settled shots at steps (60 a second)
+cargo run --release -- --replay FILE --watch                       # in the window, at real time
+```
+
+It plays in a scratch save, `game/saves/_replay/<name>/`, never in your
+own, checks the world, the player, the simulation and the sky against
+the recording every second, and says whether it reproduced exactly or
+where it first went different, and how ("step 1260, 21 s in: player
+position 0.4 m apart; world: face 2 chunk (3349, 1797, 17) differs").
+The shots and a `report.json` go to `game/out/replay/<name>/`. The exit
+code is 0 when it reproduced, 1 when it diverged, 2 when it could not
+play (the wrong bake, a damaged file). A replay needs the same world
+settings and bake it was recorded with, and is meant for the same build
+of the game; it says so when it cannot play.
 
 ## Useful options
 
@@ -176,7 +217,8 @@ For repeatable stills, use `--time 17:30 --time-scale 0`. Existing
 `--bench`, `--shots` and `--play` renders hold the initial sky time while
 streaming/reading back frames; the play harness advances the sky on its
 simulation steps only when a script asks (`skyspeed`, see Video below), and
-`skytime` / `sun` seek it. A dedicated settled evidence reel seeks the
+`skytime` / `sun` seek it. Since M2c the clock belongs to the session and
+moves on its 60 Hz steps in the game, the harness and a replay alike. A dedicated settled evidence reel seeks the
 same clock explicitly for noon, golden hour (+5° sun), dusk (−3°) and night:
 
 ```
@@ -402,7 +444,9 @@ chunks/*.gN.chunk  one LOD-0 chunk each, in full (ids and water levels,
                  the levels the water rule reads and writes), written in
                  generation N
 sim.gN.bin       the simulation: tick, update queue, frozen updates, blocks
-                 in flight
+                 in flight, and (since M2c) the settings it ran under,
+                 where its active region was computed (a reload resumes
+                 that exact region) and a digest of the block rules
 ```
 
 A save is one snapshot: a generation's files are written and synced first
@@ -497,12 +541,25 @@ trench fills, the river inside the chunk keeps its water, and water flows
 in from the generated river upstream and out into it downstream, counted.
 All three must pass.
 
+`scripts/m2c-replay.play` goes to its sites with `find`, records a replay
+with the same recorder F10 uses (a sand collapse, digging at a river bank,
+pouring water, the sky, hiding water, the active region, fly mode, a save
+and a reload), then plays the file back in a fresh session and checks it
+reproduced. `scripts/m2c-video-driver.play` checks that a recorded camera
+flight steps the world (sand lands, the tick and the sky clock advance, the
+frames draw the falling block). Both must pass.
+
 The command list lives in the header of `src/play.rs`; the ones you will
 use most:
 
 ```
 atblock FACE I J K       stand on a lattice block (fly mode: hover there)
 at LAT LON [ALT]         teleport by coordinates
+find flat|shore|river|lake|waterfall
+                         stand at the nearest such site, deterministically,
+                         looking at the water (find_* fields say where)
+replay record F | stop | check F
+                         record a replay (as F10), stop, play it back here
 lookaxis +i -30          face exactly along a lattice axis, pitch in degrees
 aim DI DJ DK             look at a lattice point relative to the feet cell
 hold w,shift 2           hold keys for seconds; tap break|place|jump|g|1..9
@@ -520,9 +577,9 @@ assert FIELD OP VALUE    position, altitude, on_ground, in_water, crosshair,
                          streamer draws at a block, after a shot), ...
 ```
 
-Writing a script: teleport with `atblock` rather than walking to places,
-probe the terrain with `column DI DJ` first, and target blocks with `aim`
-(or `lookaxis` with a computed pitch) so a run is deterministic.
+Writing a script: teleport with `atblock` (or `find`) rather than walking
+to places, probe the terrain with `column DI DJ` first, and target blocks
+with `aim` (or `lookaxis` with a computed pitch) so a run is deterministic.
 
 ## Video
 
@@ -587,7 +644,12 @@ basin resting until touched and a lake draining through a channel to its
 sill, displacement by a landing block and loss under a sealed lid, a pit at
 the shore filling from the sea with the water accounted exactly, boundary
 cells as reservoirs, drains and walls that are never written, the water
-period, and the mesher's shared corners. Several need the bake at
+period, and the mesher's shared corners. Replays (`src/replay_tests.rs`,
+driven through the app's own input code with synthetic window events):
+record then replay gives the same state, the same inputs at 144 and 30 fps
+give the same world, a damaged replay names its first divergence, a replay
+never touches the real save, harness pokes replay exactly, and a key tap
+shorter than a frame still counts. Several need the bake at
 `C:/code/triangulum/game/assets/world/seed42`. The stress tests are
 `cargo test --release -- --ignored stress` (5,041 sand blocks) and
 `cargo test --release -- --ignored water_stress --nocapture` (a 2,000-cell

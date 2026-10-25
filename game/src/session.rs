@@ -2,16 +2,89 @@
 //! saving and the state the HUD and the harness report. The windowed app
 //! and the scripted harness both drive this, so what a script checks is
 //! what the game does.
+//!
+//! The driver (M2c). Everything a player does reaches the game in one of
+//! two ways, both at a fixed 60 Hz step boundary: the held movement keys
+//! go into `step`, and every other input is an `Action` given to `apply`
+//! before the step it belongs to. The app queues window events and applies
+//! them at the next step (`controls.rs`), the harness applies them as its
+//! script says, and a replay applies them from its file, so a session is a
+//! function of its step-positioned inputs and nothing else: not the frame
+//! rate, not the wall clock. While a replay is being recorded (`recorder`)
+//! the same two calls write it.
 
 use crate::engine::Engine;
 use crate::grid::BlockPos;
 use crate::player::{self, Frame, Hit, Input, Mode, Player, REACH_M};
+use crate::replay::Recorder;
 use crate::sim::{STEPS_PER_TICK, Sim, Snapshot};
+use crate::sky::Clock;
 use crate::world::save::{self, SaveDir};
 use crate::world::{BlockId, EditStore};
 use glam::DVec3;
 use std::sync::Arc;
 use std::time::Instant;
+
+/// What a mouse button does.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Button {
+    /// Left: break the targeted block (or remove a water cell).
+    Break,
+    /// Right: place the selected block.
+    Place,
+}
+
+/// Mouse look: radians per raw mouse count.
+pub const LOOK_RAD_PER_COUNT: f64 = 0.0022;
+/// Pitch limit (radians).
+pub const PITCH_MAX: f64 = 1.55;
+/// Holding a mouse button repeats its action every this many fixed steps
+/// (0.25 s), counted in steps, so a held click breaks the same blocks at
+/// the same steps whatever the frame rate (review 2 #16).
+pub const REPEAT_STEPS: u64 = 15;
+
+/// One input, applied at a step boundary (`Session::apply`). Toggles are
+/// turned into the state they set before they are recorded (`ToggleMode`
+/// is recorded as the `SetMode` it became), so a replay file reads as what
+/// happened.
+#[derive(Clone, Debug)]
+pub enum Action {
+    /// Raw mouse motion in counts (x right, y down) since the last one.
+    Look(f64, f64),
+    /// A mouse button went down: it acts now, then every `REPEAT_STEPS`
+    /// while held.
+    Press(Button),
+    /// The held button went up (or the window lost focus).
+    Release,
+    /// One click: acts once (the harness's `tap break|place`).
+    Click(Button),
+    /// Hotbar slot (0-based).
+    Select(usize),
+    ToggleMode,
+    SetMode(Mode),
+    /// R: drop to the ground here, in walk mode.
+    Ground,
+    /// P: go to preset place n (`Engine::presets`).
+    Preset(usize),
+    ToggleWater,
+    /// Hide (true) or show water: a view flag.
+    HideWater(bool),
+    /// Scroll wheel, in lines: fly speed times 1.3 per line.
+    Scroll(f64),
+    /// `]` (true) or `[`: the next sky clock speed.
+    Time(bool),
+    /// Set the sky clock (seconds and speed).
+    Sky(Clock),
+    /// Run or pause the simulation.
+    Sim(bool),
+    SimRadius(f64),
+    WaterPeriod(u64),
+    /// Put the player exactly in this state (the harness's teleports and
+    /// look commands, as the recorder sees them).
+    Pose(Box<Player>),
+    /// Save, then rebuild the world and the simulation from the save.
+    Reload,
+}
 
 pub struct Session {
     pub engine: Arc<Engine>,
@@ -24,48 +97,215 @@ pub struct Session {
     /// The simulation (M2a): ticks every `STEPS_PER_TICK` player steps.
     pub sim: Sim,
     steps: u64,
+    /// The sky clock, advanced on the same fixed steps (M2c: the app, the
+    /// harness and a replay all keep it here; renderers copy it).
+    pub sky: Clock,
+    /// The mouse button being held and the step it last acted on.
+    held: Option<(Button, u64)>,
+    /// The report of the last `Action::Reload`.
+    pub last_reload: Option<save::LoadReport>,
+    /// A replay being written (M2c): `apply` and `step` feed it.
+    pub recorder: Option<Recorder>,
 }
 
 impl Session {
     pub fn new(engine: Arc<Engine>, player: Player, save: Option<SaveDir>, bake_sha256: String, sim: Sim) -> Self {
-        Self { engine, player, save, bake_sha256, last_save: None, saved_chunks: 0, sim, steps: 0 }
+        Self { engine, player, save, bake_sha256, last_save: None, saved_chunks: 0, sim, steps: 0, sky: Clock { seconds: 0.0, speed: 0.0 }, held: None, last_reload: None, recorder: None }
     }
 
     pub fn planet(&self) -> &crate::grid::Planet {
         &self.engine.planet
     }
 
-    /// One fixed 60 Hz step of the player, and every third step one
-    /// simulation tick (20 Hz), on this thread. The sky clock is advanced
-    /// by the caller on the same steps with its own speed; it never reaches
-    /// the simulation.
+    /// One fixed 60 Hz step with these keys held: the player, every third
+    /// step one simulation tick (20 Hz), the sky clock at its own speed
+    /// (it never reaches the simulation), and a held mouse button's repeat.
+    /// Everything on this thread.
     pub fn step(&mut self, input: &Input, dt: f64) {
+        if let Some(mut rec) = self.recorder.take() {
+            rec.before_step(self, input, dt);
+            self.recorder = Some(rec);
+        }
         let world = self.engine.world.clone();
         self.player.step(world.as_ref(), &self.engine.planet, input, dt);
         self.steps += 1;
         if self.sim.config.enabled && self.steps % STEPS_PER_TICK as u64 == 0 {
             self.sim.step(world.as_ref(), self.player.pos);
         }
+        self.sky.advance(dt);
+        if let Some((button, since)) = self.held {
+            if self.steps - since >= REPEAT_STEPS {
+                self.click(button);
+                self.held = Some((button, self.steps));
+            }
+        }
+        if let Some(mut rec) = self.recorder.take() {
+            rec.after_step(self);
+            self.recorder = Some(rec);
+        }
     }
 
-    /// Fixed steps taken so far (the app's input repeat counts these).
+    /// Fixed steps taken so far.
     pub fn steps(&self) -> u64 {
         self.steps
+    }
+
+    /// The held mouse button and the step it last acted on.
+    pub fn held(&self) -> Option<(Button, u64)> {
+        self.held
+    }
+
+    /// Restore the step counter and the held button (a replay's start: the
+    /// tick falls on every third step, and a held button repeats on its
+    /// own schedule).
+    pub fn restore_steps(&mut self, steps: u64, held: Option<(Button, u64)>) {
+        self.steps = steps;
+        self.held = held;
+    }
+
+    /// Apply one input at the current step boundary (see the module doc).
+    /// Returns the block a click changed, if any; an error only from a
+    /// failed reload.
+    pub fn apply(&mut self, action: Action) -> Result<Option<BlockPos>, String> {
+        let action = match action {
+            Action::ToggleMode => Action::SetMode(if self.player.mode == Mode::Walk { Mode::Fly } else { Mode::Walk }),
+            Action::ToggleWater => Action::HideWater(!self.engine.hide_water),
+            Action::Time(faster) => {
+                let mut c = self.sky;
+                c.change_speed(faster);
+                Action::Sky(c)
+            }
+            a => a,
+        };
+        if let Some(mut rec) = self.recorder.take() {
+            rec.before_action(self, &action);
+            self.recorder = Some(rec);
+        }
+        let mut out = Ok(None);
+        match action {
+            Action::Look(dx, dy) => {
+                let p = &mut self.player;
+                p.heading += dx * LOOK_RAD_PER_COUNT;
+                p.pitch = (p.pitch - dy * LOOK_RAD_PER_COUNT).clamp(-PITCH_MAX, PITCH_MAX);
+            }
+            Action::Press(b) => {
+                out = Ok(self.click(b));
+                self.held = Some((b, self.steps));
+            }
+            Action::Release => self.held = None,
+            Action::Click(b) => out = Ok(self.click(b)),
+            Action::Select(slot) => self.select(slot),
+            Action::SetMode(m) => self.set_mode(m),
+            Action::Ground => {
+                let dir = self.player.pos.normalize();
+                self.set_mode(Mode::Walk);
+                self.teleport(dir, None);
+            }
+            Action::Preset(i) => self.apply_preset(i),
+            Action::HideWater(hide) => {
+                self.set_hide_water(hide);
+            }
+            Action::Scroll(lines) => {
+                let p = &mut self.player;
+                p.fly_speed = (p.fly_speed * 1.3f64.powf(lines)).clamp(1.0, 5000.0);
+            }
+            Action::Sky(c) => self.sky = c,
+            Action::Sim(on) => self.sim.config.enabled = on,
+            Action::SimRadius(m) => self.sim.set_radius(m),
+            Action::WaterPeriod(n) => self.sim.config.water_period = n.max(1),
+            Action::Pose(p) => self.player = *p,
+            Action::Reload => match self.reload() {
+                Ok((_, report)) => self.last_reload = Some(report),
+                Err(e) => out = Err(e),
+            },
+            Action::ToggleMode | Action::ToggleWater | Action::Time(_) => unreachable!("normalised above"),
+        }
+        if let Some(mut rec) = self.recorder.take() {
+            rec.after(self);
+            self.recorder = Some(rec);
+        }
+        out
+    }
+
+    fn click(&mut self, b: Button) -> Option<BlockPos> {
+        match b {
+            Button::Break => self.break_block(),
+            Button::Place => self.place_block(),
+        }
+    }
+
+    /// Go to preset place `i` (P in the app): in walk mode on the ground,
+    /// or flying when the preset is high.
+    pub fn apply_preset(&mut self, i: usize) {
+        let presets = self.engine.presets();
+        if presets.is_empty() {
+            return;
+        }
+        let p = presets[i % presets.len()].clone();
+        self.player.heading = p.heading_deg.to_radians();
+        self.player.pitch = p.pitch_deg.to_radians();
+        if p.alt_agl > 50.0 {
+            self.set_mode(Mode::Fly);
+            let ground = self.engine.ground(p.dir);
+            self.teleport(p.dir, Some(ground + p.alt_agl));
+        } else {
+            self.set_mode(Mode::Walk);
+            self.teleport(p.dir, None);
+        }
+        println!("preset {}: {}", i % presets.len(), p.name);
+    }
+
+    /// Is a replay being recorded?
+    pub fn recording(&self) -> bool {
+        self.recorder.is_some()
+    }
+
+    /// Start recording a replay to `path` (F10 in the app, `replay record`
+    /// in the harness). The save is brought up to date first when there is
+    /// one (the replay names its generation); the whole current state goes
+    /// into the file as its starting snapshot.
+    pub fn start_recording(&mut self, path: &std::path::Path, note: &str) -> Result<std::path::PathBuf, String> {
+        if self.recorder.is_some() {
+            return Err("already recording a replay".into());
+        }
+        if let Err(e) = self.save_now() {
+            eprintln!("replay: the save could not be brought up to date first ({e}); recording from memory anyway");
+        }
+        let rec = Recorder::start(self, path, note)?;
+        let p = rec.path().to_path_buf();
+        self.recorder = Some(rec);
+        Ok(p)
+    }
+
+    /// Finish the replay being recorded: a last check, the end line with
+    /// the full state hash, and the file closed.
+    pub fn stop_recording(&mut self) -> Result<crate::replay::Summary, String> {
+        let Some(rec) = self.recorder.take() else { return Err("not recording a replay".into()) };
+        rec.finish(self)
     }
 
     /// The world-state hash (`Sim::state_hash`), after absorbing pending changes.
     pub fn sim_hash(&mut self) -> String {
         let world = self.engine.world.clone();
         let _ = self.sim.snapshot(world.as_ref());
-        self.sim.state_hash(&self.engine.edits)
+        self.sim.state_hash(world.as_ref())
     }
 
     /// Restore the simulation from a save directory's `sim.bin`, or start
     /// it fresh when there is none.
-    pub fn load_sim(dir: Option<&SaveDir>, config: crate::sim::SimConfig) -> Result<Sim, String> {
+    /// The settings are `config` (the command line's, or the running
+    /// session's on a reload); a save made under other settings or other
+    /// block rules says so.
+    pub fn load_sim(dir: Option<&SaveDir>, config: crate::sim::SimConfig, registry: &crate::world::Registry) -> Result<Sim, String> {
         match dir.map(|d| d.read_sim()).transpose()?.flatten() {
             Some(bytes) => {
                 let snap = Snapshot::from_bytes(&bytes).map_err(|e| format!("refusing to load the simulation state of {}: {e}", dir.unwrap().path.display()))?;
+                if let Some(saved) = snap.config.filter(|c| *c != config) {
+                    println!("note: the save's simulation ran with radius {} m, {}, water period {}; it continues with radius {} m, {}, water period {}", saved.radius_m, if saved.enabled { "on" } else { "off" }, saved.water_period, config.radius_m, if config.enabled { "on" } else { "off" }, config.water_period);
+                }
+                if snap.rules.is_some_and(|r| r != crate::sim::rules_digest(registry)) {
+                    println!("note: the save was made under other block rules (blocks.json's solid, liquid, gravity or replaceable flags changed); it continues under the current ones");
+                }
                 Ok(Sim::from_snapshot(config, snap))
             }
             None => Ok(Sim::new(config)),
@@ -234,7 +474,7 @@ impl Session {
         };
         let engine = Arc::new(self.engine.with_edits(edits));
         self.engine = engine.clone();
-        self.sim = Self::load_sim(self.save.as_ref(), self.sim.config)?;
+        self.sim = Self::load_sim(self.save.as_ref(), self.sim.config, &self.engine.registry)?;
         Ok((engine, report))
     }
 
@@ -303,6 +543,10 @@ impl Session {
             "water_updates_last": ws.water_updates_last,
             "water_period": self.sim.config.water_period,
             "sim_radius": self.sim.config.radius_m,
+            // The sky clock (M2c: the session advances it on its steps).
+            "sky_seconds": self.sky.seconds, "sky_speed": self.sky.speed,
+            "steps": self.steps,
+            "recording": self.recorder.is_some(),
         });
         if let (serde_json::Value::Object(m), serde_json::Value::Object(s), serde_json::Value::Object(w)) = (&mut v, sim, water) {
             m.extend(s);

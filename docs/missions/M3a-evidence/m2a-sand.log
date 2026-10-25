@@ -1,4 +1,4 @@
-play scripts/m2a-sand.play -> out/m3a/gate-m2a-sand
+play scripts/m2a-sand.play -> out/m3a/gate2-m2a-sand
 > atblock 2 107155 57531 2000
 > assert mode == walk
   assert ok: mode == walk (actual walk)
@@ -85,7 +85,7 @@ play scripts/m2a-sand.play -> out/m3a/gate-m2a-sand
 > assert block_rel[0,0,-3] == sand
   assert ok: block_rel[0,0,-3] == sand (actual sand)
 > tick 5
-  ticked 39 -> 44: sim on  tick 44  falling 0  queued 0  frozen 0  active 358 chunks  water 0 updates, 0 moved, in 0 out 0  tick cost 0.001 ms (avg 0.016, max 0.644)
+  ticked 39 -> 44: sim on  tick 44  falling 0  queued 0  frozen 0  active 358 chunks  water 0 updates, 0 moved, in 0 out 0  tick cost 0.001 ms (avg 0.017, max 0.646)
 > assert falling == 0
   assert ok: falling == 0 (actual 0)
 > assert queued == 0
@@ -96,7 +96,7 @@ play scripts/m2a-sand.play -> out/m3a/gate-m2a-sand
 > hold space 0.15
 > aim 7 0 -1.0
 > shot 01_tower
-  shot 01_tower: out/m3a/gate-m2a-sand/01_tower.png (settled in 3.0 s / 1307 frames; 850 draws)
+  shot 01_tower: out/m3a/gate2-m2a-sand/01_tower.png (settled in 3.0 s / 1620 frames; 850 draws)
   state 01_tower: fly lat -4.55815 lon 117.47012 alt 45.00 m (agl 2.68) face 2 i 107149 j 57531 k 557 ground false water false crosshair null edits 1 dirty 1
 > mode walk
 > atblock 2 107155 57531 2000
@@ -117,21 +117,21 @@ play scripts/m2a-sand.play -> out/m3a/gate-m2a-sand
 > assert falling == 0
   assert ok: falling == 0 (actual 0)
 > tick 1
-  ticked 47 -> 48: sim on  tick 48  falling 1  queued 7  frozen 0  active 358 chunks  water 3 updates, 0 moved, in 0 out 0  tick cost 0.013 ms (avg 0.015, max 0.644)
+  ticked 47 -> 48: sim on  tick 48  falling 1  queued 7  frozen 0  active 358 chunks  water 3 updates, 0 moved, in 0 out 0  tick cost 0.013 ms (avg 0.015, max 0.646)
 > assert falling == 1
   assert ok: falling == 1 (actual 1)
 > assert falling_rel[1,0] == 1
   assert ok: falling_rel[1,0] == 1 (actual 1)
 > tick 1
-  ticked 48 -> 49: sim on  tick 49  falling 2  queued 7  frozen 0  active 358 chunks  water 6 updates, 0 moved, in 0 out 0  tick cost 0.011 ms (avg 0.015, max 0.644)
+  ticked 48 -> 49: sim on  tick 49  falling 2  queued 7  frozen 0  active 358 chunks  water 6 updates, 0 moved, in 0 out 0  tick cost 0.017 ms (avg 0.016, max 0.646)
 > assert falling == 2
   assert ok: falling == 2 (actual 2)
 > tick 1
-  ticked 49 -> 50: sim on  tick 50  falling 3  queued 7  frozen 0  active 358 chunks  water 6 updates, 0 moved, in 0 out 0  tick cost 0.008 ms (avg 0.015, max 0.644)
+  ticked 49 -> 50: sim on  tick 50  falling 3  queued 7  frozen 0  active 358 chunks  water 6 updates, 0 moved, in 0 out 0  tick cost 0.007 ms (avg 0.015, max 0.646)
 > assert falling == 3
   assert ok: falling == 3 (actual 3)
 > tick 1
-  ticked 50 -> 51: sim on  tick 51  falling 4  queued 7  frozen 0  active 358 chunks  water 6 updates, 0 moved, in 0 out 0  tick cost 0.008 ms (avg 0.015, max 0.644)
+  ticked 50 -> 51: sim on  tick 51  falling 4  queued 7  frozen 0  active 358 chunks  water 6 updates, 0 moved, in 0 out 0  tick cost 0.009 ms (avg 0.015, max 0.646)
 > assert falling == 4
   assert ok: falling == 4 (actual 4)
 > assert falls == 4
@@ -142,20 +142,20 @@ play scripts/m2a-sand.play -> out/m3a/gate-m2a-sand
 > hold space 0.15
 > aim 7 0 -1.0
 > shot 02_collapse_a
-  shot 02_collapse_a: out/m3a/gate-m2a-sand/02_collapse_a.png (settled in 0.0 s / 11 frames; 850 draws)
+  shot 02_collapse_a: out/m3a/gate2-m2a-sand/02_collapse_a.png (settled in 0.0 s / 12 frames; 850 draws)
   state 02_collapse_a: fly lat -4.55815 lon 117.47012 alt 45.00 m (agl 2.68) face 2 i 107149 j 57531 k 557 ground false water false crosshair null edits 1 dirty 1
 > tick 3
-  ticked 54 -> 57: sim on  tick 57  falling 3  queued 7  frozen 0  active 358 chunks  water 0 updates, 0 moved, in 0 out 0  tick cost 0.025 ms (avg 0.014, max 0.644)
+  ticked 54 -> 57: sim on  tick 57  falling 3  queued 7  frozen 0  active 358 chunks  water 0 updates, 0 moved, in 0 out 0  tick cost 0.020 ms (avg 0.014, max 0.646)
 > shot 02_collapse_b
-  shot 02_collapse_b: out/m3a/gate-m2a-sand/02_collapse_b.png (settled in 0.0 s / 12 frames; 850 draws)
+  shot 02_collapse_b: out/m3a/gate2-m2a-sand/02_collapse_b.png (settled in 0.0 s / 12 frames; 850 draws)
   state 02_collapse_b: fly lat -4.55815 lon 117.47012 alt 45.00 m (agl 2.68) face 2 i 107149 j 57531 k 557 ground false water false crosshair null edits 1 dirty 1
 > tick 3
-  ticked 57 -> 60: sim on  tick 60  falling 0  queued 7  frozen 0  active 358 chunks  water 2 updates, 0 moved, in 0 out 0  tick cost 0.008 ms (avg 0.014, max 0.644)
+  ticked 57 -> 60: sim on  tick 60  falling 0  queued 7  frozen 0  active 358 chunks  water 2 updates, 0 moved, in 0 out 0  tick cost 0.012 ms (avg 0.014, max 0.646)
 > shot 02_collapse_c
-  shot 02_collapse_c: out/m3a/gate-m2a-sand/02_collapse_c.png (settled in 0.0 s / 12 frames; 850 draws)
+  shot 02_collapse_c: out/m3a/gate2-m2a-sand/02_collapse_c.png (settled in 0.0 s / 11 frames; 850 draws)
   state 02_collapse_c: fly lat -4.55815 lon 117.47012 alt 45.00 m (agl 2.68) face 2 i 107149 j 57531 k 557 ground false water false crosshair null edits 1 dirty 1
 > tick 30
-  ticked 60 -> 90: sim on  tick 90  falling 0  queued 0  frozen 0  active 358 chunks  water 0 updates, 0 moved, in 0 out 0  tick cost 0.001 ms (avg 0.010, max 0.644)
+  ticked 60 -> 90: sim on  tick 90  falling 0  queued 0  frozen 0  active 358 chunks  water 0 updates, 0 moved, in 0 out 0  tick cost 0.001 ms (avg 0.010, max 0.646)
 > assert falling == 0
   assert ok: falling == 0 (actual 0)
 > assert landings == 4
@@ -165,7 +165,7 @@ play scripts/m2a-sand.play -> out/m3a/gate-m2a-sand
 > assert queued == 0
   assert ok: queued == 0 (actual 0)
 > shot 02_collapse_d_landed
-  shot 02_collapse_d_landed: out/m3a/gate-m2a-sand/02_collapse_d_landed.png (settled in 0.0 s / 10 frames; 850 draws)
+  shot 02_collapse_d_landed: out/m3a/gate2-m2a-sand/02_collapse_d_landed.png (settled in 0.0 s / 10 frames; 850 draws)
   state 02_collapse_d_landed: fly lat -4.55815 lon 117.47012 alt 45.00 m (agl 2.68) face 2 i 107149 j 57531 k 557 ground false water false crosshair null edits 1 dirty 1
 > mode walk
 > atblock 2 107156 57531 2000
@@ -250,7 +250,7 @@ play scripts/m2a-sand.play -> out/m3a/gate-m2a-sand
 > assert block_rel[0,0,6] != air
   assert ok: block_rel[0,0,6] != air (actual grass)
 > sim off
-  sim off  tick 184  falling 0  queued 0  frozen 0  active 358 chunks  water 0 updates, 0 moved, in 0 out 0  tick cost 0.002 ms (avg 0.002, max 0.644)
+  sim off  tick 184  falling 0  queued 0  frozen 0  active 358 chunks  water 0 updates, 0 moved, in 0 out 0  tick cost 0.001 ms (avg 0.001, max 0.646)
 > assert sim_enabled == false
   assert ok: sim_enabled == false (actual false)
 > atblock 2 107155 57525 2000
@@ -289,21 +289,21 @@ play scripts/m2a-sand.play -> out/m3a/gate-m2a-sand
 > assert block_rel[1,0,2] == air
   assert ok: block_rel[1,0,2] == air (actual air)
 > tick 5
-  ticked 184 -> 184: sim off  tick 184  falling 0  queued 0  frozen 0  active 358 chunks  water 0 updates, 0 moved, in 0 out 0  tick cost 0.002 ms (avg 0.002, max 0.644)
+  ticked 184 -> 184: sim off  tick 184  falling 0  queued 0  frozen 0  active 358 chunks  water 0 updates, 0 moved, in 0 out 0  tick cost 0.001 ms (avg 0.001, max 0.646)
 > assert falling == 0
   assert ok: falling == 0 (actual 0)
 > assert block_rel[1,0,3] == sand
   assert ok: block_rel[1,0,3] == sand (actual sand)
 > sim on
-  sim on  tick 184  falling 0  queued 0  frozen 0  active 358 chunks  water 0 updates, 0 moved, in 0 out 0  tick cost 0.002 ms (avg 0.002, max 0.644)
+  sim on  tick 184  falling 0  queued 0  frozen 0  active 358 chunks  water 0 updates, 0 moved, in 0 out 0  tick cost 0.001 ms (avg 0.001, max 0.646)
 > tick 1
-  ticked 184 -> 185: sim on  tick 185  falling 3  queued 17  frozen 0  active 358 chunks  water 16 updates, 0 moved, in 0 out 0  tick cost 0.030 ms (avg 0.002, max 0.644)
+  ticked 184 -> 185: sim on  tick 185  falling 3  queued 17  frozen 0  active 358 chunks  water 16 updates, 0 moved, in 0 out 0  tick cost 0.020 ms (avg 0.001, max 0.646)
 > assert falling == 3
   assert ok: falling == 3 (actual 3)
 > assert falling_rel[1,0] == 3
   assert ok: falling_rel[1,0] == 3 (actual 3)
 > tick 1
-  ticked 185 -> 186: sim on  tick 186  falling 3  queued 0  frozen 0  active 358 chunks  water 17 updates, 0 moved, in 0 out 0  tick cost 0.013 ms (avg 0.002, max 0.644)
+  ticked 185 -> 186: sim on  tick 186  falling 3  queued 0  frozen 0  active 358 chunks  water 17 updates, 0 moved, in 0 out 0  tick cost 0.009 ms (avg 0.002, max 0.646)
 > assert falling == 3
   assert ok: falling == 3 (actual 3)
 > save
@@ -322,16 +322,16 @@ play scripts/m2a-sand.play -> out/m3a/gate-m2a-sand
 > hold space 0.15
 > aim 5 0 -1.0
 > shot 03_reloaded_midfall
-  shot 03_reloaded_midfall: out/m3a/gate-m2a-sand/03_reloaded_midfall.png (settled in 2.9 s / 694 frames; 836 draws)
+  shot 03_reloaded_midfall: out/m3a/gate2-m2a-sand/03_reloaded_midfall.png (settled in 2.8 s / 726 frames; 836 draws)
   state 03_reloaded_midfall: fly lat -4.56156 lon 117.47072 alt 46.00 m (agl 3.47) face 2 i 107150 j 57525 k 558 ground false water false crosshair null edits 1 dirty 0
 > tick 40
-  ticked 189 -> 229: sim on  tick 229  falling 0  queued 0  frozen 0  active 354 chunks  water 0 updates, 0 moved, in 0 out 0  tick cost 0.001 ms (avg 0.017, max 0.647)
+  ticked 189 -> 229: sim on  tick 229  falling 0  queued 0  frozen 0  active 358 chunks  water 0 updates, 0 moved, in 0 out 0  tick cost 0.001 ms (avg 0.024, max 0.645)
 > assert falling == 0
   assert ok: falling == 0 (actual 0)
 > assert vanished == 0
   assert ok: vanished == 0 (actual 0)
 > shot 03_reloaded_landed
-  shot 03_reloaded_landed: out/m3a/gate-m2a-sand/03_reloaded_landed.png (settled in 0.0 s / 12 frames; 836 draws)
+  shot 03_reloaded_landed: out/m3a/gate2-m2a-sand/03_reloaded_landed.png (settled in 0.0 s / 12 frames; 836 draws)
   state 03_reloaded_landed: fly lat -4.56156 lon 117.47072 alt 46.00 m (agl 3.47) face 2 i 107150 j 57525 k 558 ground false water false crosshair null edits 1 dirty 1
 > mode walk
 > atblock 2 107155 57525 2000
@@ -365,7 +365,7 @@ play scripts/m2a-sand.play -> out/m3a/gate-m2a-sand
 > assert block_rel[1,0,1] == air
   assert ok: block_rel[1,0,1] == air (actual air)
 > assert tick_ms_avg < 2
-  assert ok: tick_ms_avg < 2 (actual 0.01725581395348837)
+  assert ok: tick_ms_avg < 2 (actual 0.02353488372093023)
 > state final
   state final: walk lat -4.56151 lon 117.47354 alt 40.00 m (agl -3.13) face 2 i 107154 j 57525 k 552 ground true water false crosshair "limestone" edits 1 dirty 1
 > atblock 2 107149 57528 2000
@@ -373,9 +373,9 @@ play scripts/m2a-sand.play -> out/m3a/gate-m2a-sand
 > hold space 0.25
 > aim 7 3 -2.5
 > shot 04_both_scenes
-  shot 04_both_scenes: out/m3a/gate-m2a-sand/04_both_scenes.png (settled in 0.0 s / 10 frames; 842 draws)
+  shot 04_both_scenes: out/m3a/gate2-m2a-sand/04_both_scenes.png (settled in 0.0 s / 10 frames; 842 draws)
   state 04_both_scenes: fly lat -4.55986 lon 117.47007 alt 47.00 m (agl 4.62) face 2 i 107149 j 57528 k 559 ground false water false crosshair null edits 1 dirty 1
 > bench 60
-  bench 60 frames: wall avg 2.09 ms (p95 2.24, worst 2.63) = 479 fps; gpu avg 1.05 ms; 842 draws
+  bench 60 frames: wall avg 2.02 ms (p95 2.25, worst 2.49) = 495 fps; gpu avg 1.01 ms; 842 draws
 saved 1 chunk(s) at exit
-done in 8.6 s: 95 asserts, 0 failed, 0 errors
+done in 8.7 s: 95 asserts, 0 failed, 0 errors
