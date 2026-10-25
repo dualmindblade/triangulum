@@ -39,31 +39,43 @@
   blocks; water is translucent. World height costs nothing: 2,048 and
   4,096 draw identical chunks.
 
-## Fly it yourself
+- **M1b** (Fable, verified by Opus, merged): walking, digging, building and
+  saving. The scripted M1 scenario (walk, dig a trench and a tunnel, build a
+  bridge, save, reload, check the blocks, view the bridge from 1 km) passes
+  83 of 83 checks. Six findings from Astra's review are fixed.
 
-Free camera only for now (walking and digging come with M1b):
+## Play it yourself
 
 ```
 cd C:\code\triangulum\game
-cargo run --release                          # vertical scale 1/70 (Earth slopes)
-cargo run --release -- --vscale 0.05         # 1/20
-cargo run --release -- --vscale 0.125 --height 4096 --sea-level 1536   # 1/8
-cargo run --release -- --block-size 0.5 --n 262144 --height 4096 --sea-level 1024 --vscale 0.05   # half-metre blocks at 1/20
+cargo run --release
 ```
 
-Click to capture the mouse (Esc releases). WASD to move, Space/Ctrl up and
-down, scroll for speed, Shift to boost, P cycles scenic places, F hides
-water, H hides the HUD, Q quits. Known look issues that aren't decisions:
-flat placeholder lighting (the real sky comes in M1c), missing mid-size
-landforms (being fixed now), ripple patterns on distant steep terrain, and
-oceans that turn grey rock when seen from very high up (a bug found in
-review, being fixed now).
+You start walking on the hills. Click to capture the mouse (Esc releases).
+WASD walk, Space jump (swim up in water), Shift sprint, G walk/fly, left
+mouse breaks (hold to repeat), right mouse places, 1-9 pick the block, R
+drops you to the ground, F hides water, H hides the HUD, V vsync, P scenic
+places, Q saves and quits. Edits save automatically to `game/saves/Neisor/`.
+
+Try other worlds (each keeps its own save):
+
+```
+cargo run --release -- --vscale 0.05                                    # 1/20
+cargo run --release -- --vscale 0.125 --height 4096 --sea-level 1536    # 1/8
+cargo run --release -- --block-size 0.5 --n 262144 --height 4096 --sea-level 1024 --vscale 0.05 --save saves/half   # half-metre blocks
+```
+
+Known look issues that aren't decisions: flat placeholder lighting (the
+real sky comes in M1c), missing mid-size landforms (being fixed now),
+ripple patterns on distant steep terrain, and oceans that turn grey rock
+from very high up (being fixed now). To bridge a gap you place blocks on a
+face you can see; walking backwards off an edge while placing needs a sneak
+key, coming in M1c.
 
 ## In progress
 
-- M1b: walking, digging, building, saves, scripted harness (Fable)
-- M1-terrain: ridges, valleys and escarpments (Opus)
-- M1-review: independent review of the engine (Astra)
+- M1-terrain: ridges, valleys and escarpments, plus four generator bugs
+  from the review, including the far oceans (Opus)
 
 ## Waiting on you
 

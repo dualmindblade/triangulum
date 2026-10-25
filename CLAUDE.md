@@ -33,8 +33,10 @@ things look. **Claude (Opus)** leads the agents.
    running, label your numbers provisional.
 3. **Determinism:** world generation is a pure function of (seed, position);
    simulation is fixed-step and deterministic. Saves store changed chunks.
-4. **Generated data is not in git** (bakes, saves, bench output). Copy assets
-   into a fresh worktree; never symlink or junction them.
+4. **Generated data is not in git** (bakes, saves, bench output). A fresh
+   worktree has no `game/assets/world/`: copy it from the main checkout or
+   pass `--bake C:/code/triangulum/game/assets/world/seed42`. Never symlink
+   or junction it.
 5. Windows 10. The Bash tool is usually easier than PowerShell. Kill only
    processes you started.
 6. **Push after every merge to `main`.** The repo is public; Andrew pulls it
