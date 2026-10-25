@@ -46,7 +46,7 @@
 //! until they are back (`supply_range`); the split itself then costs
 //! microseconds. Ranges live in a bounded, oldest-first cache.
 
-use crate::grid::{Bounds, CHUNK, ChunkKey, FastMap, FootprintKey, Planet};
+use crate::grid::{BlockPos, Bounds, CHUNK, ChunkKey, FastMap, FootprintKey, Planet};
 use crate::mesh::{MeshData, MeshOptions, mesh_chunk};
 use crate::render::{DrawRecord, GpuMesh, Renderer};
 use crate::world::{Registry, World};
@@ -126,6 +126,12 @@ pub struct Node {
     pub job: Job,
     /// Bumped by every invalidation; jobs carry the value they started with.
     pub rev: u32,
+    /// The revision the resident mesh was generated at. While it trails
+    /// `rev` the mesh is stale, and the node keeps asking for a job until a
+    /// result at `rev` lands (review 2 #8: a replacement lost on the way,
+    /// parked for room and then dropped, used to leave the old mesh
+    /// resident for good).
+    pub mesh_rev: u32,
     /// Slot generation: a result for another generation is for a dead node.
     pub epoch: u32,
     /// Distance from the camera to the bounding sphere (last step).
@@ -436,6 +442,7 @@ impl Coverage {
             mesh: Mesh::Absent,
             job: Job::None,
             rev: 0,
+            mesh_rev: 0,
             epoch,
             dist: f32::MAX,
             live: true,
@@ -635,6 +642,13 @@ impl Coverage {
             if !n.live {
                 continue;
             }
+            // A resident mesh older than the node's revision is asked for
+            // again here, whatever became of the job meant to replace it
+            // (review 2 #8); until it lands the cover is not settled.
+            if n.resident() && n.mesh_rev != n.rev && n.job == Job::None && !n.hidden {
+                self.wants.push(slot);
+                st.unsettled += 1;
+            }
             if n.drawn {
                 if n.split() {
                     if !n.want {
@@ -822,23 +836,35 @@ impl Coverage {
         self.wants.len()
     }
 
-    /// A result arrived. `mesh` replaces whatever the node had.
-    pub fn install(&mut self, slot: u32, epoch: u32, rev: u32, mesh: Mesh, origin: DVec3) -> Installed {
+    /// Check a finished job against its node before anything is spent on
+    /// it (review 2 #8): a result for a dead node is dropped, one from an
+    /// older revision is answered with the job to run now, and only a
+    /// current one is worth uploading.
+    pub fn validate(&mut self, slot: u32, epoch: u32, rev: u32) -> Installed {
         let Some(n) = self.nodes.get_mut(slot as usize) else { return Installed::Dropped };
         if !n.live || n.epoch != epoch {
             return Installed::Dropped;
-        }
-        if n.job == Job::Inflight || n.job == Job::Awaiting {
-            n.job = Job::None;
         }
         if n.rev != rev {
             n.job = Job::Inflight;
             return Installed::Stale(Want { slot, epoch: n.epoch, rev: n.rev, key: n.key });
         }
+        Installed::Ok
+    }
+
+    /// A result arrived. `mesh` replaces whatever the node had.
+    pub fn install(&mut self, slot: u32, epoch: u32, rev: u32, mesh: Mesh, origin: DVec3) -> Installed {
+        match self.validate(slot, epoch, rev) {
+            Installed::Ok => {}
+            other => return other,
+        }
+        let n = &mut self.nodes[slot as usize];
+        n.job = Job::None;
         if let Mesh::Gpu(old) = n.mesh {
             self.freed.push(old);
         }
         n.mesh = mesh;
+        n.mesh_rev = rev;
         n.origin = origin;
         Installed::Ok
     }
@@ -957,6 +983,70 @@ pub fn hidden_by_horizon(ro: f64, cam: DVec3, centre: DVec3, radius: f64) -> boo
 
 // ---------------------------------------------------------------- streamer
 
+/// Whether a chunk is a node of the tree: it holds a surface naturally
+/// (`Mixed`), or an edit touches its padded voxel grid. The halo matters
+/// (review 2 #7): digging the border block of one chunk exposes a face of
+/// the untouched, naturally Enclosed chunk beside it, and that face is
+/// drawn by the neighbour's mesh, so the neighbour has to exist. The test
+/// is exact in blocks on the chunk's own face and conservative across a
+/// face edge (any edited chunk under the neighbouring face's chunks along
+/// the padding strip, at the right layers).
+pub fn chunk_exists(world: &World, key: ChunkKey, range: (f64, f64)) -> bool {
+    world.generator.classify_in(key, range) == crate::worldgen::ChunkClass::Mixed || edits_touch_halo(world, key)
+}
+
+/// Does an edit touch `key`'s padded voxel grid: an edited chunk inside
+/// it, or a block in its one-voxel halo that differs from the generator's?
+pub fn edits_touch_halo(world: &World, key: ChunkKey) -> bool {
+    let v = key.voxel_blocks() as i64;
+    let e = key.extent_blocks() as i64;
+    let (i0, j0, k0) = key.origin_blocks();
+    let (i0, j0, k0) = (i0 as i64, j0 as i64, k0 as i64);
+    let c = CHUNK as i64;
+    let inside = |lo: i64, x: i64| x >= lo && x < lo + e;
+    let in_halo = |lo: i64, x: i64| x >= lo - v && x < lo + e + v;
+    world.edited_near(key).into_iter().any(|ed| {
+        let (ei, ej, ek) = ed.origin_blocks();
+        let (ei, ej, ek) = (ei as i64, ej as i64, ek as i64);
+        if !(ek + c > k0 - v && ek < k0 + e + v) {
+            return false;
+        }
+        if ed.face != key.face {
+            return true; // conservative across a face edge
+        }
+        if !(ei + c > i0 - v && ei < i0 + e + v && ej + c > j0 - v && ej < j0 + e + v) {
+            return false;
+        }
+        // Chunk extents are 32-aligned, so an edited chunk is wholly inside
+        // this chunk or wholly outside it.
+        if inside(i0, ei) && inside(j0, ej) && inside(k0, ek) {
+            return true;
+        }
+        let natural = world.natural(ed);
+        world
+            .edits
+            .with_chunk(ed, |dense| {
+                for x in 0..CHUNK {
+                    if !in_halo(i0, ei + x as i64) {
+                        continue;
+                    }
+                    for y in 0..CHUNK {
+                        if !in_halo(j0, ej + y as i64) {
+                            continue;
+                        }
+                        for z in 0..CHUNK {
+                            if in_halo(k0, ek + z as i64) && dense[crate::world::chunk::index(x, y, z)] != natural.get(x, y, z) {
+                                return true;
+                            }
+                        }
+                    }
+                }
+                false
+            })
+            .unwrap_or(false)
+    })
+}
+
 struct JobResult {
     mesh: MeshData,
     gen_us: u32,
@@ -1071,7 +1161,7 @@ impl Streamer {
             params.factor,
             occluder_radius,
             Box::new(move |fp| range_world.generator.footprint_height_range_m(fp)),
-            Box::new(move |key, r| band_world.generator.classify_in(key, r) == crate::worldgen::ChunkClass::Mixed || band_world.edits.any_under(key)),
+            Box::new(move |key, r| chunk_exists(&band_world, key, r)),
             false,
         );
         Self {
@@ -1129,8 +1219,22 @@ impl Streamer {
     }
 
     /// Upload a finished mesh into its node; when the arena is full the
-    /// result waits.
+    /// result waits. The result is checked against the node first (review
+    /// 2 #8): a stale one is re-dispatched and a dead one dropped before
+    /// any arena room is tried for it, so neither can be parked.
     fn install(&mut self, res: JobResult, gpu: &mut Renderer) {
+        match self.cover.validate(res.slot, res.epoch, res.rev) {
+            Installed::Ok => {}
+            Installed::Stale(w) => {
+                self.stats.stale_results += 1;
+                self.dispatch(w);
+                return;
+            }
+            Installed::Dropped => {
+                self.stats.dropped_results += 1;
+                return;
+            }
+        }
         let m = &res.mesh;
         let mesh = if m.opaque.is_empty() && m.water.is_empty() {
             Mesh::Empty
@@ -1141,8 +1245,11 @@ impl Streamer {
                     self.stats.alloc_failures += 1;
                     self.cover.park(res.slot, res.epoch);
                     if self.awaiting.len() >= MAX_AWAITING_UPLOAD {
+                        // Dropped for room: the node asks again (its mesh,
+                        // if any, is older than its revision).
                         let old = self.awaiting.remove(0);
                         self.cover.unpark(old.slot, old.epoch);
+                        self.stats.dropped_results += 1;
                     }
                     self.awaiting.push(res);
                     return;
@@ -1163,6 +1270,33 @@ impl Streamer {
                 if let Mesh::Gpu(gm) = mesh {
                     gpu.free_mesh(gm);
                 }
+            }
+        }
+    }
+
+    /// What the cut shows at a block: `drawn:L` when a drawn node at LOD L
+    /// with a mesh covers it, `empty:L` when that node has nothing to draw,
+    /// `gap:L` when it has no mesh, `hidden:L` when it is below the
+    /// horizon, and `none` when no drawn node covers the block at all
+    /// (the harness's `cover[...]` assert).
+    pub fn cover_at(&self, bp: BlockPos) -> String {
+        let max_lod = self.planet().max_lod;
+        let mut key = World::chunk_of(bp).0;
+        loop {
+            if let Some(n) = self.cover.slot_of(key).and_then(|s| self.cover.node(s))
+                && n.drawn
+            {
+                let what = match n.mesh {
+                    _ if n.hidden => "hidden",
+                    Mesh::Gpu(gm) if gm.opaque_count + gm.water_count > 0 => "drawn",
+                    Mesh::Gpu(_) | Mesh::Empty => "empty",
+                    Mesh::Absent => "gap",
+                };
+                return format!("{what}:{}", key.lod);
+            }
+            match key.parent() {
+                Some(p) if p.lod <= max_lod => key = p,
+                _ => return "none".to_string(),
             }
         }
     }
@@ -1220,15 +1354,11 @@ impl Streamer {
                 let _ = tx.send(RangeResult { fp, range, us: t.elapsed().as_micros() as u32 });
             });
         }
-        // 3b. Retry parked results now that stale meshes are freed.
+        // 3b. Retry parked results now that stale meshes are freed (one
+        // that went stale meanwhile is re-dispatched by `install`).
         if !self.awaiting.is_empty() {
             let waiting = std::mem::take(&mut self.awaiting);
             for res in waiting {
-                if !self.cover.current(res.slot, res.epoch, res.rev) {
-                    self.cover.unpark(res.slot, res.epoch);
-                    self.stats.dropped_results += 1;
-                    continue;
-                }
                 self.install(res, gpu);
             }
         }
@@ -1634,6 +1764,181 @@ mod tests {
             Mesh::Gpu(g) => g,
             _ => unreachable!(),
         }
+    }
+
+    /// Review 2 #8: a node whose replacement mesh is lost on the way (its
+    /// result went stale while in flight, found no arena room, was parked
+    /// and then dropped) keeps asking for a mesh at its current revision
+    /// instead of showing the old one for good; a stale result is answered
+    /// with the current job before anything is allocated for it; and a
+    /// current result dropped for room is asked for again.
+    #[test]
+    fn a_stale_resident_mesh_is_requested_again_when_its_replacement_is_lost() {
+        let p = planet();
+        let mut c = Coverage::new(p, 3.0, p.bottom_radius(), flat_range(), Coverage::band_test(p), true);
+        let mut gpu = FakeGpu::default();
+        let mut wants = Vec::new();
+        let ground = DVec3::X * (p.radius + 2.0);
+        let mut drain = |c: &mut Coverage, gpu: &mut FakeGpu, wants: &mut Vec<Want>| {
+            for _ in 0..40 {
+                c.step(ground);
+                c.take_wants(10_000, wants);
+                for w in wants.drain(..) {
+                    c.install(w.slot, w.epoch, w.rev, Mesh::Gpu(gpu.alloc()), DVec3::ZERO);
+                }
+                for gm in c.freed.drain(..) {
+                    gpu.free(gm);
+                }
+            }
+        };
+        drain(&mut c, &mut gpu, &mut wants);
+        assert_eq!(c.stats.unsettled, 0);
+        let key = c.nodes().find(|n| n.drawn && n.resident() && !n.hidden && n.key.lod == 0).map(|n| n.key).expect("a drawn LOD-0 node under the camera");
+        let slot = c.slot_of(key).unwrap();
+        let old_mesh = c.node(slot).unwrap().mesh;
+        // An edit: the node asks for a replacement; a second edit while that
+        // is in flight bumps the revision again.
+        let w1 = c.invalidate(key).expect("a resident node remeshes");
+        assert_eq!(c.node(slot).unwrap().job, Job::Inflight);
+        assert!(c.invalidate(key).is_none(), "the result in flight comes back stale");
+        let rev = c.node(slot).unwrap().rev;
+        assert_eq!(rev, w1.rev + 1);
+        // The streamer's old sequence: the (stale) result found no arena
+        // room and was parked, then found not current on retry and dropped.
+        c.park(w1.slot, w1.epoch);
+        assert!(!c.current(w1.slot, w1.epoch, w1.rev));
+        c.unpark(w1.slot, w1.epoch);
+        let n = c.node(slot).unwrap();
+        assert!(n.resident() && n.job == Job::None && n.mesh == old_mesh, "the old mesh is still what is drawn");
+        // The tree must not call that settled, and must ask again at the
+        // current revision.
+        c.step(ground);
+        assert!(c.stats.unsettled > 0, "a resident mesh older than its node's revision is unsettled");
+        assert!(c.check().ok());
+        c.take_wants(10_000, &mut wants);
+        let again = wants.iter().find(|w| w.slot == slot).copied().expect("the node asks for its mesh again");
+        assert_eq!(again.rev, rev);
+        wants.clear();
+        assert_eq!(c.install(again.slot, again.epoch, again.rev, Mesh::Gpu(gpu.alloc()), DVec3::ZERO), Installed::Ok);
+        for gm in c.freed.drain(..) {
+            gpu.free(gm);
+        }
+        c.step(ground);
+        assert_eq!(c.stats.unsettled, 0);
+        assert_eq!(c.node(slot).unwrap().mesh_rev, rev);
+        assert!(!gpu.live.contains(&mesh_gpu(old_mesh).slot), "the old mesh was freed");
+
+        // Validation first: a stale result is answered with the current job
+        // (and the streamer never allocates for it), a dead one is dropped.
+        let w2 = c.invalidate(key).unwrap();
+        assert!(c.invalidate(key).is_none());
+        let now = c.node(slot).unwrap().rev;
+        let w3 = match c.validate(w2.slot, w2.epoch, w2.rev) {
+            Installed::Stale(w3) => w3,
+            other => panic!("{other:?}"),
+        };
+        assert_eq!((w3.slot, w3.rev), (slot, now));
+        assert_eq!(c.node(slot).unwrap().job, Job::Inflight);
+        assert_eq!(c.validate(w3.slot, w3.epoch + 1, w3.rev), Installed::Dropped);
+        assert_eq!(c.validate(w3.slot, w3.epoch, w3.rev), Installed::Ok);
+        assert_eq!(c.install(w3.slot, w3.epoch, w3.rev, Mesh::Gpu(gpu.alloc()), DVec3::ZERO), Installed::Ok);
+        for gm in c.freed.drain(..) {
+            gpu.free(gm);
+        }
+        c.step(ground);
+        assert_eq!(c.stats.unsettled, 0);
+
+        // A current replacement parked and then dropped for room: asked for again.
+        let w4 = c.invalidate(key).unwrap();
+        c.park(w4.slot, w4.epoch);
+        assert_eq!(c.node(slot).unwrap().job, Job::Awaiting);
+        c.unpark(w4.slot, w4.epoch);
+        c.step(ground);
+        assert!(c.stats.unsettled > 0);
+        c.take_wants(10_000, &mut wants);
+        assert!(wants.iter().any(|w| w.slot == slot && w.rev == w4.rev), "asked again after the drop");
+        for w in wants.drain(..) {
+            c.install(w.slot, w.epoch, w.rev, Mesh::Gpu(gpu.alloc()), DVec3::ZERO);
+        }
+        for gm in c.freed.drain(..) {
+            gpu.free(gm);
+        }
+        c.step(ground);
+        assert_eq!(c.stats.unsettled, 0);
+        assert!(c.check().ok());
+        assert_eq!(gpu.freed_twice, 0);
+        let resident: HashSet<u32> = c.nodes().filter_map(|n| if let Mesh::Gpu(g) = n.mesh { Some(g.slot) } else { None }).collect();
+        assert_eq!(gpu.live, resident, "no leaked GPU meshes");
+    }
+
+    /// Review 2 #7: digging the bottom block of a chunk exposes the top
+    /// face of the block under it, which belongs to the chunk below:
+    /// naturally Enclosed, without edits of its own, and drawn by nobody
+    /// unless it is a node. It must exist, and so must each of its
+    /// ancestors on the way down to it; a chunk two down stays out. The
+    /// same across a face edge, where the edit sits on the other face.
+    #[test]
+    fn a_chunk_whose_padding_holds_an_edit_exists() {
+        use crate::worldgen::ChunkClass;
+        let w = crate::world::tests::test_world();
+        let planet = w.planet;
+        let air = w.generator.blocks.air;
+        let g = crate::world::tests::hills_ground(&w);
+        let range = |k: ChunkKey| w.generator.footprint_height_range_m(k.footprint());
+        // The first naturally Enclosed chunk under the surface chunk, and the chunk on top of it.
+        let (surface, _, _, _) = World::chunk_of(g);
+        let mut below = ChunkKey { cz: surface.cz - 1, ..surface };
+        while w.generator.classify(below) != ChunkClass::Enclosed {
+            below = ChunkKey { cz: below.cz - 1, ..below };
+        }
+        let above = ChunkKey { cz: below.cz + 1, ..below };
+        assert!(!chunk_exists(&w, below, range(below)), "untouched and enclosed: not a node");
+        // Dig the block in g's column on `above`'s bottom layer.
+        let k0 = above.origin_blocks().2 as u32;
+        let dug = BlockPos { face: g.face, i: g.i, j: g.j, k: k0 };
+        assert!(w.registry.is_solid(w.block_at(dug)));
+        assert!(w.set_block(dug, air));
+        assert!(chunk_exists(&w, above, range(above)), "the dug chunk exists");
+        assert!(chunk_exists(&w, below, range(below)), "the chunk whose top face the dig exposed exists");
+        let mut anc = below;
+        while let Some(p) = anc.parent() {
+            if p.lod > planet.max_lod {
+                break;
+            }
+            assert!(chunk_exists(&w, p, range(p)), "its ancestor at LOD {} exists, so the tree refines down to it", p.lod);
+            anc = p;
+        }
+        let deeper = ChunkKey { cz: below.cz - 1, ..below };
+        assert!(!edits_touch_halo(&w, deeper), "two chunks down is untouched");
+        // Sideways too: the chunk past `above`'s i = 0 side is in its padding only if the dig is in the first column.
+        let side = ChunkKey { cx: above.cx - 1, ..above };
+        assert_eq!(edits_touch_halo(&w, side), g.i % 32 == 0);
+
+        // Across a face edge: face 0's i = N side meets face 2. A block
+        // dug 40 layers under the ground in face 0's last column lies in
+        // the padding of the face-2 chunk across the edge.
+        let n = planet.n;
+        let mut found = None;
+        for j in (1000..n).step_by(4096) {
+            let dir = planet.dir(0, n as f64 - 0.5, j as f64 + 0.5);
+            let c = w.generator.column(dir, planet.block_size);
+            if !c.ocean && c.height_m > 5.0 {
+                found = Some((j, c.height_m));
+                break;
+            }
+        }
+        let (j, h) = found.expect("land on the edge");
+        let k = (planet.sea_level as f64 + h as f64) as u32 - 40;
+        let deep = BlockPos { face: 0, i: n - 1, j, k };
+        assert!(w.registry.is_solid(w.block_at(deep)));
+        let (f2, ci, cj) = planet.wrap_cell(0, n as i64, j as i64);
+        assert_eq!(f2, 2);
+        let across = ChunkKey::neisor(2, 0, ci / 32, cj / 32, k / 32);
+        assert!(!edits_touch_halo(&w, across));
+        assert!(w.set_block(deep, air));
+        assert!(edits_touch_halo(&w, across), "the face-2 chunk across the edge sees the face-0 dig in its padding");
+        assert!(chunk_exists(&w, across, range(across)));
+        println!("below {below:?} ({:?}), across {across:?} ({:?})", w.generator.classify(below), w.generator.classify(across));
     }
 
     /// A split never draws parent and children together; a merge frees the

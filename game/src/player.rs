@@ -75,8 +75,14 @@ pub struct Frame {
 impl Frame {
     pub fn at(planet: &Planet, pos: DVec3) -> Frame {
         let (face, i, j, k) = planet.lattice_of_pos(pos);
+        Self::from_lattice(planet, face, i, j, k)
+    }
+
+    /// The frame of a lattice point given explicitly: how a move that
+    /// crosses a face edge continues in the neighbour's lattice.
+    pub fn from_lattice(planet: &Planet, face: u8, i: f64, j: f64, k: f64) -> Frame {
         let n = planet.n as f64;
-        let r = pos.length();
+        let r = planet.radius_at(k);
         let h = 0.01;
         let (ia, ib) = ((i - h).max(0.0), (i + h).min(n));
         let (ja, jb) = ((j - h).max(0.0), (j + h).min(n));
@@ -85,10 +91,15 @@ impl Frame {
         let (mi, mj) = (di.length(), dj.length());
         let ei = di / mi;
         let ej = dj / mj;
-        let ek = pos / r;
+        let ek = planet.dir(face, i, j);
         let mk = planet.block_size;
         let m = DMat3::from_cols(ei * mi, ej * mj, ek * mk);
         Frame { face, i, j, k, mi, mj, mk, ei, ej, ek, m, inv: m.inverse() }
+    }
+
+    /// World position of the frame's own lattice point.
+    pub fn pos(&self, planet: &Planet) -> DVec3 {
+        self.ek * planet.radius_at(self.k)
     }
 
     /// The cell the feet are in. A body resting on a floor sits at k = n
@@ -160,7 +171,17 @@ pub fn pick(vox: &dyn Voxels, planet: &Planet, eye: DVec3, dir: DVec3, reach_m: 
     for _ in 0..512 {
         let id = vox.block(frame.face, cell[0], cell[1], cell[2]);
         if vox.is_solid(id) {
-            let bp = BlockPos { face: frame.face, i: cell[0].clamp(0, planet.n as i64 - 1) as u32, j: cell[1].clamp(0, planet.n as i64 - 1) as u32, k: cell[2].clamp(0, planet.height as i64 - 1) as u32 };
+            // The cell may lie past this face's edge (`vox.block` resolved it
+            // onto the neighbour), so the block it names is that same cell
+            // on its own face, never this face's clamped boundary column
+            // (review 2 #6: the hit said the neighbour's material and
+            // breaking changed the wrong block). Below layer 0 the lookup
+            // returns the virtual bedrock floor: nothing to hit there.
+            if cell[2] < 0 || cell[2] >= planet.height as i64 {
+                return None;
+            }
+            let (bf, bi, bj) = planet.wrap_cell(frame.face, cell[0], cell[1]);
+            let bp = BlockPos { face: bf, i: bi, j: bj, k: cell[2] as u32 };
             return Some(Hit { block: bp, id, face: frame.face, cell: (cell[0], cell[1], cell[2]), normal, t });
         }
         let a = if t_max[0] < t_max[1] { if t_max[0] < t_max[2] { 0 } else { 2 } } else if t_max[1] < t_max[2] { 1 } else { 2 };
@@ -358,25 +379,15 @@ impl Player {
         }
         self.vel = vh + up * vz;
 
-        // Sweep the box through the lattice: k, then i, then j.
+        // Sweep the box through the lattice: k, then i, then j, in this
+        // face's lattice.
         let dl = f.to_lattice(self.vel * dt);
         let (mut bmin, mut bmax) = self.lattice_box(&f);
         let dz = sweep(vox, f.face, bmin, bmax, 2, dl.z);
         let hit_z = dz != dl.z;
         bmin.z += dz;
         bmax.z += dz;
-        let mut dx = sweep(vox, f.face, bmin, bmax, 0, dl.x);
-        if sneak {
-            dx = hold_edge(vox, f.face, bmin, bmax, 0, dx);
-        }
-        let hit_x = dx != dl.x;
-        bmin.x += dx;
-        bmax.x += dx;
-        let mut dy = sweep(vox, f.face, bmin, bmax, 1, dl.y);
-        if sneak {
-            dy = hold_edge(vox, f.face, bmin, bmax, 1, dy);
-        }
-        let hit_y = dy != dl.y;
+        let (dx, dy, hit_x, hit_y) = sweep_horizontal(vox, f.face, bmin, bmax, dl.x, dl.y, sneak);
         self.on_ground = hit_z && dl.z < 0.0;
         if hit_z {
             self.vel -= up * self.vel.dot(up);
@@ -387,16 +398,78 @@ impl Player {
         if hit_y {
             self.vel -= f.ej * self.vel.dot(f.ej);
         }
-        // New position: exact on this face's lattice when still inside it,
-        // a tangent step when the move crosses the face edge.
         let (ni, nj, nk) = (f.i + dx, f.j + dy, f.k + dz);
         let n = planet.n as f64;
         let r = planet.radius_at(nk);
-        self.pos = if (0.0..=n).contains(&ni) && (0.0..=n).contains(&nj) {
-            planet.dir(f.face, ni, nj) * r
+        let inside = |i: f64, j: f64| (0.0..=n).contains(&i) && (0.0..=n).contains(&j);
+        if inside(ni, nj) {
+            // Still on this face: the position is exact on its lattice.
+            self.pos = planet.dir(f.face, ni, nj) * r;
+            return;
+        }
+        // The move leaves the face (review 2 #10). Split it at the edge: go
+        // as far as the edge in this lattice, then sweep the rest in the
+        // neighbour's own lattice, where the cells really are. The two
+        // lattices meet at the edge with a kink, so the box re-expressed in
+        // the neighbour's frame can lean into a cell this frame kept it
+        // clear of; the whole box is checked there and nudged out.
+        let s = edge_fraction(f.i, f.j, dx, dy, n);
+        let (ei, ej) = (f.i + s * dx, f.j + s * dy);
+        let rest = f.to_world(DVec3::new((1.0 - s) * dx, (1.0 - s) * dy, 0.0));
+        // Just past the edge, on the neighbour (the corner policy of `wrap`
+        // picks the face past two sides at once).
+        let (face2, i2, j2) = planet.wrap(f.face, ei + (ni - ei) * 1e-6, ej + (nj - ej) * 1e-6);
+        if face2 == f.face {
+            // Nothing past there (clamped at a cube corner): stop at the edge.
+            self.pos = planet.dir(f.face, ei, ej) * r;
+            self.vel -= f.ei * self.vel.dot(f.ei) + f.ej * self.vel.dot(f.ej);
+            return;
+        }
+        let f2 = Frame::from_lattice(planet, face2, i2, j2, nk);
+        let dl2 = f2.to_lattice(rest);
+        let (b2min, b2max) = self.lattice_box(&f2);
+        let (dx2, dy2, hit_x2, hit_y2) = sweep_horizontal(vox, face2, b2min, b2max, dl2.x, dl2.y, sneak);
+        if hit_x2 {
+            self.vel -= f2.ei * self.vel.dot(f2.ei);
+        }
+        if hit_y2 {
+            self.vel -= f2.ej * self.vel.dot(f2.ej);
+        }
+        let (ni2, nj2) = (f2.i + dx2, f2.j + dy2);
+        self.pos = if inside(ni2, nj2) {
+            planet.dir(face2, ni2, nj2) * r
         } else {
-            (self.pos + f.to_world(DVec3::new(dx, dy, 0.0))).normalize() * r
+            // A second edge in one step (a corner): a tangent step.
+            (f2.pos(planet) + f2.to_world(DVec3::new(dx2, dy2, 0.0))).normalize() * r
         };
+        // Validate the whole box where it ended up, in its own frame.
+        let fv = Frame::at(planet, self.pos);
+        if let Some(push) = free_box(vox, &fv, self.lattice_box(&fv)) {
+            if push != DVec3::ZERO {
+                let (pi, pj) = (fv.i + push.x, fv.j + push.y);
+                self.pos = if inside(pi, pj) { planet.dir(fv.face, pi, pj) * r } else { (self.pos + fv.to_world(push)).normalize() * r };
+                let fc = Frame::at(planet, self.pos);
+                if free_box(vox, &fc, self.lattice_box(&fc)) != Some(DVec3::ZERO) {
+                    self.refuse_horizontal(planet, &f, up, r);
+                }
+            }
+        } else {
+            self.refuse_horizontal(planet, &f, up, r);
+        }
+    }
+
+    /// No horizontal move this step: the vertical one only, on the lattice
+    /// the step started in, and the horizontal velocity is dropped.
+    fn refuse_horizontal(&mut self, planet: &Planet, f: &Frame, up: DVec3, r: f64) {
+        self.pos = planet.dir(f.face, f.i, f.j) * r;
+        self.vel = up * self.vel.dot(up);
+    }
+
+    /// Is the box free of solid cells in the lattice of its own position?
+    /// (The collision invariant every step keeps.)
+    pub fn box_is_free(&self, vox: &dyn Voxels, planet: &Planet) -> bool {
+        let f = Frame::at(planet, self.pos);
+        free_box(vox, &f, self.lattice_box(&f)) == Some(DVec3::ZERO)
     }
 
     /// Stand on the ground under `dir`: feet on the first air block above the
@@ -456,6 +529,79 @@ fn hold_edge(vox: &dyn Voxels, face: u8, bmin: DVec3, bmax: DVec3, axis: usize, 
         }
     }
     d * lo
+}
+
+/// Sweep i, then j, holding the edge when sneaking. Returns the allowed
+/// displacements and whether each axis was stopped short.
+fn sweep_horizontal(vox: &dyn Voxels, face: u8, mut bmin: DVec3, mut bmax: DVec3, dlx: f64, dly: f64, sneak: bool) -> (f64, f64, bool, bool) {
+    let mut dx = sweep(vox, face, bmin, bmax, 0, dlx);
+    if sneak {
+        dx = hold_edge(vox, face, bmin, bmax, 0, dx);
+    }
+    bmin.x += dx;
+    bmax.x += dx;
+    let mut dy = sweep(vox, face, bmin, bmax, 1, dly);
+    if sneak {
+        dy = hold_edge(vox, face, bmin, bmax, 1, dy);
+    }
+    (dx, dy, dx != dlx, dy != dly)
+}
+
+/// The fraction of the horizontal move (dx, dy) from (i, j) at which the
+/// point reaches a side of the face (1 when it stays inside).
+fn edge_fraction(i: f64, j: f64, dx: f64, dy: f64, n: f64) -> f64 {
+    let mut s = 1.0f64;
+    for (c, d) in [(i, dx), (j, dy)] {
+        if d > 0.0 && c + d > n {
+            s = s.min((n - c) / d);
+        }
+        if d < 0.0 && c + d < 0.0 {
+            s = s.min(c / -d);
+        }
+    }
+    s.clamp(0.0, 1.0)
+}
+
+/// The first solid cell the box overlaps in `face`'s lattice, as its corners.
+fn first_solid(vox: &dyn Voxels, face: u8, bmin: DVec3, bmax: DVec3) -> Option<(DVec3, DVec3)> {
+    let lo = |v: f64| (v + EPS).floor() as i64;
+    let hi = |v: f64| (v - EPS).floor() as i64;
+    for k in lo(bmin.z)..=hi(bmax.z) {
+        for i in lo(bmin.x)..=hi(bmax.x) {
+            for j in lo(bmin.y)..=hi(bmax.y) {
+                if vox.is_solid(vox.block(face, i, j, k)) {
+                    let c0 = DVec3::new(i as f64, j as f64, k as f64);
+                    return Some((c0, c0 + DVec3::ONE));
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Check the box against the solid cells of its frame: Some(zero) when it
+/// is clear, Some(push) when a sideways nudge of that much (lattice units,
+/// at most half a cell) clears it, None when nothing small does.
+fn free_box(vox: &dyn Voxels, f: &Frame, (bmin, bmax): (DVec3, DVec3)) -> Option<DVec3> {
+    let (mut bmin, mut bmax) = (bmin, bmax);
+    let mut total = DVec3::ZERO;
+    for _ in 0..4 {
+        let Some((c0, c1)) = first_solid(vox, f.face, bmin, bmax) else { return Some(total) };
+        let candidates = [
+            DVec3::new(c1.x - bmin.x + 2.0 * EPS, 0.0, 0.0),
+            DVec3::new(-(bmax.x - c0.x + 2.0 * EPS), 0.0, 0.0),
+            DVec3::new(0.0, c1.y - bmin.y + 2.0 * EPS, 0.0),
+            DVec3::new(0.0, -(bmax.y - c0.y + 2.0 * EPS), 0.0),
+        ];
+        let push = candidates.into_iter().min_by(|a, b| a.length().total_cmp(&b.length())).unwrap();
+        if push.length() > 0.5 {
+            return None;
+        }
+        bmin += push;
+        bmax += push;
+        total += push;
+    }
+    None
 }
 
 /// Sweep an axis-aligned box along `axis` by `d` lattice units; return the
@@ -850,5 +996,147 @@ mod tests {
         // A placed block inside the player's box is detected.
         assert!(pl.overlaps_cell(&p, 2, (1000, 2000, 600)));
         assert!(!pl.overlaps_cell(&p, 2, (1002, 2000, 600)));
+    }
+
+    /// A world addressed the way `World` is: a cell past a face's side is
+    /// the neighbouring face's own cell (`Planet::wrap_cell`), so a block
+    /// on face 2 is one block however it is reached.
+    struct Canon {
+        planet: Planet,
+        floor_k: i64,
+        cells: HashMap<BlockPos, BlockId>,
+    }
+
+    impl Canon {
+        fn canonical(&self, face: u8, i: i64, j: i64, k: i64) -> Option<BlockPos> {
+            if k < 0 || k >= self.planet.height as i64 {
+                return None;
+            }
+            let (f, ci, cj) = self.planet.wrap_cell(face, i, j);
+            Some(BlockPos { face: f, i: ci, j: cj, k: k as u32 })
+        }
+    }
+
+    impl Voxels for Canon {
+        fn block(&self, face: u8, i: i64, j: i64, k: i64) -> BlockId {
+            if k < 0 {
+                return STONE; // the virtual bedrock floor, as World::block_lattice
+            }
+            if k < self.floor_k {
+                return STONE;
+            }
+            self.canonical(face, i, j, k).and_then(|bp| self.cells.get(&bp).copied()).unwrap_or(0)
+        }
+        fn is_solid(&self, id: BlockId) -> bool {
+            id != 0 && id != WATER
+        }
+        fn is_liquid(&self, id: BlockId) -> bool {
+            id == WATER
+        }
+    }
+
+    /// Review 2 #6: a ray from face 0 that hits a block past the edge, on
+    /// face 2, names that block on face 2, not face 0's clamped boundary
+    /// column; and a solid below layer 0 (the virtual floor) is no hit.
+    #[test]
+    fn picking_across_a_face_edge_names_the_neighbours_block() {
+        let p = planet(1.0);
+        let n = p.n as i64;
+        let mut w = Canon { planet: p, floor_k: 600, cells: HashMap::new() };
+        // Two blocks past face 0's i = N side, at the player's eye height.
+        let target = w.canonical(0, n + 1, 40000, 601).unwrap();
+        assert_eq!(target.face, 2, "face 0's +i side meets face 2");
+        w.cells.insert(target, STONE);
+        let pl = standing(&p, 0, n as f64 - 1.5, 40000.5, 600);
+        let hit = pick(&w, &p, pl.eye(), pl.look_dir(), REACH_M).expect("hit across the edge");
+        assert_eq!(hit.id, STONE);
+        assert_eq!(hit.cell, (n + 1, 40000, 601), "the frame cell lies past the edge");
+        assert_eq!(hit.block, target, "the block is the face-2 block the ray hit, not {:?}", BlockPos { face: 0, i: p.n - 1, j: 40000, k: 601 });
+        // The old clamped column must not be what breaking would change.
+        assert_ne!(hit.block.face, 0);
+        // Below the world: standing on the bottom layer's top with nothing
+        // under it, looking down finds the virtual floor and reports no hit
+        // rather than layer 0.
+        let w0 = Canon { planet: p, floor_k: 0, cells: HashMap::new() };
+        let mut down = standing(&p, 2, 1000.5, 2000.5, 0);
+        down.pitch = -1.5;
+        assert!(pick(&w0, &p, down.eye(), down.look_dir(), REACH_M).is_none(), "no hit on the floor below layer 0");
+        // ...while a real block at layer 0 is picked as layer 0.
+        let mut w1 = Canon { planet: p, floor_k: 0, cells: HashMap::new() };
+        w1.cells.insert(BlockPos { face: 2, i: 1000, j: 2000, k: 0 }, STONE);
+        let mut up = standing(&p, 2, 1000.5, 2000.5, 1);
+        up.pitch = -1.5;
+        let hit = pick(&w1, &p, up.eye(), up.look_dir(), REACH_M).expect("layer 0");
+        assert_eq!(hit.block, BlockPos { face: 2, i: 1000, j: 2000, k: 0 });
+    }
+
+    /// Review 2 #10: the two lattices meet at a face edge with a kink, so
+    /// a box swept clear of a wall in face 0's lattice can, re-expressed
+    /// in face 2's lattice after the crossing, overlap that wall. Astra's
+    /// case: feet at face 0 (N-0.02, N-0.70, 600) walking +i along a wall
+    /// in the next row. The box must never overlap a solid cell in the
+    /// lattice of wherever it is, and the walk must get through.
+    #[test]
+    fn walking_across_a_face_edge_along_a_wall_keeps_the_box_out_of_it() {
+        let p = planet(1.0);
+        let n = p.n as i64;
+        let nf = n as f64;
+        let mut w = Canon { planet: p, floor_k: 600, cells: HashMap::new() };
+        // The wall: row N-2 of face 0, continued past the edge as the same
+        // row of face 2 (the cells face 0's lattice reaches at j = N-2),
+        // two blocks high.
+        for di in -8..=8 {
+            for k in 600..602 {
+                let bp = w.canonical(0, n + di, n - 2, k).unwrap();
+                w.cells.insert(bp, STONE);
+            }
+        }
+        let mut pl = standing(&p, 0, nf - 0.02, nf - 0.70, 600);
+        let start = pl.pos;
+        let f0 = Frame::at(&p, pl.pos);
+        assert_eq!(f0.face, 0);
+        assert!(pl.box_is_free(&w, &p), "starts clear of the wall");
+        let mut faces = std::collections::BTreeSet::new();
+        for step in 0..120 {
+            pl.step(&w, &p, &Input { forward: true, ..Default::default() }, STEP);
+            let f = Frame::at(&p, pl.pos);
+            faces.insert(f.face);
+            let (bmin, bmax) = pl.lattice_box(&f);
+            // How far into a solid cell the box reaches in its own lattice.
+            if let Some((c0, c1)) = first_solid(&w, f.face, bmin, bmax) {
+                let depth = (bmax.y - c0.y).min(c1.y - bmin.y).min(bmax.x - c0.x).min(c1.x - bmin.x);
+                panic!("step {step} on face {}: the box ({:.4}..{:.4}, {:.4}..{:.4}) overlaps the solid cell {:?} by {depth:.4} lattice units", f.face, bmin.x, bmax.x, bmin.y, bmax.y, c0);
+            }
+            assert!((f.k - 600.0).abs() < 1e-6 && pl.on_ground, "step {step}: k = {}", f.k);
+        }
+        assert!(faces.contains(&2), "crossed onto face 2: {faces:?}");
+        let dist = (pl.pos - start).length();
+        assert!((dist - 2.0 * WALK_SPEED).abs() < 0.3, "kept walking along the wall through the edge: {dist:.2} m in 2 s");
+    }
+
+    /// The whole-box check also catches a wall straight ahead past the edge
+    /// (the sweep sees it through `wrap_cell`, the kink shifts it a little):
+    /// walking +i into face 2's second column stops short of it and never
+    /// overlaps it.
+    #[test]
+    fn a_wall_just_past_the_edge_stops_the_walk_without_overlap() {
+        let p = planet(1.0);
+        let n = p.n as i64;
+        let nf = n as f64;
+        let mut w = Canon { planet: p, floor_k: 600, cells: HashMap::new() };
+        for dj in -6..=6 {
+            for k in 600..602 {
+                let bp = w.canonical(0, n + 1, n - 4 + dj, k).unwrap();
+                w.cells.insert(bp, STONE);
+            }
+        }
+        let mut pl = standing(&p, 0, nf - 1.5, nf - 4.5, 600);
+        for step in 0..120 {
+            pl.step(&w, &p, &Input { forward: true, ..Default::default() }, STEP);
+            assert!(pl.box_is_free(&w, &p), "step {step}: the box overlaps the wall");
+        }
+        let f = Frame::at(&p, pl.pos);
+        assert_eq!(f.face, 2, "stopped against the wall on face 2 (i = {}, j = {})", f.i, f.j);
+        assert!(pl.on_ground);
     }
 }
