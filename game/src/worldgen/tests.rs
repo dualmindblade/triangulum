@@ -20,6 +20,11 @@ fn generator_with(vscale: Option<f64>, h: u32, sea: u32) -> Generator {
     Generator::new(planet, shared_bake(), 42, vs, 1.0, 1.0, &registry()).unwrap()
 }
 
+/// `generator_with` for sibling test modules.
+pub fn generator_pub(vscale: Option<f64>, h: u32, sea: u32) -> Generator {
+    generator_with(vscale, h, sea)
+}
+
 pub fn test_generator() -> Generator {
     generator_with(None, 2048, 512)
 }

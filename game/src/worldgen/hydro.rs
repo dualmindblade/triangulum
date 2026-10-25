@@ -452,6 +452,9 @@ pub struct RiverAt {
     /// Distance from the course (m) and arc length along the link (m).
     pub d: f64,
     pub s: f64,
+    /// The most upstream arc length of course within reach of a channel
+    /// cell next to this column (the bank looks up the level there).
+    pub s_near: f64,
     /// Downstream course direction (unit, tangent to the sphere).
     pub tangent: DVec3,
     /// The link's water profile at the voxel size asked for.
@@ -828,7 +831,13 @@ impl Hydro {
                         let d = s.point(x);
                         let c = self.cands(d, 0.0);
                         let l = self.lake_at(d, &c.cells, 1.0e9);
-                        (s.lake_a >= 0 && l.field_of(s.lake_a) > LAKE_APRON, s.lake_b >= 0 && l.field_of(s.lake_b) > LAKE_APRON)
+                        // Inside: in the lake's band, or the channel's edge
+                        // (and its banks) within reach of the lake's water.
+                        let near = |k: i32| {
+                            k >= 0
+                                && l.iter().any(|lf| lf.lake == k && (lf.field > LAKE_APRON || self.lake_zone - lf.field < (s.hw + 12.0) * lf.grad))
+                        };
+                        (near(s.lake_a), near(s.lake_b))
                     })
                     .collect();
                 let mut lo = 0.0;
@@ -904,7 +913,9 @@ impl Hydro {
         let s = &self.segs[k as usize];
         let active = s.s_hi - s.s_lo;
         let floor_hw = CHANNEL_MIN_HALF_VOXELS * voxel + 0.2 * voxel;
-        let flat = |hw_node: f64| (4.0 * hw_node.max(floor_hw) + 4.0 * voxel).min(0.3 * active);
+        // The same at LODs 0-3 (voxels up to 8 m), so steps and falls sit in
+        // the same places there.
+        let flat = |hw_node: f64| (4.0 * hw_node.max(floor_hw) + 4.0 * voxel.max(8.0)).min(0.3 * active);
         let (r_a, r_b) = (flat(s.hw_node_a), flat(s.hw_node_b));
         let lm = (active - r_a - r_b).max(1e-6);
         let s0 = s.s_lo;
@@ -995,13 +1006,6 @@ impl Hydro {
         2.0 * voxel + 0.5 * self.block + 1.0
     }
 
-    /// Upstream look-ahead for banks (m): more than any lattice neighbour's
-    /// along-river offset (1.5 voxels on bends).
-    #[inline]
-    fn delta(&self, voxel: f64) -> f64 {
-        2.0 * voxel
-    }
-
     /// Nearby river links: distance from the course, arc length, tangent.
     pub fn rivers_at(&self, dir: DVec3, cands: &Cands, voxel: f64, out: &mut Vec<RiverAt>) {
         out.clear();
@@ -1038,8 +1042,41 @@ impl Hydro {
             if d > seg_reach(s.hf) {
                 continue;
             }
+            // Beside the channel: the most upstream course point within the
+            // channel's half-width plus a voxel and a half (every channel
+            // cell next door has its nearest course point there; the level
+            // never rises downstream, so the water there is the highest
+            // this column can be next to, however tight the bend).
+            let reach = self.half_width(s, voxel) + 1.5 * voxel + 0.5 * self.block;
+            let mut s_near = best.1;
+            if d <= reach {
+                let rc = reach / self.radius;
+                for (ri, &(c, rr)) in s.runs.iter().enumerate() {
+                    if (dir - c).length() - rr > rc {
+                        continue;
+                    }
+                    let i0 = ri * SEARCH_RUN;
+                    for i in i0..(i0 + SEARCH_RUN).min(s.pts.len() - 1) {
+                        let (p, q) = (s.pts[i], s.pts[i + 1]);
+                        if s.cum[i] >= s_near {
+                            break;
+                        }
+                        let (e, w) = (q - p, p - dir);
+                        let (a, b, cc) = (e.length_squared(), w.dot(e), w.length_squared() - rc * rc);
+                        let disc = b * b - a * cc;
+                        if a <= 0.0 || disc < 0.0 {
+                            continue;
+                        }
+                        let (t0, t1) = ((-b - disc.sqrt()) / a, (-b + disc.sqrt()) / a);
+                        if t1 < 0.0 || t0 > 1.0 {
+                            continue;
+                        }
+                        s_near = s_near.min(s.cum[i] + t0.max(0.0) * (s.cum[i + 1] - s.cum[i]));
+                    }
+                }
+            }
             let t = best.2 - dir * best.2.dot(dir);
-            out.push(RiverAt { seg: k, d, s: best.1, tangent: t.normalize_or_zero(), prof: self.profile(k, voxel) });
+            out.push(RiverAt { seg: k, d, s: best.1, s_near, tangent: t.normalize_or_zero(), prof: self.profile(k, voxel) });
         }
     }
 
@@ -1172,7 +1209,6 @@ impl Hydro {
             }
             lake_shore |= lf.field >= zone - 0.07 && h < l.w + fb + 0.6 * self.block;
         }
-        let delta = self.delta(voxel);
         let mut bank = false;
         for r in rivers {
             let s = &self.segs[r.seg as usize];
@@ -1183,7 +1219,7 @@ impl Hydro {
                 continue;
             }
             let p = r.prof;
-            let wb = self.w_water(r.seg, &p, (r.s - delta).max(0.0));
+            let wb = self.w_water(r.seg, &p, r.s_near);
             if wb <= 0.0 {
                 continue; // at sea level the sea and the coast hold it
             }
@@ -1219,6 +1255,32 @@ impl Hydro {
             }
             let p = r.prof;
             let (ww, wbed) = (self.w_water(r.seg, &p, r.s), self.w_bed(r.seg, &p, r.s));
+            // Higher water close by that this channel does not meet at its
+            // own level (another river beside it, a lake it skirts): here
+            // the channel yields to that water's bank, so two waters at
+            // different levels are always parted by ground. Where links
+            // join, their levels agree (flat at the node), so nothing yields.
+            let eps = 0.5 / 255.0 * self.block;
+            let yields = rivers.iter().any(|o| {
+                if o.seg == r.seg {
+                    return false;
+                }
+                let so = &self.segs[o.seg as usize];
+                if !self.has_channel(so, lod, voxel) {
+                    return false;
+                }
+                let hwo = self.half_width(so, voxel);
+                if o.d < hwo {
+                    // Inside the other channel too: the higher water is the water here.
+                    self.w_water(o.seg, &o.prof, o.s) > ww + eps
+                } else {
+                    // In the other channel's bank band: its bank stands here.
+                    o.d < hwo + bank_w && self.w_water(o.seg, &o.prof, o.s_near) > ww + eps
+                }
+            }) || lake.iter().any(|lf| lf.field <= zone && (zone - lf.field) < bank_w * lf.grad && self.lakes[lf.lake as usize].w > ww + eps);
+            if yields {
+                continue;
+            }
             let q = r.d / hw;
             if !drowned {
                 let bed = wbed - s.depth * (1.0 - q * q * q * q) - LAKE_SHORE_DEPTH_BLOCKS * self.block - self.plunge(r.seg, &p, r.s);

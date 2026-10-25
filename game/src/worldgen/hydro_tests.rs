@@ -19,7 +19,11 @@ use std::sync::OnceLock;
 fn world_gen() -> &'static Generator {
     static G: OnceLock<Generator> = OnceLock::new();
     G.get_or_init(|| {
-        let g = super::tests::test_generator();
+        // HYDRO_VSCALE=0.125 runs the water tests at 1/8 (H 4096, sea 1536).
+        let g = match std::env::var("HYDRO_VSCALE").ok().and_then(|s| s.parse::<f64>().ok()) {
+            Some(vs) => super::tests::generator_pub(Some(vs), 4096, 1536),
+            None => super::tests::test_generator(),
+        };
         assert!(g.hydro.is_some(), "the bake has no hydro.bin: run python scripts/bake_rivers_v2.py");
         g
     })
@@ -68,10 +72,10 @@ impl Region {
             .par_iter()
             .flat_map_iter(|&(f, cx, cy)| {
                 let (mut lo, mut hi) = (f64::MAX, f64::MIN);
-                for a in 0..9 {
-                    for b in 0..9 {
-                        let i = cx as f64 * per as f64 + (a as f64 + 0.5) / 9.0 * per as f64;
-                        let j = cy as f64 * per as f64 + (b as f64 + 0.5) / 9.0 * per as f64;
+                for a in 0..17 {
+                    for b in 0..17 {
+                        let i = cx as f64 * per as f64 + (a as f64 + 0.5) / 17.0 * per as f64;
+                        let j = cy as f64 * per as f64 + (b as f64 + 0.5) / 17.0 * per as f64;
                         let c = g.column(p.dir(f, i, j), voxel_m);
                         let h = c.height_m as f64;
                         lo = lo.min(h);
@@ -82,8 +86,11 @@ impl Region {
                         }
                     }
                 }
-                let pad = 10.0 * p.block_size + 3.0 * voxel_m;
-                let k_lo = ((lo - pad) / p.block_size + p.sea_level as f64).max(0.0);
+                let pad = 16.0 * p.block_size + 3.0 * voxel_m;
+                // Below: also the tallest fall and its plunge pool, which a
+                // sample can straddle.
+                let pad_lo = pad + 28.0 * p.block_size;
+                let k_lo = ((lo - pad_lo) / p.block_size + p.sea_level as f64).max(0.0);
                 let k_hi = ((hi + pad) / p.block_size + p.sea_level as f64).min(p.height as f64 - 1.0);
                 let (z0, z1) = ((k_lo as u64 / per) as u32, (k_hi as u64 / per) as u32);
                 (z0..=z1).map(move |cz| ChunkKey::neisor(f, lod, cx, cy, cz))
@@ -565,12 +572,18 @@ fn water_agrees_across_lods() {
             };
             if let Some(cs) = c {
                 wet += 1;
-                if !around.iter().any(|s| s.is_some()) {
+                let near: Vec<f64> = around.iter().filter_map(|s| s.map(|x| x.0)).collect();
+                if near.is_empty() {
                     orphan.push(format!("{}: coarse water at {cs:.2} m with no LOD-0 water within a voxel", here()));
                 } else if !fine_wet.is_empty() {
-                    let mean = fine_wet.iter().sum::<f64>() / fine_wet.len() as f64;
-                    if (cs - mean).abs() > 0.5 * vm + p.block_size + 1e-6 {
-                        surf_bad.push(format!("{}: coarse surface {cs:.2} m, LOD-0 mean {mean:.2} m over {} wet columns", here(), fine_wet.len()));
+                    // The coarse surface is one LOD 0 has within a voxel (a
+                    // fall's step may sit a voxel apart between LODs), to
+                    // half a voxel plus a block.
+                    let (lo, hi) = near.iter().fold((f64::MAX, f64::MIN), |a, &x| (a.0.min(x), a.1.max(x)));
+                    let tol = 0.5 * vm + p.block_size + 1e-6;
+                    if cs < lo - tol || cs > hi + tol {
+                        let mean = fine_wet.iter().sum::<f64>() / fine_wet.len() as f64;
+                        surf_bad.push(format!("{}: coarse surface {cs:.2} m, LOD-0 {lo:.2}..{hi:.2} m within a voxel (mean under it {mean:.2} m)", here()));
                     }
                 }
             }
@@ -974,6 +987,42 @@ fn hydro_lake_survey() {
     for e in examples {
         println!("  {e}");
     }
+}
+
+/// The gate over far more of the river network (about a tenth of all
+/// links, every link with a fall at this scale and every face-edge
+/// crossing): too slow for every run (minutes), run it before merging.
+#[test]
+#[ignore]
+fn water_is_contained_wide() {
+    let g = world_gen();
+    let h = hydro();
+    let p = &g.planet;
+    let ns = h.segs.len() as u32;
+    let mut links: Vec<u32> = (0..ns).step_by(10).collect();
+    links.extend((0..ns).filter(|&k| {
+        let pr = h.profile(k, p.block_size);
+        let s = &h.segs[k as usize];
+        (pr.falls && pr.steps > 0) || p.lattice_of_dir(s.pts[0]).0 != p.lattice_of_dir(*s.pts.last().unwrap()).0
+    }));
+    links.sort_unstable();
+    links.dedup();
+    let km: f64 = links.iter().map(|&k| h.segs[k as usize].len).sum::<f64>() / 1000.0;
+    let mut total = Report::default();
+    for (n, batch) in links.chunks(300).enumerate() {
+        let mut cols: FastMap<Col, ()> = FastMap::default();
+        along(batch, &mut cols);
+        let cols: Vec<Col> = cols.into_keys().collect();
+        let region = Region::build(g, 0, &cols);
+        let rep = check(g, &region, &cols);
+        println!("batch {n}: {} links, {} chunks, {} water cells, {} drops, {} walls, {} perched", batch.len(), region.chunks.len(), rep.water_cells, rep.drops, rep.walls.len(), rep.perched.len());
+        total = total.merge(rep);
+    }
+    println!("wide sweep: {} links ({km:.0} km of course)", links.len());
+    report("wide river sweep", &total);
+    assert_eq!(total.missing, 0);
+    assert!(total.walls.is_empty(), "{} water walls, e.g. {}", total.walls.len(), total.walls[0]);
+    assert!(total.perched.is_empty(), "{} perched, e.g. {}", total.perched.len(), total.perched[0]);
 }
 
 /// Not a check: print the generated cells and the water model around
