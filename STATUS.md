@@ -38,8 +38,14 @@
   recommended smooth equal-area one (grid page linked above).
 - Block size (1 m or ½ m) gets decided after you've played M1.
 
-## Decided today
+## Decided
 
-See `DESIGN.md`: smooth exact equal-area grid, world height 512 blocks,
-planet 131,072 columns per face (R ≈ 90.6 km), vertical scale ≈ 1/70,
-Andrew's 256-level water rule.
+See `DESIGN.md`: the smooth equal-area grid (`EqualAreaCobe`), planet
+131,072 columns per face (R ≈ 90.6 km), Andrew's 256-level water rule.
+
+## Under review
+
+- World height: 2,048 blocks suggested (512 felt small); the engine
+  benchmark measures what height costs.
+- Vertical scale: between 1/70 (Earth's slopes) and 1 (Earth's heights);
+  Andrew decides from renders at 1/70, 1/20 and 1/8, coming with M1a.
