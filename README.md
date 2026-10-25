@@ -39,8 +39,9 @@ Then generate the planet and fly it in the new engine (from the repo root):
 # 1. grow the planet once (~1.5 h on the CPU; skip if output/seed42_r8 exists)
 python -m planetgen --seed 42 --res 8
 
-# 2. bake it for the engine (~20 s; writes game/assets/world/seed42)
+# 2. bake it for the engine (~20 s + ~1 min; writes game/assets/world/seed42)
 python scripts/bake_world.py
+python scripts/bake_rivers_v2.py
 
 # 3. fly (the first build takes a few minutes)
 cd game
