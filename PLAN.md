@@ -41,6 +41,15 @@ Replays that reproduce a bug exactly.
 **Done when** digging into a lake drains it into your tunnel, diverting a
 river doesn't dry up the loaded area, and the frame rate holds.
 
+| Task | What | Who | State |
+|---|---|---|---|
+| M1-video | A ~1 minute M1 showcase clip (harness frame recording + ffmpeg) | Opus | started |
+| M1-review2 | Independent review of everything merged since the first review (player, saves, harness, landforms, sky, coverage tree) | Astra | started |
+| M2a | Simulation core: fixed 20 Hz tick separate from the sky clock, a deterministic block-update queue with neighbour notifications (across chunk and face edges), an active region around the player, falling sand and gravel, saves of sim-changed chunks, a determinism hash test | Fable | started |
+| M2-hydro | Generated lakes and rivers as water at rest (levels from planetgen, near-continuous river surfaces, waterfalls) | — | next |
+| M2b | Water: Andrew's 256-level rule, sloped water surfaces, sleeping when settled, generator values at the loaded-area edge | — | after M2a |
+| M2c | Replays: a snapshot plus ordered inputs reproduce a session exactly | — | after M2a |
+
 ## M3 — Andrew's workshop
 
 Blocks defined in files Andrew edits, block textures, a live look panel
