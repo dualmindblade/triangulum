@@ -108,7 +108,16 @@ fn vertex(vi: u32, ii: u32) -> VOut {
     let n11 = grids[d.slot].dir[b + 6u].xyz;
     let off = mix(mix(o00, o10, gf.x), mix(o01, o11, gf.x), gf.y);
     let up = mix(mix(n00, n10, gf.x), mix(n01, n11, gf.x), gf.y);
-    let world = d.origin + off + up * (lp.z * d.voxel);
+    // Exact radius (review #11): the bilinear chord sags r0 (1 - |up|)
+    // below the sphere mid-cell (23 m at LOD 9), so coarse and fine water
+    // surfaces did not meet. The mesher puts r0, the lattice floor's
+    // radius, in off[0].w (mesh.rs GRID_R0_INDEX). Skipped at the three
+    // finest LODs, where the sag is under 2 mm and f32 noise in the
+    // correction would show up close.
+    let len = length(up);
+    var sag = 0.0;
+    if (d.voxel >= 8.0) { sag = grids[d.slot].off[0].w * (1.0 - len); }
+    let world = d.origin + off + (up / len) * (lp.z * d.voxel + sag);
 
     // Each column's own grid frame, never a position/chunk-dependent guess.
     // Equal-area grid tangents need not be orthogonal: cross products give
