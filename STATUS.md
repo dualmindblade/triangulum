@@ -44,7 +44,7 @@
 Free camera only for now (walking and digging come with M1b):
 
 ```
-cd C:\code	riangulum\game
+cd C:\code\triangulum\game
 cargo run --release                          # vertical scale 1/70 (Earth slopes)
 cargo run --release -- --vscale 0.05         # 1/20
 cargo run --release -- --vscale 0.125 --height 4096 --sea-level 1536   # 1/8
