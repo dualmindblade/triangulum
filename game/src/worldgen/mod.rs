@@ -276,6 +276,16 @@ impl Generator {
         Ok(Self { planet, bake, seed, vscale, roughness, landform, lf, blocks, strata, skirt: 2, markers: Vec::new(), hide_water: false, hydro, max_relief_m })
     }
 
+    /// The highest block id this generator places (M3b: the simulation's
+    /// state hash covers the rules of the blocks up to here, and of any
+    /// later block an edit holds; blocks appended to blocks.json are later).
+    pub fn max_block_id(&self) -> BlockId {
+        let b = &self.blocks;
+        let named = [b.air, b.stone, b.dirt, b.grass, b.dry_grass, b.sand, b.gravel, b.snow, b.ice, b.water, b.deep_ocean, b.bedrock, b.sandstone, b.marker_red, b.marker_white];
+        let strata = self.strata.beds.iter().copied().chain(self.strata.basalt).chain(self.strata.basement);
+        named.into_iter().chain(strata).chain(self.markers.iter().map(|m| m.block)).max().unwrap_or(0)
+    }
+
     /// LOD of a voxel size.
     #[inline]
     fn lod_of(&self, voxel_m: f64) -> u8 {

@@ -19,29 +19,51 @@
 //! applies within half a second. The screenshot button writes the frame
 //! without the panel, and a JSON sidecar with every look value.
 //!
+//! M3b, blocks and textures (the Blocks section, `workshop/blocks_panel.rs`):
+//!
+//! - **Add a block**: a name, its colours, solid or falls like sand. It
+//!   takes the next id and is written to blocks.json at once (a save that
+//!   holds it must always find it); ids are never deleted or renumbered,
+//!   a block Andrew stops wanting is hidden from the hotbar instead.
+//! - **Change a block**: rename it (the old name is kept in `was`, so saves
+//!   and replays that know it still work), switch whether it falls (the
+//!   panel says what that does first), hide it.
+//! - **The hotbar**: what keys 1-9 hold, saved in blocks.json.
+//! - **Textures**: a picture per face (top, sides, bottom), painted in a
+//!   pixel editor (`workshop/editor.rs`), imported from any PNG, or one of
+//!   the examples; every change shows on the blocks in the world at once.
+//!   Save look writes the PNGs into `textures/` beside blocks.json, and the
+//!   game reloads a texture file edited in a paint program.
+//!
 //! The app calls `update` before it renders, `ui` inside its egui pass and
 //! `shot_pending` / `save_frame` after painting. With the panel closed the
 //! per-frame cost is a few comparisons and, twice a second, three file
-//! metadata reads.
+//! metadata reads (and, when textures are in use, the metadata of a few
+//! texture files each frame, round robin).
+
+mod blocks_panel;
+mod editor;
 
 use crate::engine::Engine;
 use crate::grid::WorldConfig;
 use crate::look::{self, FileWatch, Look, Terrain};
 use crate::player::Mode;
 use crate::render::Renderer;
+use crate::render::textures::{self, Picture, TextureSet};
 use crate::session::{Action, Session};
 use crate::sim::Sim;
 use crate::sky::Clock;
 use crate::sim::draw::FallingDraws;
 use crate::sky::Settings;
 use crate::stream::Streamer;
-use crate::world::blocks::{self, BlockColours};
+use crate::world::blocks::{self, BlockColours, BlockDef, BlockTextures};
 use crate::world::save::SaveDir;
 use crate::world::{BlockId, EditStore, Registry};
 use serde_json::{Value, json};
+use std::collections::HashMap;
 use std::f64::consts::{PI, TAU};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, mpsc};
 use std::time::{Duration, Instant, SystemTime};
 
 /// The blocks file as shipped with this build: "Reset" in the Blocks section.
@@ -50,6 +72,62 @@ const POLL: Duration = Duration::from_millis(500);
 /// A terrain dial applies this long after it last moved (and once released).
 const TERRAIN_SETTLE: Duration = Duration::from_millis(350);
 const NOTE_LIFE: Duration = Duration::from_secs(25);
+/// Texture files checked for changes per frame (round robin).
+const TEXTURE_POLL_PER_FRAME: usize = 4;
+
+/// A change to the blocks themselves, asked for in the panel and made at
+/// the next update (it needs the session: a replay being recorded stops
+/// first when the change would make it play differently).
+enum Request {
+    Add { name: String, colour: [f32; 3], falls: bool },
+    Rename(BlockId, String),
+    Falls(BlockId, bool),
+    Hidden(BlockId, bool),
+    /// The hotbar's blocks (None: back to the default).
+    Hotbar(Option<Vec<BlockId>>),
+}
+
+/// The Blocks section's own state (`blocks_panel.rs`).
+struct BlocksUi {
+    /// The block whose details and textures are shown.
+    selected: Option<BlockId>,
+    /// The face being painted: 0 top, 1 sides, 2 bottom, 3 every face.
+    face: usize,
+    add_open: bool,
+    add_label: String,
+    add_colour: [f32; 3],
+    add_falls: bool,
+    add_error: Option<String>,
+    rename: String,
+    /// A falling change waiting for "Yes".
+    confirm_falls: Option<(BlockId, bool)>,
+    hotbar_slot: usize,
+    editor: editor::PixelEditor,
+    /// The file the editor's picture came from, if any.
+    editing: Option<String>,
+    /// Where an import goes (block, face) and the file dialog's answer.
+    import: Option<((BlockId, usize), mpsc::Receiver<Option<PathBuf>>)>,
+}
+
+impl Default for BlocksUi {
+    fn default() -> Self {
+        Self {
+            selected: None,
+            face: 3,
+            add_open: false,
+            add_label: String::new(),
+            add_colour: [0.4, 0.12, 0.08],
+            add_falls: false,
+            add_error: None,
+            rename: String::new(),
+            confirm_falls: None,
+            hotbar_slot: 0,
+            editor: editor::PixelEditor::default(),
+            editing: None,
+            import: None,
+        }
+    }
+}
 
 /// The real world, set aside while a preview world is shown.
 struct Home {
@@ -75,11 +153,35 @@ pub struct Workshop {
     /// look.json, blocks.json, world.json.
     watches: [FileWatch; 3],
     last_poll: Instant,
-    names: Vec<String>,
+    /// The shared registry (M3b: the panel adds and changes blocks in it).
+    registry: Arc<Registry>,
+    /// Every block's definition as last read from the registry.
+    blocks: Vec<BlockDef>,
     /// Colours per id: as the panel shows them, and as shipped.
     colours: Vec<BlockColours>,
     colours_default: Vec<BlockColours>,
     colours_dirty: bool,
+    /// Textures per id (M3b): as the panel shows them, and as blocks.json
+    /// holds them.
+    textures: Vec<BlockTextures>,
+    saved_textures: Vec<BlockTextures>,
+    textures_dirty: bool,
+    /// The pictures (files, layers, pixels) and whether the GPU has them all.
+    texset: TextureSet,
+    gpu_textures: bool,
+    /// The registry's colour table needs uploading.
+    table_dirty: bool,
+    /// The example pictures in textures/examples/ (file, picture).
+    examples: Vec<(String, Picture)>,
+    /// Blocks the game ships with: the generator, the scripts and the
+    /// tools find them by name, so their names are fixed.
+    shipped: Vec<String>,
+    requests: Vec<Request>,
+    /// What keys 1-9 hold, as the panel last set them.
+    hotbar: Vec<BlockId>,
+    bui: BlocksUi,
+    /// Small pictures for the panel and the hotbar: key -> (texture, picture).
+    thumbs: HashMap<String, (egui::TextureHandle, Picture)>,
     water: Option<BlockId>,
     deep_ocean: Option<BlockId>,
     /// Mean strata rock under the far ocean, solved from the shipped
@@ -118,15 +220,17 @@ impl Workshop {
             look::Startup { look: d.clone(), defaults: d, look_path: format!("{root}/assets/look.json").into(), blocks_path: format!("{root}/assets/blocks.json").into(), world_path: format!("{root}/assets/world.json").into(), panel_open: false }
         });
         let terrain = Terrain { roughness: engine.config.roughness, landform: engine.config.landform, vscale: engine.vscale() };
-        let mut w = Self::from_parts(&engine.registry, st, terrain, engine.planet.radius / 6_371_000.0);
+        let mut w = Self::from_parts(engine.registry.clone(), st, terrain, engine.planet.radius / 6_371_000.0);
         // A --lod-factor on the command line wins over the file for this run.
         w.look.detail.lod_factor = engine.lod.factor;
+        w.hotbar = engine.hotbar.clone();
         w
     }
 
     /// The workshop over a registry and terrain (no engine: the tests).
-    pub fn from_parts(registry: &Registry, st: look::Startup, terrain: Terrain, earth_vscale: f64) -> Self {
-        let names: Vec<String> = registry.defs().iter().map(|d| d.name.clone()).collect();
+    pub fn from_parts(registry: Arc<Registry>, st: look::Startup, terrain: Terrain, earth_vscale: f64) -> Self {
+        let blocks_list = registry.defs();
+        let names: Vec<String> = blocks_list.iter().map(|d| d.name.clone()).collect();
         let colours = registry.colours();
         // Shipped colours by name (a --blocks file may number differently).
         let shipped = Registry::parse(SHIPPED_BLOCKS).ok();
@@ -149,6 +253,12 @@ impl Workshop {
             .map(|c| Terrain { roughness: c.roughness, landform: c.landform, vscale: c.vertical_scale.unwrap_or(earth_vscale) })
             .unwrap_or(terrain);
         let watches = [FileWatch::new(st.look_path.clone()), FileWatch::new(st.blocks_path.clone()), FileWatch::new(st.world_path.clone())];
+        let texset = TextureSet::for_registry(&registry, textures::dir_for(&st.blocks_path));
+        let examples = load_examples(&texset);
+        let shipped_names = Registry::parse(SHIPPED_BLOCKS).map(|r| r.defs().into_iter().map(|d| d.name).collect()).unwrap_or_default();
+        let textures_now = registry.textures();
+        let hotbar = registry.default_hotbar();
+        let _ = &names;
         Self {
             open: st.panel_open,
             recapture: false,
@@ -162,10 +272,23 @@ impl Workshop {
             world_path: st.world_path,
             watches,
             last_poll: Instant::now(),
-            names,
+            blocks: blocks_list,
             colours,
             colours_default,
             colours_dirty: true,
+            saved_textures: textures_now.clone(),
+            textures: textures_now,
+            textures_dirty: false,
+            texset,
+            gpu_textures: false,
+            table_dirty: true,
+            examples,
+            shipped: shipped_names,
+            requests: Vec::new(),
+            hotbar,
+            bui: BlocksUi::default(),
+            thumbs: HashMap::new(),
+            registry,
             water,
             deep_ocean,
             ocean_floor,
@@ -220,8 +343,10 @@ impl Workshop {
         let now = Instant::now();
         if now.duration_since(self.last_poll) >= POLL {
             self.last_poll = now;
-            self.poll_files();
+            self.poll_files_with(Some(session));
         }
+        // Blocks added or changed in the panel (M3b).
+        self.apply_requests(session);
         // Time of day and its speed: the session's sky clock, set as an
         // input (a replay records it, as it does [ and ]).
         let lon = session.player.pos.y.atan2(session.player.pos.x);
@@ -243,9 +368,14 @@ impl Workshop {
             streamer.cover.factor = self.look.detail.lod_factor;
             self.look_applied = Some(self.look.clone());
         }
-        // Block colours: the GPU table, no remeshing.
+        // Block colours and textures: the GPU table and texture layers, no
+        // remeshing.
         if self.apply_colours(&session.engine.registry) {
-            gpu.set_colours(&session.engine.registry.colour_table());
+            self.table_dirty = true;
+        }
+        self.apply_textures(gpu);
+        if std::mem::take(&mut self.table_dirty) {
+            gpu.set_colours(&self.registry.colour_table());
         }
         // Terrain, once a dial has come to rest.
         if self.terrain_moved.is_some_and(|t| !self.terrain_held && now.duration_since(t) >= TERRAIN_SETTLE) {
@@ -257,6 +387,211 @@ impl Workshop {
         self.notes.retain(|(t, _)| now.duration_since(*t) < NOTE_LIFE);
         // A requested screenshot is this frame, drawn without the panel.
         self.shot_now = std::mem::take(&mut self.shot_requested);
+    }
+
+    /// Textures (M3b): the panel's choices into the registry, layers for
+    /// any new files, pictures changed by painting or on disk to the GPU.
+    pub fn apply_textures(&mut self, gpu: &mut Renderer) {
+        match self.sync_textures() {
+            None => gpu.set_textures(self.texset.size, &self.texset.pictures()),
+            Some(dirty) => {
+                for i in dirty {
+                    if !gpu.set_texture_layer(i as u32, self.texset.picture_at(i)) {
+                        gpu.set_textures(self.texset.size, &self.texset.pictures());
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    /// The CPU side of `apply_textures`: the layers the GPU needs again
+    /// (None: all of them).
+    fn sync_textures(&mut self) -> Option<Vec<usize>> {
+        if self.registry.texture_size() != self.texset.size {
+            self.texset.set_size(self.registry.texture_size());
+            self.gpu_textures = false;
+            self.textures_dirty = true;
+            self.bui.editing = None;
+        }
+        if !self.texset.is_empty() {
+            let (notes, appeared) = self.texset.poll(TEXTURE_POLL_PER_FRAME);
+            for n in notes {
+                self.note(format!("Texture {n}"));
+            }
+            self.textures_dirty |= appeared;
+        }
+        let dirty = self.texset.take_dirty();
+        if std::mem::take(&mut self.textures_dirty) || !dirty.is_empty() {
+            self.registry.set_textures(&self.textures);
+            self.texset.assign(&self.registry);
+            self.table_dirty = true;
+        }
+        let dirty: Vec<usize> = dirty.into_iter().chain(self.texset.take_dirty()).collect();
+        if !self.gpu_textures {
+            self.gpu_textures = true;
+            return None;
+        }
+        Some(dirty)
+    }
+
+    /// Re-read the block definitions after the registry changed: blocks
+    /// added since get their colours and textures in the panel's lists.
+    fn refresh_blocks(&mut self) {
+        let defs = self.registry.defs();
+        let (colours, textures) = (self.registry.colours(), self.registry.textures());
+        for d in defs.iter().skip(self.colours.len()) {
+            let id = d.id as usize;
+            self.colours.push(colours[id]);
+            self.saved_colours.push(d.colours());
+            self.colours_default.push(d.colours());
+            self.textures.push(textures[id].clone());
+            self.saved_textures.push(d.textures());
+        }
+        self.blocks = defs;
+        self.table_dirty = true;
+        // A block that came with textures needs its layers.
+        self.textures_dirty = true;
+    }
+
+    /// Write the definitions (and hotbar) to blocks.json now: a block that
+    /// exists must be in the file before any save can hold it.
+    fn write_defs(&mut self) -> Result<(), String> {
+        let r = blocks::save_defs(&self.blocks_path.to_string_lossy(), &self.registry);
+        self.watches[1].mark();
+        r
+    }
+
+    /// Make the changes the panel asked for.
+    fn apply_requests(&mut self, session: &mut Session) {
+        for r in std::mem::take(&mut self.requests) {
+            match r {
+                Request::Add { name, colour, falls } => {
+                    let label = name.replace('_', " ");
+                    match self.registry.add(BlockDef::new_solid(&name, BlockColours::flat(colour), falls)) {
+                        Ok(id) => {
+                            self.refresh_blocks();
+                            self.bui.selected = Some(id);
+                            self.bui.rename = name.clone();
+                            self.bui.add_label.clear();
+                            self.bui.add_open = false;
+                            self.bui.add_error = None;
+                            match self.write_defs() {
+                                Ok(()) => self.note(format!("Added {label} (block {id}) and saved it to blocks.json. Put it on the hotbar below to place it.")),
+                                Err(e) => self.note(format!("Added {label}, but blocks.json was not written ({e}): fix that before quitting, or a save holding {label} will not load.")),
+                            }
+                        }
+                        Err(e) => self.bui.add_error = Some(e),
+                    }
+                }
+                Request::Rename(id, new) => {
+                    let old = self.registry.name(id);
+                    match self.registry.rename(id, &new) {
+                        Ok(()) => {
+                            self.refresh_blocks();
+                            let saved = self.write_defs();
+                            self.note(match saved {
+                                Ok(()) => format!("Renamed {old} to {new}. blocks.json keeps the old name in \"was\", so saves and replays that know {old} still work."),
+                                Err(e) => format!("Renamed {old} to {new}, but blocks.json was not written: {e}"),
+                            });
+                        }
+                        Err(e) => self.note(format!("Not renamed: {e}")),
+                    }
+                }
+                Request::Falls(id, falls) => {
+                    self.stop_recording_for(session, "the block rules changed");
+                    match self.registry.set_falls(id, falls) {
+                        Ok(()) => {
+                            self.refresh_blocks();
+                            let name = self.registry.name(id).replace('_', " ");
+                            let saved = self.write_defs().err().map_or(String::new(), |e| format!(" (blocks.json was not written: {e})"));
+                            self.note(if falls {
+                                format!("{name} now falls like sand: dig under it to see{saved}.")
+                            } else {
+                                format!("{name} no longer falls{saved}.")
+                            });
+                        }
+                        Err(e) => self.note(format!("Not changed: {e}")),
+                    }
+                }
+                Request::Hidden(id, hidden) => {
+                    if self.registry.set_hidden(id, hidden).is_ok() {
+                        self.refresh_blocks();
+                        if let Err(e) = self.write_defs() {
+                            self.note(format!("blocks.json was not written: {e}"));
+                        }
+                    }
+                }
+                Request::Hotbar(h) => {
+                    self.stop_recording_for(session, "the hotbar changed");
+                    let ids = h.clone().unwrap_or_else(|| self.registry.default_hotbar());
+                    self.registry.set_hotbar_names(h.map(|h| h.iter().map(|&id| self.registry.name(id)).collect()));
+                    self.set_hotbar(session, ids);
+                    if let Err(e) = self.write_defs() {
+                        self.note(format!("The hotbar changed, but blocks.json was not written: {e}"));
+                    }
+                }
+            }
+        }
+    }
+
+    /// Put `ids` on keys 1-9 in the session (and in the real world when a
+    /// preview is showing).
+    fn set_hotbar(&mut self, session: &mut Session, ids: Vec<BlockId>) {
+        self.hotbar = ids.clone();
+        if session.engine.hotbar != ids {
+            session.engine = Arc::new(session.engine.with_hotbar(ids.clone()));
+        }
+        if let Some(h) = &mut self.home {
+            h.engine = Arc::new(h.engine.with_hotbar(ids));
+        }
+    }
+
+    /// A replay can't cross a change to the block rules or the hotbar: one
+    /// being recorded ends, saved, first.
+    fn stop_recording_for(&mut self, session: &mut Session, why: &str) {
+        if session.recording() {
+            match session.stop_recording() {
+                Ok(s) => self.note(format!("Replay recording stopped and saved to {} ({why}).", s.path.display())),
+                Err(e) => self.note(format!("Replay recording stopped: {e}")),
+            }
+        }
+    }
+
+    /// The pictures for keys 1-9 in the HUD: each block's top texture (or
+    /// its sides'), None for a block with no texture (the HUD shows its
+    /// colour).
+    pub fn hotbar_thumbs(&mut self, ctx: &egui::Context, hotbar: &[BlockId]) -> Vec<Option<egui::TextureId>> {
+        hotbar
+            .iter()
+            .map(|&id| {
+                let t = self.textures.get(id as usize)?;
+                let [top, side, _] = t.faces();
+                let file = top.or(side)?.to_string();
+                let pic = self.texset.picture(&file)?.clone();
+                Some(self.thumb(ctx, &file, &pic))
+            })
+            .collect()
+    }
+
+    /// An egui texture of a picture, kept and refreshed when it changes.
+    fn thumb(&mut self, ctx: &egui::Context, key: &str, pic: &Picture) -> egui::TextureId {
+        let image = || egui::ColorImage::from_rgba_unmultiplied([pic.size as usize, pic.size as usize], &pic.rgba);
+        match self.thumbs.get_mut(key) {
+            Some((h, p)) => {
+                if p != pic {
+                    h.set(image(), egui::TextureOptions::NEAREST);
+                    *p = pic.clone();
+                }
+                h.id()
+            }
+            None => {
+                let h = ctx.load_texture(format!("tex:{key}"), image(), egui::TextureOptions::NEAREST);
+                let id = h.id();
+                self.thumbs.insert(key.to_string(), (h, pic.clone()));
+                id
+            }
+        }
     }
 
     /// Keep the far ocean in step with the water, then push the colours
@@ -287,6 +622,12 @@ impl Workshop {
 
     /// Reload whichever of the three files changed on disk.
     pub fn poll_files(&mut self) {
+        self.poll_files_with(None);
+    }
+
+    /// As `poll_files`; with the session, a change to the hotbar or the
+    /// block rules ends a replay recording first and the hotbar follows.
+    fn poll_files_with(&mut self, mut session: Option<&mut Session>) {
         if self.watches[0].changed() {
             match Look::load(&self.look_path, &self.defaults) {
                 Ok(l) => {
@@ -302,23 +643,52 @@ impl Workshop {
         if self.watches[1].changed() {
             match Registry::load(&self.blocks_path.to_string_lossy()) {
                 Ok(r) => {
-                    // Blocks whose colours changed in the file take them;
-                    // unsaved panel edits to other blocks stay.
-                    let mut n = 0;
+                    // New blocks, renames, falling, hiding and the hotbar
+                    // (M3b); a change that would replay differently ends a
+                    // recording first.
+                    let rules = r.defs().iter().zip(self.registry.defs()).any(|(a, b)| a.gravity != b.gravity) || r.hotbar_names() != self.registry.hotbar_names();
+                    if let (true, Some(s)) = (rules, session.as_deref_mut()) {
+                        self.stop_recording_for(s, "blocks.json changed the block rules or the hotbar");
+                    }
+                    let merged = self.registry.merge_file(&r);
+                    let mut said = Vec::new();
+                    match &merged {
+                        Ok(done) if !done.is_empty() => {
+                            self.refresh_blocks();
+                            said.push(done.join(", "));
+                            if let (true, Some(s)) = (done.iter().any(|d| d == "hotbar"), session.as_deref_mut()) {
+                                let ids = match self.registry.saved_hotbar() {
+                                    Some(Ok(h)) if !h.is_empty() => h,
+                                    _ => self.registry.default_hotbar(),
+                                };
+                                self.set_hotbar(s, ids);
+                            }
+                        }
+                        Ok(_) => {}
+                        Err(e) => said.push(format!("its blocks were not applied ({e})")),
+                    }
+                    // Blocks whose colours or textures changed in the file
+                    // take them; unsaved panel edits to other blocks stay.
+                    let (mut n, mut t) = (0, 0);
                     for d in r.defs() {
                         let id = d.id as usize;
-                        if self.names.get(id) == Some(&d.name) && self.saved_colours[id] != d.colours() {
-                            self.colours[id] = d.colours();
-                            self.saved_colours[id] = d.colours();
-                            n += 1;
+                        if self.blocks.get(id).is_some_and(|b| b.answers_to(&d.name)) {
+                            if self.saved_colours[id] != d.colours() {
+                                self.colours[id] = d.colours();
+                                self.saved_colours[id] = d.colours();
+                                n += 1;
+                            }
+                            if self.saved_textures[id] != d.textures() {
+                                self.textures[id] = d.textures();
+                                self.saved_textures[id] = d.textures();
+                                t += 1;
+                            }
                         }
                     }
                     self.colours_dirty = true;
-                    let restart = r.defs().len() != self.names.len() || r.defs().iter().any(|d| self.names.get(d.id as usize) != Some(&d.name));
-                    self.note(format!(
-                        "blocks.json changed on disk: {n} block colour(s) applied.{}",
-                        if restart { " New or renamed blocks (and their flags) need a restart." } else { "" }
-                    ));
+                    self.textures_dirty |= t > 0;
+                    said.push(format!("{n} block colour(s) and {t} block texture(s) applied"));
+                    self.note(format!("blocks.json changed on disk: {}.", said.join("; ")));
                 }
                 Err(e) => self.note(format!("blocks.json changed but was not applied: {e}")),
             }
@@ -370,7 +740,7 @@ impl Workshop {
                 return;
             }
         };
-        engine.hotbar = base.hotbar.clone();
+        engine.hotbar = self.hotbar.clone();
         self.stop_recording(session);
         if self.home.is_none() {
             // Leave the real world saved: unsaved edits (or simulation
@@ -469,22 +839,36 @@ impl Workshop {
         let look = self.look.tidy();
         let a = look.save(&self.look_path);
         self.watches[0].mark();
-        let b = blocks::save_colours(&self.blocks_path.to_string_lossy(), &self.colours);
+        // The pictures first, so blocks.json never names a file that is
+        // not there yet.
+        let pictures = self.texset.save();
+        let b = match &pictures {
+            Ok(_) => blocks::save_look(&self.blocks_path.to_string_lossy(), &self.colours, &self.textures),
+            Err(_) => blocks::save_colours(&self.blocks_path.to_string_lossy(), &self.colours),
+        };
         self.watches[1].mark();
-        match (a, b) {
-            (Ok(()), Ok(())) => {
+        let c = pictures.as_ref().map(|_| ()).map_err(Clone::clone);
+        match (a, b, c) {
+            (Ok(()), Ok(()), Ok(())) => {
                 self.look = look.clone();
                 self.saved_look = look;
                 self.saved_colours = self.colours.clone();
-                self.note(format!("Saved {} and {}. To share the look, commit and push those two files (or send them).", self.look_path.display(), self.blocks_path.display()))
+                self.saved_textures = self.textures.clone();
+                let n = pictures.map_or(0, |p| p.len());
+                let pics = if n > 0 { format!(" and {n} picture(s) in {}", self.texset.dir.display()) } else { String::new() };
+                self.note(format!(
+                    "Saved {} and {}{pics}. To share the look, commit and push them (the textures folder too), or send them.",
+                    self.look_path.display(),
+                    self.blocks_path.display()
+                ))
             }
-            (a, b) => self.note(format!("Saving failed: {}", [a.err(), b.err()].into_iter().flatten().collect::<Vec<_>>().join("; "))),
+            (a, b, c) => self.note(format!("Saving failed: {}", [a.err(), b.err(), c.err()].into_iter().flatten().collect::<Vec<_>>().join("; "))),
         }
     }
 
-    /// Unsaved changes to the look or the block colours?
+    /// Unsaved changes to the look, the block colours or the textures?
     pub fn unsaved(&self) -> bool {
-        self.look.tidy() != self.saved_look || self.colours != self.saved_colours
+        self.look.tidy() != self.saved_look || self.colours != self.saved_colours || self.textures != self.saved_textures || !self.texset.unsaved().is_empty()
     }
 
     fn revert(&mut self) {
@@ -498,15 +882,21 @@ impl Workshop {
         match Registry::load(&self.blocks_path.to_string_lossy()) {
             Ok(r) => {
                 for d in r.defs() {
-                    if self.names.get(d.id as usize) == Some(&d.name) {
-                        self.colours[d.id as usize] = d.colours();
-                        self.saved_colours[d.id as usize] = d.colours();
+                    let id = d.id as usize;
+                    if self.blocks.get(id).is_some_and(|b| b.answers_to(&d.name)) {
+                        self.colours[id] = d.colours();
+                        self.saved_colours[id] = d.colours();
+                        self.textures[id] = d.textures();
+                        self.saved_textures[id] = d.textures();
                     }
                 }
                 self.colours_dirty = true;
+                self.textures_dirty = true;
             }
             Err(e) => self.note(format!("blocks.json: {e}")),
         }
+        self.texset.revert();
+        self.bui.editing = None;
         self.note("Back to the look as last saved.");
     }
 
@@ -530,13 +920,19 @@ impl Workshop {
     /// block's face colours, the terrain, the time, and where you stood.
     pub fn sidecar(&self, session: &Session, gpu: &Renderer, png: &Path) -> Value {
         let blocks: serde_json::Map<String, Value> = self
-            .names
+            .blocks
             .iter()
             .zip(&self.colours)
-            .filter(|(n, _)| !n.starts_with("unused_") && n.as_str() != "air")
-            .map(|(n, c)| {
+            .zip(&self.textures)
+            .filter(|((d, _), _)| !d.name.starts_with("unused_") && d.name != "air")
+            .map(|((d, c), tex)| {
                 let [t, s, b] = c.faces().map(|f| f.map(|x| (x as f64 * 1e4).round() / 1e4));
-                (n.clone(), json!({ "top": t, "side": s, "bottom": b }))
+                let mut v = json!({ "top": t, "side": s, "bottom": b });
+                if tex.any() {
+                    let [tt, ts, tb] = tex.faces();
+                    v["textures"] = json!({ "top": tt, "side": ts, "bottom": tb });
+                }
+                (d.name.clone(), v)
             })
             .collect();
         // Through text, so f32 colours read 0.55 and not 0.550000011920929.
@@ -557,6 +953,7 @@ impl Workshop {
                 "clock_seconds": session.sky.seconds,
             },
             "world": session.engine.config.name,
+            "texture_size": self.texset.size,
             "state": session.state(),
         })
     }
@@ -610,6 +1007,7 @@ impl Workshop {
                 None => h,
             }
         };
+        self.take_drops(ctx);
         egui::Window::new("Look panel")
             .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-12.0, 12.0))
             .default_width(590.0)
@@ -714,67 +1112,6 @@ impl Workshop {
                 self.colours[w as usize] = self.colours_default[w as usize];
                 self.colours_dirty = true;
             }
-        }
-    }
-
-    fn ui_blocks(&mut self, ui: &mut egui::Ui) {
-        ui.label(egui::RichText::new("Each block's colour. Tick \"faces\" to give the top, the sides and the bottom their own colours.").weak());
-        let following = self.look.water.far_ocean_follows_water;
-        egui::Grid::new("blocks").num_columns(6).striped(true).spacing([10.0, 6.0]).show(ui, |ui| {
-            ui.label(egui::RichText::new("block").strong());
-            ui.label(egui::RichText::new("colour").strong());
-            ui.label(egui::RichText::new("faces").strong());
-            ui.label(egui::RichText::new("top").strong());
-            ui.label(egui::RichText::new("sides").strong());
-            ui.label(egui::RichText::new("bottom").strong());
-            ui.end_row();
-            for id in 1..self.names.len() {
-                let name = self.names[id].clone();
-                if name.starts_with("unused_") {
-                    continue;
-                }
-                let locked = following && Some(id as BlockId) == self.deep_ocean;
-                let default = self.colours_default[id];
-                let c = &mut self.colours[id];
-                let mut changed = false;
-                ui.label(name.replace('_', " ")).on_hover_text(if locked { "The sea seen from far away. It follows the water colour; untick that in Water to set it here." } else { "" });
-                ui.add_enabled_ui(!locked, |ui| {
-                    changed |= pick(ui, &mut c.color).changed();
-                });
-                let mut faces = c.per_face();
-                if ui.add_enabled(!locked, egui::Checkbox::without_text(&mut faces)).changed() {
-                    if faces {
-                        let [t, s, b] = c.faces();
-                        (c.top, c.side, c.bottom) = (Some(t), Some(s), Some(b));
-                    } else {
-                        (c.top, c.side, c.bottom) = (None, None, None);
-                    }
-                    changed = true;
-                }
-                if c.per_face() {
-                    for f in [&mut c.top, &mut c.side, &mut c.bottom] {
-                        let mut v = f.unwrap_or(c.color);
-                        if pick(ui, &mut v).changed() {
-                            *f = Some(v);
-                            changed = true;
-                        }
-                    }
-                } else {
-                    ui.label("");
-                    ui.label("");
-                    ui.label("");
-                }
-                if !locked && *c != default && ui.small_button("reset").on_hover_text("Back to this block's shipped colours").clicked() {
-                    *c = default;
-                    changed = true;
-                }
-                ui.end_row();
-                self.colours_dirty |= changed;
-            }
-        });
-        if ui.button("Reset all block colours to default").clicked() {
-            self.colours = self.colours_default.clone();
-            self.colours_dirty = true;
         }
     }
 
@@ -906,12 +1243,26 @@ fn pick(ui: &mut egui::Ui, c: &mut [f32; 3]) -> egui::Response {
     r
 }
 
+/// A linear colour as egui shows it.
+fn srgb32(c: [f32; 3]) -> egui::Color32 {
+    let t = |x: f32| textures::to_srgb(x);
+    egui::Color32::from_rgb(t(c[0]), t(c[1]), t(c[2]))
+}
+
 /// A labelled colour picker row.
 fn colour(ui: &mut egui::Ui, label: &str, help: &str, c: &mut [f32; 3]) -> bool {
     ui.label(label).on_hover_text(help);
     let changed = pick(ui, c).on_hover_text(help).changed();
     ui.end_row();
     changed
+}
+
+/// The example pictures (textures/examples/*.png), at the texture size.
+fn load_examples(set: &TextureSet) -> Vec<(String, Picture)> {
+    let dir = set.dir.join("examples");
+    let mut files: Vec<PathBuf> = std::fs::read_dir(&dir).map(|d| d.flatten().map(|e| e.path()).filter(|p| p.extension().is_some_and(|x| x.eq_ignore_ascii_case("png"))).collect()).unwrap_or_default();
+    files.sort();
+    files.into_iter().filter_map(|p| Some((format!("examples/{}", p.file_name()?.to_string_lossy()), Picture::load(&p, set.size).ok()?))).collect()
 }
 
 /// Local solar hour at longitude `lon` (radians) at clock `seconds`.
@@ -958,13 +1309,19 @@ mod tests {
         for f in ["look.json", "blocks.json", "world.json"] {
             std::fs::copy(format!("{}/assets/{f}", env!("CARGO_MANIFEST_DIR")), dir.join(f)).unwrap();
         }
+        // The example textures (M3b), as shipped.
+        let ex = dir.join("textures/examples");
+        std::fs::create_dir_all(&ex).unwrap();
+        for e in std::fs::read_dir(format!("{}/assets/textures/examples", env!("CARGO_MANIFEST_DIR"))).unwrap().flatten() {
+            std::fs::copy(e.path(), ex.join(e.file_name())).unwrap();
+        }
         dir
     }
 
-    fn workshop(dir: &Path, registry: &Registry) -> Workshop {
+    fn workshop(dir: &Path, registry: &Arc<Registry>) -> Workshop {
         let d = Look::defaults(&Settings::default(), 90_569.6);
         let st = look::Startup { look: Look::load(&dir.join("look.json"), &d).unwrap(), defaults: d, look_path: dir.join("look.json"), blocks_path: dir.join("blocks.json"), world_path: dir.join("world.json"), panel_open: false };
-        Workshop::from_parts(registry, st, Terrain { roughness: 1.0, landform: 1.0, vscale: 0.0142 }, 0.0142)
+        Workshop::from_parts(registry.clone(), st, Terrain { roughness: 1.0, landform: 1.0, vscale: 0.0142 }, 0.0142)
     }
 
     /// Hot reload: a colour changed in blocks.json with a text editor
@@ -974,7 +1331,7 @@ mod tests {
     #[test]
     fn hot_reload_applies_a_changed_colour() {
         let dir = scratch("reload");
-        let registry = Registry::load(&dir.join("blocks.json").to_string_lossy()).unwrap();
+        let registry = Arc::new(Registry::load(&dir.join("blocks.json").to_string_lossy()).unwrap());
         let mut w = workshop(&dir, &registry);
         let grass = registry.id("grass").unwrap() as usize;
         assert!(!w.apply_colours(&registry), "nothing to change at first");
@@ -989,8 +1346,8 @@ mod tests {
         w.poll_files();
         assert!(w.apply_colours(&registry), "the edit reaches the registry");
         let after = registry.colour_table();
-        assert_eq!(after[grass * 3], [0.5, 0.1, 0.9, 1.0], "grass top is the new colour");
-        assert_eq!(after[grass * 3 + 1], [0.18, 0.11, 0.06, 1.0], "its dirt sides stay");
+        assert_eq!(after[grass * 3], [0.5, 0.1, 0.9, -1.0], "grass top is the new colour");
+        assert_eq!(after[grass * 3 + 1], [0.18, 0.11, 0.06, -1.0], "its dirt sides stay");
         assert_ne!(after[grass * 3], before);
 
         // look.json: raise the atmosphere.
@@ -1017,7 +1374,7 @@ mod tests {
     #[test]
     fn save_look_round_trips_both_files() {
         let dir = scratch("save");
-        let registry = Registry::load(&dir.join("blocks.json").to_string_lossy()).unwrap();
+        let registry = Arc::new(Registry::load(&dir.join("blocks.json").to_string_lossy()).unwrap());
         let mut w = workshop(&dir, &registry);
         w.look.water.opacity = 0.4321;
         w.look.sky.zenith_colour = [0.05, 0.2, 0.9];
@@ -1043,7 +1400,7 @@ mod tests {
     #[test]
     fn far_ocean_matches_the_shipped_colour() {
         let dir = scratch("ocean");
-        let registry = Registry::load(&dir.join("blocks.json").to_string_lossy()).unwrap();
+        let registry = Arc::new(Registry::load(&dir.join("blocks.json").to_string_lossy()).unwrap());
         let shipped = registry.def(registry.id("deep_ocean").unwrap()).color;
         let mut w = workshop(&dir, &registry);
         w.apply_colours(&registry);
@@ -1073,5 +1430,159 @@ mod tests {
         assert_eq!(civil_from_days(0), (1970, 1, 1));
         assert_eq!(civil_from_days(20_386), (2025, 10, 25));
         assert_eq!(civil_from_days(11_016), (2000, 2, 29));
+    }
+
+    /// M3b, painting without a window: an example goes on stone with one
+    /// click; painting on it makes stone's own file (the example is never
+    /// changed); the world's colour table samples it at once; Save look
+    /// writes the PNG and blocks.json, and both read back; Revert throws
+    /// unsaved painting away.
+    #[test]
+    fn paint_a_texture_save_and_read_back() {
+        let dir = scratch("paint");
+        let registry = Arc::new(Registry::load(&dir.join("blocks.json").to_string_lossy()).unwrap());
+        let mut w = workshop(&dir, &registry);
+        assert!(w.examples.iter().any(|(f, _)| f == "examples/stone.png"), "the examples are offered");
+        let stone = registry.id("stone").unwrap();
+        let example_bytes = std::fs::read(dir.join("textures/examples/stone.png")).unwrap();
+        // One click: the example on every face.
+        w.set_faces(stone, 3, Some("examples/stone.png".into()));
+        assert_eq!(w.sync_textures(), None, "the first sync uploads everything");
+        let layer = registry.colour_table()[stone as usize * 3][3];
+        assert!(layer >= 0.0, "stone's top samples a texture");
+        assert!(w.unsaved());
+        // Paint a pixel on it.
+        w.select(Some(stone));
+        w.sync_editor(stone, 3);
+        let mut pic = w.bui.editor.picture.clone().expect("the example is in the editor");
+        pic.set(3, 4, [250, 20, 20, 255]);
+        w.bui.editor.replace(pic.clone());
+        w.commit_paint(stone, 3);
+        assert_eq!(w.textures[stone as usize].all.as_deref(), Some("stone.png"), "painting an example makes the block's own copy");
+        let dirty = w.sync_textures().unwrap();
+        assert!(!dirty.is_empty(), "the painted layer goes to the GPU");
+        assert_eq!(w.texset.picture("stone.png"), Some(&pic));
+        assert_ne!(w.texset.picture("examples/stone.png"), Some(&pic));
+        // A second stroke paints the same file (it is stone's own now).
+        pic.set(5, 5, [20, 250, 20, 255]);
+        w.bui.editor.replace(pic.clone());
+        w.commit_paint(stone, 3);
+        assert_eq!(w.textures[stone as usize].all.as_deref(), Some("stone.png"));
+        // Only the top: a copy for the top face, the sides keep stone.png.
+        w.bui.face = 0;
+        w.bui.editing = None;
+        w.sync_editor(stone, 0);
+        w.commit_paint(stone, 0);
+        assert_eq!(w.textures[stone as usize].faces(), [Some("stone_top.png"), Some("stone.png"), Some("stone.png")]);
+        // Save look writes both pictures and blocks.json.
+        w.save_look();
+        assert!(!w.unsaved(), "{:?}", w.notes);
+        assert_eq!(Picture::load(&dir.join("textures/stone.png"), 16).unwrap(), pic);
+        assert!(dir.join("textures/stone_top.png").exists());
+        assert_eq!(std::fs::read(dir.join("textures/examples/stone.png")).unwrap(), example_bytes, "the example file is untouched");
+        let back = Registry::load(&dir.join("blocks.json").to_string_lossy()).unwrap();
+        assert_eq!(back.def(stone).textures().faces(), [Some("stone_top.png"), Some("stone.png"), Some("stone.png")]);
+        // Revert after more painting: back to the saved picture.
+        let mut more = pic.clone();
+        more.set(0, 0, [0, 0, 255, 255]);
+        w.bui.face = 1;
+        w.bui.editing = None;
+        w.sync_editor(stone, 1);
+        w.bui.editor.replace(more);
+        w.commit_paint(stone, 1);
+        assert!(w.unsaved());
+        w.revert();
+        w.sync_textures();
+        assert_eq!(w.texset.picture("stone.png"), Some(&pic));
+        assert!(!w.unsaved(), "{:?}", w.notes);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// M3b hot reload: blocks.json changed on disk (a text editor, a git
+    /// pull) with a new block and a texture: the new block is in the
+    /// running registry at once, the texture reaches the colour table, and
+    /// the panel's lists grow. A file that renumbers is refused.
+    #[test]
+    fn hot_reload_brings_in_a_new_block_and_a_texture() {
+        let dir = scratch("newblock");
+        let path = dir.join("blocks.json");
+        let registry = Arc::new(Registry::load(&path.to_string_lossy()).unwrap());
+        let mut w = workshop(&dir, &registry);
+        w.sync_textures();
+        let n = registry.len();
+        let text = std::fs::read_to_string(&path).unwrap();
+        let other = Registry::parse(&text).unwrap();
+        let brick = other.add(BlockDef::new_solid("brick", BlockColours::flat([0.4, 0.1, 0.08]), false)).unwrap();
+        let mut t = other.textures();
+        t[brick as usize].all = Some("examples/dirt.png".into());
+        other.set_textures(&t);
+        let new_text = blocks::look_into_text(&blocks::defs_into_text(&text, &other).unwrap(), &other.colours(), Some(&other.textures())).unwrap();
+        std::thread::sleep(Duration::from_millis(20));
+        std::fs::write(&path, &new_text).unwrap();
+        w.poll_files();
+        assert_eq!(registry.len(), n + 1);
+        assert_eq!(registry.id("brick").unwrap(), brick);
+        assert_eq!(w.blocks.len(), n + 1);
+        assert_eq!(w.colours.len(), n + 1);
+        assert!(w.notes.iter().any(|(_, m)| m.contains("added brick")), "{:?}", w.notes);
+        w.sync_textures();
+        assert!(registry.colour_table()[brick as usize * 3][3] >= 0.0, "brick samples the dirt picture");
+        assert!(!w.unsaved(), "what came from the file is saved");
+        // A renumbered file: refused, nothing changes.
+        std::thread::sleep(Duration::from_millis(20));
+        std::fs::write(&path, new_text.replace("\"name\": \"brick\"", "\"name\": \"glass\"")).unwrap();
+        w.poll_files();
+        assert_eq!(registry.name(brick), "brick");
+        assert!(w.notes.last().unwrap().1.contains("never renumber"), "{:?}", w.notes);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// M3b: the panel's block changes through a real session: Add a block
+    /// (written to blocks.json at once), Rename it (the old name kept),
+    /// make it fall (the registry's rule changes), and put it on the hotbar
+    /// (the session's keys change and the file remembers them).
+    #[test]
+    fn add_rename_fall_and_hotbar_through_a_session() {
+        use crate::player::{Mode, Player};
+        use crate::sim::SimConfig;
+        let dir = scratch("requests");
+        let path = dir.join("blocks.json");
+        let registry = Arc::new(Registry::load(&path.to_string_lossy()).unwrap());
+        let bake = "C:/code/triangulum/game/assets/world/seed42";
+        let mut config = WorldConfig::load(&dir.join("world.json").to_string_lossy()).unwrap();
+        config.bake = bake.into();
+        let b: Arc<dyn crate::worldgen::bake::Bake> = Arc::new(crate::worldgen::bake::open(bake).unwrap());
+        let engine = Engine::build(config, registry.clone(), b, Arc::new(EditStore::new()), crate::stream::LodParams { factor: 5.0, max_inflight: 4 }, crate::mesh::MeshOptions::default(), 2, false, Vec::new(), false).unwrap();
+        let engine = Arc::new(engine);
+        let mut s = Session::new(engine.clone(), Player::new(glam::DVec3::X * 1e7, 0.0, 0.0, Mode::Fly, 1.0), None, String::new(), Sim::new(SimConfig::default()));
+        let mut w = workshop(&dir, &registry);
+        w.hotbar = engine.hotbar.clone();
+        w.requests.push(Request::Add { name: "brick".into(), colour: [0.4, 0.1, 0.08], falls: false });
+        w.apply_requests(&mut s);
+        let brick = registry.id("brick").expect("added");
+        assert!(registry.is_solid(brick) && !registry.has_gravity(brick));
+        assert_eq!(Registry::load(&path.to_string_lossy()).unwrap().id("brick").unwrap(), brick, "written to blocks.json at once");
+        assert_eq!(w.bui.selected, Some(brick));
+        w.requests.push(Request::Rename(brick, "red_brick".into()));
+        w.requests.push(Request::Falls(brick, true));
+        let mut hb = w.hotbar.clone();
+        hb[0] = brick;
+        w.requests.push(Request::Hotbar(Some(hb)));
+        w.apply_requests(&mut s);
+        assert!(registry.has_gravity(brick));
+        assert_eq!(s.engine.hotbar[0], brick, "key 1 holds the new block");
+        assert_eq!(s.selected_block(), brick);
+        let back = Registry::load(&path.to_string_lossy()).unwrap();
+        assert_eq!(back.name(brick), "red_brick");
+        assert_eq!(back.id("brick").unwrap(), brick, "the old name still answers");
+        assert!(back.has_gravity(brick));
+        assert_eq!(back.saved_hotbar().unwrap().unwrap()[0], brick);
+        // Back to the default hotbar: the key goes from the file too.
+        w.requests.push(Request::Hotbar(None));
+        w.apply_requests(&mut s);
+        assert_eq!(s.engine.hotbar, registry.default_hotbar());
+        assert!(Registry::load(&path.to_string_lossy()).unwrap().saved_hotbar().is_none());
+        assert!(!std::fs::read_to_string(&path).unwrap().contains("\"hotbar\""));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

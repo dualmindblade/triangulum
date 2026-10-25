@@ -183,15 +183,31 @@ const SNAPSHOT_VERSION: u32 = 2;
 /// are left out: they are look, and changing one must not change the hash
 /// (Andrew's live look panel edits them while the game runs).
 pub fn rules_digest(reg: &crate::world::Registry) -> [u8; 32] {
+    rules_digest_upto(reg, usize::MAX)
+}
+
+/// M3b: the rules digest of the first `n` blocks. Blocks.json only ever
+/// grows (ids are append-only), and a block's identity is its first name
+/// (a renamed block keeps the old one in `was`), so the digest of a
+/// registry's first blocks is the digest a save or a replay recorded
+/// before blocks were added or renamed.
+pub fn rules_digest_upto(reg: &crate::world::Registry, n: usize) -> [u8; 32] {
     let mut h = Sha256::new();
     h.update(b"triangulum-block-rules-1");
-    for d in reg.defs() {
+    for d in reg.defs().iter().take(n) {
+        let name = d.first_name();
         h.update(&d.id.to_le_bytes());
-        h.update(&(d.name.len() as u32).to_le_bytes());
-        h.update(d.name.as_bytes());
+        h.update(&(name.len() as u32).to_le_bytes());
+        h.update(name.as_bytes());
         h.update(&[d.solid as u8 | (d.liquid as u8) << 1 | (d.gravity as u8) << 2 | (d.replaceable as u8) << 3]);
     }
     h.finish()
+}
+
+/// M3b: were `digest`'s rules this registry's, or the rules of the blocks
+/// it began with before blocks were appended?
+pub fn rules_extend(reg: &crate::world::Registry, digest: &[u8; 32]) -> bool {
+    (1..=reg.len()).rev().any(|n| rules_digest_upto(reg, n) == *digest)
 }
 
 impl Snapshot {
@@ -716,7 +732,13 @@ impl Sim {
             }
             None => h.update(&[0]),
         }
-        h.update(&rules_digest(&world.registry));
+        // M3b: the rules of the blocks this state can hold, the generator's
+        // and any later block an edit or a fall holds. A block appended to
+        // blocks.json and not used yet decides nothing, so adding one
+        // changes no hash (a replay recorded before still matches).
+        let used = edits.keys().into_iter().filter_map(|k| edits.with_chunk(k, |ids| ids.iter().copied().max()).flatten()).chain(self.falling.iter().map(|f| f.id));
+        let used = used.max().unwrap_or(0).max(world.generator.max_block_id());
+        h.update(&rules_digest_upto(&world.registry, used as usize + 1));
         let entries = |h: &mut Sha256, es: &BTreeSet<(u64, PosKey)>| {
             h.update(&(es.len() as u64).to_le_bytes());
             for (due, key) in es {

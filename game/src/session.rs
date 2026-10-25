@@ -303,7 +303,7 @@ impl Session {
                 if let Some(saved) = snap.config.filter(|c| *c != config) {
                     println!("note: the save's simulation ran with radius {} m, {}, water period {}; it continues with radius {} m, {}, water period {}", saved.radius_m, if saved.enabled { "on" } else { "off" }, saved.water_period, config.radius_m, if config.enabled { "on" } else { "off" }, config.water_period);
                 }
-                if snap.rules.is_some_and(|r| r != crate::sim::rules_digest(registry)) {
+                if snap.rules.is_some_and(|r| !crate::sim::rules_extend(registry, &r)) {
                     println!("note: the save was made under other block rules (blocks.json's solid, liquid, gravity or replaceable flags changed); it continues under the current ones");
                 }
                 Ok(Sim::from_snapshot(config, snap))

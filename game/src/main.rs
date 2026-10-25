@@ -62,6 +62,9 @@ pub mod workshop;
 pub mod world;
 pub mod worldgen;
 
+#[cfg(test)]
+mod compat_tests;
+
 use engine::Engine;
 use grid::WorldConfig;
 use mesh::MeshOptions;
@@ -344,6 +347,16 @@ fn main() {
     let bake: Arc<dyn worldgen::bake::Bake> = Arc::new(worldgen::bake::open(&config.bake).unwrap_or_else(|e| fail(&format!("load bake {}: {e}", config.bake))));
     println!("bake loaded in {:.2}s: {}", t0.elapsed().as_secs_f64(), bake.describe());
     println!("blocks: {} definitions from {}", registry.len(), args.blocks);
+    // Block textures (M3b): every PNG blocks.json names, from the textures
+    // folder beside it, installed for every renderer.
+    let textures = render::textures::TextureSet::for_registry(&registry, render::textures::dir_for(Path::new(&args.blocks)));
+    for (file, why) in textures.missing() {
+        println!("texture warning: {file}: {why} (that face keeps its colour)");
+    }
+    if !textures.is_empty() {
+        println!("textures: {} picture(s) of {} x {} px from {}", textures.len(), textures.size, textures.size, textures.dir.display());
+    }
+    render::textures::install(render::textures::Installed { block_m: config.block_size_m, size: textures.size, pictures: textures.pictures().into_iter().cloned().collect() });
     let bake_sha = world::save::bake_identity(&config.bake).unwrap_or_else(|e| fail(&format!("bake identity: {e}")));
 
     // Saves: load before the engine exists so a mismatch refuses early.
@@ -395,6 +408,14 @@ fn main() {
     let mut engine = Engine::build(config, registry.clone(), bake, edits, lod, MeshOptions { split: args.split, ao: args.ao }, args.skirt, args.hide_water, Vec::new(), args.markers).unwrap_or_else(|e| fail(&e));
     if let Some(h) = &args.hotbar {
         engine.hotbar = registry.hotbar_from(h).unwrap_or_else(|e| fail(&e));
+    } else if args.play.is_none() && replay.is_none() {
+        // The game (not the harness, whose scripts press 1-9 expecting the
+        // default): the hotbar Andrew set in the workshop (M3b).
+        match registry.saved_hotbar() {
+            Some(Ok(h)) if !h.is_empty() => engine.hotbar = h,
+            Some(Err(e)) => println!("hotbar warning: {e}; using the default hotbar"),
+            _ => {}
+        }
     }
     let p = engine.planet;
     println!(

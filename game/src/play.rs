@@ -384,7 +384,7 @@ impl Run {
             mode: if p.mode == Mode::Walk { "walk".into() } else { "fly".into() },
             on_ground: p.on_ground,
             in_water: p.in_water,
-            hotbar: engine.hotbar.iter().map(|&id| (engine.registry.def(id).name.clone(), engine.registry.def(id).color)).collect(),
+            hotbar: engine.hotbar.iter().map(|&id| (engine.registry.name(id), engine.registry.colour(id))).collect(),
             selected: p.selected,
             outline: pick.map_or(Vec::new(), |hit| outline_segments(&engine.planet, &cam, aspect, w, h, hit.face, hit.cell)),
             edits: engine.edits.len(),

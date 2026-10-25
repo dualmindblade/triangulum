@@ -25,6 +25,7 @@ pub struct SkyUniform {
     pub moon: [f32; 4],       // moonlight rgb (colour x strength), unused
     pub water: [f32; 4],      // opacity, edge opacity, glint, glint sharpness
     pub underwater: [f32; 4], // rgb, strength
+    pub tex: [f32; 4],        // M3b: blocks per metre (textures tile once per block), unused x3
 }
 
 pub struct Sky {
@@ -34,6 +35,8 @@ pub struct Sky {
     pub look: Look,
     radius: f64,
     observer: Option<(DVec3, bool)>,
+    /// Block size in metres (M3b: texture coordinates are in blocks).
+    pub block_m: f64,
 }
 
 fn rgb(c: [f32; 3], w: f64) -> [f32; 4] {
@@ -44,7 +47,8 @@ impl Sky {
     pub fn new() -> Self {
         let initial = sky::startup();
         let look = crate::look::startup().map_or_else(|| Look::defaults(&initial.settings, initial.radius), |s| s.look.clone());
-        Self { settings: initial.settings, clock: initial.clock, look, radius: initial.radius, observer: None }
+        let block_m = super::textures::installed().map_or(1.0, |t| t.block_m);
+        Self { settings: initial.settings, clock: initial.clock, look, radius: initial.radius, observer: None, block_m }
     }
 
     /// The app supplies the exact eye, including negative sea-level altitude.
@@ -86,6 +90,7 @@ impl Sky {
             moon: rgb(l.moon_colour.map(|c| c * l.moonlight as f32), 0.0),
             water: [w.opacity as f32, w.edge_opacity as f32, w.glint as f32, w.glint_sharpness as f32],
             underwater: rgb(w.underwater_colour, w.underwater_strength),
+            tex: [(1.0 / self.block_m) as f32, 0.0, 0.0, 0.0],
         }
     }
 }

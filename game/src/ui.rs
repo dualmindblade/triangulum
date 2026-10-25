@@ -44,6 +44,9 @@ pub struct Hud {
     pub in_water: bool,
     /// Hotbar slots: (name, linear RGB).
     pub hotbar: Vec<(String, [f32; 3])>,
+    /// The slots' textures (M3b), where a block has one (the look panel's
+    /// egui textures); the colour otherwise.
+    pub hotbar_tex: Vec<Option<egui::TextureId>>,
     pub selected: usize,
     /// Outline of the targeted block: screen-space segments in pixels.
     pub outline: Vec<([f32; 2], [f32; 2])>,
@@ -158,7 +161,14 @@ pub fn draw_hud(ctx: &egui::Context, h: &Hud, stats: bool) {
         painter.rect_filled(egui::Rect::from_min_size(egui::pos2(x0 - 4.0, y0 - 4.0), egui::vec2(total + 8.0, slot + 8.0)), 4.0, egui::Color32::from_black_alpha(150));
         for (n, (name, colour)) in h.hotbar.iter().enumerate() {
             let r = egui::Rect::from_min_size(egui::pos2(x0 + slot * n as f32, y0), egui::vec2(slot, slot)).shrink(5.0);
-            painter.rect_filled(r, 3.0, srgb(*colour));
+            match h.hotbar_tex.get(n).copied().flatten() {
+                Some(tex) => {
+                    painter.image(tex, r, egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)), egui::Color32::WHITE);
+                }
+                None => {
+                    painter.rect_filled(r, 3.0, srgb(*colour));
+                }
+            }
             let stroke = if n == h.selected { egui::Stroke::new(3.0, egui::Color32::WHITE) } else { egui::Stroke::new(1.0, egui::Color32::from_gray(90)) };
             painter.rect_stroke(r, 3.0, stroke, egui::StrokeKind::Outside);
             painter.text(r.left_top() + egui::vec2(3.0, 1.0), egui::Align2::LEFT_TOP, format!("{}", n + 1), egui::FontId::monospace(11.0), egui::Color32::WHITE);

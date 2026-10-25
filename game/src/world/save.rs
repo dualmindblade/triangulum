@@ -258,10 +258,16 @@ impl Header {
         if self.bake_sha256 != bake_sha256 {
             bad.push(format!("bake {}.. vs {}..", &self.bake_sha256[..self.bake_sha256.len().min(12)], &bake_sha256[..bake_sha256.len().min(12)]));
         }
+        // M3b: blocks.json may have grown since (new blocks append), and a
+        // renamed block keeps its old name in "was", so it still answers.
+        let defs = registry.defs();
         for (id, name) in &self.blocks {
-            let cur = registry.defs().get(*id as usize).map(|d| d.name.as_str());
-            if cur != Some(name.as_str()) {
-                bad.push(format!("block id {id} is '{name}' in the save but '{}' in blocks.json (ids are stable: append, never renumber)", cur.unwrap_or("missing")));
+            let cur = defs.get(*id as usize);
+            if !cur.is_some_and(|d| d.answers_to(name)) {
+                bad.push(format!(
+                    "block id {id} is '{name}' in the save but '{}' in blocks.json (ids are stable: append, never renumber; a block renamed by hand keeps its old name in \"was\")",
+                    cur.map_or("missing", |d| d.name.as_str())
+                ));
             }
         }
         if !bad.is_empty() {
@@ -358,6 +364,21 @@ impl SaveDir {
     pub fn write_header(&self, config: &WorldConfig, registry: &Registry, bake_sha256: &str) -> Result<(), String> {
         std::fs::create_dir_all(&self.path).map_err(|e| format!("create {}: {e}", self.path.display()))?;
         let h = Header::for_world(config, registry, bake_sha256);
+        let text = serde_json::to_string_pretty(&h).map_err(|e| e.to_string())?;
+        write_atomic(&self.header_path(), text.as_bytes())
+    }
+
+    /// M3b: blocks added to blocks.json since the header was written are
+    /// recorded in it (only the block table changes), so the header names
+    /// every id a chunk of this save can hold.
+    fn extend_header_blocks(&self, registry: &Registry) -> Result<(), String> {
+        let Some(mut h) = self.read_header()? else { return Ok(()) };
+        let known = h.blocks.iter().map(|(id, _)| *id).max();
+        let new: Vec<(BlockId, String)> = registry.defs().iter().filter(|d| known.is_none_or(|k| d.id > k) && !d.name.starts_with("unused_")).map(|d| (d.id, d.name.clone())).collect();
+        if new.is_empty() {
+            return Ok(());
+        }
+        h.blocks.extend(new);
         let text = serde_json::to_string_pretty(&h).map_err(|e| e.to_string())?;
         write_atomic(&self.header_path(), text.as_bytes())
     }
@@ -462,6 +483,8 @@ impl SaveDir {
         }
         if !self.exists() {
             self.write_header(config, registry, bake_sha256)?;
+        } else {
+            self.extend_header_blocks(registry)?;
         }
         let dir = self.chunks_dir();
         std::fs::create_dir_all(&dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
