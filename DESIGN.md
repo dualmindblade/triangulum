@@ -8,9 +8,12 @@ with their OK; record the change here with the date.
 - Cube-sphere. Each face is an N×N grid of columns; columns are radial
   prisms; layer k is the radial block index. A block is identified by
   integers (face, i, j, k).
-- Projection: a smooth, exactly equal-area map, computed numerically once
-  and shipped as a table (`crates/cubesphere`). Every block footprint has the
-  same area. Fallback if the solve misbehaves: NASA's COBE sky cube (CSC).
+- Projection: smooth and exactly equal-area, computed numerically once and
+  shipped as a table: `Projection::EqualAreaCobe` in `crates/cubesphere`
+  (2026-10-25). Every block footprint has the same area to within 1e-6, and
+  only 14% of the surface is more than 10° off square (COBE 16%, gnomonic
+  31%). Andrew can still pick another grid by eye before the first saved
+  world: https://claude.ai/artifact/7qz75zidRkhjMbVcKU3apY
 - The 8 cube corners stay. Andrew: "part of the charm".
 - Face frames match `viewer/src/planet.rs` `FACES`, so old and new data line up.
 

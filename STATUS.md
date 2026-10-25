@@ -15,15 +15,14 @@
 
 ## Done
 
-- **M1-grid v1** (Astra, verified by Opus, merged): `crates/cubesphere` with
-  five projections and a smooth, exactly equal-area map. Areas equal to
-  within 6e-7, no crease, exact round trips. Trade-off: 23% of the surface
-  more than 10° off square (16% for COBE and the creased version).
+- **M1-grid** (Astra, verified by Opus, merged): `crates/cubesphere` with
+  six projections. The recommended one, `EqualAreaCobe`, is smooth, exactly
+  equal-area (1e-6) and the squarest: 14% of the surface more than 10° off
+  square. Compare all four candidates on the grid page linked above.
 
 ## In progress
 
 - M1a engine skeleton (Fable), plus vertical-scale renders for Andrew
-- M1-grid v2 (Astra): equal-area that keeps COBE's squareness
 - M1-bake smooth world bake (Opus)
 - M1-inventory of old features (Opus)
 
