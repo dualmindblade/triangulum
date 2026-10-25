@@ -4,9 +4,11 @@
 //! triangles in pixel space plus one texture manager) is uploaded here, as
 //! the old viewer did.
 
-use crate::grid::BlockPos;
+use crate::camera::Camera;
+use crate::grid::{BlockPos, Planet};
 use egui::epaint::{ImageDelta, Primitive};
 use egui::{ClippedPrimitive, TextureId, TexturesDelta};
+use glam::Vec4;
 
 /// What the HUD shows.
 #[derive(Default, Clone)]
@@ -22,7 +24,8 @@ pub struct Hud {
     pub lon: f64,
     pub alt: f64,
     pub alt_agl: f64,
-    pub block: Option<(BlockPos, String)>,
+    /// The block under the crosshair within reach, its name and distance.
+    pub block: Option<(BlockPos, String, f64)>,
     pub speed: f64,
     pub vsync: bool,
     pub loaded: usize,
@@ -35,47 +38,128 @@ pub struct Hud {
     pub preset: String,
     pub hide_water: bool,
     pub captured: bool,
+    /// "walk" or "fly".
+    pub mode: String,
+    pub on_ground: bool,
+    pub in_water: bool,
+    /// Hotbar slots: (name, linear RGB).
+    pub hotbar: Vec<(String, [f32; 3])>,
+    pub selected: usize,
+    /// Outline of the targeted block: screen-space segments in pixels.
+    pub outline: Vec<([f32; 2], [f32; 2])>,
+    pub edits: usize,
+    pub dirty: usize,
+    pub save_note: String,
 }
 
-pub fn draw_hud(ctx: &egui::Context, h: &Hud) {
-    egui::Window::new("stats")
-        .title_bar(false)
-        .resizable(false)
-        .frame(egui::Frame::NONE.fill(egui::Color32::from_black_alpha(150)).inner_margin(8.0))
-        .anchor(egui::Align2::LEFT_TOP, egui::vec2(8.0, 8.0))
-        .show(ctx, |ui| {
-            ui.set_min_width(760.0);
-            ui.style_mut().override_font_id = Some(egui::FontId::monospace(13.0));
-            let mut line = |s: String| {
-                ui.label(egui::RichText::new(s).color(egui::Color32::from_rgb(235, 235, 235)));
-            };
-            line(format!("fps {:6.1}   1% low (5 s) {:6.1}", h.fps, h.low1_fps));
-            line(format!("frame {:5.2} ms  cpu {:5.2} ms  gpu {:5.2} ms", h.frame_ms, h.cpu_ms, h.gpu_ms));
-            line(format!("tris {:.2}M (+{:.2}M water)  draws {}  VRAM {:.0} MB", h.tris as f64 / 1e6, h.water_tris as f64 / 1e6, h.draws, h.vram_mb));
-            let per: Vec<String> = h.drawn_per_lod.iter().enumerate().filter(|(_, n)| **n > 0).map(|(l, n)| format!("L{l}:{n}")).collect();
-            line(format!("drawn/LOD  {}", per.join(" ")));
-            let per: Vec<String> = h.loaded_per_lod.iter().enumerate().filter(|(_, n)| **n > 0).map(|(l, n)| format!("L{l}:{n}")).collect();
-            line(format!("loaded/LOD {}  (total {}, inflight {}, pending {})", per.join(" "), h.loaded, h.inflight, h.pending));
-            line(format!("lat {:9.5}  lon {:10.5}  alt {:.1} m  ({:.1} m AGL)", h.lat, h.lon, h.alt, h.alt_agl));
-            match &h.block {
-                Some((b, name)) => line(format!("crosshair: face {} i {} j {} k {}  {}", b.face, b.i, b.j, b.k, name)),
-                None => line("crosshair: nothing within 2 km".into()),
-            }
-            line(format!(
-                "speed {:.1} m/s  vsync {}  water {}  preset {}  [{}]",
-                h.speed,
-                if h.vsync { "on" } else { "off" },
-                if h.hide_water { "hidden" } else { "shown" },
-                h.preset,
-                if h.captured { "mouse captured: Esc releases" } else { "click to capture mouse" }
-            ));
-            line("WASD move  Space/Ctrl up/down  scroll speed  Shift boost  P preset  V vsync  F water  H hud".into());
-        });
+fn srgb(c: [f32; 3]) -> egui::Color32 {
+    let f = |x: f32| {
+        let x = x.clamp(0.0, 1.0);
+        let s = if x <= 0.0031308 { 12.92 * x } else { 1.055 * x.powf(1.0 / 2.4) - 0.055 };
+        (s * 255.0).round() as u8
+    };
+    egui::Color32::from_rgb(f(c[0]), f(c[1]), f(c[2]))
+}
+
+/// Screen-space segments (pixels) outlining lattice cell (face, i, j, k).
+/// Segments with an endpoint behind the camera are dropped.
+pub fn outline_segments(planet: &Planet, cam: &Camera, aspect: f64, width: u32, height: u32, face: u8, cell: (i64, i64, i64)) -> Vec<([f32; 2], [f32; 2])> {
+    let vp = cam.view_proj(aspect);
+    let (w, h) = (width as f32, height as f32);
+    let corner = |dx: i64, dy: i64, dz: i64| -> Option<[f32; 2]> {
+        let p = planet.pos(face, (cell.0 + dx) as f64, (cell.1 + dy) as f64, (cell.2 + dz) as f64);
+        let rel = (p - cam.pos).as_vec3();
+        let c = vp * Vec4::new(rel.x, rel.y, rel.z, 1.0);
+        if c.w <= 1e-6 {
+            return None;
+        }
+        Some([(c.x / c.w * 0.5 + 0.5) * w, (0.5 - c.y / c.w * 0.5) * h])
+    };
+    let corners: Vec<Option<[f32; 2]>> = (0..8).map(|n| corner(n & 1, (n >> 1) & 1, (n >> 2) & 1)).collect();
+    const EDGES: [(usize, usize); 12] = [(0, 1), (2, 3), (4, 5), (6, 7), (0, 2), (1, 3), (4, 6), (5, 7), (0, 4), (1, 5), (2, 6), (3, 7)];
+    EDGES.iter().filter_map(|&(a, b)| Some((corners[a]?, corners[b]?))).collect()
+}
+
+pub fn draw_hud(ctx: &egui::Context, h: &Hud, stats: bool) {
+    let ppp = ctx.pixels_per_point();
+    if stats {
+        egui::Window::new("stats")
+            .title_bar(false)
+            .resizable(false)
+            .frame(egui::Frame::NONE.fill(egui::Color32::from_black_alpha(150)).inner_margin(8.0))
+            .anchor(egui::Align2::LEFT_TOP, egui::vec2(8.0, 8.0))
+            .show(ctx, |ui| {
+                ui.set_min_width(760.0);
+                ui.style_mut().override_font_id = Some(egui::FontId::monospace(13.0));
+                let mut line = |s: String| {
+                    ui.label(egui::RichText::new(s).color(egui::Color32::from_rgb(235, 235, 235)));
+                };
+                line(format!("fps {:6.1}   1% low (5 s) {:6.1}", h.fps, h.low1_fps));
+                line(format!("frame {:5.2} ms  cpu {:5.2} ms  gpu {:5.2} ms", h.frame_ms, h.cpu_ms, h.gpu_ms));
+                line(format!("tris {:.2}M (+{:.2}M water)  draws {}  VRAM {:.0} MB", h.tris as f64 / 1e6, h.water_tris as f64 / 1e6, h.draws, h.vram_mb));
+                let per: Vec<String> = h.drawn_per_lod.iter().enumerate().filter(|(_, n)| **n > 0).map(|(l, n)| format!("L{l}:{n}")).collect();
+                line(format!("drawn/LOD  {}", per.join(" ")));
+                let per: Vec<String> = h.loaded_per_lod.iter().enumerate().filter(|(_, n)| **n > 0).map(|(l, n)| format!("L{l}:{n}")).collect();
+                line(format!("loaded/LOD {}  (total {}, inflight {}, pending {})", per.join(" "), h.loaded, h.inflight, h.pending));
+                line(format!("lat {:9.5}  lon {:10.5}  alt {:.1} m  ({:.1} m AGL)", h.lat, h.lon, h.alt, h.alt_agl));
+                match &h.block {
+                    Some((b, name, dist)) => line(format!("crosshair: face {} i {} j {} k {}  {}  ({:.1} m)", b.face, b.i, b.j, b.k, name, dist)),
+                    None => line("crosshair: nothing within reach".into()),
+                }
+                let state = if h.mode == "fly" {
+                    format!("fly {:.1} m/s", h.speed)
+                } else if h.in_water {
+                    "walk: swimming".to_string()
+                } else if h.on_ground {
+                    "walk: on ground".to_string()
+                } else {
+                    "walk: in the air".to_string()
+                };
+                line(format!(
+                    "{state}  vsync {}  water {}  preset {}  edits {} chunks ({} unsaved){}  [{}]",
+                    if h.vsync { "on" } else { "off" },
+                    if h.hide_water { "hidden" } else { "shown" },
+                    h.preset,
+                    h.edits,
+                    h.dirty,
+                    if h.save_note.is_empty() { String::new() } else { format!("  {}", h.save_note) },
+                    if h.captured { "mouse captured: Esc releases" } else { "click to capture mouse" }
+                ));
+                line("WASD move  Space jump/up  Ctrl down  Shift sprint  G walk/fly  LMB break  RMB place  1-9 block  scroll fly speed".into());
+                line("P preset  R to ground  V vsync  F water  H hud  Q quit".into());
+            });
+    }
     let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("crosshair")));
     let c = ctx.content_rect().center();
     let col = egui::Color32::from_rgba_unmultiplied(255, 255, 255, 180);
     painter.line_segment([c - egui::vec2(10.0, 0.0), c + egui::vec2(10.0, 0.0)], egui::Stroke::new(1.5, col));
     painter.line_segment([c - egui::vec2(0.0, 10.0), c + egui::vec2(0.0, 10.0)], egui::Stroke::new(1.5, col));
+    // Targeted block outline: a dark line under a light one so it reads on any block.
+    for (a, b) in &h.outline {
+        let pa = egui::pos2(a[0] / ppp, a[1] / ppp);
+        let pb = egui::pos2(b[0] / ppp, b[1] / ppp);
+        painter.line_segment([pa, pb], egui::Stroke::new(3.0, egui::Color32::from_black_alpha(160)));
+        painter.line_segment([pa, pb], egui::Stroke::new(1.5, egui::Color32::from_rgba_unmultiplied(255, 255, 255, 230)));
+    }
+    // Hotbar along the bottom.
+    if !h.hotbar.is_empty() {
+        let slot = 46.0;
+        let total = slot * h.hotbar.len() as f32;
+        let rect = ctx.content_rect();
+        let x0 = rect.center().x - total / 2.0;
+        let y0 = rect.max.y - slot - 12.0;
+        painter.rect_filled(egui::Rect::from_min_size(egui::pos2(x0 - 4.0, y0 - 4.0), egui::vec2(total + 8.0, slot + 8.0)), 4.0, egui::Color32::from_black_alpha(150));
+        for (n, (name, colour)) in h.hotbar.iter().enumerate() {
+            let r = egui::Rect::from_min_size(egui::pos2(x0 + slot * n as f32, y0), egui::vec2(slot, slot)).shrink(5.0);
+            painter.rect_filled(r, 3.0, srgb(*colour));
+            let stroke = if n == h.selected { egui::Stroke::new(3.0, egui::Color32::WHITE) } else { egui::Stroke::new(1.0, egui::Color32::from_gray(90)) };
+            painter.rect_stroke(r, 3.0, stroke, egui::StrokeKind::Outside);
+            painter.text(r.left_top() + egui::vec2(3.0, 1.0), egui::Align2::LEFT_TOP, format!("{}", n + 1), egui::FontId::monospace(11.0), egui::Color32::WHITE);
+            if n == h.selected {
+                painter.text(egui::pos2(rect.center().x, y0 - 10.0), egui::Align2::CENTER_BOTTOM, name, egui::FontId::proportional(15.0), egui::Color32::WHITE);
+            }
+        }
+    }
 }
 
 /// A caption band along the bottom of the frame (for saved renders).

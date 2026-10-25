@@ -1,0 +1,208 @@
+# M1 "done when": walk on Neisor, dig a tunnel, build a bridge, save, reload,
+# check the edited blocks, and see the bridge from a few hundred metres away.
+#
+# Place: the hills preset. The ground top is grass at layer 548 along the
+# whole strip i = 107156..107164, j = 57519 (dirt at 547, sandstone below),
+# so every pick angle below is deterministic. Feet stand on layer 549, so
+# block_rel[di,dj,dk] is relative to that: dk -1 is the ground top block.
+#
+#   I = 107156  J = 57519  K = 548 (ground top)
+#
+# Layout built here, all along +i from column I:
+#   trench  (I+1..I+4, J, 546..548) dug from the rim, 3 deep
+#   tunnel  (I+5..I+7, J, 546..547) dug from inside the trench, 2 high, under the grass
+#   bridge  (I+1..I+4, J, 548) a stone deck over the trench, flush with the field,
+#           two metres of air beneath it
+
+# ---- 1. walk ----------------------------------------------------------
+atblock 2 107156 57519 548
+lookaxis +i 0
+assert mode == walk
+assert on_ground == true
+assert block_rel[0,0,-1] == grass
+assert block_rel[0,0,-2] == dirt
+shot 01_start
+hold w 1.5
+assert speed > 4
+assert on_ground == true
+assert i >= 107161
+assert k == 549
+tap jump
+wait 0.25
+assert on_ground == false
+assert alt_agl > 0.8
+wait 1
+assert on_ground == true
+assert k == 549
+
+# ---- 2. dig a trench from the rim, four columns long, three deep ----------
+# Pitches are chosen so each ray enters the next column above the ground and
+# meets the target block inside already-dug cells.
+atblock 2 107156 57519 548
+lookaxis +i -60
+assert crosshair == grass
+tap break
+assert block_rel[1,0,-1] == air
+lookaxis +i -65
+assert crosshair == dirt
+tap break
+assert block_rel[1,0,-2] == air
+lookaxis +i -40
+tap break
+assert block_rel[2,0,-1] == air
+lookaxis +i -50
+tap break
+assert block_rel[2,0,-2] == air
+lookaxis +i -30
+tap break
+assert block_rel[3,0,-1] == air
+lookaxis +i -42
+tap break
+assert block_rel[3,0,-2] == air
+lookaxis +i -22
+tap break
+assert block_rel[4,0,-1] == air
+lookaxis +i -33
+tap break
+assert block_rel[4,0,-2] == air
+# third layer (sandstone)
+lookaxis +i -69
+assert crosshair == sandstone
+tap break
+assert block_rel[1,0,-3] == air
+lookaxis +i -69
+tap break
+assert block_rel[2,0,-3] == air
+lookaxis +i -57
+tap break
+assert block_rel[3,0,-3] == air
+lookaxis +i -48
+tap break
+assert block_rel[4,0,-3] == air
+assert block_rel[4,0,-4] == sandstone
+assert block_rel[5,0,-1] == grass
+assert edits >= 1
+shot 02_trench
+
+# ---- 3. drop in and dig a tunnel into the trench's far wall, under the grass
+lookaxis +i 0
+hold w 0.4
+wait 1
+assert on_ground == true
+assert k == 546
+assert i >= 107157
+hold w 1.5
+assert i == 107160
+lookaxis +i 0
+assert crosshair == dirt
+tap break
+assert block_rel[1,0,1] == air
+lookaxis +i -75
+assert crosshair == sandstone
+tap break
+assert block_rel[1,0,0] == air
+hold w 0.5
+assert i == 107161
+lookaxis +i 0
+tap break
+lookaxis +i -75
+tap break
+hold w 0.5
+assert i == 107162
+lookaxis +i 0
+tap break
+lookaxis +i -75
+tap break
+hold w 0.5
+assert i == 107163
+assert k == 546
+assert on_ground == true
+assert block_rel[0,0,0] == air
+assert block_rel[0,0,1] == air
+assert block_rel[0,0,2] == grass
+assert block_rel[1,0,0] == sandstone
+assert block_rel[1,0,1] == dirt
+lookaxis -i 5
+shot 03_tunnel
+
+# ---- 4. build a stone bridge over the trench ------------------------------
+# From the rim (and then from each deck block), aim at the +j face of the grass
+# block beside the trench cell ahead: the placed block lands in the trench cell
+# at ground level, making a deck with two metres of air underneath.
+atblock 2 107156 57519 548
+select 1
+assert selected_block == stone
+aim 1.0 -0.5 -0.5
+assert crosshair == grass
+tap place
+assert block_rel[1,0,-1] == stone
+assert block_rel[1,0,-2] == air
+atblock 2 107157 57519 548
+assert k == 549
+aim 1.0 -0.5 -0.5
+tap place
+assert block_rel[1,0,-1] == stone
+atblock 2 107158 57519 548
+aim 1.0 -0.5 -0.5
+tap place
+assert block_rel[1,0,-1] == stone
+atblock 2 107159 57519 548
+aim 1.0 -0.5 -0.5
+tap place
+assert block_rel[1,0,-1] == stone
+assert block_rel[1,0,-2] == air
+assert block_rel[1,0,-3] == air
+# walk back onto the rim, then across the deck without falling through
+atblock 2 107156 57519 548
+lookaxis +i 0
+hold w 0.85
+assert on_ground == true
+assert k == 549
+assert i >= 107158
+assert i <= 107160
+assert block_rel[0,0,-1] == stone
+assert block_rel[0,0,-2] == air
+atblock 2 107152 57516 548
+aim 6.0 3.0 -1.0
+shot 04_bridge
+# and from underneath, standing on the trench floor
+atblock 2 107158 57519 545
+assert k == 546
+aim 0.5 0 2.0
+assert crosshair == stone
+shot 04_under_bridge
+
+# ---- 5. save, reload (quit and start again), check every edit -------------
+save
+assert dirty == 0
+reload
+assert edits >= 1
+assert block[2,107157,57519,548] == stone
+assert block[2,107158,57519,548] == stone
+assert block[2,107159,57519,548] == stone
+assert block[2,107160,57519,548] == stone
+assert block[2,107157,57519,547] == air
+assert block[2,107160,57519,546] == air
+assert block[2,107160,57519,545] == sandstone
+assert block[2,107161,57519,548] == grass
+assert block[2,107161,57519,547] == air
+assert block[2,107161,57519,546] == air
+assert block[2,107163,57519,546] == air
+assert block[2,107164,57519,547] == dirt
+assert block[2,107156,57519,548] == grass
+assert block[2,107157,57520,548] == grass
+shot 05_reloaded
+
+# ---- 6. the bridge from a distance: LOD 0 at 300 m, LOD 1 at 550 m, LOD 2 at 1 km
+mode fly
+atblock 2 107158 57219 698
+lookaxis +j -26
+shot 06_bridge_300m
+atblock 2 107158 56969 798
+lookaxis +j -24.5
+shot 06_bridge_550m
+atblock 2 107158 56519 948
+lookaxis +j -22
+shot 07_bridge_1km
+bench 120
+assert bench_fps > 60

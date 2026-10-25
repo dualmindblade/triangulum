@@ -77,6 +77,20 @@ impl WorldConfig {
     }
 }
 
+/// One side of a face: 0 = i < 0, 1 = i > N, 2 = j < 0, 3 = j > N.
+pub type Edge = u8;
+
+/// How a face's side continues onto its neighbour (derived from `FACES`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct EdgeMap {
+    /// The neighbouring face.
+    pub face: u8,
+    /// Which of the neighbour's sides is the shared edge.
+    pub edge: Edge,
+    /// Whether the coordinate along the edge runs the other way (u' = N - u).
+    pub flip: bool,
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct Planet {
     /// Block size s in metres.
@@ -92,23 +106,107 @@ pub struct Planet {
     /// Coarsest LOD in use (voxel = 2^max_lod blocks).
     pub max_lod: u8,
     pub proj: Projection,
+    /// `edges[face][side]`: the neighbour across each side.
+    pub edges: [[EdgeMap; 4]; 6],
+}
+
+/// Which `FACES` entry has this axis.
+fn face_with_axis(axis: DVec3) -> u8 {
+    cs::FACES.iter().position(|(a, _, _)| a.distance(axis) < 1e-9).expect("every cube axis is a face") as u8
+}
+
+/// The side of face `g` whose outward direction is `v`, if any.
+fn side_toward(g: u8, v: DVec3) -> Option<Edge> {
+    let (_, right, up) = cs::FACES[g as usize];
+    [(-right, 0u8), (right, 1), (-up, 2), (up, 3)].into_iter().find(|(d, _)| d.distance(v) < 1e-9).map(|(_, e)| e)
+}
+
+/// The face-edge adjacency of the cube, from the frames alone. Crossing
+/// side `e` of face `f` lands on `map.face`, entering through `map.edge`;
+/// the coordinate along the shared edge is kept or reversed (`flip`).
+pub fn edge_maps() -> [[EdgeMap; 4]; 6] {
+    let mut out = [[EdgeMap { face: 0, edge: 0, flip: false }; 4]; 6];
+    for f in 0..6u8 {
+        let (axis, right, up) = cs::FACES[f as usize];
+        for e in 0..4u8 {
+            let outward = match e {
+                0 => -right,
+                1 => right,
+                2 => -up,
+                _ => up,
+            };
+            let g = face_with_axis(outward);
+            // On g, f's own axis points back toward f: that side of g is the shared edge.
+            let edge = side_toward(g, axis).expect("neighbour side");
+            let par_f = if e < 2 { up } else { right };
+            let (_, gr, gu) = cs::FACES[g as usize];
+            let par_g = if edge < 2 { gu } else { gr };
+            let flip = if par_g.distance(par_f) < 1e-9 {
+                false
+            } else if par_g.distance(-par_f) < 1e-9 {
+                true
+            } else {
+                panic!("edge-parallel axes of faces {f} and {g} are not aligned")
+            };
+            out[f as usize][e as usize] = EdgeMap { face: g, edge, flip };
+        }
+    }
+    out
 }
 
 impl Planet {
+    /// Panicking constructor for tests and callers with known-good parameters.
     pub fn new(block_size: f64, height: u32, sea_level: u32, n: u32) -> Self {
-        assert!(height.is_power_of_two(), "world height H = {height} must be a power of two");
-        assert!(n % height == 0, "N = {n} must be a multiple of H = {height}");
-        assert!(height >= CHUNK_U32 && n >= CHUNK_U32, "H and N must be at least one chunk");
-        assert!(sea_level > 0 && sea_level < height, "sea level {sea_level} must lie inside (0, H = {height})");
-        assert!(block_size > 0.0);
-        let radius = block_size * n as f64 * (6.0 / (4.0 * std::f64::consts::PI)).sqrt();
+        Self::try_new(block_size, height, sea_level, n).unwrap_or_else(|e| panic!("{e}"))
+    }
+
+    /// Validate the world parameters. Unsupported configurations are
+    /// rejected here rather than hanging or leaving strips of the planet
+    /// unvisited later.
+    pub fn try_new(block_size: f64, height: u32, sea_level: u32, n: u32) -> Result<Self, String> {
+        if !(block_size > 0.0) || !block_size.is_finite() {
+            return Err(format!("block size {block_size} m must be positive"));
+        }
+        if !height.is_power_of_two() {
+            return Err(format!("world height H = {height} must be a power of two"));
+        }
+        if height < CHUNK_U32 || n < CHUNK_U32 {
+            return Err(format!("H = {height} and N = {n} must be at least one chunk ({CHUNK} blocks)"));
+        }
+        if n % height != 0 {
+            return Err(format!("N = {n} must be a multiple of H = {height}"));
+        }
+        if sea_level == 0 || sea_level >= height {
+            return Err(format!("sea level {sea_level} must lie inside (0, H = {height})"));
+        }
         // The coarsest voxel is H blocks (the cap). A voxel grid can only
         // place sea level exactly when the voxel size divides the sea level,
         // so LODs coarser than the largest power of two dividing sea_level
         // would show the sea either a voxel too high or not at all; they are
         // left out. With the defaults (H 2048, sea 512) this is LOD 9 (512 m).
-        let max_lod = (height.trailing_zeros().min(sea_level.trailing_zeros())) as u8;
-        Self { block_size, height, sea_level, n, radius, max_lod, proj: Projection::EqualAreaCobe }
+        // A sea level like 513 would leave only LOD 0 and billions of root
+        // chunks, so the sea level must be a multiple of H / 8 at least.
+        let sea_lod = (height.trailing_zeros().min(sea_level.trailing_zeros())) as u8;
+        let min_lod = (height.trailing_zeros() as u8).saturating_sub(3);
+        if sea_lod < min_lod {
+            return Err(format!(
+                "sea level {sea_level} must be a multiple of {} (H / 8) so the coarsest LOD stays at least {} blocks; {} leaves LOD {sea_lod}",
+                height / 8,
+                1u32 << min_lod,
+                sea_level
+            ));
+        }
+        // The coarsest chunk never exceeds the face (small test planets), and
+        // coverage must be exact: root chunks tile the face only when N is a
+        // multiple of the coarsest chunk edge.
+        let face_lod = (n / CHUNK_U32).ilog2() as u8;
+        let max_lod = sea_lod.min(face_lod);
+        let coarse_chunk = CHUNK_U32 << max_lod;
+        if n % coarse_chunk != 0 {
+            return Err(format!("N = {n} must be a multiple of the coarsest chunk edge {coarse_chunk} blocks (32 x 2^{max_lod}); otherwise strips of the face are never visited"));
+        }
+        let radius = block_size * n as f64 * (6.0 / (4.0 * std::f64::consts::PI)).sqrt();
+        Ok(Self { block_size, height, sea_level, n, radius, max_lod, proj: Projection::EqualAreaCobe, edges: edge_maps() })
     }
 
     /// Radius of the bottom of the world (layer 0).
@@ -152,37 +250,60 @@ impl Planet {
         (p + 1.0) * 0.5 * self.n as f64
     }
 
-    /// Unit direction of continuous lattice point (i, j) on `face`. Indices a
-    /// little outside [0, N] are allowed: they are snapped onto the
-    /// neighbouring face's own lattice so chunk borders sample the same
-    /// column centres their neighbours do.
-    pub fn dir(&self, face: u8, i: f64, j: f64) -> DVec3 {
+    /// Carry continuous lattice coordinates that lie past a face's sides onto
+    /// the face that is really there. Pure index arithmetic on the cube's
+    /// edge adjacency, so it holds at every voxel spacing: a column centre
+    /// half a voxel past the edge lands on the neighbour's own centre half a
+    /// voxel inside its edge, at any LOD.
+    ///
+    /// Corner policy: past two sides at once there is no face (three faces
+    /// meet at a cube corner). The side with the larger overshoot is crossed
+    /// first, then the remaining overshoot is crossed again from the
+    /// neighbour, so the diagonal continues onto the third face; whatever is
+    /// still outside after that is clamped to the face.
+    pub fn wrap(&self, face: u8, i: f64, j: f64) -> (u8, f64, f64) {
         let n = self.n as f64;
-        if (0.0..=n).contains(&i) && (0.0..=n).contains(&j) {
-            return cs::face_to_dir(self.proj, face, self.p_of(i), self.p_of(j));
+        let (mut f, mut i, mut j) = (face, i, j);
+        for _ in 0..2 {
+            let over_i = if i < 0.0 { -i } else if i > n { i - n } else { 0.0 };
+            let over_j = if j < 0.0 { -j } else if j > n { j - n } else { 0.0 };
+            if over_i == 0.0 && over_j == 0.0 {
+                return (f, i, j);
+            }
+            let (side, t, u) = if over_i >= over_j { (if i < 0.0 { 0 } else { 1 }, over_i, j) } else { (if j < 0.0 { 2 } else { 3 }, over_j, i) };
+            let m = self.edges[f as usize][side];
+            let u = if m.flip { n - u } else { u };
+            // Entering through the neighbour's side `m.edge`, `t` deep.
+            let (ni, nj) = match m.edge {
+                0 => (t, u),
+                1 => (n - t, u),
+                2 => (u, t),
+                _ => (u, n - t),
+            };
+            f = m.face;
+            i = ni;
+            j = nj;
         }
-        // Past the face edge: `warp` is only defined on the face, so extend
-        // linearly in gnomonic space from the edge (the gnomonic plane
-        // continues onto the neighbour), then snap to that face's lattice.
-        let (p, q) = (self.p_of(i), self.p_of(j));
-        let (pc, qc) = (p.clamp(-1.0, 1.0), q.clamp(-1.0, 1.0));
-        let eps = 1e-4;
-        let (a0, b0) = cs::warp(self.proj, pc, qc);
-        let (a1, _) = cs::warp(self.proj, pc - eps * pc.signum().max(0.0) + eps * (-pc.signum()).max(0.0), qc);
-        let (_, b1) = cs::warp(self.proj, pc, qc - eps * qc.signum().max(0.0) + eps * (-qc.signum()).max(0.0));
-        let a = a0 + (a0 - a1) / eps * (p - pc).abs() * pc.signum();
-        let b = b0 + (b0 - b1) / eps * (q - qc).abs() * qc.signum();
-        let (axis, right, up) = cs::FACES[face as usize];
-        let d = (axis + a * right + b * up).normalize();
-        let (f2, p2, q2) = cs::dir_to_face(self.proj, d);
-        if f2 == face {
-            return d;
+        (f, i.clamp(0.0, n), j.clamp(0.0, n))
+    }
+
+    /// `wrap` for cell indices: the cell containing the centre of (ci, cj).
+    pub fn wrap_cell(&self, face: u8, ci: i64, cj: i64) -> (u8, u32, u32) {
+        let n = self.n as i64;
+        if (0..n).contains(&ci) && (0..n).contains(&cj) {
+            return (face, ci as u32, cj as u32);
         }
-        // Snap to the same fractional offset within a column (centres stay centres).
-        let fi = i.fract().abs();
-        let fj = j.fract().abs();
-        let snap = |x: f64, fr: f64| (self.i_of(x) - fr).round() + fr;
-        cs::face_to_dir(self.proj, f2, self.p_of(snap(p2, fi)), self.p_of(snap(q2, fj)))
+        let (f, i, j) = self.wrap(face, ci as f64 + 0.5, cj as f64 + 0.5);
+        let nf = self.n as f64;
+        (f, i.floor().clamp(0.0, nf - 1.0) as u32, j.floor().clamp(0.0, nf - 1.0) as u32)
+    }
+
+    /// Unit direction of continuous lattice point (i, j) on `face`. Indices
+    /// outside [0, N] continue onto the neighbouring face (`wrap`), so chunk
+    /// borders sample exactly the column centres their neighbours do.
+    pub fn dir(&self, face: u8, i: f64, j: f64) -> DVec3 {
+        let (f, i, j) = self.wrap(face, i, j);
+        cs::face_to_dir(self.proj, f, self.p_of(i), self.p_of(j))
     }
 
     /// Continuous lattice coordinates (face, i, j) of a direction.
@@ -359,14 +480,111 @@ mod tests {
     }
 
     #[test]
-    fn border_columns_snap_onto_the_neighbour_face() {
+    fn edge_maps_are_mutual_and_cover_the_cube() {
+        let maps = edge_maps();
+        for f in 0..6u8 {
+            for e in 0..4u8 {
+                let m = maps[f as usize][e as usize];
+                assert_ne!(m.face, f);
+                // The neighbour's map back through the shared edge returns here.
+                let back = maps[m.face as usize][m.edge as usize];
+                assert_eq!(back.face, f, "face {f} side {e} -> {m:?} -> {back:?}");
+                assert_eq!(back.edge, e);
+                assert_eq!(back.flip, m.flip);
+            }
+        }
+        // Face 0 (+X) is ringed by +Y (2), -Y (3), +Z (4), -Z (5).
+        assert_eq!(maps[0][1].face, 2);
+        assert_eq!(maps[0][0].face, 3);
+        assert_eq!(maps[0][3].face, 4);
+        assert_eq!(maps[0][2].face, 5);
+    }
+
+    #[test]
+    fn border_columns_continue_onto_the_neighbour_at_every_edge_and_lod() {
         let g = Planet::new(1.0, 512, 256, 4096);
-        // column centre one past the i = N edge of face 0
-        let d = g.dir(0, 4096.5, 300.5);
-        let (f, i, j) = g.lattice_of_dir(d);
-        assert_ne!(f, 0);
-        let near_centre = |x: f64| (x - x.floor() - 0.5).abs() < 1e-6;
-        assert!(near_centre(i) && near_centre(j), "i {i} j {j}");
+        let n = g.n as f64;
+        let near_centre = |x: f64, v: f64| ((x / v) - (x / v).floor() - 0.5).abs() < 1e-6;
+        for face in 0..6u8 {
+            for (i, j) in [(n + 0.5, 300.5), (-0.5, 300.5), (300.5, n + 0.5), (300.5, -0.5)] {
+                // L0: half a column past the edge is the neighbour's first column centre...
+                let d = g.dir(face, i, j);
+                let (f, wi, wj) = g.lattice_of_dir(d);
+                assert_ne!(f, face, "face {face} ({i}, {j}) stayed home");
+                assert!(near_centre(wi, 1.0) && near_centre(wj, 1.0), "face {face} ({i}, {j}) -> {f} ({wi}, {wj})");
+                let depth = wi.min(n - wi).min(wj).min(n - wj);
+                assert!((depth - 0.5).abs() < 1e-6, "half a column inside the neighbour's edge, got {depth}");
+                // ...and the step across the edge is the same size as a step inside it
+                // (the old extrapolation turned back into the face here).
+                let inside = |di: f64, dj: f64| g.dir(face, i.clamp(0.0, n) + di, j.clamp(0.0, n) + dj);
+                let (si, sj) = (if i > n { -1.0 } else if i < 0.0 { 1.0 } else { 0.0 }, if j > n { -1.0 } else if j < 0.0 { 1.0 } else { 0.0 });
+                let step_in = inside(0.5 * si, 0.5 * sj).distance(inside(1.5 * si, 1.5 * sj));
+                let step_across = d.distance(inside(0.5 * si, 0.5 * sj));
+                assert!((step_across / step_in - 1.0).abs() < 0.1, "face {face} ({i}, {j}): across {step_across} vs inside {step_in}");
+            }
+            // A coarse LOD (voxel 64 blocks): half a coarse voxel past the edge
+            // is a coarse centre half a voxel inside the neighbour.
+            let v = 64.0;
+            let d = g.dir(face, n + v / 2.0, 7.0 * v + v / 2.0);
+            let (f, wi, wj) = g.lattice_of_dir(d);
+            assert_ne!(f, face);
+            assert!(near_centre(wi, v) && near_centre(wj, v), "coarse: {f} ({wi}, {wj})");
+            assert!((wi.min(n - wi).min(wj).min(n - wj) - v / 2.0).abs() < 1e-6);
+            // Integer cells map the same way.
+            let (f2, ci, cj) = g.wrap_cell(face, g.n as i64, 300);
+            assert_eq!(f2, f);
+            let (_, wi, wj) = g.lattice_of_dir(g.dir(face, n + 0.5, 300.5));
+            assert_eq!((ci, cj), (wi.floor() as u32, wj.floor() as u32));
+        }
+        // The shared edge itself is one line: approaching it from both faces agrees.
+        let m = g.edges[0][1];
+        let a = g.dir(0, n, 100.0);
+        let (bi, bj) = match m.edge {
+            0 => (0.0, if m.flip { n - 100.0 } else { 100.0 }),
+            1 => (n, if m.flip { n - 100.0 } else { 100.0 }),
+            2 => (if m.flip { n - 100.0 } else { 100.0 }, 0.0),
+            _ => (if m.flip { n - 100.0 } else { 100.0 }, n),
+        };
+        assert!(a.distance(g.dir(m.face, bi, bj)) < 1e-12);
+    }
+
+    #[test]
+    fn corners_continue_onto_the_third_face() {
+        let g = Planet::new(1.0, 512, 256, 4096);
+        let n = g.n as f64;
+        // Past one side only: the neighbour across that side.
+        let (f1, _, _) = g.wrap(0, n + 0.5, n - 0.5);
+        let (f2, _, _) = g.wrap(0, n - 0.5, n + 0.5);
+        assert_eq!(f1, g.edges[0][1].face);
+        assert_eq!(f2, g.edges[0][3].face);
+        assert_ne!(f1, f2);
+        // Past both: the third face at the corner, a valid cell close to it.
+        let (f3, i, j) = g.wrap(0, n + 0.5, n + 1.5);
+        assert!(f3 != 0 && (f3 == f1 || f3 == f2), "the other neighbour at the corner (only three faces meet there), got {f3}");
+        assert!((0.0..=n).contains(&i) && (0.0..=n).contains(&j));
+        let depth = i.min(n - i).min(j).min(n - j);
+        assert!(depth <= 1.5 + 1e-9, "stays near the corner: depth {depth}");
+        // The corner direction itself is where the three faces meet.
+        let corner = g.dir(0, n, n);
+        let (fc, _, _) = g.wrap(0, n + 1.0, n + 1.0);
+        let d = g.dir(fc, 0.0, 0.0).distance(corner).min(g.dir(fc, n, 0.0).distance(corner)).min(g.dir(fc, 0.0, n).distance(corner)).min(g.dir(fc, n, n).distance(corner));
+        assert!(d < 1e-12, "third face shares the corner");
+        // Far past a side (several columns) is still monotone: deeper in means further from the edge.
+        let d1 = g.dir(0, n + 1.5, 200.5);
+        let d2 = g.dir(0, n + 3.5, 200.5);
+        assert!(g.dir(0, n, 200.5).distance(d2) > g.dir(0, n, 200.5).distance(d1));
+    }
+
+    #[test]
+    fn unsupported_configurations_are_rejected_with_a_reason() {
+        assert!(Planet::try_new(1.0, 2048, 513, 131072).unwrap_err().contains("multiple of 256"));
+        assert!(Planet::try_new(1.0, 2048, 512, 131072 + 2048).unwrap_err().contains("coarsest chunk edge"));
+        assert!(Planet::try_new(1.0, 2048, 512, 131072 + 32).unwrap_err().contains("multiple of H"));
+        assert!(Planet::try_new(1.0, 2000, 512, 131072).unwrap_err().contains("power of two"));
+        assert!(Planet::try_new(0.0, 2048, 512, 131072).unwrap_err().contains("positive"));
+        assert!(Planet::try_new(1.0, 2048, 256, 131072).is_ok());
+        assert!(Planet::try_new(1.0, 2048, 1024 + 512, 131072).is_ok(), "1536 = 6 x 256");
+        assert!(Planet::try_new(0.5, 2048, 512, 262144).is_ok());
     }
 
     #[test]

@@ -1,17 +1,18 @@
-//! The windowed app: free-fly camera, streaming, rendering, egui HUD.
+//! The windowed app: the player (walk or fly), streaming, rendering, the
+//! egui HUD, block breaking and placing, and autosave.
 
 use crate::camera::Camera;
 use crate::engine::{Engine, Preset};
-use crate::grid::BlockPos;
+use crate::player::{Input, Mode, STEP};
 use crate::render::{DrawRecord, Renderer};
+use crate::session::Session;
 use crate::stream::Streamer;
-use crate::ui::{EguiPaint, Hud, draw_hud};
-use glam::DVec3;
+use crate::ui::{EguiPaint, Hud, draw_hud, outline_segments};
 use std::collections::{HashSet, VecDeque};
 use std::sync::Arc;
 use std::time::Instant;
 use winit::application::ApplicationHandler;
-use winit::event::{DeviceEvent, ElementState, MouseScrollDelta, WindowEvent};
+use winit::event::{DeviceEvent, ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{CursorGrabMode, Window, WindowId};
@@ -20,7 +21,6 @@ pub struct AppOptions {
     pub width: u32,
     pub height: u32,
     pub vsync: bool,
-    pub start: Camera,
     pub backend: Option<String>,
     /// Save the frame to this PNG and quit after `exit_after` seconds (for headless checks).
     pub screenshot: Option<String>,
@@ -36,22 +36,24 @@ struct Gfx {
     egui_paint: EguiPaint,
 }
 
+/// Holding a mouse button repeats its action this often.
+const REPEAT_S: f64 = 0.25;
+
 struct App {
-    engine: Arc<Engine>,
+    session: Session,
     opts: Option<AppOptions>,
     gfx: Option<Gfx>,
     streamer: Option<Streamer>,
     egui_ctx: egui::Context,
-    cam: Camera,
     keys: HashSet<KeyCode>,
     last: Instant,
+    /// Fixed-step accumulator (s).
+    acc: f64,
     opaque: Vec<DrawRecord>,
     water: Vec<DrawRecord>,
     captured: bool,
-    speed: f64,
     vsync: bool,
-    show_hud: bool,
-    hide_water: bool,
+    show_stats: bool,
     preset: usize,
     presets: Vec<Preset>,
     /// (time, frame ms) over the last five seconds.
@@ -62,9 +64,15 @@ struct App {
     screenshot: Option<String>,
     exit_after: Option<f64>,
     want_exit: bool,
+    mouse_held: Option<(MouseButton, Instant)>,
+    save_note: String,
 }
 
 impl App {
+    fn engine(&self) -> &Arc<Engine> {
+        &self.session.engine
+    }
+
     fn configure_surface(&mut self) {
         let Some(gfx) = &self.gfx else { return };
         let size = gfx.window.inner_size();
@@ -96,69 +104,93 @@ impl App {
             return;
         }
         self.preset = i % self.presets.len();
-        let p = &self.presets[self.preset];
-        self.cam = self.engine.camera_at(p.dir, p.alt_agl, p.heading_deg, p.pitch_deg);
+        let p = self.presets[self.preset].clone();
+        self.session.player.heading = p.heading_deg.to_radians();
+        self.session.player.pitch = p.pitch_deg.to_radians();
+        if p.alt_agl > 50.0 {
+            self.session.set_mode(Mode::Fly);
+            let ground = self.engine().ground(p.dir);
+            self.session.teleport(p.dir, Some(ground + p.alt_agl));
+        } else {
+            self.session.set_mode(Mode::Walk);
+            self.session.teleport(p.dir, None);
+        }
         println!("preset {}: {}", self.preset, p.name);
     }
 
-    /// Block under the crosshair: march the view ray through loaded LOD-0
-    /// chunks, falling back to the generator's column heights.
-    fn pick(&self) -> Option<(BlockPos, String)> {
-        let streamer = self.streamer.as_ref()?;
-        let (fwd, _, _) = self.cam.vectors();
-        let planet = &self.engine.planet;
-        let mut t = 0.0;
-        while t < 2000.0 {
-            let p = self.cam.pos + fwd * t;
-            let bp = planet.block_of_pos(p);
-            let key = crate::grid::ChunkKey { face: bp.face, lod: 0, cx: bp.i / 32, cy: bp.j / 32, cz: bp.k / 32 };
-            let hit = match streamer.chunks.get(&key) {
-                Some(c) => {
-                    let id = c.get((bp.i % 32) as usize, (bp.j % 32) as usize, (bp.k % 32) as usize);
-                    if self.engine.registry.is_solid(id) || self.engine.registry.is_liquid(id) { Some(id) } else { None }
-                }
-                None => {
-                    let dir = p.normalize();
-                    let h = self.engine.generator.ground_height_m(dir);
-                    let k_surface = planet.sea_level as f64 + h / planet.block_size;
-                    if (bp.k as f64) < k_surface { Some(u16::MAX) } else { None }
-                }
-            };
-            if let Some(id) = hit {
-                let name = if id == u16::MAX { "(unloaded: column surface)".to_string() } else { self.engine.registry.def(id).name.clone() };
-                return Some((bp, name));
-            }
-            t += (t * 0.01).max(0.5 * planet.block_size);
+    /// Swap the streamer for the session's current engine (water toggle, reload).
+    fn reset_streamer(&mut self) {
+        if let (Some(s), Some(g)) = (&mut self.streamer, &mut self.gfx) {
+            s.clear(&mut g.gpu);
         }
-        None
+        self.streamer = Some(self.engine().streamer());
+    }
+
+    fn input(&self) -> Input {
+        let k = &self.keys;
+        Input {
+            forward: k.contains(&KeyCode::KeyW),
+            back: k.contains(&KeyCode::KeyS),
+            left: k.contains(&KeyCode::KeyA),
+            right: k.contains(&KeyCode::KeyD),
+            jump: k.contains(&KeyCode::Space),
+            down: k.contains(&KeyCode::ControlLeft) || k.contains(&KeyCode::ControlRight),
+            sprint: k.contains(&KeyCode::ShiftLeft) || k.contains(&KeyCode::ShiftRight),
+        }
+    }
+
+    fn mouse_action(&mut self, button: MouseButton) {
+        match button {
+            MouseButton::Left => {
+                self.session.break_block();
+            }
+            MouseButton::Right => {
+                self.session.place_block();
+            }
+            _ => {}
+        }
+    }
+
+    fn save_on_exit(&mut self) {
+        match self.session.save_now() {
+            Ok(n) if n > 0 => println!("saved {n} chunk(s) to {}", self.session.save.as_ref().map_or("-".into(), |s| s.path.display().to_string())),
+            Ok(_) => {}
+            Err(e) => eprintln!("save failed: {e}"),
+        }
     }
 
     fn frame(&mut self) {
         let now = Instant::now();
-        let dt = (now - self.last).as_secs_f64().min(0.1);
+        let dt = (now - self.last).as_secs_f64().min(0.25);
         self.last = now;
-        // Movement.
-        let mut speed = self.speed;
-        if self.keys.contains(&KeyCode::ShiftLeft) || self.keys.contains(&KeyCode::ShiftRight) {
-            speed *= 4.0;
+        // Fixed-step player physics (the same step the harness uses).
+        self.acc += dt;
+        let input = self.input();
+        let mut steps = 0;
+        while self.acc >= STEP && steps < 8 {
+            self.session.step(&input, STEP);
+            self.acc -= STEP;
+            steps += 1;
         }
-        let (fwd, _, up) = self.cam.vectors();
-        let right = self.cam.right();
-        let mut mv = DVec3::ZERO;
-        if self.keys.contains(&KeyCode::KeyW) { mv += fwd; }
-        if self.keys.contains(&KeyCode::KeyS) { mv -= fwd; }
-        if self.keys.contains(&KeyCode::KeyA) { mv -= right; }
-        if self.keys.contains(&KeyCode::KeyD) { mv += right; }
-        if self.keys.contains(&KeyCode::Space) { mv += up; }
-        if self.keys.contains(&KeyCode::ControlLeft) || self.keys.contains(&KeyCode::ControlRight) { mv -= up; }
-        if mv != DVec3::ZERO {
-            self.cam.pos += mv.normalize() * speed * dt;
+        if steps == 8 {
+            self.acc = 0.0;
         }
-        // Stay above the bottom of the world.
-        let min_r = self.engine.planet.bottom_radius() + 2.0;
-        if self.cam.pos.length() < min_r {
-            self.cam.pos = self.cam.pos.normalize() * min_r;
+        if let Some((button, since)) = self.mouse_held {
+            if since.elapsed().as_secs_f64() >= REPEAT_S {
+                self.mouse_action(button);
+                self.mouse_held = Some((button, Instant::now()));
+            }
         }
+        // Autosave (debounced).
+        match self.session.save_if_due(now) {
+            Ok(n) if n > 0 => self.save_note = format!("saved {n} chunk(s)"),
+            Ok(_) => {}
+            Err(e) => {
+                self.save_note = format!("SAVE FAILED: {e}");
+                eprintln!("save failed: {e}");
+            }
+        }
+        let cam = self.session.player.camera();
 
         let (Some(gfx), Some(streamer)) = (&mut self.gfx, &mut self.streamer) else { return };
         let frame = match gfx.surface.get_current_texture() {
@@ -171,19 +203,22 @@ impl App {
         let view = frame.texture.create_view(&Default::default());
         let t0 = Instant::now();
         let aspect = gfx.gpu.width as f64 / gfx.gpu.height as f64;
-        let vp = self.cam.view_proj(aspect);
-        streamer.update(self.cam.pos, vp, &mut gfx.gpu, &mut self.opaque, &mut self.water);
-        let uni = self.cam.uniform(aspect, self.engine.sun_at(self.cam.pos), &self.engine.planet, self.engine.water_alpha);
+        let vp = cam.view_proj(aspect);
+        streamer.update(cam.pos, vp, &mut gfx.gpu, &mut self.opaque, &mut self.water);
+        let engine = self.session.engine.clone();
+        let uni = cam.uniform(aspect, engine.sun_at(cam.pos), &engine.planet, engine.water_alpha);
         let fs = gfx.gpu.render(&uni, &self.opaque, &self.water, Some(&view));
         self.cpu_ms = t0.elapsed().as_secs_f64() * 1e3;
         self.last_tris = (fs.triangles, fs.water_triangles, (fs.draws + fs.water_draws) as usize);
         let gpu_ms = gfx.gpu.poll_gpu_ms();
 
-        // HUD.
-        if self.show_hud {
+        // HUD (crosshair, outline and hotbar always; stats on H).
+        {
             let raw = gfx.egui_state.take_egui_input(&gfx.window);
-            let hud = self.hud_info(gpu_ms);
-            let full = self.egui_ctx.run_ui(raw, |ui| draw_hud(ui.ctx(), &hud));
+            let (w, h) = (gfx.config.width, gfx.config.height);
+            let hud = self.hud_info(gpu_ms, &cam, aspect, w, h);
+            let stats = self.show_stats;
+            let full = self.egui_ctx.run_ui(raw, |ui| draw_hud(ui.ctx(), &hud, stats));
             let gfx = self.gfx.as_mut().unwrap();
             gfx.egui_state.handle_platform_output(&gfx.window, full.platform_output);
             let prims = self.egui_ctx.tessellate(full.shapes, full.pixels_per_point);
@@ -207,7 +242,7 @@ impl App {
         }
     }
 
-    fn hud_info(&self, gpu_ms: f64) -> Hud {
+    fn hud_info(&self, gpu_ms: f64, cam: &Camera, aspect: f64, width: u32, height: u32) -> Hud {
         let now = Instant::now();
         let last_1s: Vec<f64> = self.frames.iter().filter(|(t, _)| now.duration_since(*t).as_secs_f64() <= 1.0).map(|(_, ms)| *ms).collect();
         let fps = if last_1s.is_empty() { 0.0 } else { 1000.0 / (last_1s.iter().sum::<f64>() / last_1s.len() as f64) };
@@ -217,8 +252,12 @@ impl App {
         let low1 = if all.is_empty() { 0.0 } else { 1000.0 / (all[..n1].iter().sum::<f64>() / n1 as f64) };
         let streamer = self.streamer.as_ref().unwrap();
         let st = &streamer.stats;
-        let (lat, lon, alt) = self.cam.lat_lon_alt(&self.engine.planet);
-        let ground = self.engine.generator.ground_height_m(self.cam.pos.normalize());
+        let engine = self.engine();
+        let p = &self.session.player;
+        let (lat, lon, alt) = cam.lat_lon_alt(&engine.planet);
+        let ground = engine.ground(p.pos.normalize());
+        let pick = self.session.pick();
+        let outline = pick.map_or(Vec::new(), |h| outline_segments(&engine.planet, cam, aspect, width, height, h.face, h.cell));
         Hud {
             fps,
             low1_fps: low1,
@@ -231,8 +270,8 @@ impl App {
             lon,
             alt,
             alt_agl: alt - ground,
-            block: self.pick(),
-            speed: self.speed,
+            block: pick.map(|h| (h.block, engine.registry.def(h.id).name.clone(), h.t)),
+            speed: p.fly_speed,
             vsync: self.vsync,
             loaded: st.loaded,
             inflight: st.inflight,
@@ -242,8 +281,17 @@ impl App {
             draws: self.last_tris.2,
             vram_mb: self.gfx.as_ref().map_or(0.0, |g| g.gpu.resident_bytes() as f64 / 1e6),
             preset: self.presets.get(self.preset).map_or("-".into(), |p| p.name.clone()),
-            hide_water: self.hide_water,
+            hide_water: engine.hide_water,
             captured: self.captured,
+            mode: if p.mode == Mode::Walk { "walk".into() } else { "fly".into() },
+            on_ground: p.on_ground,
+            in_water: p.in_water,
+            hotbar: engine.hotbar.iter().map(|&id| (engine.registry.def(id).name.clone(), engine.registry.def(id).color)).collect(),
+            selected: p.selected,
+            outline,
+            edits: engine.edits.len(),
+            dirty: engine.edits.dirty_count(),
+            save_note: self.save_note.clone(),
         }
     }
 }
@@ -260,7 +308,8 @@ impl ApplicationHandler for App {
         );
         let instance = crate::render::make_instance(opts.backend.as_deref());
         let surface = instance.create_surface(window.clone()).unwrap();
-        let gpu = Renderer::new(&instance, Some(&surface), opts.width, opts.height, self.engine.quad_mb, self.engine.slot_capacity, &self.engine.colours);
+        let engine = self.engine().clone();
+        let gpu = Renderer::new(&instance, Some(&surface), opts.width, opts.height, engine.quad_mb, engine.slot_capacity, &engine.colours);
         let caps = surface.get_capabilities(
             &pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
                 power_preference: wgpu::PowerPreference::HighPerformance,
@@ -285,12 +334,11 @@ impl ApplicationHandler for App {
         surface.configure(&gpu.device, &config);
         let egui_state = egui_winit::State::new(self.egui_ctx.clone(), egui::ViewportId::ROOT, &window, Some(window.scale_factor() as f32), None, None);
         let egui_paint = EguiPaint::new(&gpu.device, gpu.format);
-        self.streamer = Some(self.engine.streamer());
-        self.cam = opts.start;
+        self.streamer = Some(engine.streamer());
         self.vsync = opts.vsync;
         self.gfx = Some(Gfx { window, surface, config, gpu, egui_state, egui_paint });
         el.set_control_flow(ControlFlow::Poll);
-        println!("app: WASD move, Space/Ctrl up/down, mouse look (click to capture, Esc releases), scroll speed, Shift boost, P preset, V vsync, F water, H hud, Q quit");
+        println!("app: WASD move, Space jump/up, Ctrl down, Shift sprint, mouse look (click to capture, Esc releases), LMB break, RMB place, 1-9 block, G walk/fly, scroll fly speed, P preset, R to ground, V vsync, F water, H hud, Q quit");
     }
 
     fn window_event(&mut self, el: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
@@ -298,7 +346,10 @@ impl ApplicationHandler for App {
             let _ = gfx.egui_state.on_window_event(&gfx.window, &event);
         }
         match event {
-            WindowEvent::CloseRequested => el.exit(),
+            WindowEvent::CloseRequested => {
+                self.save_on_exit();
+                el.exit()
+            }
             WindowEvent::KeyboardInput { event, .. } => {
                 if let PhysicalKey::Code(code) = event.physical_key {
                     if event.state == ElementState::Pressed {
@@ -306,26 +357,36 @@ impl ApplicationHandler for App {
                         if first {
                             match code {
                                 KeyCode::Escape => self.set_capture(false),
-                                KeyCode::KeyQ => el.exit(),
+                                KeyCode::KeyQ => {
+                                    self.save_on_exit();
+                                    el.exit()
+                                }
                                 KeyCode::KeyP => self.apply_preset(self.preset + 1),
                                 KeyCode::KeyV => {
                                     self.vsync = !self.vsync;
                                     self.configure_surface();
                                 }
-                                KeyCode::KeyH => self.show_hud = !self.show_hud,
+                                KeyCode::KeyH => self.show_stats = !self.show_stats,
                                 KeyCode::KeyF => {
-                                    self.hide_water = !self.hide_water;
-                                    let engine = Arc::new(self.engine.with_flags(self.hide_water, self.engine.markers_on));
-                                    self.engine = engine;
-                                    if let (Some(s), Some(g)) = (&mut self.streamer, &mut self.gfx) {
-                                        s.clear(&mut g.gpu);
-                                    }
-                                    self.streamer = Some(self.engine.streamer());
+                                    let hide = !self.engine().hide_water;
+                                    self.session.set_hide_water(hide);
+                                    self.reset_streamer();
                                 }
+                                KeyCode::KeyG => self.session.toggle_mode(),
                                 KeyCode::KeyR => {
-                                    let dir = self.cam.pos.normalize();
-                                    self.cam = self.engine.camera_at(dir, 1.7, self.cam.heading.to_degrees(), 0.0);
+                                    let dir = self.session.player.pos.normalize();
+                                    self.session.set_mode(Mode::Walk);
+                                    self.session.teleport(dir, None);
                                 }
+                                KeyCode::Digit1 => self.session.select(0),
+                                KeyCode::Digit2 => self.session.select(1),
+                                KeyCode::Digit3 => self.session.select(2),
+                                KeyCode::Digit4 => self.session.select(3),
+                                KeyCode::Digit5 => self.session.select(4),
+                                KeyCode::Digit6 => self.session.select(5),
+                                KeyCode::Digit7 => self.session.select(6),
+                                KeyCode::Digit8 => self.session.select(7),
+                                KeyCode::Digit9 => self.session.select(8),
                                 _ => {}
                             }
                         }
@@ -334,18 +395,24 @@ impl ApplicationHandler for App {
                     }
                 }
             }
-            WindowEvent::MouseInput { state: ElementState::Pressed, .. } => {
+            WindowEvent::MouseInput { state: ElementState::Pressed, button, .. } => {
                 if !self.captured {
                     self.set_capture(true);
+                } else {
+                    self.mouse_action(button);
+                    self.mouse_held = Some((button, Instant::now()));
                 }
             }
+            WindowEvent::MouseInput { state: ElementState::Released, .. } => self.mouse_held = None,
             WindowEvent::MouseWheel { delta, .. } => {
                 let steps = match delta {
                     MouseScrollDelta::LineDelta(_, y) => y as f64,
                     MouseScrollDelta::PixelDelta(p) => p.y / 40.0,
                 };
-                self.speed = (self.speed * 1.3f64.powf(steps)).clamp(1.0, 5000.0);
+                let p = &mut self.session.player;
+                p.fly_speed = (p.fly_speed * 1.3f64.powf(steps)).clamp(1.0, 5000.0);
             }
+            WindowEvent::Focused(false) => self.mouse_held = None,
             WindowEvent::Resized(_) => self.configure_surface(),
             WindowEvent::RedrawRequested => self.frame(),
             _ => {}
@@ -355,14 +422,16 @@ impl ApplicationHandler for App {
     fn device_event(&mut self, _el: &ActiveEventLoop, _id: winit::event::DeviceId, event: DeviceEvent) {
         if let DeviceEvent::MouseMotion { delta } = event {
             if self.captured {
-                self.cam.heading += delta.0 * 0.0022;
-                self.cam.pitch = (self.cam.pitch - delta.1 * 0.0022).clamp(-1.55, 1.55);
+                let p = &mut self.session.player;
+                p.heading += delta.0 * 0.0022;
+                p.pitch = (p.pitch - delta.1 * 0.0022).clamp(-1.55, 1.55);
             }
         }
     }
 
     fn about_to_wait(&mut self, el: &ActiveEventLoop) {
         if self.want_exit {
+            self.save_on_exit();
             el.exit();
             return;
         }
@@ -372,28 +441,26 @@ impl ApplicationHandler for App {
     }
 }
 
-pub fn run(engine: Arc<Engine>, opts: AppOptions) {
+pub fn run(session: Session, opts: AppOptions) {
     let el = EventLoop::new().unwrap();
-    let presets = engine.presets();
+    let presets = session.engine.presets();
     let (screenshot, exit_after) = (opts.screenshot.clone(), opts.exit_after);
     let egui_ctx = egui::Context::default();
     egui_ctx.all_styles_mut(|s| s.animation_time = 0.0);
     let mut app = App {
-        cam: opts.start,
-        engine,
+        session,
         opts: Some(opts),
         gfx: None,
         streamer: None,
         egui_ctx,
         keys: HashSet::new(),
         last: Instant::now(),
+        acc: 0.0,
         opaque: Vec::new(),
         water: Vec::new(),
         captured: false,
-        speed: 20.0,
         vsync: true,
-        show_hud: true,
-        hide_water: false,
+        show_stats: true,
         preset: 0,
         presets,
         frames: VecDeque::new(),
@@ -403,6 +470,8 @@ pub fn run(engine: Arc<Engine>, opts: AppOptions) {
         screenshot,
         exit_after,
         want_exit: false,
+        mouse_held: None,
+        save_note: String::new(),
     };
     el.run_app(&mut app).unwrap();
 }

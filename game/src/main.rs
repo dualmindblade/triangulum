@@ -1,14 +1,19 @@
-//! Triangulum engine (M1a).
+//! Triangulum engine (M1b).
 //!
-//!   cargo run --release                         # fly (WASD, mouse, scroll speed, P presets)
-//!   cargo run --release -- --at 12.5 -40.2 300  # start at lat, lon, altitude (m above sea)
+//!   cargo run --release                         # play: walk on the hills (WASD, mouse, G to fly)
+//!   cargo run --release -- --at 12.5 -40.2 300  # start at lat, lon, altitude (m above sea; flies when high)
 //!   cargo run --release -- --at 12.5 -40.2 300 --look 45 -20   # plus heading and pitch (deg)
+//!   cargo run --release -- --play scripts/m1-done.play         # scripted harness (see src/play.rs)
 //!   cargo run --release -- --bench --out out/run1
 //!   cargo run --release -- --shots --out out/shots --vscale 0.125 --sea-level 1024
 //!   cargo run --release -- --find-places
 //!
 //! World settings come from `assets/world.json`; every one can be overridden:
 //!   --seed N --block-size S --height H --sea-level K --n N --bake DIR --vscale F --roughness F
+//! (a relative "bake" in world.json is resolved against the game/ directory)
+//! Saves: --save DIR (default saves/<world name>)  --no-save  --keep-save (harness: keep its save)
+//! Player: --walk | --fly (default: walk when starting within 50 m of the ground)
+//!   --hotbar stone,dirt,...  (blocks on keys 1-9; default: the first nine solid blocks)
 //! Other options: --lod-factor F (5) --threads N --no-ao --no-split --skirt N
 //!   --no-vsync --size WxH --hide-water --markers --backend vulkan|dx12
 //!   --frames N --skip-flight --only pose,pose --label TEXT --which a,b
@@ -20,19 +25,26 @@ pub mod camera;
 pub mod engine;
 pub mod grid;
 pub mod mesh;
+pub mod play;
+pub mod player;
 pub mod render;
+pub mod session;
+pub mod sha256;
 pub mod stream;
 pub mod ui;
 pub mod world;
 pub mod worldgen;
 
 use engine::Engine;
-use glam::DVec3;
 use grid::WorldConfig;
 use mesh::MeshOptions;
+use player::{Mode, Player};
+use session::Session;
+use std::path::Path;
 use std::sync::Arc;
 use stream::LodParams;
-use world::Registry;
+use world::save::SaveDir;
+use world::{EditStore, Registry};
 
 struct Args {
     world: String,
@@ -51,7 +63,13 @@ struct Args {
     shots: bool,
     find_places: bool,
     probe: bool,
-    out: String,
+    play: Option<String>,
+    out: Option<String>,
+    save: Option<String>,
+    no_save: bool,
+    keep_save: bool,
+    walk: Option<bool>,
+    hotbar: Option<String>,
     frames: usize,
     skip_flight: bool,
     only: Option<String>,
@@ -91,7 +109,13 @@ fn parse_args() -> Args {
         shots: false,
         find_places: false,
         probe: false,
-        out: format!("{root}/out/run"),
+        play: None,
+        out: None,
+        save: None,
+        no_save: false,
+        keep_save: false,
+        walk: None,
+        hotbar: None,
         frames: 120,
         skip_flight: false,
         only: None,
@@ -140,7 +164,14 @@ fn parse_args() -> Args {
             "--shots" => a.shots = true,
             "--find-places" => a.find_places = true,
             "--probe" => a.probe = true,
-            "--out" => a.out = val(),
+            "--play" => a.play = Some(val()),
+            "--out" => a.out = Some(val()),
+            "--save" => a.save = Some(val()),
+            "--no-save" => a.no_save = true,
+            "--keep-save" => a.keep_save = true,
+            "--walk" => a.walk = Some(true),
+            "--fly" => a.walk = Some(false),
+            "--hotbar" => a.hotbar = Some(val()),
             "--frames" => a.frames = val().parse().unwrap(),
             "--skip-flight" => a.skip_flight = true,
             "--only" => a.only = Some(val()),
@@ -173,12 +204,23 @@ fn parse_args() -> Args {
     a
 }
 
+fn fail(msg: &str) -> ! {
+    eprintln!("error: {msg}");
+    std::process::exit(2)
+}
+
 fn main() {
     let args = parse_args();
+    let root = env!("CARGO_MANIFEST_DIR");
     if args.threads > 0 {
         rayon::ThreadPoolBuilder::new().num_threads(args.threads).build_global().unwrap();
     }
-    let mut config = WorldConfig::load(&args.world).unwrap_or_else(|e| panic!("{e}"));
+    let mut config = WorldConfig::load(&args.world).unwrap_or_else(|e| fail(&e));
+    // A relative bake path in world.json is relative to the game/ directory,
+    // so the engine runs from any current directory.
+    if Path::new(&config.bake).is_relative() {
+        config.bake = format!("{root}/{}", config.bake);
+    }
     if let Some(v) = args.seed { config.seed = v; }
     if let Some(v) = args.block_size { config.block_size_m = v; }
     if let Some(v) = args.height { config.world_height = v; }
@@ -189,12 +231,44 @@ fn main() {
     if let Some(v) = args.roughness { config.roughness = v; }
 
     let t0 = std::time::Instant::now();
-    let registry = Arc::new(Registry::load(&args.blocks).unwrap_or_else(|e| panic!("{e}")));
-    let bake: Arc<dyn worldgen::bake::Bake> = Arc::new(worldgen::bake::open(&config.bake).unwrap_or_else(|e| panic!("load bake {}: {e}", config.bake)));
+    let registry = Arc::new(Registry::load(&args.blocks).unwrap_or_else(|e| fail(&e)));
+    let bake: Arc<dyn worldgen::bake::Bake> = Arc::new(worldgen::bake::open(&config.bake).unwrap_or_else(|e| fail(&format!("load bake {}: {e}", config.bake))));
     println!("bake loaded in {:.2}s: {}", t0.elapsed().as_secs_f64(), bake.describe());
     println!("blocks: {} definitions from {}", registry.len(), args.blocks);
+    let bake_sha = world::save::bake_identity(&config.bake).unwrap_or_else(|e| fail(&format!("bake identity: {e}")));
+
+    // Saves: load before the engine exists so a mismatch refuses early.
+    let tools = args.bench || args.shots || args.find_places || args.probe;
+    let edits = Arc::new(EditStore::new());
+    let save_dir = if args.no_save || tools {
+        None
+    } else if let Some(script) = &args.play {
+        let stem = Path::new(script).file_stem().and_then(|s| s.to_str()).unwrap_or("play").to_string();
+        let dir = args.save.clone().unwrap_or_else(|| format!("{root}/saves/_play/{stem}"));
+        if !args.keep_save {
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+        Some(SaveDir::new(dir))
+    } else {
+        Some(SaveDir::new(args.save.clone().unwrap_or_else(|| format!("{root}/saves/{}", config.name))))
+    };
+    if let Some(dir) = &save_dir {
+        match dir.load_into(&config, &registry, &bake_sha, &edits) {
+            Ok(report) => {
+                for w in &report.warnings {
+                    println!("save warning: {w}");
+                }
+                println!("save {}: {} edited chunk(s) loaded", dir.path.display(), report.chunks);
+            }
+            Err(e) => fail(&e),
+        }
+    }
+
     let lod = LodParams { factor: args.lod_factor, max_inflight: (rayon::current_num_threads() * 2).max(4) };
-    let engine = Engine::build(config, registry, bake, lod, MeshOptions { split: args.split, ao: args.ao }, args.skirt, args.hide_water, Vec::new(), args.markers).unwrap_or_else(|e| panic!("{e}"));
+    let mut engine = Engine::build(config, registry.clone(), bake, edits, lod, MeshOptions { split: args.split, ao: args.ao }, args.skirt, args.hide_water, Vec::new(), args.markers).unwrap_or_else(|e| fail(&e));
+    if let Some(h) = &args.hotbar {
+        engine.hotbar = registry.hotbar_from(h).unwrap_or_else(|e| fail(&e));
+    }
     let p = engine.planet;
     println!(
         "planet {}: s = {} m, H = {} blocks (sea level {}), N = {}, R = {:.3} km, vertical scale {:.5} (1/{:.1}), roughness {}, max LOD {} ({} m voxels), lod factor {}, {} rayon threads",
@@ -213,6 +287,7 @@ fn main() {
         rayon::current_num_threads()
     );
     let engine = Arc::new(engine);
+    let out = |default: &str| args.out.clone().unwrap_or_else(|| format!("{root}/{default}"));
 
     if args.probe {
         // Height profile along 96 columns around --at, in the lattice i direction.
@@ -246,29 +321,44 @@ fn main() {
         }
         for pr in engine.presets() {
             let (lat, lon) = grid::Planet::lat_lon_deg(pr.dir);
-            println!("preset {}: lat {lat:.4} lon {lon:.4} alt {} m AGL heading {} pitch {}", pr.name, pr.alt_agl, pr.heading_deg, pr.pitch_deg);
+            let (f, i, j) = p.lattice_of_dir(pr.dir);
+            let k = p.sea_level as f64 + engine.ground(pr.dir) / p.block_size;
+            println!("preset {}: lat {lat:.4} lon {lon:.4} alt {} m AGL heading {} pitch {}; lattice face {f} i {i:.0} j {j:.0} ground k {k:.0}", pr.name, pr.alt_agl, pr.heading_deg, pr.pitch_deg);
         }
         return;
     }
     if args.bench {
-        bench::run_bench(engine, bench::BenchOptions { out: args.out, frames: args.frames, skip_flight: args.skip_flight, only: args.only, backend: args.backend, label: args.label });
+        bench::run_bench(engine, bench::BenchOptions { out: out("out/run"), frames: args.frames, skip_flight: args.skip_flight, only: args.only, backend: args.backend, label: args.label });
         return;
     }
     if args.shots {
-        bench::run_shots(engine, bench::ShotOptions { out: args.out, backend: args.backend, which: args.which });
+        bench::run_shots(engine, bench::ShotOptions { out: out("out/shots"), backend: args.backend, which: args.which });
         return;
     }
-    let start = match args.at {
+
+    // The player: on the hills preset, or at --at.
+    let (dir, alt_asl, heading, pitch) = match args.at {
         Some((lat, lon, alt)) => {
             let dir = grid::Planet::dir_of_lat_lon_deg(lat, lon);
-            let (heading, pitch) = args.look.unwrap_or((0.0, if alt > 2000.0 { -45.0 } else { 0.0 }));
-            engine.camera_asl(dir, alt, heading, pitch)
+            let (heading, pitch) = args.look.unwrap_or((0.0, if alt - engine.ground(dir) > 2000.0 { -45.0 } else { 0.0 }));
+            (dir, Some(alt), heading, pitch)
         }
         None => {
             let pr = &engine.presets()[0];
-            engine.camera_at(pr.dir, pr.alt_agl, pr.heading_deg, pr.pitch_deg)
+            (pr.dir, None, pr.heading_deg, pr.pitch_deg)
         }
     };
-    let _ = DVec3::ZERO;
-    app::run(engine, app::AppOptions { width: args.width, height: args.win_height, vsync: args.vsync, start, backend: args.backend, screenshot: args.screenshot, exit_after: args.exit_after });
+    let ground = engine.ground(dir);
+    let walk = args.walk.unwrap_or_else(|| alt_asl.is_none_or(|a| a - ground <= 50.0));
+    let mut session = Session::new(engine.clone(), Player::new(dir * (p.radius + alt_asl.unwrap_or(ground + 2.0)), heading, pitch, if walk { Mode::Walk } else { Mode::Fly }, p.block_size), save_dir, bake_sha);
+    if walk {
+        session.teleport(dir, None);
+    }
+
+    if let Some(script) = args.play {
+        let stem = Path::new(&script).file_stem().and_then(|s| s.to_str()).unwrap_or("play").to_string();
+        let code = play::run_play(session, play::PlayOptions { script, out: out(&format!("out/play/{stem}")), width: args.width, height: args.win_height, backend: args.backend });
+        std::process::exit(code);
+    }
+    app::run(session, app::AppOptions { width: args.width, height: args.win_height, vsync: args.vsync, backend: args.backend, screenshot: args.screenshot, exit_after: args.exit_after });
 }
