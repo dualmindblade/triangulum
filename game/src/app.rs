@@ -169,6 +169,9 @@ impl App {
         let mut steps = 0;
         while self.acc >= STEP && steps < 8 {
             self.session.step(&input, STEP);
+            if let Some(gfx) = &mut self.gfx {
+                gfx.gpu.sky.clock.advance(STEP);
+            }
             self.acc -= STEP;
             steps += 1;
         }
@@ -207,6 +210,9 @@ impl App {
         streamer.update(cam.pos, vp, &mut gfx.gpu, &mut self.opaque, &mut self.water);
         let engine = self.session.engine.clone();
         let uni = cam.uniform(aspect, engine.sun_at(cam.pos), &engine.planet, engine.water_alpha);
+        let (face, i, j, k) = engine.planet.lattice_of_pos(cam.pos);
+        let eye_block = engine.world.block_lattice(face, i.floor() as i64, j.floor() as i64, k.floor() as i64);
+        gfx.gpu.sky.set_observer(cam.pos, engine.registry.is_liquid(eye_block));
         let fs = gfx.gpu.render(&uni, &self.opaque, &self.water, Some(&view));
         self.cpu_ms = t0.elapsed().as_secs_f64() * 1e3;
         self.last_tris = (fs.triangles, fs.water_triangles, (fs.draws + fs.water_draws) as usize);
@@ -338,7 +344,7 @@ impl ApplicationHandler for App {
         self.vsync = opts.vsync;
         self.gfx = Some(Gfx { window, surface, config, gpu, egui_state, egui_paint });
         el.set_control_flow(ControlFlow::Poll);
-        println!("app: WASD move, Space jump/up, Ctrl down, Shift sprint, mouse look (click to capture, Esc releases), LMB break, RMB place, 1-9 block, G walk/fly, scroll fly speed, P preset, R to ground, V vsync, F water, H hud, Q quit");
+        println!("app: WASD move, Space jump/up, Ctrl down, Shift sprint, mouse look (click to capture, Esc releases), LMB break, RMB place, 1-9 block, G walk/fly, scroll fly speed, P preset, R to ground, V vsync, F water, H hud, [ slower time, ] faster time, Q quit");
     }
 
     fn window_event(&mut self, el: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
@@ -367,6 +373,14 @@ impl ApplicationHandler for App {
                                     self.configure_surface();
                                 }
                                 KeyCode::KeyH => self.show_stats = !self.show_stats,
+                                KeyCode::BracketLeft | KeyCode::BracketRight => {
+                                    if let Some(gfx) = &mut self.gfx {
+                                        gfx.gpu.sky.clock.change_speed(code == KeyCode::BracketRight);
+                                        let speed = gfx.gpu.sky.clock.speed;
+                                        gfx.window.set_title(&format!("Triangulum | time {speed}x ([ slower, ] faster)"));
+                                        println!("time speed: {speed}x");
+                                    }
+                                }
                                 KeyCode::KeyF => {
                                     let hide = !self.engine().hide_water;
                                     self.session.set_hide_water(hide);
