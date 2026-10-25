@@ -1,0 +1,46 @@
+# Probe the generated river of m2b-river.play (face 3, chunk i 127712..
+# 127743, j 38656..38687): the bottom water layer (k 511) along j at
+# several i, and along i at the chunk's j sides. Not a gate: the asserts
+# only print the levels.
+at -14.11420 -47.69908
+mode fly
+assert level[3,127715,38656,511] >= 0
+assert level[3,127715,38660,511] >= 0
+assert level[3,127715,38670,511] >= 0
+assert level[3,127715,38675,511] >= 0
+assert level[3,127715,38680,511] >= 0
+assert level[3,127715,38687,511] >= 0
+assert level[3,127710,38665,511] >= 0
+assert level[3,127711,38665,511] >= 0
+assert level[3,127712,38665,511] >= 0
+assert level[3,127716,38665,511] >= 0
+assert level[3,127717,38665,511] >= 0
+assert level[3,127705,38656,511] >= 0
+assert level[3,127708,38656,511] >= 0
+assert level[3,127710,38656,511] >= 0
+assert level[3,127712,38656,511] >= 0
+assert level[3,127714,38656,511] >= 0
+assert level[3,127716,38656,511] >= 0
+assert level[3,127718,38656,511] >= 0
+assert level[3,127720,38656,511] >= 0
+assert level[3,127722,38656,511] >= 0
+assert level[3,127705,38687,511] >= 0
+assert level[3,127708,38687,511] >= 0
+assert level[3,127710,38687,511] >= 0
+assert level[3,127712,38687,511] >= 0
+assert level[3,127714,38687,511] >= 0
+assert level[3,127716,38687,511] >= 0
+assert level[3,127718,38687,511] >= 0
+assert level[3,127720,38687,511] >= 0
+assert level[3,127722,38687,511] >= 0
+assert level[3,127724,38687,511] >= 0
+assert level[3,127712,38655,511] >= 0
+assert level[3,127714,38655,511] >= 0
+assert level[3,127716,38655,511] >= 0
+assert level[3,127716,38688,511] >= 0
+assert level[3,127718,38688,511] >= 0
+assert level[3,127720,38688,511] >= 0
+assert level[3,127722,38688,511] >= 0
+assert level[3,127714,38665,512] >= 0
+assert level[3,127714,38660,512] >= 0
+assert level[3,127714,38670,512] >= 0

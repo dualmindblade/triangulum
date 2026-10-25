@@ -1,0 +1,14 @@
+running 1 test
+batch 0: 300 links, 36385 chunks, 4833951 water cells, 4135 drops, 0 walls, 0 perched
+batch 1: 300 links, 37257 chunks, 4855302 water cells, 1855 drops, 0 walls, 0 perched
+test worldgen::hydro_tests::water_is_contained_wide has been running for over 60 seconds
+batch 2: 300 links, 37328 chunks, 6755014 water cells, 1238 drops, 0 walls, 0 perched
+batch 3: 300 links, 37795 chunks, 7101263 water cells, 816 drops, 0 walls, 0 perched
+batch 4: 300 links, 38966 chunks, 7232924 water cells, 1016 drops, 0 walls, 0 perched
+batch 5: 300 links, 38448 chunks, 7985559 water cells, 900 drops, 0 walls, 0 perched
+batch 6: 300 links, 40291 chunks, 9002248 water cells, 585 drops, 0 walls, 0 perched
+batch 7: 61 links, 7788 chunks, 2268701 water cells, 240 drops, 0 walls, 0 perched
+wide sweep: 2161 links (989 km of course)
+wide river sweep: 43255602 columns, 50034962 water cells, 194510391 neighbour pairs at rest, 10785 designated drops, 0 walls, 0 perched, 0 cells not generated
+test worldgen::hydro_tests::water_is_contained_wide ... ok
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 103 filtered out; finished in 191.29s

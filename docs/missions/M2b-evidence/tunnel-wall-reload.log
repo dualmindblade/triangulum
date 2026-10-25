@@ -10,7 +10,7 @@ play scripts/tunnel-wall-reload.play -> out/play/tunnel-wall-reload
 > assert k == 538
   assert ok: k == 538 (actual 538)
 > shot 01_surface
-  shot 01_surface: out/play/tunnel-wall-reload/01_surface.png (settled in 3.1 s / 1174 frames; 873 draws)
+  shot 01_surface: out/play/tunnel-wall-reload/01_surface.png (settled in 2.2 s / 871 frames; 872 draws)
   state 01_surface: fly lat -4.42564 lon 117.84209 alt 26.00 m (agl -0.14) face 2 i 107672 j 57752 k 538 ground true water false crosshair null edits 0 dirty 0
 > aim 0 0 -0.5
 > tap break
@@ -128,7 +128,7 @@ play scripts/tunnel-wall-reload.play -> out/play/tunnel-wall-reload
   assert ok: block[2,107672,57752,511] != air (actual shale)
 > look 0 -89
 > shot 02_shaft_bottom_live
-  shot 02_shaft_bottom_live: out/play/tunnel-wall-reload/02_shaft_bottom_live.png (settled in 0.0 s / 18 frames; 5 draws)
+  shot 02_shaft_bottom_live: out/play/tunnel-wall-reload/02_shaft_bottom_live.png (settled in 0.0 s / 17 frames; 5 draws)
   state 02_shaft_bottom_live: fly lat -4.42564 lon 117.84209 alt -0.00 m (agl -26.14) face 2 i 107672 j 57752 k 512 ground false water false crosshair "shale" edits 1 dirty 1
 > assert cover_rel[1,0,0] == drawn:0
   assert ok: cover_rel[1,0,0] == drawn:0 (actual drawn:0)
@@ -145,7 +145,7 @@ play scripts/tunnel-wall-reload.play -> out/play/tunnel-wall-reload
 > assert block[2,107672,57752,511] != air
   assert ok: block[2,107672,57752,511] != air (actual shale)
 > shot 03_shaft_bottom_reloaded
-  shot 03_shaft_bottom_reloaded: out/play/tunnel-wall-reload/03_shaft_bottom_reloaded.png (settled in 3.0 s / 800 frames; 5 draws)
+  shot 03_shaft_bottom_reloaded: out/play/tunnel-wall-reload/03_shaft_bottom_reloaded.png (settled in 2.2 s / 960 frames; 5 draws)
   state 03_shaft_bottom_reloaded: fly lat -4.42564 lon 117.84209 alt -0.00 m (agl -26.14) face 2 i 107672 j 57752 k 512 ground false water false crosshair "shale" edits 1 dirty 0
 > assert cover_rel[1,0,0] == drawn:0
   assert ok: cover_rel[1,0,0] == drawn:0 (actual drawn:0)
@@ -156,8 +156,8 @@ play scripts/tunnel-wall-reload.play -> out/play/tunnel-wall-reload
   assert ok: k == 538 (actual 538)
 > look 0 -89.9
 > shot 04_down_the_shaft
-  shot 04_down_the_shaft: out/play/tunnel-wall-reload/04_down_the_shaft.png (settled in 0.0 s / 17 frames; 10 draws)
+  shot 04_down_the_shaft: out/play/tunnel-wall-reload/04_down_the_shaft.png (settled in 0.0 s / 15 frames; 10 draws)
   state 04_down_the_shaft: fly lat -4.42564 lon 117.84209 alt 26.00 m (agl -0.14) face 2 i 107672 j 57752 k 538 ground false water false crosshair null edits 1 dirty 0
 > assert cover_rel[0,0,-27] == drawn:0
   assert ok: cover_rel[0,0,-27] == drawn:0 (actual drawn:0)
-done in 6.5 s: 18 asserts, 0 failed, 0 errors
+done in 6.4 s: 18 asserts, 0 failed, 0 errors

@@ -364,8 +364,11 @@ pub struct Sim {
     tick: u64,
     /// (due tick, position), drained in order up to the current tick.
     queue: BTreeSet<(u64, PosKey)>,
-    /// Updates whose chunk was outside the active region when they came due.
-    frozen: BTreeMap<ChunkKey, BTreeSet<(u64, PosKey)>>,
+    /// Updates whose chunk was outside the active region when they came
+    /// due: one per cell (its earliest due tick), since a frozen update
+    /// runs when its chunk wakes whatever its due tick was, and a cell at
+    /// the region's edge beside flowing water is notified every tick.
+    frozen: BTreeMap<ChunkKey, BTreeMap<PosKey, u64>>,
     /// Sorted by (column, height) after every tick.
     falling: Vec<Falling>,
     active: FastSet<ChunkKey>,
@@ -412,7 +415,13 @@ impl Sim {
     pub fn restore(&mut self, snap: Snapshot) {
         self.tick = snap.tick;
         self.queue = snap.queue.into_iter().collect();
-        self.frozen = snap.frozen.into_iter().map(|(k, v)| (k, v.into_iter().collect())).collect();
+        self.frozen = BTreeMap::new();
+        for (ck, es) in snap.frozen {
+            let cells = self.frozen.entry(ck).or_default();
+            for (due, key) in es {
+                cells.entry(key).and_modify(|d| *d = (*d).min(due)).or_insert(due);
+            }
+        }
         self.falling = snap.falling;
         self.falling.sort_by_key(Falling::sort_key);
         self.active.clear();
@@ -511,7 +520,7 @@ impl Sim {
         Snapshot {
             tick: self.tick,
             queue: self.queue.iter().copied().collect(),
-            frozen: self.frozen.iter().map(|(k, v)| (*k, v.iter().copied().collect())).collect(),
+            frozen: self.frozen.iter().map(|(k, v)| (*k, v.iter().map(|(key, due)| (*due, *key)).collect())).collect(),
             falling,
         }
     }
@@ -538,7 +547,11 @@ impl Sim {
             h.update(&ck.cx.to_le_bytes());
             h.update(&ck.cy.to_le_bytes());
             h.update(&ck.cz.to_le_bytes());
-            entries(&mut h, es);
+            h.update(&(es.len() as u64).to_le_bytes());
+            for (key, due) in es {
+                h.update(&due.to_le_bytes());
+                h.update(&key.0.to_le_bytes());
+            }
         }
         let mut falling = self.falling.clone();
         falling.sort_by_key(Falling::sort_key);
@@ -617,7 +630,7 @@ impl Sim {
         let woken: Vec<ChunkKey> = self.frozen.keys().filter(|k| self.active.contains(k)).copied().collect();
         for k in woken {
             if let Some(es) = self.frozen.remove(&k) {
-                for (_, key) in es {
+                for (key, _) in es {
                     self.queue.insert((self.tick, key));
                 }
                 self.dirty = true;
@@ -657,7 +670,7 @@ impl Sim {
             let bp = key.pos();
             let (ck, ..) = World::chunk_of(bp);
             if !self.active.contains(&ck) {
-                self.frozen.entry(ck).or_default().insert((d, key));
+                self.frozen.entry(ck).or_default().entry(key).and_modify(|due| *due = (*due).min(d)).or_insert(d);
                 continue;
             }
             self.stats.processed += 1;

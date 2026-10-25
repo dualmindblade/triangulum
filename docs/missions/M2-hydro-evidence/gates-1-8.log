@@ -1,0 +1,13 @@
+running 3 tests
+test worldgen::hydro_tests::water_agrees_across_lods ... LOD 1: 454641 coarse columns checked (3281 chunks), 173705 wet, 68573 over deep LOD-0 water; 0 surface disagreements, 0 deep water missing, 0 coarse water with no LOD-0 water near
+LOD 2: 118555 coarse columns checked (1328 chunks), 37916 wet, 8276 over deep LOD-0 water; 0 surface disagreements, 0 deep water missing, 0 coarse water with no LOD-0 water near
+LOD 3: 30990 coarse columns checked (734 chunks), 9237 wet, 516 over deep LOD-0 water; 0 surface disagreements, 0 deep water missing, 0 coarse water with no LOD-0 water near
+ok
+test worldgen::hydro_tests::water_is_contained ... sweep: 1537 lake shore windows (771 lakes), 302 river links (140.0 km of course: 1126 mouths, 852 inflows, 627 outflows, 51 face-edge crossings in the network); sites found in 2.7 s
+lake shores: 28287 chunks generated in 16.6 s, checked in 1.2 s
+lake shores: 3255756 columns, 1889031 water cells, 7405560 neighbour pairs at rest, 0 designated drops, 0 walls, 0 perched, 0 cells not generated
+river stretches: 38288 chunks generated in 22.7 s, checked in 2.1 s
+river stretches: 6016489 columns, 12827075 water cells, 50241511 neighbour pairs at rest, 39787 designated drops, 0 walls, 0 perched, 0 cells not generated
+ok
+test worldgen::hydro_tests::water_is_contained_wide ... ignored
+test result: ok. 2 passed; 0 failed; 1 ignored; 0 measured; 101 filtered out; finished in 68.39s

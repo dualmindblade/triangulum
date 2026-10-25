@@ -470,61 +470,61 @@ impl World {
 
     /// The water levels of a generated LOD-0 chunk's padded grid (34^3,
     /// index by `pidx`), for the mesher's sloped surfaces (M2b): None when
-    /// every water cell in reach is full, which is the ocean and every
-    /// resting lake, so the flat path costs nothing extra. The interior
-    /// comes from the edited chunk or the generator's chunk; the border
-    /// from edited neighbours where there are any, and from the generator
-    /// only when this chunk itself holds partial water (a neighbouring
-    /// generated river next to a full chunk is read as full here: the one
-    /// corner it would tilt is the hook M2-hydro's levels can finish).
+    /// every water cell in reach is full (the sea), so the flat path costs
+    /// nothing extra. The generator's own padded levels (`Generated::levels`,
+    /// which it computes for the border columns too: lakes and rivers across
+    /// chunk borders) are the base; an edited chunk replaces the interior,
+    /// and edited neighbours the border cells they hold.
     pub fn padded_levels(&self, key: ChunkKey, g: &Generated) -> Option<Vec<u8>> {
         if key.lod != 0 {
             return None;
         }
-        let partial = |w: &[u8]| w.iter().any(|&l| l != 0 && l != edits::WATER_FULL);
-        let interior: Option<Vec<u8>> = match self.edits.with_edited(key, |e| e.water.clone()) {
-            Some(w) => w,
-            None => self.natural(key).water_dense(),
-        };
-        let interior_partial = interior.as_ref().is_some_and(|w| partial(w));
+        let edited_interior: Option<Option<Vec<u8>>> = self.edits.with_edited(key, |e| e.water.clone());
         let near: Vec<ChunkKey> = self.edited_near(key).into_iter().filter(|e| *e != key).collect();
         let near_partial = near.iter().any(|n| self.edits.has_partial_water(*n).unwrap_or(false));
-        if !interior_partial && !near_partial {
+        let interior_partial = match &edited_interior {
+            Some(w) => w.as_ref().is_some_and(|w| w.iter().any(|&l| l != 0 && l != edits::WATER_FULL)),
+            None => g.levels.is_some(),
+        };
+        if g.levels.is_none() && !interior_partial && !near_partial {
             return None;
         }
         let c = CHUNK as i32;
-        let mut levels = vec![0u8; PAD_VOXELS];
-        if let Some(w) = &interior {
+        // The generator's padded levels, or full wherever its padded grid is water.
+        let mut levels: Vec<u8> = match &g.levels {
+            Some(l) => l.clone(),
+            None => g.ids.iter().map(|&id| if self.registry.is_liquid(id) { edits::WATER_FULL } else { 0 }).collect(),
+        };
+        if let Some(w) = &edited_interior {
             for x in 0..CHUNK {
                 for y in 0..CHUNK {
                     for z in 0..CHUNK {
-                        levels[pidx(x as i32, y as i32, z as i32)] = w[index(x, y, z)];
+                        levels[pidx(x as i32, y as i32, z as i32)] = w.as_ref().map_or(0, |w| w[index(x, y, z)]);
                     }
                 }
             }
         }
-        let (i0, j0, k0) = key.origin_blocks();
-        let (i0, j0, k0) = (i0 as i64, j0 as i64, k0 as i64);
-        for x in -1..=c {
-            for y in -1..=c {
-                for z in -1..=c {
-                    let border = x < 0 || y < 0 || z < 0 || x >= c || y >= c || z >= c;
-                    if !border {
-                        continue;
+        if !near.is_empty() {
+            let (i0, j0, k0) = key.origin_blocks();
+            let (i0, j0, k0) = (i0 as i64, j0 as i64, k0 as i64);
+            for x in -1..=c {
+                for y in -1..=c {
+                    for z in -1..=c {
+                        let border = x < 0 || y < 0 || z < 0 || x >= c || y >= c || z >= c;
+                        if !border {
+                            continue;
+                        }
+                        let Some(bp) = self.resolve_block(key.face, i0 + x as i64, j0 + y as i64, k0 + z as i64) else { continue };
+                        let (ck, cx, cy, cz) = Self::chunk_of(bp);
+                        if let Some(l) = self.edits.water_level(ck, cx, cy, cz) {
+                            levels[pidx(x, y, z)] = l;
+                        }
                     }
-                    let p = pidx(x, y, z);
-                    if !self.registry.is_liquid(g.ids[p]) {
-                        continue;
-                    }
-                    let Some(bp) = self.resolve_block(key.face, i0 + x as i64, j0 + y as i64, k0 + z as i64) else { continue };
-                    let (ck, cx, cy, cz) = Self::chunk_of(bp);
-                    levels[p] = match self.edits.water_level(ck, cx, cy, cz) {
-                        Some(l) => l,
-                        None if interior_partial => self.natural(ck).water_level(cx, cy, cz),
-                        None => edits::WATER_FULL,
-                    };
                 }
             }
+        }
+        if !levels.iter().any(|&l| l != 0 && l != edits::WATER_FULL) {
+            return None;
         }
         Some(levels)
     }

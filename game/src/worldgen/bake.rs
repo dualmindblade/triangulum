@@ -83,6 +83,10 @@ pub trait Bake: Send + Sync {
     /// Visit every texel: (direction, elev_km, ocean, |gradient| km per texel).
     fn for_each_texel(&self, f: &mut dyn FnMut(DVec3, f32, bool, f32));
     fn describe(&self) -> String;
+    /// Rivers and lakes (`hydro.bin` beside the rasters), when the bake has them.
+    fn hydro(&self) -> Option<&super::hydro::HydroData> {
+        None
+    }
 }
 
 #[derive(Default)]
@@ -114,6 +118,7 @@ pub struct RasterBake {
     land_min_km: f32,
     rough_max_km: f32,
     dir: String,
+    hydro: Option<super::hydro::HydroData>,
 }
 
 /// Open whichever bake lives in `dir`: the new one if it has a meta.json
@@ -181,7 +186,9 @@ impl RasterBake {
             face.pyr_rough = pyr_rough;
             faces.push(face);
         }
-        Ok(Self::finish(res, faces, true, true, dir))
+        let mut bake = Self::finish(res, faces, true, true, dir);
+        bake.hydro = super::hydro::HydroData::load(&format!("{dir}/hydro.bin"))?;
+        Ok(bake)
     }
 
     /// The old viewer bake. Layout per face (planar, little-endian,
@@ -238,7 +245,7 @@ impl RasterBake {
                 rough_max = rough_max.max(*r);
             }
         }
-        Self { res, faces, equiangular, has_geology, land_min_km: land_min, rough_max_km: rough_max, dir: dir.to_string() }
+        Self { res, faces, equiangular, has_geology, land_min_km: land_min, rough_max_km: rough_max, dir: dir.to_string(), hydro: None }
     }
 
     /// Texel parameter in [-1, 1] for a gnomonic coordinate.
@@ -515,15 +522,23 @@ impl Bake for RasterBake {
 
     fn describe(&self) -> String {
         format!(
-            "{} bake {} ({}x{} per face, land min {:.2} km, rough max {:.2} km{})",
+            "{} bake {} ({}x{} per face, land min {:.2} km, rough max {:.2} km{}{})",
             if self.equiangular { "equal-angle world" } else { "old gnomonic face" },
             self.dir,
             self.res,
             self.res,
             self.land_min_km,
             self.rough_max_km,
-            if self.has_geology { ", with soil and geology fields" } else { "" }
+            if self.has_geology { ", with soil and geology fields" } else { "" },
+            match &self.hydro {
+                Some(h) => format!(", {} river links and {} lakes", h.segs.len(), h.lakes.len()),
+                None => String::new(),
+            }
         )
+    }
+
+    fn hydro(&self) -> Option<&super::hydro::HydroData> {
+        self.hydro.as_ref()
     }
 }
 

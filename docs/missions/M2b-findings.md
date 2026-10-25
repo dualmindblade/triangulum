@@ -1,12 +1,14 @@
 # M2b: water (Fable, 2026-10-25)
 
 Branch `worktree-agent-ab33dd7bad8d90ac0`, crate `game/`, from main at
-090a86f (M1-hardening merged). Evidence in `docs/missions/M2b-evidence/`
-(downscaled frames and logs) and, full size, under
-`C:\code\triangulum\.claude\worktrees\agent-ab33dd7bad8d90ac0\game\out\`
-(gitignored, this machine only). Scripts: `game/scripts/m2b-water.play`
-and `game/scripts/m2b-boundary.play` (new), `probe-shore.play` (the site
-probe), and the four gates that must still pass.
+090a86f (M1-hardening merged), then main with M2-hydro merged in and the
+generated lakes and rivers integrated (the last section). Evidence in
+`docs/missions/M2b-evidence/` (downscaled frames and logs) and, full size,
+under `C:\code\triangulum\.claude\worktrees\agent-ab33dd7bad8d90ac0\game\out\`
+(gitignored, this machine only). Scripts: `game/scripts/m2b-water.play`,
+`m2b-boundary.play` and `m2b-river.play` (new), `probe-shore.play` and
+`probe-river.play` (the site probes), and the four gates that must still
+pass.
 
 ## What was built
 
@@ -22,6 +24,7 @@ probe), and the four gates that must still pass.
 | `mesh`, `render`, shader | Water quads are 16 bytes: the usual two words, four 8-bit corner heights (corner c = cu + 2 cv, as AO) and a spare word; `mesh_set` is generic over the merge key so full water still merges greedily and partial faces merge only with equal corners. A top face sits at level / 255 with each corner averaged over the water cells sharing that lattice corner (Minecraft's rule: weight 10 at 0.8 and above, air counts as 0, solid left out, water above makes it full), so neighbouring surfaces meet exactly; a side face against air takes the same two top corners (watertight falls and partial columns). `Renderer::add_mesh` gives a water quad two slots; `vs_water` reads slot `quad_base + 2 (q - quad_base)` and lowers the top corners. Full water (the ocean, every coarse LOD) carries 255s and is the geometry it was: the LOD-seam tests pass unchanged. |
 | `play` | `level[F,I,J,K]`, `level_rel[DI,DJ,DK]`, `water_rel[box]` (units in a box), the water stats as fields, `sim radius M`, `sim period N`. |
 | `README` | A "Water (M2b)" section, the scripts, the tests, the known gaps. |
+| M2-hydro integration | `Generated::levels` (the one edit in `worldgen/`): the generator already computes the level of every padded cell, border columns included, and now keeps them at LOD 0 whenever one is partial, so `World::padded_levels` averages corners against the real neighbour across chunk borders (lakes and rivers) instead of assuming 255; edited chunks and edited neighbours still overlay. `Sim::frozen` holds one entry per cell (its earliest due tick) instead of one per (tick, cell): a cell outside the region beside a flowing river is notified every tick, and the old set grew by about 18 entries a tick without bound (7,131 after 400 ticks of a diverted river), all of them saved and all woken at once. |
 
 ### Decisions written down
 
@@ -48,6 +51,29 @@ probe), and the four gates that must still pass.
 - **A free-standing cell at level 1 never moves sideways** (it is 2 below
   nothing), so thin films creep one level per tick per cell and stop at
   slope 1 (below).
+- **Generated rivers are held until disturbed** (the question M2-hydro
+  forces: under Andrew's rule every step drains the pool above it). Nothing
+  schedules a generated cell until a change reaches it through the M2a
+  change log, so an untouched river keeps its generated shape, steps and
+  falls included, at no cost: this is "stop simulating when laminar". A
+  disturbance wakes cells by notification and the waking cascades along
+  the reach as pools drain through their steps, inside the active region
+  only; at the region's edge the generated river upstream supplies (a
+  reservoir at its level) and the generated river downstream absorbs (a
+  drain at its level, the case that was injection-only until M2-hydro), so
+  the loaded area neither dries up nor floods: water flows in and out, and
+  is counted. Rejected: feeding every generated cell an equal inflow (a
+  source per cell, bookkeeping for every river cell in the region, and the
+  rule's half-the-difference transfers would pile the inflow up at the
+  inlet above its generated level), and treating every unchanged generated
+  cell as an infinite source inside the region (cheap and keeps the bed
+  intact, but a river could then never be diverted: its own cells would
+  keep flowing in the old bed forever). The honest cost of the choice: a
+  reach the player disturbs drains to its lower pools and settles into a
+  trickle sloping about two levels per cell from the upstream edge, fed at
+  a few units a tick; edits are authoritative, so the generated profile
+  does not come back. Austin and Andrew should see one disturbed river
+  before this is final (`m2b-river.play`, below, is that scene).
 
 ## Evidence
 
@@ -164,6 +190,11 @@ run alone; `M2b-evidence/water-stress.txt`):
 | a 2,000-cell pour (20 x 20 x 5 released five layers over a 40 x 40 floor) | 619 (31 s) | 5.97 ms | 3.30 (1.16 / 0.79 / 0.94) ms |
 | a 10,000-cell dam break (50 x 20 x 10 into an equal empty compartment) | not settled after 4,000 (200 s) | 18.9 ms | 5.05 (1.95 / 1.12 / 1.43) ms |
 
+(A second run on the merged tree, with the machine quieter: the pour 3.03
+ms average and 4.34 worst, the dam break 4.71 average and 6.44 worst, the
+same 65,472,480 units moved: the simulation is deterministic across the
+merge. The table keeps the worse run.)
+
 The dam break's one-time notification of 10,000 placed cells costs 16.4 ms
 (a generated lake is never "placed", so this is the cost of building one by
 hand). After it the tick is 4,000-7,000 water updates at about 0.25 us each
@@ -187,6 +218,33 @@ the box one unit per tick per cell.
 surface along the trench, the drop into the hole, the pit and the channel
 at the shore. The flat sea is pixel-identical geometry to before (255
 corners), which the unchanged LOD-seam tests also say.
+
+### On the generated world (main with M2-hydro merged)
+
+- `cargo test --release`: **111 passed, 0 failed, 10 ignored** (the hydro gates
+  `water_is_contained` and `water_agrees_across_lods` included; the M2b
+  tests unchanged).
+- `m2b-water.play` **97 / 0** and `m2b-boundary.play` **44 / 0** pass
+  unchanged with lakes and rivers in the world (their sites hold no
+  generated water but the sea).
+- `m2b-river.play` (**41 asserts, 0 failed**; `M2b-evidence/m2b-river.log`,
+  `water_08_*.jpg`, `water_09_*.jpg`): the small river above the tallest
+  fall (Opus's `waterfall_ground` site, link 1728, 173 m³/s; face 3, two
+  cells deep, gravel bed at k 510, partial top cell at k 512 at levels
+  84-89). With the region one chunk wide, forty ticks process **no update at
+  all**: a generated river is held until disturbed. A trench four cells
+  long is dug from the bank down to below the bed; the river's edge cell
+  spreads into it the next tick and the trench floor is wet three ticks
+  later. After 400 ticks the trench is full to its floor layer and the river
+  inside the chunk is still nearly full beside the trench, across the
+  channel and along the reach (bottom layer 200 or more), while the frozen
+  river beyond the chunk's downstream side is exactly as generated (255).
+  **Water crossed the boundary both ways: 47,556 units in from the
+  generated river upstream and 44,896 out into the generated river
+  downstream** (the drain case, injection-only before the merge, for real),
+  a steady flow of about 115 units a tick at 0.56 ms a tick
+  that does not stop: the river runs through the loaded area. That is M2's
+  "done when" for rivers: diverting one does not dry up the loaded area.
 
 ## For Andrew to decide
 
@@ -213,18 +271,20 @@ corners), which the unchanged LOD-seam tests also say.
 5. **The surface look**: Minecraft's corner averaging (weights 10 and 1,
    air as 0). A full cell beside air dips to 0.91 at that edge; a lone
    placed cell tapers. Easy to retune in `mesh.rs` `Surface::corner`.
+6. **What a disturbed river becomes** (the generated-river decision above,
+   and `m2b-river.play`): a reach the player touches drains to its lower
+   pools and keeps flowing as a trickle fed from the region's edge; its
+   steps and falls, once notified, dissolve. The alternative that keeps the
+   generated bed intact makes rivers undivertable.
 
 ## Not verified
 
-- **Generated rivers and lakes with levels** (M2-hydro) were not on main
-  when this was built; the boundary's drain case and natural partial
-  levels are exercised by injection in the tests only. When they land:
-  rivers are at rest only if their cells differ by at most 1 laterally and
-  are full or solid below; a waterfall cell (air below) is not at rest and
-  will flow once notified. `World::padded_levels` reads the generator's
-  levels for a chunk that holds partial water itself but reads a full
-  neighbour chunk's border as 255 (one corner may tilt at a chunk border
-  beside a generated river); that is the hook to finish.
+- A generated waterfall's curtain and the inside of a tight bend are not
+  at rest by the rule (Opus's designated drops); the river script's reach
+  has neither inside its chunk, so what a disturbance does to a fall (the
+  curtain would spread into the gorge's air once notified) has not been
+  watched. It will dissolve into a sheet on the cliff; whether that is
+  acceptable is part of decision 6 below.
 - The windowed app with the bucket: the harness and the tests drive the
   same `Session` (pick, place, break, displacement, the HUD line), and the
   app's one change (the underwater tint through `is_submerged`) compiles,

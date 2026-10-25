@@ -2,15 +2,19 @@
 
 The new engine: a planet-sized cube-sphere voxel world you can walk on, dig
 into, build on and come back to. This is the M2b state: walk, fly, dig,
-build, save, the July sky and lighting (M1c), and the simulation: sand and
-gravel fall (M2a), water flows by Andrew's 256-level rule (M2b).
+build, save, the July sky and lighting (M1c), planetgen's lakes and rivers
+as water at rest (M2-hydro), and the simulation: sand and gravel fall
+(M2a), water flows by Andrew's 256-level rule (M2b).
 
 ## Running
 
 You need Rust (stable, MSVC on Windows) and the baked planet. The bake is
-not in git: either run `python scripts/bake_world.py` from the repo root
-(about 20 s; it needs `output/seed42_r8` from planetgen) or copy
+not in git: either run `python scripts/bake_world.py` and then
+`python scripts/bake_rivers_v2.py` from the repo root (about 20 s and 60 s;
+they need `output/seed42_r8` from planetgen) or copy
 `game/assets/world/seed42/` from a machine that has it. Copy, never symlink.
+Without `hydro.bin` (the second script's output) the world has no lakes or
+rivers, only the sea and dry valleys.
 
 ```
 cd game
@@ -165,12 +169,45 @@ active chunks and the tick cost. Idle ticks cost microseconds; a 5,041-block
 slab in flight costs about a millisecond a tick, with the mass start (68 ms)
 and the landing ticks (5-11 ms) as the known spikes.
 
+## Lakes and rivers (M2-hydro)
+
+The generator puts planetgen's lakes and rivers into the world as water at
+rest (`src/worldgen/hydro.rs`; the bake is `scripts/bake_rivers_v2.py`,
+which writes `hydro.bin` and `hydro.json` beside the rasters). Every column
+may have a water surface; cells below it that are not solid hold water, with
+the exact level (1-255 of a block) at LOD 0 and whole voxels further out:
+
+- **Lakes** (771 on Neisor) are flat at their level, with a sandy beach and a
+  low apron where the land around dips below the water. A lake's level never
+  stands more than 25 m (Earth scale) above the bake's own shore.
+- **Rivers** (20,504 links of the drainage graph, every one carrying more
+  than 120 m³/s) run in meandering channels 4-32 m wide, in a valley a metre
+  above the water. Gentle reaches are a smooth surface at rest (it leans at
+  most 0.6 levels per block); steeper ones are pools separated by cascades
+  of up to a block, and drops of 3 blocks or more are waterfalls (up to 24
+  blocks each) in a short gorge, with a plunge pool and a one-voxel water
+  curtain. Rivers meet the sea at sea level and lakes at the lake's level.
+- **No water walls:** water is always held by ground at least 0.6 blocks
+  above it, or by water within one level of it, except where a river drops
+  on purpose (its steps and falls). The gates are `cargo test --release
+  water_is_contained` (lake shores and 140 km of rivers) and
+  `water_agrees_across_lods`; `-- --ignored water_is_contained_wide` sweeps
+  a tenth of the whole network (about 1,000 km, a few minutes).
+
+Partial levels are drawn since M2b (sloped surfaces, below), and the
+levels are what the water rule reads and writes.
+
+Evidence shots of a lake shore, a river reach, a waterfall, a river mouth
+and a river crossing a cube edge, from the ground and from 300 m:
+`python scripts/hydro_shots.py` (frames in `out/play/<site>/`).
+
 ## Water (M2b)
 
 Andrew's rule (`DESIGN.md`, "Water"; the code and the settling argument are
 in `src/sim/water.rs`). Every cell holds one byte of water level, 0 to 255
 (a cell is water exactly when its level is at least 1); the generator's
-oceans are full cells. Each tick, every scheduled air or water cell:
+seas are full cells and its lakes and rivers carry their own levels. Each
+tick, every scheduled air or water cell:
 
 1. **falls**: water moves straight down into the cell below while that cell
    is air or water with room, as much as fits (a free-standing column drops
@@ -203,13 +240,24 @@ where something changed (the state hash and the tests check it).
 `--water-period N` makes water step every N ticks (Andrew's flow-speed dial;
 1 is 20 cells per second).
 
+**Generated rivers are held until disturbed.** A generated river is at rest
+except at its designated drops (steps, falls), where under the rule every
+step would drain the pool above it. Nothing schedules a generated cell
+until a change reaches it, so an untouched river keeps its shape, falls
+included, at no cost. A disturbance (a channel dug from the bank) wakes
+cells by notification; the waking cascades upstream along the reach as
+pools drain through their steps, inside the active region only, where the
+generated river upstream supplies and the generated river downstream
+absorbs (the boundary, below). The reach the player disturbed settles into
+a trickle fed from the upstream edge; edits are authoritative, so the
+generated profile does not come back.
+
 **The boundary of the active region.** Cells in inactive chunks are frozen:
 never written. Where the generator has water, a frozen cell is a reservoir
 at the level it holds now (a lake stays full and refills the region; a lake
 the player drained near the edge does not refill itself when the region
 shifts), and generated water that is still exactly as generated and below
-full (a river cell, once M2-hydro produces levels) also absorbs, down to
-its level. Everything else at the boundary is a wall, so a channel dug past
+full (a river cell) also absorbs, down to its level. Everything else at the boundary is a wall, so a channel dug past
 the edge does not drain a lake into frozen nothing. Units crossing the
 boundary are counted in the stats panel (`water in`, `water out`), as are
 units the player placed and removed and units displaced or lost; the water
@@ -272,7 +320,9 @@ keeps the water in the saved chunk.
 
 The bake's identity is a SHA-256 of its rasters' contents, cached in
 `content.sha256.json` beside the bake and recomputed (a few seconds) when a
-raster's size or time changes.
+raster's size or time changes, combined with the SHA-256 of `hydro.bin`
+when the bake has one. Saves made before the lakes and rivers (generator
+version 2) are refused.
 
 Coarse LODs rebuild from edited data: a coarse voxel shows the topmost
 solid block in it when that block was placed by an edit (a one-block bridge
@@ -335,7 +385,12 @@ channel inland, and check the pit fills, the channel floods and the sea
 stays full. `scripts/m2b-boundary.play` pours water into a trench with a
 small active region, walks away so the trench freezes at the region's edge,
 comes back and watches it finish, then digs at the shore with a region so
-small the sea beyond it is the generator's reservoir. Both must pass.
+small the sea beyond it is the generator's reservoir. `scripts/m2b-river.play`
+stands by a generated river (nothing is scheduled until it is touched),
+digs a trench from the bank with the region one chunk wide, and checks the
+trench fills, the river inside the chunk keeps its water, and water flows
+in from the generated river upstream and out into it downstream, counted.
+All three must pass.
 
 The command list lives in the header of `src/play.rs`; the ones you will
 use most:
@@ -433,13 +488,16 @@ period, and the mesher's shared corners. Several need the bake at
 `cargo test --release -- --ignored water_stress --nocapture` (a 2,000-cell
 pour and a 10,000-cell dam break, with the per-tick cost).
 
+The water tests (`src/worldgen/hydro_tests.rs`, they need `hydro.bin`)
+check every generated water cell around 1,537 lake shores and along 300
+river links for walls, perched water and rest, and coarse LODs against
+LOD 0; `HYDRO_VSCALE=0.125` runs them at 1/8. Ignored helpers there measure
+generation cost before and after (`profile_hydro_chunks`), find the evidence
+sites (`hydro_places`) and print the water model at a column
+(`hydro_probe`, with `HYDRO_PROBE="face i j"`).
+
 ## Known gaps (M2b)
 
-- Generated lakes and rivers with per-cell levels are M2-hydro's; until they
-  land, generated water is the ocean at 255 and the boundary's "drain" case
-  (unchanged generated water below full) is exercised by injection in the
-  tests only. A generated river cell next to a full chunk is read as full by
-  that chunk's mesher (one corner may tilt at the chunk border).
 - Resting water leans up to one level per cell, as the rule allows, and the
   dynamics leave the steepest lean they can: a dish around a pit, a film on
   a drained lake that slopes up from the sill. Whether that look is wanted

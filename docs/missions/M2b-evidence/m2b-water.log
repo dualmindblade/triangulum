@@ -56,7 +56,7 @@ play scripts/m2b-water.play -> out/play/m2b-water
 > assert block_rel[1,-1,-1] != air
   assert ok: block_rel[1,-1,-1] != air (actual grass)
 > tick 2
-  ticked 0 -> 2: sim on  tick 2  falling 0  queued 0  frozen 0  active 352 chunks  water 0 updates, 0 moved, in 0 out 0  tick cost 0.001 ms (avg 0.327, max 0.652)
+  ticked 0 -> 2: sim on  tick 2  falling 0  queued 0  frozen 0  active 352 chunks  water 0 updates, 0 moved, in 0 out 0  tick cost 0.001 ms (avg 0.329, max 0.657)
 > assert queued == 0
   assert ok: queued == 0 (actual 0)
 > assert water_moved == 0
@@ -78,7 +78,7 @@ play scripts/m2b-water.play -> out/play/m2b-water
 > assert water_rel[1,-1,-3,5,1,0] == 255
   assert ok: water_rel[1,-1,-3,5,1,0] == 255 (actual 255)
 > tick 1
-  ticked 2 -> 3: sim on  tick 3  falling 0  queued 12  frozen 0  active 352 chunks  water 3 updates, 128 moved, in 0 out 0  tick cost 0.010 ms (avg 0.221, max 0.652)
+  ticked 2 -> 3: sim on  tick 3  falling 0  queued 12  frozen 0  active 352 chunks  water 3 updates, 128 moved, in 0 out 0  tick cost 0.009 ms (avg 0.222, max 0.657)
 > assert level_rel[1,0,-1] == 127
   assert ok: level_rel[1,0,-1] == 127 (actual 127)
 > assert level_rel[2,0,-1] == 128
@@ -88,7 +88,7 @@ play scripts/m2b-water.play -> out/play/m2b-water
 > assert water_rel[1,-1,-3,5,1,0] == 255
   assert ok: water_rel[1,-1,-3,5,1,0] == 255 (actual 255)
 > tick 1
-  ticked 3 -> 4: sim on  tick 4  falling 0  queued 12  frozen 0  active 352 chunks  water 5 updates, 192 moved, in 0 out 0  tick cost 0.010 ms (avg 0.168, max 0.652)
+  ticked 3 -> 4: sim on  tick 4  falling 0  queued 12  frozen 0  active 352 chunks  water 5 updates, 192 moved, in 0 out 0  tick cost 0.009 ms (avg 0.169, max 0.657)
 > assert level_rel[1,0,-1] == 127
   assert ok: level_rel[1,0,-1] == 127 (actual 127)
 > assert level_rel[2,0,-1] == 64
@@ -101,11 +101,11 @@ play scripts/m2b-water.play -> out/play/m2b-water
 > hold space 0.12
 > aim 3 0 -1.0
 > shot 01_slope
-  shot 01_slope: out/play/m2b-water/01_slope.png (settled in 3.2 s / 1353 frames; 260 draws)
+  shot 01_slope: out/play/m2b-water/01_slope.png (settled in 2.2 s / 1200 frames; 258 draws)
   state 01_slope: fly lat -4.55810 lon 117.47294 alt 45.33 m (agl 2.67) face 2 i 107153 j 57531 k 557 ground false water false crosshair "water" edits 1 dirty 1
 > mode walk
 > tick 6
-  ticked 6 -> 12: sim on  tick 12  falling 0  queued 26  frozen 0  active 352 chunks  water 11 updates, 652 moved, in 0 out 0  tick cost 0.013 ms (avg 0.067, max 0.652)
+  ticked 6 -> 12: sim on  tick 12  falling 0  queued 26  frozen 0  active 352 chunks  water 11 updates, 652 moved, in 0 out 0  tick cost 0.027 ms (avg 0.068, max 0.657)
 > assert level_rel[5,0,-2] > 0
   assert ok: level_rel[5,0,-2] > 0 (actual 16)
 > assert water_rel[1,-1,-3,5,1,0] == 255
@@ -114,11 +114,11 @@ play scripts/m2b-water.play -> out/play/m2b-water
 > hold space 0.12
 > aim 4 0 -1.5
 > shot 02_drop
-  shot 02_drop: out/play/m2b-water/02_drop.png (settled in 0.0 s / 12 frames; 445 draws)
+  shot 02_drop: out/play/m2b-water/02_drop.png (settled in 0.0 s / 12 frames; 443 draws)
   state 02_drop: fly lat -4.55810 lon 117.47294 alt 46.48 m (agl 3.81) face 2 i 107153 j 57531 k 558 ground false water false crosshair null edits 1 dirty 1
 > mode walk
 > tick 80
-  ticked 14 -> 94: sim on  tick 94  falling 0  queued 0  frozen 0  active 352 chunks  water 0 updates, 1235 moved, in 0 out 0  tick cost 0.001 ms (avg 0.016, max 0.652)
+  ticked 14 -> 94: sim on  tick 94  falling 0  queued 0  frozen 0  active 352 chunks  water 0 updates, 1235 moved, in 0 out 0  tick cost 0.001 ms (avg 0.015, max 0.657)
 > assert queued == 0
   assert ok: queued == 0 (actual 0)
 > assert water_rel[1,-1,-3,5,1,0] == 255
@@ -147,21 +147,21 @@ play scripts/m2b-water.play -> out/play/m2b-water
 > assert water_placed == 510
   assert ok: water_placed == 510 (actual 510)
 > tick 1
-  ticked 96 -> 97: sim on  tick 97  falling 0  queued 28  frozen 0  active 352 chunks  water 7 updates, 1616 moved, in 0 out 0  tick cost 0.034 ms (avg 0.016, max 0.652)
+  ticked 96 -> 97: sim on  tick 97  falling 0  queued 28  frozen 0  active 352 chunks  water 7 updates, 1616 moved, in 0 out 0  tick cost 0.023 ms (avg 0.015, max 0.657)
 > aim 1 0 -1.5
 > tap place
   place: face 2 i 107154 j 57531 k 555
 > assert water_placed == 765
   assert ok: water_placed == 765 (actual 765)
 > tick 5
-  ticked 97 -> 102: sim on  tick 102  falling 0  queued 107  frozen 0  active 352 chunks  water 67 updates, 2458 moved, in 0 out 0  tick cost 0.119 ms (avg 0.012, max 0.652)
+  ticked 97 -> 102: sim on  tick 102  falling 0  queued 107  frozen 0  active 352 chunks  water 67 updates, 2458 moved, in 0 out 0  tick cost 0.082 ms (avg 0.010, max 0.657)
 > aim 4 0 -1.5
 > shot 03_fall_into_the_hole
-  shot 03_fall_into_the_hole: out/play/m2b-water/03_fall_into_the_hole.png (settled in 0.0 s / 12 frames; 700 draws)
+  shot 03_fall_into_the_hole: out/play/m2b-water/03_fall_into_the_hole.png (settled in 0.0 s / 12 frames; 699 draws)
   state 03_fall_into_the_hole: fly lat -4.55810 lon 117.47294 alt 45.00 m (agl 2.33) face 2 i 107153 j 57531 k 557 ground false water false crosshair "water" edits 1 dirty 1
 > mode walk
 > tick 150
-  ticked 102 -> 252: sim on  tick 252  falling 0  queued 0  frozen 0  active 352 chunks  water 0 updates, 2827 moved, in 0 out 0  tick cost 0.001 ms (avg 0.001, max 0.652)
+  ticked 102 -> 252: sim on  tick 252  falling 0  queued 0  frozen 0  active 352 chunks  water 0 updates, 2827 moved, in 0 out 0  tick cost 0.001 ms (avg 0.002, max 0.657)
 > assert queued == 0
   assert ok: queued == 0 (actual 0)
 > assert level_rel[5,0,-2] == 255
@@ -270,19 +270,19 @@ play scripts/m2b-water.play -> out/play/m2b-water
 > assert level[1,1800,59003,511] == 0
   assert ok: level[1,1800,59003,511] == 0 (actual 0)
 > tick 1
-  ticked 252 -> 253: sim on  tick 253  falling 0  queued 28  frozen 0  active 360 chunks  water 30 updates, 3211 moved, in 0 out 0  tick cost 0.678 ms (avg 0.008, max 0.678)
+  ticked 252 -> 253: sim on  tick 253  falling 0  queued 28  frozen 0  active 360 chunks  water 30 updates, 3211 moved, in 0 out 0  tick cost 0.693 ms (avg 0.009, max 0.693)
 > assert level[1,1800,59003,511] > 0
   assert ok: level[1,1800,59003,511] > 0 (actual 128)
 > tick 2
-  ticked 253 -> 255: sim on  tick 255  falling 0  queued 97  frozen 0  active 360 chunks  water 41 updates, 4865 moved, in 0 out 0  tick cost 0.057 ms (avg 0.009, max 0.678)
+  ticked 253 -> 255: sim on  tick 255  falling 0  queued 97  frozen 0  active 360 chunks  water 41 updates, 4865 moved, in 0 out 0  tick cost 0.061 ms (avg 0.010, max 0.693)
 > assert level[1,1800,59003,510] > 0
   assert ok: level[1,1800,59003,510] > 0 (actual 48)
 > aim -2 0 -2.0
 > shot 04_shore_pit_filling
-  shot 04_shore_pit_filling: out/play/m2b-water/04_shore_pit_filling.png (settled in 8.7 s / 1247 frames; 41 draws)
+  shot 04_shore_pit_filling: out/play/m2b-water/04_shore_pit_filling.png (settled in 4.7 s / 1025 frames; 41 draws)
   state 04_shore_pit_filling: fly lat -3.41531 lon 136.39687 alt 1.00 m (agl 0.45) face 1 i 1803 j 59003 k 513 ground false water false crosshair "sand" edits 2 dirty 2
 > tick 200
-  ticked 255 -> 455: sim on  tick 455  falling 0  queued 0  frozen 0  active 360 chunks  water 0 updates, 64214 moved, in 0 out 0  tick cost 0.001 ms (avg 0.039, max 7.961)
+  ticked 255 -> 455: sim on  tick 455  falling 0  queued 0  frozen 0  active 360 chunks  water 0 updates, 64214 moved, in 0 out 0  tick cost 0.001 ms (avg 0.033, max 7.238)
 > assert queued == 0
   assert ok: queued == 0 (actual 0)
 > assert level[1,1800,59003,510] == 255
@@ -307,7 +307,7 @@ play scripts/m2b-water.play -> out/play/m2b-water
   assert ok: water_lost == 0 (actual 0)
 > aim -2 0 -2.0
 > shot 05_shore_pit_full
-  shot 05_shore_pit_full: out/play/m2b-water/05_shore_pit_full.png (settled in 0.0 s / 36 frames; 41 draws)
+  shot 05_shore_pit_full: out/play/m2b-water/05_shore_pit_full.png (settled in 0.0 s / 19 frames; 41 draws)
   state 05_shore_pit_full: fly lat -3.41531 lon 136.39687 alt 1.00 m (agl 0.45) face 1 i 1803 j 59003 k 513 ground false water false crosshair "sand" edits 5 dirty 5
 > aim 0 0 -0.5
 > assert crosshair == sand
@@ -338,11 +338,11 @@ play scripts/m2b-water.play -> out/play/m2b-water
 > assert block[1,1804,59003,509] != air
   assert ok: block[1,1804,59003,509] != air (actual limestone)
 > tick 3
-  ticked 455 -> 458: sim on  tick 458  falling 0  queued 34  frozen 0  active 360 chunks  water 17 updates, 65060 moved, in 0 out 0  tick cost 0.032 ms (avg 0.027, max 7.961)
+  ticked 455 -> 458: sim on  tick 458  falling 0  queued 34  frozen 0  active 360 chunks  water 17 updates, 65060 moved, in 0 out 0  tick cost 0.048 ms (avg 0.023, max 7.238)
 > assert level[1,1803,59003,510] > 0
   assert ok: level[1,1803,59003,510] > 0 (actual 234)
 > tick 200
-  ticked 458 -> 658: sim on  tick 658  falling 0  queued 0  frozen 0  active 360 chunks  water 0 updates, 84448 moved, in 0 out 0  tick cost 0.001 ms (avg 0.001, max 7.961)
+  ticked 458 -> 658: sim on  tick 658  falling 0  queued 0  frozen 0  active 360 chunks  water 0 updates, 84448 moved, in 0 out 0  tick cost 0.001 ms (avg 0.001, max 7.238)
 > assert queued == 0
   assert ok: queued == 0 (actual 0)
 > assert level[1,1803,59003,510] == 255
@@ -364,13 +364,13 @@ play scripts/m2b-water.play -> out/play/m2b-water
 > hold space 0.1
 > aim -4 0 -2.0
 > shot 06_channel
-  shot 06_channel: out/play/m2b-water/06_channel.png (settled in 0.1 s / 15 frames; 856 draws)
+  shot 06_channel: out/play/m2b-water/06_channel.png (settled in 0.0 s / 15 frames; 860 draws)
   state 06_channel: fly lat -3.41543 lon 136.39994 alt 2.00 m (agl 0.93) face 1 i 1807 j 59003 k 514 ground false water false crosshair null edits 6 dirty 6
 > assert tick_ms_avg < 2
   assert ok: tick_ms_avg < 2 (actual 0.001)
 > state final
   state final: fly lat -3.41543 lon 136.39994 alt 2.00 m (agl 0.93) face 1 i 1807 j 59003 k 514 ground false water false crosshair null edits 6 dirty 6
 > bench 60
-  bench 60 frames: wall avg 1.86 ms (p95 2.03, worst 3.12) = 538 fps; gpu avg 1.11 ms; 856 draws
+  bench 60 frames: wall avg 2.16 ms (p95 2.41, worst 3.17) = 463 fps; gpu avg 1.12 ms; 860 draws
 saved 6 chunk(s) at exit
-done in 13.0 s: 97 asserts, 0 failed, 0 errors
+done in 7.9 s: 97 asserts, 0 failed, 0 errors

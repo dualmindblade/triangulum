@@ -20,6 +20,11 @@ fn generator_with(vscale: Option<f64>, h: u32, sea: u32) -> Generator {
     Generator::new(planet, shared_bake(), 42, vs, 1.0, 1.0, &registry()).unwrap()
 }
 
+/// `generator_with` for sibling test modules.
+pub fn generator_pub(vscale: Option<f64>, h: u32, sea: u32) -> Generator {
+    generator_with(vscale, h, sea)
+}
+
 pub fn test_generator() -> Generator {
     generator_with(None, 2048, 512)
 }
@@ -30,6 +35,11 @@ fn key_at(g: &Generator, dir: DVec3, lod: u8, height_m: f64) -> ChunkKey {
     let e = (CHUNK as f64) * (1u64 << lod) as f64;
     let k = p.sea_level as f64 + height_m / p.block_size;
     ChunkKey::neisor(f, lod, (i / e) as u32, (j / e) as u32, (k / e).max(0.0) as u32)
+}
+
+/// `dirs` for sibling test modules.
+pub fn dirs_pub(n: usize, salt: u64) -> Vec<DVec3> {
+    dirs(n, salt)
 }
 
 /// Deterministic pseudo-random unit directions.

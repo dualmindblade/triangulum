@@ -77,6 +77,13 @@
   after a reload, and the far water seams (47 m apart, now 2 m). Each
   fix has a test that fails without it.
 
+- **M2-hydro** (Opus, verified by Opus, merged): Neisor's lakes and
+  rivers as real water: 771 lakes, about 9,400 km of rivers, waterfalls
+  up to 14 m (24 m at 1/8). A strict check of about 74 million water
+  cells found no water walls and nothing perched. Needs the new bake
+  step `python scripts/bake_rivers_v2.py` (about a minute); without it
+  the game runs with no rivers. Saves from before are refused.
+
 **M1 is feature-complete.** The last step is yours: play it and tell me what
 feels wrong.
 
@@ -111,7 +118,6 @@ detail (still about 500 fps).
 
 ## In progress
 
-- M2-hydro: lakes and rivers as real water, held by their banks (Opus)
 - M2b: flowing water under Andrew's 256-level rule, sloped surfaces (Fable)
 
 ## Waiting on you
