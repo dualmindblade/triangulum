@@ -112,6 +112,7 @@ detail (still about 500 fps).
 ## In progress
 
 - M2-hydro: lakes and rivers as real water, held by their banks (Opus)
+- M2b: flowing water under Andrew's 256-level rule, sloped surfaces (Fable)
 
 ## Waiting on you
 
