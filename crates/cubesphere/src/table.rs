@@ -3,45 +3,57 @@
 //! using one scalar spline and its transpose enforces coordinate exchange.
 
 const DATA: &[u8] = include_bytes!("../data/equal_area.bin");
-const INTERVALS: usize = u32::from_le_bytes([DATA[8], DATA[9], DATA[10], DATA[11]]) as usize;
-const SIZE: usize = INTERVALS + 1;
-const _: () = assert!(INTERVALS >= 8);
-const _: () = assert!(
-    u64::from_le_bytes([
-        DATA[0], DATA[1], DATA[2], DATA[3], DATA[4], DATA[5], DATA[6], DATA[7]
-    ]) == u64::from_le_bytes(*b"CSEQAR01")
-);
-const _: () = assert!(DATA.len() == 16 + 8 * SIZE * SIZE);
-const _: () = assert!(DATA[12] == 5 && DATA[13] == 0 && DATA[14] == 0 && DATA[15] == 0);
+const COBE_DATA: &[u8] = include_bytes!("../data/equal_area_cobe.bin");
 
-#[inline]
-fn coefficient(i: usize, j: usize) -> f64 {
-    let offset = 16 + 8 * (i * SIZE + j);
-    f64::from_le_bytes(DATA[offset..offset + 8].try_into().unwrap())
+const fn checked_intervals(data: &[u8]) -> usize {
+    let intervals = u32::from_le_bytes([data[8], data[9], data[10], data[11]]) as usize;
+    assert!(intervals >= 8);
+    assert!(
+        u64::from_le_bytes([
+            data[0], data[1], data[2], data[3], data[4], data[5], data[6], data[7]
+        ]) == u64::from_le_bytes(*b"CSEQAR01")
+    );
+    assert!(data.len() == 16 + 8 * (intervals + 1) * (intervals + 1));
+    assert!(data[12] == 5 && data[13] == 0 && data[14] == 0 && data[15] == 0);
+    intervals
+}
+
+const INTERVALS: usize = checked_intervals(DATA);
+const COBE_INTERVALS: usize = checked_intervals(COBE_DATA);
+
+pub(super) const fn intervals<const COBE: bool>() -> usize {
+    if COBE { COBE_INTERVALS } else { INTERVALS }
 }
 
 #[inline]
-fn knot(i: usize) -> f64 {
+fn coefficient<const COBE: bool>(i: usize, j: usize) -> f64 {
+    let data = if COBE { COBE_DATA } else { DATA };
+    let offset = 16 + 8 * (i * (intervals::<COBE>() + 1) + j);
+    f64::from_le_bytes(data[offset..offset + 8].try_into().unwrap())
+}
+
+#[inline]
+fn knot<const COBE: bool>(i: usize) -> f64 {
     if i <= 5 {
         0.0
-    } else if i >= SIZE {
+    } else if i > intervals::<COBE>() {
         1.0
     } else {
-        (i - 3) as f64 / INTERVALS as f64
+        (i - 3) as f64 / intervals::<COBE>() as f64
     }
 }
 
 #[inline]
-fn basis<const DERIV: bool>(x: f64) -> (usize, [f64; 6], [f64; 6]) {
-    let span = ((x * INTERVALS as f64) as usize + 3).clamp(5, INTERVALS);
+fn basis<const DERIV: bool, const COBE: bool>(x: f64) -> (usize, [f64; 6], [f64; 6]) {
+    let span = ((x * intervals::<COBE>() as f64) as usize + 3).clamp(5, intervals::<COBE>());
     let mut n = [0.0; 6];
     let mut fourth = [0.0; 6];
     let mut left = [0.0; 6];
     let mut right = [0.0; 6];
     n[0] = 1.0;
     for j in 1..=5 {
-        left[j] = x - knot(span + 1 - j);
-        right[j] = knot(span + j) - x;
+        left[j] = x - knot::<COBE>(span + 1 - j);
+        right[j] = knot::<COBE>(span + j) - x;
         let mut saved = 0.0;
         for r in 0..j {
             let temp = n[r] / (right[r + 1] + left[j - r]);
@@ -58,10 +70,10 @@ fn basis<const DERIV: bool>(x: f64) -> (usize, [f64; 6], [f64; 6]) {
         for r in 0..6 {
             let i = span - 5 + r;
             if r > 0 {
-                d[r] += 5.0 * fourth[r - 1] / (knot(i + 5) - knot(i));
+                d[r] += 5.0 * fourth[r - 1] / (knot::<COBE>(i + 5) - knot::<COBE>(i));
             }
             if r < 5 {
-                d[r] -= 5.0 * fourth[r] / (knot(i + 6) - knot(i + 1));
+                d[r] -= 5.0 * fourth[r] / (knot::<COBE>(i + 6) - knot::<COBE>(i + 1));
             }
         }
     }
@@ -70,9 +82,12 @@ fn basis<const DERIV: bool>(x: f64) -> (usize, [f64; 6], [f64; 6]) {
 
 /// (g, g_x, g_y), (h, h_y, h_x), with h(x,y) = g(y,x).
 #[inline]
-pub(super) fn residual<const DERIV: bool>(x: f64, y: f64) -> ([f64; 3], [f64; 3]) {
-    let (ix, nx, dx) = basis::<DERIV>(x);
-    let (iy, ny, dy) = basis::<DERIV>(y);
+pub(super) fn residual<const DERIV: bool, const COBE: bool>(
+    x: f64,
+    y: f64,
+) -> ([f64; 3], [f64; 3]) {
+    let (ix, nx, dx) = basis::<DERIV, COBE>(x);
+    let (iy, ny, dy) = basis::<DERIV, COBE>(y);
     let mut g = [0.0; 3];
     let mut h = [0.0; 3];
     for i in 0..6 {
@@ -81,8 +96,8 @@ pub(super) fn residual<const DERIV: bool>(x: f64, y: f64) -> ([f64; 3], [f64; 3]
         let mut row_gy = 0.0;
         let mut row_hx = 0.0;
         for j in 0..6 {
-            let c = coefficient(ix + i, iy + j);
-            let ct = coefficient(iy + i, ix + j);
+            let c = coefficient::<COBE>(ix + i, iy + j);
+            let ct = coefficient::<COBE>(iy + i, ix + j);
             row_g += ny[j] * c;
             row_h += nx[j] * ct;
             if DERIV {
