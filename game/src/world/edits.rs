@@ -90,6 +90,18 @@ impl EditStore {
         self.inner.read().unwrap().chunks.keys().copied().collect()
     }
 
+    /// Is any chunk inside `anc` edited (itself, at LOD 0)?
+    pub fn any_under(&self, anc: ChunkKey) -> bool {
+        let g = self.inner.read().unwrap();
+        if anc.lod == 0 {
+            return g.chunks.contains_key(&anc);
+        }
+        if anc.lod > INDEX_LODS {
+            return g.chunks.keys().any(|k| anc.contains(k));
+        }
+        g.under.get(&anc).is_some_and(|v| !v.is_empty())
+    }
+
     /// The edited LOD-0 chunks inside `anc` (itself, at LOD 0).
     pub fn edited_under(&self, anc: ChunkKey) -> Vec<ChunkKey> {
         let g = self.inner.read().unwrap();

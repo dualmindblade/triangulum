@@ -1,0 +1,62 @@
+play scripts/edge-corner-flight.play -> C:\code\triangulum\.claude\worktrees\agent-a39e5a1dc735ceceb\game/out/play/edge-corner-flight
+> mode fly
+> speed 1000
+> at 0 30 3000
+> look 90 0
+> assert face == 0
+  assert ok: face == 0 (actual 0)
+> assert mode == fly
+  assert ok: mode == fly (actual fly)
+> travel 30
+  travel 1800 frames in 1.9 s: faces 0,2; cover violations 0 (overlaps max 0, gaps max 0, uncovered max 0); nodes max 2904; cpu avg 0.31 ms p99 1.29 max 6.78; worst phases: tree 6.38 (policy 0.06, structure 0.42 of which splits 0.39, counts 0.05; inline ranges 0.00 / 0), results 0.63, draw lists 1.82; range jobs in flight max 128, worst 12.19 ms
+> assert face == 2
+  assert ok: face == 2 (actual 2)
+> assert travel_violations == 0
+  assert ok: travel_violations == 0 (actual 0)
+> assert travel_overlaps_max == 0
+  assert ok: travel_overlaps_max == 0 (actual 0)
+> assert travel_gaps_max == 0
+  assert ok: travel_gaps_max == 0 (actual 0)
+> assert travel_uncovered_max == 0
+  assert ok: travel_uncovered_max == 0 (actual 0)
+> assert travel_frames == 1800
+  assert ok: travel_frames == 1800 (actual 1800)
+> shot 01_after_edge
+  shot 01_after_edge: C:\code\triangulum\.claude\worktrees\agent-a39e5a1dc735ceceb\game/out/play/edge-corner-flight/01_after_edge.png (settled in 0.1 s / 177 frames; 322 draws)
+  state 01_after_edge: fly lat 0.00000 lon 48.36981 alt 3002.67 m (agl 3002.67) face 2 i 4418 j 65536 k 3514 ground false water false crosshair null edits 0 dirty 0
+> at 20 44.5 3000
+> look 0 0
+> assert face == 0
+  assert ok: face == 0 (actual 0)
+> travel 50
+  travel 3000 frames in 4.0 s: faces 0,4; cover violations 0 (overlaps max 0, gaps max 0, uncovered max 0); nodes max 4940; cpu avg 0.44 ms p99 1.49 max 7.56; worst phases: tree 6.06 (policy 5.99, structure 4.48 of which splits 0.37, counts 0.24; inline ranges 0.00 / 0), results 2.20, draw lists 4.71; range jobs in flight max 432, worst 4.55 ms
+> assert face == 4
+  assert ok: face == 4 (actual 4)
+> assert lat > 48
+  assert ok: lat > 48 (actual 50.616060003804265)
+> assert travel_violations == 0
+  assert ok: travel_violations == 0 (actual 0)
+> assert travel_overlaps_max == 0
+  assert ok: travel_overlaps_max == 0 (actual 0)
+> assert travel_gaps_max == 0
+  assert ok: travel_gaps_max == 0 (actual 0)
+> assert travel_uncovered_max == 0
+  assert ok: travel_uncovered_max == 0 (actual 0)
+> shot 02_after_corner
+  shot 02_after_corner: C:\code\triangulum\.claude\worktrees\agent-a39e5a1dc735ceceb\game/out/play/edge-corner-flight/02_after_corner.png (settled in 0.0 s / 15 frames; 324 draws)
+  state 02_after_corner: fly lat 50.61606 lon 44.50000 alt 3004.45 m (agl 3004.45) face 4 i 110870 j 19537 k 3516 ground false water false crosshair null edits 0 dirty 0
+> at 0 46 250
+> look 270 0
+> speed 400
+> travel 20
+  travel 1200 frames in 3.4 s: faces 0,2; cover violations 0 (overlaps max 0, gaps max 0, uncovered max 0); nodes max 8870; cpu avg 0.58 ms p99 2.03 max 7.02; worst phases: tree 6.42 (policy 4.57, structure 0.59 of which splits 0.51, counts 0.11; inline ranges 0.00 / 0), results 3.16, draw lists 0.09; range jobs in flight max 80, worst 0.74 ms
+> assert face == 0
+  assert ok: face == 0 (actual 0)
+> assert travel_violations == 0
+  assert ok: travel_violations == 0 (actual 0)
+> shot 03_low_back_across_edge
+  shot 03_low_back_across_edge: C:\code\triangulum\.claude\worktrees\agent-a39e5a1dc735ceceb\game/out/play/edge-corner-flight/03_low_back_across_edge.png (settled in 1.6 s / 688 frames; 683 draws)
+  state 03_low_back_across_edge: fly lat -0.00000 lon 40.95299 alt 250.29 m (agl 250.29) face 0 i 125747 j 65536 k 762 ground false water false crosshair null edits 0 dirty 0
+> bench 60
+  bench 60 frames: wall avg 1.13 ms (p95 1.31, worst 1.50) = 886 fps; gpu avg 0.60 ms; 683 draws
+done in 11.4 s: 17 asserts, 0 failed, 0 errors

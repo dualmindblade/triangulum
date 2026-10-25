@@ -35,8 +35,11 @@
 //!
 //! Whether a chunk exists is worldgen's call: the streamer hands the tree
 //! `Generator::classify_in(key, range)`, so Air and Enclosed chunks (all
-//! solid, border included) are never nodes; they are still materialised
-//! through `World::generate` when a player digs into or stands on them.
+//! solid, border included) are never nodes; physics still materialises
+//! them through `World::generate` when a player stands on or digs into
+//! them, and a chunk with edits always counts as existing: an edit to a
+//! chunk that is not a node creates it under its nearest split ancestor
+//! (`invalidate`), and the tree refines the rest.
 //! Footprint height ranges cost hundreds of microseconds each with
 //! landforms, so a node that wants to split first asks for its children's
 //! footprint ranges (`take_range_wants`, run by workers) and keeps drawing
@@ -136,6 +139,9 @@ pub struct Node {
     pub want: bool,
     /// A root whose subtree has drawn something at some point.
     pub ever_drawn: bool,
+    /// Created by an edit under an already split parent: a region nothing
+    /// rendered before, so not a gap until it has drawn once.
+    pub fresh: bool,
 }
 
 impl Node {
@@ -437,6 +443,7 @@ impl Coverage {
             hidden: false,
             want: false,
             ever_drawn: false,
+            fresh: false,
         };
         let slot = match self.free_nodes.pop() {
             Some(s) => {
@@ -545,6 +552,49 @@ impl Coverage {
         self.children(slot).iter().any(|&c| c != NONE && f(&self.nodes[c as usize]))
     }
 
+    fn has_drawn_ancestor(&self, slot: u32) -> bool {
+        let mut p = self.nodes[slot as usize].parent;
+        while p != NONE {
+            let a = &self.nodes[p as usize];
+            if a.drawn {
+                return true;
+            }
+            p = a.parent;
+        }
+        false
+    }
+
+    /// An edited chunk that is not a node (its footprint said Air or
+    /// Enclosed): create it under its nearest existing split ancestor so
+    /// it gets drawn; the levels between follow as the tree refines, the
+    /// band test admitting edited chunks. Nothing to do when the nearest
+    /// ancestor is a leaf (it draws, or will split through that test).
+    fn materialise(&mut self, key: ChunkKey) {
+        let mut child = key;
+        let mut anc = key.parent();
+        while let Some(a) = anc {
+            if a.lod > self.planet.max_lod {
+                return;
+            }
+            if let Some(&aslot) = self.index.get(&a) {
+                let n = self.nodes[aslot as usize];
+                if !n.split() {
+                    return;
+                }
+                let idx = ((child.cx & 1) | ((child.cy & 1) << 1) | ((child.cz & 1) << 2)) as usize;
+                if self.kids[n.kids as usize][idx] != NONE {
+                    return;
+                }
+                let slot = self.alloc(child, aslot);
+                self.nodes[slot as usize].fresh = true;
+                self.kids[n.kids as usize][idx] = slot;
+                return;
+            }
+            child = a;
+            anc = a.parent();
+        }
+    }
+
     /// Conservative: true when no point of the sphere can be above the
     /// horizon of the opaque core as seen from `cam`.
     pub fn hidden_by_horizon(&self, cam: DVec3, centre: DVec3, radius: f64) -> bool {
@@ -609,7 +659,7 @@ impl Coverage {
                     } else {
                         st.unsettled += 1;
                     }
-                } else if n.want && n.key.lod > 0 && !n.hidden {
+                } else if n.want && n.key.lod > 0 && !n.hidden && n.resident() {
                     if split_time > self.split_budget_s {
                         st.splits_deferred += 1;
                         st.unsettled += 1;
@@ -686,20 +736,18 @@ impl Coverage {
                     st.unsettled += 1;
                 }
             } else {
-                // A leaf below the cut (waiting for siblings), or a root
-                // before its first mesh.
-                if n.parent == NONE {
-                    if n.resident() {
+                // A leaf below the cut (waiting for siblings), a root before
+                // its first mesh, or a chunk an edit created under a split
+                // parent whose cut is at its siblings: the last two draw as
+                // soon as they are resident.
+                if n.resident() {
+                    if n.parent == NONE || (n.fresh && !self.has_drawn_ancestor(slot)) {
                         let m = &mut self.nodes[slot as usize];
                         m.drawn = true;
                         m.ever_drawn = true;
-                    } else if !n.hidden {
-                        if n.job == Job::None {
-                            self.wants.push(slot);
-                        }
-                        st.unsettled += 1;
+                        m.fresh = false;
                     }
-                } else if !n.resident() && !n.hidden {
+                } else if !n.hidden {
                     if n.job == Job::None {
                         self.wants.push(slot);
                     }
@@ -824,7 +872,10 @@ impl Coverage {
     /// An edit touched `key`: bump its revision. Returns the job to run now
     /// when the node holds (or is waiting to hold) a mesh that is now wrong.
     pub fn invalidate(&mut self, key: ChunkKey) -> Option<Want> {
-        let &slot = self.index.get(&key)?;
+        let Some(&slot) = self.index.get(&key) else {
+            self.materialise(key);
+            return None;
+        };
         let n = &mut self.nodes[slot as usize];
         n.rev = n.rev.wrapping_add(1);
         match n.job {
@@ -879,7 +930,7 @@ impl Coverage {
                 if !n.hidden && !n.resident() {
                     r.gaps += 1;
                 }
-            } else if !n.split() && !drawn_above && !n.hidden && root.ever_drawn {
+            } else if !n.split() && !drawn_above && !n.hidden && root.ever_drawn && !n.fresh {
                 r.uncovered += 1;
             }
         }
@@ -1020,7 +1071,7 @@ impl Streamer {
             params.factor,
             occluder_radius,
             Box::new(move |fp| range_world.generator.footprint_height_range_m(fp)),
-            Box::new(move |key, r| band_world.generator.classify_in(key, r) == crate::worldgen::ChunkClass::Mixed),
+            Box::new(move |key, r| band_world.generator.classify_in(key, r) == crate::worldgen::ChunkClass::Mixed || band_world.edits.any_under(key)),
             false,
         );
         Self {
@@ -1509,6 +1560,73 @@ mod tests {
             println!("seed {seed}: max nodes {max_nodes}, max drawn {max_drawn}, switches {switches}, merges {merges}, final nodes {}", c.len());
             assert!(switches > 0 && merges > 0, "seed {seed}: the path exercised both directions ({switches} switches, {merges} merges)");
         }
+    }
+
+    /// Item 4: a chunk the band test excludes (an Enclosed one) that gets
+    /// edited is created under its split ancestor, drawn once resident,
+    /// and never counts as a cover violation; the tree refines it further
+    /// because the band test admits edited chunks.
+    #[test]
+    fn an_edited_enclosed_chunk_becomes_a_node() {
+        use std::sync::{Arc, Mutex};
+        let p = planet();
+        // Band: the surface only, unless the chunk has an "edit".
+        let edited: Arc<Mutex<Vec<ChunkKey>>> = Arc::new(Mutex::new(Vec::new()));
+        let e2 = edited.clone();
+        let mut band = Coverage::band_test(p);
+        let band: BandFn = Box::new(move |key, r| band(key, r) || e2.lock().unwrap().iter().any(|e| key.contains(e)));
+        let mut c = Coverage::new(p, 3.0, p.bottom_radius(), flat_range(), band, true);
+        let mut gpu = FakeGpu::default();
+        let mut wants = Vec::new();
+        let ground = DVec3::X * (p.radius + 2.0);
+        for _ in 0..40 {
+            c.step(ground);
+            c.take_wants(10_000, &mut wants);
+            for w in wants.drain(..) {
+                c.install(w.slot, w.epoch, w.rev, Mesh::Gpu(gpu.alloc()), DVec3::ZERO);
+            }
+            for gm in c.freed.drain(..) {
+                gpu.free(gm);
+            }
+        }
+        assert_eq!(c.stats.unsettled, 0);
+        // A chunk 100 m below the band, right under the camera: not a node.
+        let (f, i, j) = p.lattice_of_dir(DVec3::X);
+        let deep = ChunkKey::neisor(f, 0, i as u32 / 32, j as u32 / 32, (256 - 128) / 32);
+        assert!(c.slot_of(deep).is_none(), "an Enclosed chunk is not a node");
+        let drawn_before = c.stats.drawn;
+        // Dig into it: the edit invalidates it (and its ancestors, as World::affected_chunks does).
+        edited.lock().unwrap().push(deep);
+        let mut k = deep;
+        loop {
+            c.invalidate(k);
+            match k.parent() {
+                Some(pk) if pk.lod <= p.max_lod => k = pk,
+                _ => break,
+            }
+        }
+        // It (or an ancestor on the way to it) now exists under a split parent, is drawn once
+        // resident, and the tree refines down to it without a violation at any step.
+        let mut seen_deep = false;
+        for _ in 0..40 {
+            c.step(ground);
+            let r = c.check();
+            assert!(r.ok(), "{r:?}");
+            c.take_wants(10_000, &mut wants);
+            for w in wants.drain(..) {
+                c.install(w.slot, w.epoch, w.rev, Mesh::Gpu(gpu.alloc()), DVec3::ZERO);
+            }
+            for gm in c.freed.drain(..) {
+                gpu.free(gm);
+            }
+            if let Some(s) = c.slot_of(deep) {
+                seen_deep |= c.node(s).unwrap().drawn;
+            }
+        }
+        assert!(seen_deep, "the dug chunk is drawn at LOD 0");
+        assert_eq!(c.stats.unsettled, 0);
+        assert!(c.check().ok() && c.stats.drawn > drawn_before);
+        assert!(c.nodes().all(|n| !n.fresh), "nothing stays fresh once drawn");
     }
 
     fn mesh_gpu(m: Mesh) -> GpuMesh {
