@@ -18,8 +18,9 @@ with their OK; record the change here with the date.
 
 - Block size s: 1 m during M1, with ½ m as a switch. Decided after M1 by
   playing both.
-- World height H, in blocks, is a power of 2. Default 512: 256 below sea
-  level, 256 above.
+- World height H, in blocks, is a power of 2, set per world. The value is
+  under review (512 felt small; 2,048 m with 512 m below sea level is the
+  suggestion). The split above and below sea level is its own setting.
 - Planet size N = k·H columns per face edge. Default N = 131,072 (k = 256).
   With equal-area blocks, R = s·N·√(6/4π) ≈ 0.691·s·N, so R ≈ 90.57 km.
 - LOD voxel sizes are 1, 2, 4 … H blocks. The coarsest LOD voxel equals the
