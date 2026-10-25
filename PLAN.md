@@ -45,7 +45,7 @@ river doesn't dry up the loaded area, and the frame rate holds.
 |---|---|---|---|
 | M1-video | A ~1 minute M1 showcase clip (harness frame recording + ffmpeg) | Opus | started |
 | M1-review2 | Independent review of everything merged since the first review (player, saves, harness, landforms, sky, coverage tree) | Astra | started |
-| M2a | Simulation core: fixed 20 Hz tick separate from the sky clock, a deterministic block-update queue with neighbour notifications (across chunk and face edges), an active region around the player, falling sand and gravel, saves of sim-changed chunks, a determinism hash test | Fable | started |
+| M2a | Simulation core: fixed 20 Hz tick separate from the sky clock, a deterministic block-update queue with neighbour notifications (across chunk and face edges), an active region around the player, falling sand and gravel, saves of sim-changed chunks, a determinism hash test | Fable | done |
 | M1-worldgen-fix | Review 2 #12 (coarse oceans need opaque backing) and #13 (enclosed classification at the world ceiling) | Opus | done |
 | M1-hardening | Review 2 #6 (picking across face edges), #7 (tunnel walls missing after reload), #8 (stranded stale meshes), #9 (water seams at real triangle edges), #10 (collision at face transitions), #17 (edit-history memory) | — | after M2a |
 | M2-hydro | Generated lakes and rivers as water at rest (levels from planetgen, near-continuous river surfaces, waterfalls) | — | next |

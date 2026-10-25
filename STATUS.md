@@ -64,6 +64,14 @@
   edges between them can still be up to 23 m apart, far out. It's on the
   hardening list.)
 
+- **M2a** (Fable, verified by Opus, merged): the simulation. A 20 Hz tick,
+  separate from the sky clock, with a strictly ordered block-update queue.
+  Sand and gravel fall when you dig out what holds them up, and land
+  where they should, even across a save and reload mid-fall. The same
+  inputs always give the same world (checked by a state hash). Saves are
+  now crash-safe: written all-or-nothing, retried on failure, validated on
+  load. Saves made before this are refused.
+
 **M1 is feature-complete.** The last step is yours: play it and tell me what
 feels wrong.
 
@@ -90,10 +98,9 @@ cargo run --release -- --vscale 0.125 --height 4096 --sea-level 1536    # 1/8
 cargo run --release -- --block-size 0.5 --n 262144 --height 4096 --sea-level 1024 --vscale 0.05 --save saves/half   # half-metre blocks
 ```
 
-**Two cautions until the save fixes land (in progress):** don't press F
-(hide water) and then edit near the ocean, because that can save the ocean
-as dry land; and don't combine `--play` with `--save` pointing at your real
-save, because the harness clears that folder.
+**One caution until the harness fix lands (in progress):** don't combine
+`--play` with `--save` pointing at your real save, because the harness
+clears that folder. (The hide-water caution is gone: fixed in M2a.)
 
 Hold Ctrl while walking to sneak: you won't walk off edges, so you can
 back out over a gap and place blocks under you. Known issues: ripple
@@ -105,7 +112,7 @@ detail (still about 500 fps).
 
 - M1-video: a ~1 minute showcase clip of everything M1 does (Opus)
 - M1-review2: a second independent code review (Astra)
-- M2a: the simulation tick, block updates, falling sand and gravel (Fable)
+
 
 ## Waiting on you
 
