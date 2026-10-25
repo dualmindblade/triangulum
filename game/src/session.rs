@@ -72,9 +72,13 @@ impl Session {
         }
     }
 
-    /// The block under the crosshair within reach.
+    /// The block under the crosshair within reach. Holding water (the
+    /// bucket, M2b) the ray also stops at water, so a click removes or
+    /// places water; holding anything else it passes through water to the
+    /// floor, as before.
     pub fn pick(&self) -> Option<Hit> {
-        player::pick(self.engine.world.as_ref(), &self.engine.planet, self.player.eye(), self.player.look_dir(), REACH_M)
+        let liquids = self.engine.registry.is_liquid(self.selected_block());
+        player::pick(self.engine.world.as_ref(), &self.engine.planet, self.player.eye(), self.player.look_dir(), REACH_M, liquids)
     }
 
     pub fn selected_block(&self) -> BlockId {
@@ -88,15 +92,25 @@ impl Session {
         }
     }
 
-    /// Left click: the picked block becomes air.
+    /// Left click: the picked block becomes air. A water cell (picked while
+    /// holding water) is removed whole, and the units are counted.
     pub fn break_block(&mut self) -> Option<BlockPos> {
         let hit = self.pick()?;
         let air = self.engine.generator.blocks.air;
-        self.engine.world.set_block(hit.block, air).then_some(hit.block)
+        let world = self.engine.world.as_ref();
+        let (id, level) = world.block_and_level_at(hit.block);
+        let changed = world.set_block(hit.block, air);
+        if changed && self.engine.registry.is_liquid(id) {
+            self.sim.stats.water_removed += level as u64;
+        }
+        changed.then_some(hit.block)
     }
 
     /// Right click: the selected block goes into the cell in front of the
-    /// picked face, unless that would be inside the player or outside the world.
+    /// picked face, unless that would be inside the player or outside the
+    /// world. Water places a full cell (topping up a partial one). A solid
+    /// block placed into water pushes the water up its column (M2b
+    /// displacement); water that finds no room is lost and counted.
     pub fn place_block(&mut self) -> Option<BlockPos> {
         let hit = self.pick()?;
         let cell = hit.place_cell();
@@ -105,11 +119,27 @@ impl Session {
             return None;
         }
         let id = self.selected_block();
-        let cur = self.engine.world.block_at(bp);
-        if self.engine.registry.is_solid(cur) {
+        let world = self.engine.world.as_ref();
+        let reg = &self.engine.registry;
+        let (cur, level) = world.block_and_level_at(bp);
+        if reg.is_solid(cur) {
             return None;
         }
-        self.engine.world.set_block(bp, id).then_some(bp)
+        if reg.is_liquid(id) {
+            let changed = world.set_block(bp, id);
+            if changed {
+                self.sim.stats.water_placed += (crate::world::edits::WATER_FULL - level) as u64;
+            }
+            return changed.then_some(bp);
+        }
+        let (mut writes, lost) = world.displace_writes(bp);
+        writes.insert(0, (bp, id, None));
+        let changed = world.commit_levels(&writes) > 0;
+        if changed && reg.is_liquid(cur) {
+            self.sim.stats.water_displaced += level as u64 - lost as u64;
+            self.sim.stats.water_lost += lost as u64;
+        }
+        changed.then_some(bp)
     }
 
     pub fn toggle_mode(&mut self) {
@@ -262,8 +292,21 @@ impl Session {
             "tick_ms_max": self.sim.stats.max_us as f64 / 1e3,
             "refocus_ms": self.sim.stats.refocus_us as f64 / 1e3,
         });
-        if let (serde_json::Value::Object(m), serde_json::Value::Object(s)) = (&mut v, sim) {
+        // Water (M2b), in level units: 255 = one full cell.
+        let ws = &self.sim.stats;
+        let water = serde_json::json!({
+            "water_moved": ws.water_moved, "water_writes": ws.water_writes,
+            "water_in": ws.water_in, "water_out": ws.water_out,
+            "water_placed": ws.water_placed, "water_removed": ws.water_removed,
+            "water_displaced": ws.water_displaced, "water_lost": ws.water_lost,
+            "water_balance": ws.water_balance(),
+            "water_updates_last": ws.water_updates_last,
+            "water_period": self.sim.config.water_period,
+            "sim_radius": self.sim.config.radius_m,
+        });
+        if let (serde_json::Value::Object(m), serde_json::Value::Object(s), serde_json::Value::Object(w)) = (&mut v, sim, water) {
             m.extend(s);
+            m.extend(w);
         }
         if let Some(h) = pick {
             v["crosshair"] = serde_json::Value::String(name(h.id));
@@ -286,6 +329,35 @@ impl Session {
         let f = Frame::at(&self.engine.planet, self.player.pos);
         let (ci, cj, ck) = f.feet_cell();
         self.block_name(f.face, ci + di, cj + dj, ck + dk)
+    }
+
+    /// Water level (0..255) at lattice coordinates (for `level[f,i,j,k]`
+    /// asserts); 0 outside the world.
+    pub fn level_at(&self, face: u8, i: i64, j: i64, k: i64) -> u8 {
+        self.engine.world.resolve_block(face, i, j, k).map_or(0, |bp| self.engine.world.water_level_at(bp))
+    }
+
+    /// Water level relative to the feet block.
+    pub fn level_rel(&self, di: i64, dj: i64, dk: i64) -> u8 {
+        let f = Frame::at(&self.engine.planet, self.player.pos);
+        let (ci, cj, ck) = f.feet_cell();
+        self.level_at(f.face, ci + di, cj + dj, ck + dk)
+    }
+
+    /// Total water (units) in a box of cells relative to the feet block,
+    /// corners inclusive (for `water_rel[...]` asserts).
+    pub fn water_in_box_rel(&self, a: (i64, i64, i64), b: (i64, i64, i64)) -> u64 {
+        let f = Frame::at(&self.engine.planet, self.player.pos);
+        let (ci, cj, ck) = f.feet_cell();
+        let mut sum = 0u64;
+        for di in a.0.min(b.0)..=a.0.max(b.0) {
+            for dj in a.1.min(b.1)..=a.1.max(b.1) {
+                for dk in a.2.min(b.2)..=a.2.max(b.2) {
+                    sum += self.level_at(f.face, ci + di, cj + dj, ck + dk) as u64;
+                }
+            }
+        }
+        sum
     }
 
     /// Blocks in flight in the column DI, DJ from the feet (for `falling_rel[DI,DJ]` asserts).

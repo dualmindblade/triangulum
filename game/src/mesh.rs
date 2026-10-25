@@ -6,6 +6,16 @@
 //! quads where a liquid voxel meets air. Quads never cross a curvature-grid
 //! cell in the tangent directions, so the bilinear warp stays crack-free.
 //!
+//! Water quads (M2b) are 16 bytes: the same two words, then a word of four
+//! 8-bit corner heights (corner c = cu + 2 cv again, 255 = the top of the
+//! voxel) and a spare word. A top face is drawn at height level / 255 inside
+//! its block, with each corner averaged over the water cells sharing that
+//! lattice corner (Minecraft-style, `Surface::corner`), so neighbouring
+//! cells' surfaces meet exactly; the top edge of a side face against air
+//! takes the same two corners, so falls and partial columns are watertight.
+//! A cell with water above it counts as full. Full water (the ocean, resting
+//! lakes, every coarse LOD) carries 255s and is the geometry it always was.
+//!
 //! Grid record: 25 offsets (vec4, xyz = corner position at the chunk's
 //! lattice floor relative to the chunk origin) then 25 unit directions
 //! (vec4). `off[0].w` carries `r0`, the radius of the lattice floor, so a
@@ -13,9 +23,9 @@
 //! of on the bilinear chord (review #11: at LOD 9 the chord sags 23 m below
 //! the sphere mid-cell, so coarse and fine water surfaces did not meet).
 
-use crate::worldgen::{Generated, PAD, pidx};
 use crate::grid::{CHUNK, ChunkKey, Planet};
-use crate::world::{BlockId, Registry};
+use crate::world::Registry;
+use crate::worldgen::{Generated, PAD, pidx};
 use glam::DVec3;
 use std::time::Instant;
 
@@ -39,13 +49,17 @@ pub const GRID_F32S: usize = GRID_CORNERS * GRID_CORNERS * 4 * 2;
 pub const GRID_BYTES: usize = GRID_F32S * 4;
 /// Index of `r0` (the lattice floor's radius) in the grid record.
 pub const GRID_R0_INDEX: usize = 3;
+/// Corner heights of a full (or coarse) water quad: 255 at every corner.
+pub const WATER_FLAT: u32 = 0xFFFF_FFFF;
 
 pub type Quad = [u32; 2];
+/// A water quad: `Quad` plus the corner heights and a spare word.
+pub type WaterQuad = [u32; 4];
 
 pub struct MeshData {
     pub key: ChunkKey,
     pub opaque: Vec<Quad>,
-    pub water: Vec<Quad>,
+    pub water: Vec<WaterQuad>,
     pub grid: Vec<f32>,
     /// World position of the chunk's lattice corner (i0, j0, k0).
     pub origin: DVec3,
@@ -99,9 +113,78 @@ impl Masks {
         }
         (self.solid[col(x, y)] >> (z + 1)) & 1 == 1
     }
+    #[inline]
+    fn liquid_at(&self, x: i32, y: i32, z: i32) -> bool {
+        if !(-1..=CHUNK as i32).contains(&x) || !(-1..=CHUNK as i32).contains(&y) || !(-1..=CHUNK as i32).contains(&z) {
+            return false;
+        }
+        (self.liquid[col(x, y)] >> (z + 1)) & 1 == 1
+    }
 }
 
+/// The water surface of a padded LOD-0 grid with per-cell levels.
+struct Surface<'a> {
+    masks: &'a Masks,
+    levels: &'a [u8],
+}
+
+impl Surface<'_> {
+    /// Height (0..=255 of a voxel) of layer `z`'s water at lattice corner
+    /// (cx, cy), cx and cy in 0..=32: the weighted mean over the four cells
+    /// around the corner, water cells by their level (weight 10 at 0.8 and
+    /// above, else 1), air cells as 0 with weight 1, solid cells left out;
+    /// a water cell with water above it makes the corner full.
+    fn corner(&self, cx: i32, cy: i32, z: i32) -> u8 {
+        let (mut sum, mut w) = (0u32, 0u32);
+        for (x, y) in [(cx - 1, cy - 1), (cx, cy - 1), (cx - 1, cy), (cx, cy)] {
+            if self.masks.liquid_at(x, y, z) {
+                if self.masks.liquid_at(x, y, z + 1) {
+                    return 255;
+                }
+                let l = self.levels[pidx(x, y, z)] as u32;
+                if l >= 204 {
+                    sum += 10 * l;
+                    w += 10;
+                } else {
+                    sum += l;
+                    w += 1;
+                }
+            } else if !self.masks.solid_at(x, y, z) {
+                w += 1;
+            }
+        }
+        if w == 0 { 255 } else { ((sum + w / 2) / w) as u8 }
+    }
+
+    /// The four corner heights of a face of water voxel (x, y, z), packed
+    /// as corner c = cu + 2 cv (the AO convention): a top face takes the
+    /// surface at its four lattice corners; a side face takes it at its two
+    /// top corners (cv = 1) and 255 below; a bottom face is flat.
+    fn heights(&self, axis: u32, sign: u32, x: i32, y: i32, z: i32) -> u32 {
+        let s = sign as i32;
+        let h = |cu: i32, cv: i32| -> u32 {
+            let v = match axis {
+                2 if sign == 1 => self.corner(x + cu, y + cv, z),
+                2 => 255,
+                0 if cv == 1 => self.corner(x + s, y + cu, z),
+                1 if cv == 1 => self.corner(x + cu, y + s, z),
+                _ => 255,
+            };
+            v as u32
+        };
+        h(0, 0) | (h(1, 0) << 8) | (h(0, 1) << 16) | (h(1, 1) << 24)
+    }
+}
+
+/// Mesh a generated chunk whose water is full everywhere (natural chunks,
+/// coarse LODs).
 pub fn mesh_chunk(generated: &Generated, registry: &Registry, planet: &Planet, opt: MeshOptions) -> MeshData {
+    mesh_chunk_levels(generated, None, registry, planet, opt)
+}
+
+/// Mesh a generated chunk; `levels` (padded, `World::padded_levels`) gives
+/// LOD-0 water its sloped surfaces.
+pub fn mesh_chunk_levels(generated: &Generated, levels: Option<&[u8]>, registry: &Registry, planet: &Planet, opt: MeshOptions) -> MeshData {
     let t0 = Instant::now();
     let key = generated.key;
     let ids = &generated.ids;
@@ -138,12 +221,29 @@ pub fn mesh_chunk(generated: &Generated, registry: &Registry, planet: &Planet, o
     if any_solid {
         let blocking: Vec<u64> = masks.solid.clone();
         let cap = |axis: u32, sign: u32, slice: usize| if axis == 2 && sign == 1 && Some(slice) == sea_slice { sea_edge } else { CHUNK };
-        mesh_set(&masks.solid, &blocking, ids, &masks, opt, true, &cap, &mut opaque);
+        // Merge key: block id and the four corner AO values.
+        let face_key = |axis: u32, sign: u32, u: usize, v: usize, slice: usize| -> u32 {
+            let (x, y, z) = voxel_of(axis, slice, u, v);
+            let id = ids[pidx(x, y, z)] as u32;
+            if !opt.ao {
+                return id | (0xFF << 16);
+            }
+            id | (ao_bits(&masks, axis, sign, x, y, z) << 16)
+        };
+        mesh_set(&masks.solid, &blocking, opt, &cap, &face_key, &mut |lo, k| opaque.push([lo, k]));
     }
     if any_liquid {
         let blocking: Vec<u64> = masks.solid.iter().zip(&masks.liquid).map(|(s, l)| s | l).collect();
         let cap = |_: u32, _: u32, _: usize| sea_edge;
-        mesh_set(&masks.liquid, &blocking, ids, &masks, MeshOptions { split: opt.split, ao: false }, false, &cap, &mut water);
+        let surface = levels.filter(|_| key.lod == 0).map(|levels| Surface { masks: &masks, levels });
+        // Merge key: block id and the four corner heights (full water merges as before).
+        let face_key = |axis: u32, sign: u32, u: usize, v: usize, slice: usize| -> (u32, u32) {
+            let (x, y, z) = voxel_of(axis, slice, u, v);
+            let id = ids[pidx(x, y, z)] as u32 | (0xFF << 16);
+            let heights = surface.as_ref().map_or(WATER_FLAT, |s| s.heights(axis, sign, x, y, z));
+            (id, heights)
+        };
+        mesh_set(&masks.liquid, &blocking, MeshOptions { split: opt.split, ao: false }, &cap, &face_key, &mut |lo, k: (u32, u32)| water.push([lo, k.0, k.1, 0]));
     }
 
     // Curvature grid record relative to the chunk's lattice corner.
@@ -182,9 +282,10 @@ pub fn sea_edge_voxels(planet: &Planet, lod: u8) -> usize {
 
 /// Emit greedy quads for every face of `occ` voxels that borders a
 /// non-`blocking` voxel. `cap(axis, sign, slice)` is the longest tangent
-/// edge, in voxels, of the quads in that face plane.
-#[allow(clippy::too_many_arguments)]
-fn mesh_set(occ: &[u64], blocking: &[u64], ids: &[BlockId], masks: &Masks, opt: MeshOptions, with_ao: bool, cap: &dyn Fn(u32, u32, usize) -> usize, out: &mut Vec<Quad>) {
+/// edge, in voxels, of the quads in that face plane; `face_key(axis, sign,
+/// u, v, slice)` is what a face must share to merge (its id and shading);
+/// `emit(lo, key)` receives each quad.
+fn mesh_set<K: Copy + PartialEq>(occ: &[u64], blocking: &[u64], opt: MeshOptions, cap: &dyn Fn(u32, u32, usize) -> usize, face_key: &dyn Fn(u32, u32, usize, usize, usize) -> K, emit: &mut dyn FnMut(u32, K)) {
     // Transposed masks: xcol[y][z] bits over x+1; ycol[x][z] bits over y+1.
     let mut xocc = vec![0u64; PAD * PAD];
     let mut yocc = vec![0u64; PAD * PAD];
@@ -272,15 +373,6 @@ fn mesh_set(occ: &[u64], blocking: &[u64], ids: &[BlockId], masks: &Masks, opt: 
         // one is linear.
         let split_u = opt.split;
         let split_v = opt.split && axis == 2;
-        // Merge key: block id and the four corner AO values.
-        let face_key = |u: usize, v: usize, slice: usize| -> u32 {
-            let (x, y, z) = voxel_of(axis, slice, u, v);
-            let id = ids[pidx(x, y, z)] as u32;
-            if !(with_ao && opt.ao) {
-                return id | (0xFF << 16);
-            }
-            id | (ao_bits(masks, axis, sign, x, y, z) << 16)
-        };
         let plane = &mut planes[dirset as usize];
         for slice in 0..CHUNK {
             let edge = cap(axis, sign, slice);
@@ -293,9 +385,9 @@ fn mesh_set(occ: &[u64], blocking: &[u64], ids: &[BlockId], masks: &Masks, opt: 
                     }
                     let u0 = row.trailing_zeros() as usize;
                     let ulim = (if split_u { (u0 / cell + 1) * cell } else { CHUNK }).min((u0 / edge + 1) * edge);
-                    let k = face_key(u0, v, slice);
+                    let k = face_key(axis, sign, u0, v, slice);
                     let mut w = 1usize;
-                    while u0 + w < ulim && (row >> (u0 + w)) & 1 == 1 && face_key(u0 + w, v, slice) == k {
+                    while u0 + w < ulim && (row >> (u0 + w)) & 1 == 1 && face_key(axis, sign, u0 + w, v, slice) == k {
                         w += 1;
                     }
                     let wmask: u32 = if w == 32 { !0 } else { ((1u32 << w) - 1) << u0 };
@@ -307,7 +399,7 @@ fn mesh_set(occ: &[u64], blocking: &[u64], ids: &[BlockId], masks: &Masks, opt: 
                             break;
                         }
                         for u in u0..u0 + w {
-                            if face_key(u, v + h, slice) != k {
+                            if face_key(axis, sign, u, v + h, slice) != k {
                                 break 'rows;
                             }
                         }
@@ -321,7 +413,7 @@ fn mesh_set(occ: &[u64], blocking: &[u64], ids: &[BlockId], masks: &Masks, opt: 
                         | ((v as u32) << 13)
                         | (((w - 1) as u32) << 18)
                         | (((h - 1) as u32) << 23);
-                    out.push([lo, k]);
+                    emit(lo, k);
                 }
             }
         }
@@ -388,7 +480,7 @@ mod tests {
             let generated = g.generate(key);
             let m = mesh_chunk(&generated, &registry, &g.planet, MeshOptions::default());
             let m2 = mesh_chunk(&generated, &registry, &g.planet, MeshOptions { split: true, ao: false });
-            for q in m.opaque.iter().chain(&m.water) {
+            for q in m.opaque.iter().copied().chain(m.water.iter().map(|w| [w[0], w[1]])) {
                 let id = (q[1] & 0xFFFF) as u16;
                 assert!(id != 0 && (id as usize) < registry.len(), "block {id}");
                 let u = (q[0] >> 8) & 31;
@@ -531,8 +623,9 @@ mod tests {
         let top_at = |m: &MeshData, x_side: u32| -> Vec<(f64, f64)> {
             m.opaque
                 .iter()
-                .chain(&m.water)
-                .map(unpack)
+                .copied()
+                .chain(m.water.iter().map(|w| [w[0], w[1]]))
+                .map(|q| unpack(&q))
                 .filter(|&(axis, sign, slice, u0, _, w, _)| axis == 2 && sign == 1 && (slice + 1) as f64 * (1u64 << m.key.lod) as f64 == sea_k && (if x_side == 0 { u0 == 0 } else { u0 + w == 32 }))
                 .map(|(_, _, _, _, v0, _, h)| (v0 as f64, (v0 + h) as f64))
                 .collect()

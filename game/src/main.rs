@@ -18,8 +18,9 @@
 //!   --play resets only its own scratch save (saves/_play/<script>); it never deletes
 //!   a directory given with --save unless --reset-save is also given
 //! Simulation: --sim-radius M (112; LOD-0 chunks within it tick, the rest is frozen)  --no-sim
+//!   --water-period N (1; ticks per water step: how many 20 Hz ticks a cell of water takes to move one cell)
 //! Player: --walk | --fly (default: walk when starting within 50 m of the ground)
-//!   --hotbar stone,dirt,...  (blocks on keys 1-9; default: the first nine solid blocks)
+//!   --hotbar stone,dirt,...  (blocks on keys 1-9; default: the first eight solid blocks and water)
 //! Other options: --lod-factor F (5) --threads N --no-ao --no-split --skirt N
 //!   --no-vsync --size WxH --hide-water --markers --backend vulkan|dx12
 //!   --frames N --skip-flight --only pose,pose --label TEXT --which a,b --map-px N
@@ -98,6 +99,7 @@ struct Args {
     reset_save: bool,
     sim_radius: f64,
     no_sim: bool,
+    water_period: u64,
     walk: Option<bool>,
     hotbar: Option<String>,
     frames: usize,
@@ -159,6 +161,7 @@ fn parse_args() -> Args {
         reset_save: false,
         sim_radius: sim::SimConfig::default().radius_m,
         no_sim: false,
+        water_period: sim::SimConfig::default().water_period,
         walk: None,
         hotbar: None,
         frames: 120,
@@ -229,6 +232,7 @@ fn parse_args() -> Args {
             "--reset-save" => a.reset_save = true,
             "--sim-radius" => a.sim_radius = val().parse().unwrap(),
             "--no-sim" => a.no_sim = true,
+            "--water-period" => a.water_period = val().parse().unwrap(),
             "--walk" => a.walk = Some(true),
             "--fly" => a.walk = Some(false),
             "--hotbar" => a.hotbar = Some(val()),
@@ -483,7 +487,10 @@ fn main() {
     if !(args.sim_radius.is_finite() && args.sim_radius >= 0.0) {
         fail("--sim-radius must be a non-negative number of metres");
     }
-    let sim = Session::load_sim(save_dir.as_ref(), sim::SimConfig { radius_m: args.sim_radius, enabled: !args.no_sim }).unwrap_or_else(|e| fail(&e));
+    if args.water_period == 0 {
+        fail("--water-period must be at least 1 tick");
+    }
+    let sim = Session::load_sim(save_dir.as_ref(), sim::SimConfig { radius_m: args.sim_radius, enabled: !args.no_sim, water_period: args.water_period }).unwrap_or_else(|e| fail(&e));
     println!("simulation: {} Hz tick, {} m active radius{}; resumed at tick {} with {} queued, {} frozen, {} falling", sim::TICK_HZ, args.sim_radius, if args.no_sim { " (off)" } else { "" }, sim.tick(), sim.queued(), sim.frozen_count(), sim.falling().len());
     let mut session = Session::new(engine.clone(), Player::new(dir * (p.radius + alt_asl.unwrap_or(ground + 2.0)), heading, pitch, if walk { Mode::Walk } else { Mode::Fly }, p.block_size), save_dir, bake_sha, sim);
     if walk {

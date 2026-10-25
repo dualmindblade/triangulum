@@ -1,0 +1,253 @@
+# M2b: water. Pour water into a trench that ends in a drop, watch it slope
+# along the trench and fall in (levels asserted tick by tick, the total
+# conserved, settled within a budget); then dig a pit at the sea shore and
+# open a channel inland: the pit and the channel fill, the sea stays full.
+#
+# Terrain-independent in the m1-done.play sense: every height is relative to
+# where the player stands (dk 0 = the feet block), every level is asserted
+# relative to the feet or at a lattice cell the probe scripts checked, and
+# every check is about what the edits and the water did. Site A is the flat
+# patch of m2a-sand.play (row J = 57531, columns 107153..107159, level
+# ground). Site B is the shore the water tests found on face 1: the sea's
+# surface cell at (1799, 59003, 511), sand from i 1800 (top block at k 511
+# for i 1800..1802, at k 512 from i 1803), air above (probe-shore.play).
+#
+#   tick N: N simulation ticks (20 Hz) with no input. A full cell beside one
+#   empty trench cell splits 127 / 128 in one tick (the remainder goes to
+#   the neighbour); a cell with air below falls one cell per tick; a cell
+#   that just arrived by falling spreads in the same tick if nothing is
+#   below it. Water is key 9 (the bucket): the pick ray then stops at water,
+#   so a right click on a film places a cell above it, which falls in.
+#   Digging the deep cell of the hole needs a steep ray: from next to it.
+
+# ---- 1. Site A: a two-deep hole at +5, then a trench one deep from +1 to +4
+atblock 2 107157 57531 2000
+assert mode == walk
+assert on_ground == true
+assert sim_enabled == true
+lookaxis +i 0
+aim 1 0 -0.5
+assert crosshair != none
+tap break
+aim 1 0 -1.5
+tap break
+assert block_rel[1,0,-1] == air
+assert block_rel[1,0,-2] == air
+assert block_rel[1,0,-3] != air
+atblock 2 107153 57531 2000
+lookaxis +i 0
+aim 1 0 -0.5
+tap break
+aim 2 0 -0.5
+tap break
+aim 3 0 -0.5
+tap break
+aim 4 0 -0.5
+tap break
+assert block_rel[1,0,-1] == air
+assert block_rel[2,0,-1] == air
+assert block_rel[3,0,-1] == air
+assert block_rel[4,0,-1] == air
+assert block_rel[5,0,-1] == air
+assert block_rel[5,0,-2] == air
+assert block_rel[5,0,-3] != air
+assert block_rel[1,0,-2] != air
+assert block_rel[1,1,-1] != air
+assert block_rel[1,-1,-1] != air
+tick 2
+assert queued == 0
+assert water_moved == 0
+
+# ---- 2. one full cell at the near end: it splits, slopes and drops in ----
+select 9
+assert selected_block == water
+aim 1 0 -1.5
+assert crosshair != none
+tap place
+assert block_rel[1,0,-1] == water
+assert level_rel[1,0,-1] == 255
+assert water_placed == 255
+assert water_rel[1,-1,-3,5,1,0] == 255
+tick 1
+assert level_rel[1,0,-1] == 127
+assert level_rel[2,0,-1] == 128
+assert level_rel[3,0,-1] == 0
+assert water_rel[1,-1,-3,5,1,0] == 255
+tick 1
+assert level_rel[1,0,-1] == 127
+assert level_rel[2,0,-1] == 64
+assert level_rel[3,0,-1] == 64
+assert water_rel[1,-1,-3,5,1,0] == 255
+mode fly
+hold space 0.12
+aim 3 0 -1.0
+shot 01_slope
+mode walk
+tick 6
+assert level_rel[5,0,-2] > 0
+assert water_rel[1,-1,-3,5,1,0] == 255
+mode fly
+hold space 0.12
+aim 4 0 -1.5
+shot 02_drop
+mode walk
+tick 80
+assert queued == 0
+assert water_rel[1,-1,-3,5,1,0] == 255
+assert level_rel[5,0,-2] >= 225
+assert level_rel[5,0,-1] == 0
+assert level_rel[1,0,-1] <= 6
+assert level_rel[4,0,-1] <= 3
+assert water_lost == 0
+assert water_in == 0
+assert water_out == 0
+
+# ---- 3. two more cells poured onto the film from above: the hole fills to the
+#         brim and the trench holds the rest, within a lean of one per cell
+mode fly
+hold space 0.1
+aim 1 0 -1.5
+assert crosshair == water
+tap place
+assert water_placed == 510
+tick 1
+aim 1 0 -1.5
+tap place
+assert water_placed == 765
+tick 5
+aim 4 0 -1.5
+shot 03_fall_into_the_hole
+mode walk
+tick 150
+assert queued == 0
+assert level_rel[5,0,-2] == 255
+assert level_rel[5,0,-1] >= 90
+assert level_rel[5,0,-1] <= 110
+assert level_rel[1,0,-1] >= 90
+assert level_rel[1,0,-1] <= 110
+assert water_rel[-8,-8,-3,13,8,1] == 765
+assert water_balance == 765
+state site_a
+
+# ---- 4. Site B: a pit at the shore fills from the sea; the sea stays full ----
+atblock 1 1803 59003 511
+assert on_ground == true
+assert block[1,1799,59003,511] == water
+assert level[1,1799,59003,511] == 255
+assert block[1,1800,59003,511] == sand
+assert block[1,1800,59003,510] == sand
+assert block[1,1800,59003,512] == air
+mode fly
+select 1
+lookaxis -i 0
+# the 3 x 3 x 2 pit: i 1800..1802, j 59002..59004, k 511 then 510
+aim -3 0 -1.5
+assert crosshair == sand
+tap break
+aim -3 -1 -1.5
+tap break
+aim -3 1 -1.5
+tap break
+aim -2 0 -1.5
+tap break
+aim -2 -1 -1.5
+tap break
+aim -2 1 -1.5
+tap break
+aim -1 0 -1.5
+tap break
+aim -1 -1 -1.5
+tap break
+aim -1 1 -1.5
+tap break
+# the lower layer from inside the pit (a steep ray from the shore would clip
+# the player's own ground block): hover in the pit's middle upper cell
+atblock 1 1801 59003 510
+aim 0 0 -0.5
+assert crosshair == sand
+tap break
+aim -1 0 -0.5
+tap break
+aim 1 0 -0.5
+tap break
+aim 0 -1 -0.5
+tap break
+aim 0 1 -0.5
+tap break
+aim -1 -1 -0.5
+tap break
+aim -1 1 -0.5
+tap break
+aim 1 -1 -0.5
+tap break
+aim 1 1 -0.5
+tap break
+atblock 1 1803 59003 512
+lookaxis -i 0
+assert block[1,1800,59003,511] == air
+assert block[1,1800,59003,510] == air
+assert block[1,1802,59004,510] == air
+assert block[1,1802,59002,510] == air
+assert block[1,1800,59003,509] != air
+assert level[1,1800,59003,511] == 0
+tick 1
+assert level[1,1800,59003,511] > 0
+tick 2
+assert level[1,1800,59003,510] > 0
+aim -2 0 -2.0
+shot 04_shore_pit_filling
+tick 200
+assert queued == 0
+assert level[1,1800,59003,510] == 255
+assert level[1,1801,59003,510] == 255
+assert level[1,1802,59004,510] == 255
+assert level[1,1801,59003,511] >= 200
+assert level[1,1799,59003,511] >= 230
+assert level[1,1779,59003,511] == 255
+assert level[1,1760,59003,511] == 255
+assert water_in == 0
+assert water_out == 0
+assert water_lost == 0
+aim -2 0 -2.0
+shot 05_shore_pit_full
+
+# ---- 5. a channel inland from the pit, dug under the feet: it floods, the
+#         sea stays full
+aim 0 0 -0.5
+assert crosshair == sand
+tap break
+aim 0 0 -1.5
+tap break
+aim 0 0 -2.5
+tap break
+aim 1 0 -0.5
+tap break
+aim 1 0 -1.5
+tap break
+aim 1 0 -2.5
+tap break
+assert block[1,1803,59003,512] == air
+assert block[1,1803,59003,510] == air
+assert block[1,1804,59003,510] == air
+assert block[1,1804,59003,509] != air
+tick 3
+assert level[1,1803,59003,510] > 0
+tick 200
+assert queued == 0
+assert level[1,1803,59003,510] == 255
+assert level[1,1804,59003,510] == 255
+assert level[1,1804,59003,511] >= 150
+assert level[1,1779,59003,511] >= 250
+assert level[1,1760,59003,511] == 255
+assert water_in == 0
+assert water_out == 0
+atblock 1 1807 59003 511
+mode fly
+hold space 0.1
+aim -4 0 -2.0
+shot 06_channel
+
+# ---- 6. the tick budget at this activity, and the frame rate ----------------
+assert tick_ms_avg < 2
+state final
+bench 60

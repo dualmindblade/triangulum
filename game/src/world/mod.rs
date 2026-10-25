@@ -14,6 +14,7 @@ pub use edits::EditStore;
 use crate::grid::{BlockPos, CHUNK, ChunkKey, FastMap, Planet};
 use crate::worldgen::{Generated, Generator, PAD_VOXELS, pidx};
 use chunk::{VOXELS, index};
+use glam::DVec3;
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
@@ -52,6 +53,23 @@ pub trait Voxels {
     fn block(&self, face: u8, i: i64, j: i64, k: i64) -> BlockId;
     fn is_solid(&self, id: BlockId) -> bool;
     fn is_liquid(&self, id: BlockId) -> bool;
+    /// Water level (0..255) of a cell; a liquid cell is full unless the
+    /// implementation knows better (M2b: the stored level).
+    fn water_level(&self, _face: u8, _i: i64, _j: i64, _k: i64) -> u8 {
+        edits::WATER_FULL
+    }
+    /// Is the point at fraction `frac` (0..1) up a cell under water? A cell
+    /// with water above it counts as full (a falling column), otherwise the
+    /// surface sits at level / 255.
+    fn submerged(&self, face: u8, i: i64, j: i64, k: i64, frac: f64) -> bool {
+        if !self.is_liquid(self.block(face, i, j, k)) {
+            return false;
+        }
+        if self.is_liquid(self.block(face, i, j, k + 1)) {
+            return true;
+        }
+        frac * f64::from(edits::WATER_FULL) < f64::from(self.water_level(face, i, j, k))
+    }
 }
 
 /// Generator + edits. Chunks the generator produces are cached at LOD 0 for
@@ -195,6 +213,70 @@ impl World {
         self.natural(key).water_level(x, y, z)
     }
 
+    /// Block and water level at a position in one lookup (edits first).
+    pub fn block_and_level_at(&self, bp: BlockPos) -> (BlockId, u8) {
+        let (key, x, y, z) = Self::chunk_of(bp);
+        if let Some(c) = self.edits.get_with_level(key, x, y, z) {
+            return c;
+        }
+        let n = self.natural(key);
+        (n.get(x, y, z), n.water_level(x, y, z))
+    }
+
+    /// The generator's block and water level at a position: what an
+    /// unedited cell holds, and what the water rule treats a cell outside
+    /// the active region as (M2b, `Sim::boundary_cell`). The generator's
+    /// per-cell levels (M2-hydro's rivers) arrive through here.
+    pub fn natural_cell(&self, bp: BlockPos) -> (BlockId, u8) {
+        let (key, x, y, z) = Self::chunk_of(bp);
+        let n = self.natural(key);
+        (n.get(x, y, z), n.water_level(x, y, z))
+    }
+
+    /// Is a world position under water? Level-aware (`Voxels::submerged`).
+    pub fn is_submerged(&self, pos: DVec3) -> bool {
+        let (f, i, j, k) = self.planet.lattice_of_pos(pos);
+        if k < 0.0 || k >= self.planet.height as f64 {
+            return false;
+        }
+        <Self as Voxels>::submerged(self, f, i.floor() as i64, j.floor() as i64, k.floor() as i64, k - k.floor())
+    }
+
+    /// A solid block is about to take `bp`: the water there, if any, is
+    /// pushed up its own column into the first cells above that can hold it
+    /// (a full cell passes it on; the surface cell and the air above it take
+    /// it), so a block dropped into a pool raises the pool instead of
+    /// destroying water (M2b displacement). Returns the writes to commit
+    /// together with the placement and the units that found no room (a
+    /// solid ceiling): those are lost, and the caller counts them.
+    pub fn displace_writes(&self, bp: BlockPos) -> (Vec<(BlockPos, BlockId, Option<u8>)>, u32) {
+        let (id, level) = self.block_and_level_at(bp);
+        if !self.registry.is_liquid(id) || level == 0 {
+            return (Vec::new(), 0);
+        }
+        let water = self.water_id();
+        let mut remaining = level as u32;
+        let mut out = Vec::new();
+        for k in bp.k + 1..self.planet.height {
+            let up = BlockPos { k, ..bp };
+            let (uid, ul) = self.block_and_level_at(up);
+            if !self.registry.is_replaceable(uid) {
+                break;
+            }
+            let cap = (edits::WATER_FULL - ul) as u32;
+            if cap == 0 {
+                continue;
+            }
+            let d = remaining.min(cap);
+            out.push((up, water, Some((ul as u32 + d) as u8)));
+            remaining -= d;
+            if remaining == 0 {
+                break;
+            }
+        }
+        (out, remaining)
+    }
+
     /// The generator's chunk as dense ids and water levels: what an edited
     /// chunk starts from.
     fn natural_dense(&self, key: ChunkKey) -> (Vec<BlockId>, Option<Vec<u8>>) {
@@ -267,17 +349,21 @@ impl World {
             })
             .collect();
         let changed = self.edits.commit(&ws, |key| self.natural_dense(key), |id| self.registry.is_liquid(id));
-        let mut invalidated = Vec::new();
+        // The chunks to remesh, deduplicated as they come: a flood commits
+        // thousands of cells a tick that share a few dozen chunks.
+        let mut invalidated: crate::grid::FastSet<ChunkKey> = crate::grid::FastSet::default();
+        let mut scratch = Vec::with_capacity(32);
         let mut log = Vec::new();
         for ((bp, _, _), c) in valid.iter().zip(&changed) {
             if *c {
-                invalidated.extend(self.affected_chunks(*bp));
+                self.affected_chunks_into(*bp, &mut scratch);
+                invalidated.extend(scratch.drain(..));
                 log.push(*bp);
             }
         }
         if !log.is_empty() {
+            let mut invalidated: Vec<ChunkKey> = invalidated.into_iter().collect();
             invalidated.sort();
-            invalidated.dedup();
             self.edits.push_invalidated(invalidated);
             self.edits.push_changed(log.iter().copied());
         }
@@ -302,30 +388,47 @@ impl World {
     /// stepping one block to 64 stayed in chunk 1).
     pub fn affected_chunks(&self, bp: BlockPos) -> Vec<ChunkKey> {
         let mut out = Vec::new();
+        self.affected_chunks_into(bp, &mut out);
+        out.sort();
+        out.dedup();
+        out
+    }
+
+    /// `affected_chunks` appended to `out`, unsorted and possibly with
+    /// repeats, without allocating (a flood calls this thousands of times
+    /// a tick).
+    pub fn affected_chunks_into(&self, bp: BlockPos, out: &mut Vec<ChunkKey>) {
         let (i, j, k) = (bp.i as i64, bp.j as i64, bp.k as i64);
         for lod in 0..=self.planet.max_lod {
             let e = (CHUNK as i64) << lod;
             let v = 1i64 << lod;
             let per_edge = self.planet.chunks_per_edge(lod);
             let per_col = self.planet.chunks_per_column(lod);
-            let offsets = |c: i64| -> Vec<i64> {
+            // The voxel offsets to the padding neighbours: none, -v, +v.
+            let offsets = |c: i64| -> ([i64; 3], usize) {
                 let local = (c % e) >> lod; // voxel index within the chunk
-                let mut o = vec![0];
+                let mut o = [0i64; 3];
+                let mut n = 1;
                 if local == 0 {
-                    o.push(-v);
+                    o[n] = -v;
+                    n += 1;
                 }
                 if local == (CHUNK as i64) - 1 {
-                    o.push(v);
+                    o[n] = v;
+                    n += 1;
                 }
-                o
+                (o, n)
             };
-            for &dz in &offsets(k) {
+            let (ox, nx) = offsets(i);
+            let (oy, ny) = offsets(j);
+            let (oz, nz) = offsets(k);
+            for &dz in &oz[..nz] {
                 let ck = k + dz;
                 if ck < 0 || ck >= self.planet.height as i64 {
                     continue;
                 }
-                for &dx in &offsets(i) {
-                    for &dy in &offsets(j) {
+                for &dx in &ox[..nx] {
+                    for &dy in &oy[..ny] {
                         // A block one voxel past the face edge resolves onto the neighbouring face.
                         let (f, ri, rj) = self.resolve(bp.face, i + dx, j + dy);
                         let key = ChunkKey::neisor(f, lod, ri / e as u32, rj / e as u32, (ck / e) as u32);
@@ -336,9 +439,6 @@ impl World {
                 }
             }
         }
-        out.sort();
-        out.dedup();
-        out
     }
 
     /// Generate one chunk at its LOD: the pure generator, then the edits.
@@ -366,6 +466,67 @@ impl World {
             };
         }
         g
+    }
+
+    /// The water levels of a generated LOD-0 chunk's padded grid (34^3,
+    /// index by `pidx`), for the mesher's sloped surfaces (M2b): None when
+    /// every water cell in reach is full, which is the ocean and every
+    /// resting lake, so the flat path costs nothing extra. The interior
+    /// comes from the edited chunk or the generator's chunk; the border
+    /// from edited neighbours where there are any, and from the generator
+    /// only when this chunk itself holds partial water (a neighbouring
+    /// generated river next to a full chunk is read as full here: the one
+    /// corner it would tilt is the hook M2-hydro's levels can finish).
+    pub fn padded_levels(&self, key: ChunkKey, g: &Generated) -> Option<Vec<u8>> {
+        if key.lod != 0 {
+            return None;
+        }
+        let partial = |w: &[u8]| w.iter().any(|&l| l != 0 && l != edits::WATER_FULL);
+        let interior: Option<Vec<u8>> = match self.edits.with_edited(key, |e| e.water.clone()) {
+            Some(w) => w,
+            None => self.natural(key).water_dense(),
+        };
+        let interior_partial = interior.as_ref().is_some_and(|w| partial(w));
+        let near: Vec<ChunkKey> = self.edited_near(key).into_iter().filter(|e| *e != key).collect();
+        let near_partial = near.iter().any(|n| self.edits.has_partial_water(*n).unwrap_or(false));
+        if !interior_partial && !near_partial {
+            return None;
+        }
+        let c = CHUNK as i32;
+        let mut levels = vec![0u8; PAD_VOXELS];
+        if let Some(w) = &interior {
+            for x in 0..CHUNK {
+                for y in 0..CHUNK {
+                    for z in 0..CHUNK {
+                        levels[pidx(x as i32, y as i32, z as i32)] = w[index(x, y, z)];
+                    }
+                }
+            }
+        }
+        let (i0, j0, k0) = key.origin_blocks();
+        let (i0, j0, k0) = (i0 as i64, j0 as i64, k0 as i64);
+        for x in -1..=c {
+            for y in -1..=c {
+                for z in -1..=c {
+                    let border = x < 0 || y < 0 || z < 0 || x >= c || y >= c || z >= c;
+                    if !border {
+                        continue;
+                    }
+                    let p = pidx(x, y, z);
+                    if !self.registry.is_liquid(g.ids[p]) {
+                        continue;
+                    }
+                    let Some(bp) = self.resolve_block(key.face, i0 + x as i64, j0 + y as i64, k0 + z as i64) else { continue };
+                    let (ck, cx, cy, cz) = Self::chunk_of(bp);
+                    levels[p] = match self.edits.water_level(ck, cx, cy, cz) {
+                        Some(l) => l,
+                        None if interior_partial => self.natural(ck).water_level(cx, cy, cz),
+                        None => edits::WATER_FULL,
+                    };
+                }
+            }
+        }
+        Some(levels)
     }
 
     /// LOD 0: an edited chunk replaces the interior wholesale; edited
@@ -525,6 +686,13 @@ impl Voxels for World {
     #[inline]
     fn is_liquid(&self, id: BlockId) -> bool {
         self.registry.is_liquid(id)
+    }
+    #[inline]
+    fn water_level(&self, face: u8, i: i64, j: i64, k: i64) -> u8 {
+        match self.resolve_block(face, i, j, k) {
+            Some(bp) => self.water_level_at(bp),
+            None => 0,
+        }
     }
 }
 

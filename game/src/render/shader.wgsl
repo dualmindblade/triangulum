@@ -73,10 +73,20 @@ fn lagrange5(t: f32) -> array<f32, 5> {
 }
 
 // Shared vertex transform: returns the camera-relative world position and
-// fills the shading inputs.
-fn vertex(vi: u32, ii: u32) -> VOut {
+// fills the shading inputs. Water quads (M2b) are two slots each: the usual
+// two words, then four 8-bit corner heights that lower the top corners of
+// a partial cell's faces (255 = the voxel's top, the geometry of full water).
+fn vertex(vi: u32, ii: u32, water: bool) -> VOut {
     let d = draws[ii];
-    let q = quads[vi >> 2u];
+    var q: vec2<u32>;
+    var heights = 0xFFFFFFFFu;
+    if (water) {
+        let e = d.quad_base + 2u * ((vi >> 2u) - d.quad_base);
+        q = quads[e];
+        heights = quads[e + 1u].x;
+    } else {
+        q = quads[vi >> 2u];
+    }
     let c = vi & 3u;
     let axis = q.x & 3u;
     let sign = (q.x >> 2u) & 1u;
@@ -107,6 +117,16 @@ fn vertex(vi: u32, ii: u32) -> VOut {
         case 0u: { lp = vec3<f32>(ps, pu, pv); }
         case 1u: { lp = vec3<f32>(pu, ps, pv); }
         default: { lp = vec3<f32>(pu, pv, ps); }
+    }
+    // A water surface sits at its corner height inside the voxel: the top
+    // face's four corners and a side face's two top corners drop from the
+    // voxel top by (255 - height) / 255 voxels; bottoms and full water stay.
+    if (water) {
+        let top = (axis == 2u && sign == 1u) || (axis != 2u && cv == 1u);
+        if (top) {
+            let hc = f32((heights >> (8u * ao_corner)) & 0xFFu);
+            lp.z += (hc - 255.0) / 255.0;
+        }
     }
 
     // Curvature grid over the footprint (4x4 cells of 8 voxels): bilinear
@@ -184,7 +204,7 @@ fn vertex(vi: u32, ii: u32) -> VOut {
 
 @vertex
 fn vs_main(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> VOut {
-    return vertex(vi, ii);
+    return vertex(vi, ii, false);
 }
 
 @fragment
@@ -232,7 +252,7 @@ fn atmosphere(c: vec3<f32>, rel: vec3<f32>) -> vec3<f32> {
 
 @vertex
 fn vs_water(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> VOut {
-    return vertex(vi, ii);
+    return vertex(vi, ii, true);
 }
 
 @fragment

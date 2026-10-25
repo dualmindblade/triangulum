@@ -131,9 +131,14 @@ impl Registry {
     pub fn colour_table(&self) -> Vec<[f32; 4]> {
         self.defs.iter().map(|d| [d.color[0], d.color[1], d.color[2], 1.0]).collect()
     }
-    /// The first nine solid blocks by id: what keys 1-9 place unless `--hotbar` says otherwise.
+    /// The first eight solid blocks by id and then the first liquid (water on
+    /// key 9, M2b): what keys 1-9 place unless `--hotbar` says otherwise.
     pub fn default_hotbar(&self) -> Vec<BlockId> {
-        self.defs.iter().filter(|d| d.solid && !d.name.starts_with("unused_")).map(|d| d.id).take(9).collect()
+        let mut hb: Vec<BlockId> = self.defs.iter().filter(|d| d.solid && !d.name.starts_with("unused_")).map(|d| d.id).take(8).collect();
+        if let Some(l) = self.defs.iter().find(|d| d.liquid) {
+            hb.push(l.id);
+        }
+        hb
     }
     /// Resolve a comma-separated list of block names (for `--hotbar`).
     pub fn hotbar_from(&self, names: &str) -> Result<Vec<BlockId>, String> {

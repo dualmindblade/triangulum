@@ -38,6 +38,8 @@
 //!                           no input); "tick 20" is one second
 //!   sim on|off              run or pause the simulation (ticks stop; edits
 //!                           still log, and all notify when it resumes)
+//!   sim radius M            active region radius in metres (--sim-radius)
+//!   sim period N            ticks per water step (--water-period; 1)
 //!   select N                hotbar slot 1-9
 //!   speed M_PER_S           fly speed (scroll wheel), 1..5000
 //!   travel SECONDS [KEYS]   like hold (default "w"), but every step also
@@ -80,8 +82,16 @@
 //!                             sim_active_chunks falls landings vanished
 //!                             tick_ms_last tick_ms_avg tick_ms_max
 //!                             sim_hash (the world-state hash; computed on demand)
+//!                             water_moved water_writes water_in water_out
+//!                             water_placed water_removed water_displaced
+//!                             water_lost water_balance water_updates_last
+//!                             water_period sim_radius (units: 255 = a cell)
 //!                           or block[F,I,J,K]  the block at lattice coords
 //!                           or block_rel[DI,DJ,DK]  relative to the feet block
+//!                           or level[F,I,J,K] / level_rel[DI,DJ,DK]  the water
+//!                              level 0..255 of a cell
+//!                           or water_rel[DI,DJ,DK,DI2,DJ2,DK2]  the total water
+//!                              (units) in that box of cells, corners inclusive
 //!                           or falling_rel[DI,DJ]  blocks in flight in that column
 //!                           or cover[F,I,J,K] / cover_rel[DI,DJ,DK]  what the
 //!                              streamer's cut shows at that block, after a
@@ -445,6 +455,27 @@ impl Run {
             }
             return Some(serde_json::Value::String(self.session.block_name_rel(v[0], v[1], v[2])));
         }
+        if let Some(inner) = field.strip_prefix("level[").and_then(|r| r.strip_suffix(']')) {
+            let v: Vec<i64> = inner.split(',').map(|x| x.trim().parse().ok()).collect::<Option<_>>()?;
+            if v.len() != 4 {
+                return None;
+            }
+            return Some(serde_json::Value::from(self.session.level_at(v[0] as u8, v[1], v[2], v[3])));
+        }
+        if let Some(inner) = field.strip_prefix("level_rel[").and_then(|r| r.strip_suffix(']')) {
+            let v: Vec<i64> = inner.split(',').map(|x| x.trim().parse().ok()).collect::<Option<_>>()?;
+            if v.len() != 3 {
+                return None;
+            }
+            return Some(serde_json::Value::from(self.session.level_rel(v[0], v[1], v[2])));
+        }
+        if let Some(inner) = field.strip_prefix("water_rel[").and_then(|r| r.strip_suffix(']')) {
+            let v: Vec<i64> = inner.split(',').map(|x| x.trim().parse().ok()).collect::<Option<_>>()?;
+            if v.len() != 6 {
+                return None;
+            }
+            return Some(serde_json::Value::from(self.session.water_in_box_rel((v[0], v[1], v[2]), (v[3], v[4], v[5]))));
+        }
         if let Some(inner) = field.strip_prefix("cover[").and_then(|r| r.strip_suffix(']')) {
             let v: Vec<i64> = inner.split(',').map(|x| x.trim().parse().ok()).collect::<Option<_>>()?;
             if v.len() != 4 {
@@ -654,13 +685,22 @@ pub fn run_play(session: Session, opts: PlayOptions) -> i32 {
                 Some(n) if n >= 0.0 => run.ticks(n as usize),
                 _ => bad(&mut run, "tick N"),
             },
-            "sim" => match args.first().map(|s| s.to_lowercase()).as_deref() {
-                Some(v @ ("on" | "off")) => {
+            "sim" => match (args.first().map(|s| s.to_lowercase()).as_deref(), num(1)) {
+                (Some(v @ ("on" | "off")), _) => {
                     run.session.sim.config.enabled = v == "on";
                     let d = run.session.sim.describe();
                     run.say(format!("  {d}"));
                 }
-                _ => bad(&mut run, "sim on|off"),
+                (Some("radius"), Some(m)) if m >= 0.0 => {
+                    run.session.sim.set_radius(m);
+                    let d = run.session.sim.describe();
+                    run.say(format!("  radius {m} m: {d}"));
+                }
+                (Some("period"), Some(n)) if n >= 1.0 => {
+                    run.session.sim.config.water_period = n as u64;
+                    run.say(format!("  water period {} tick(s)", n as u64));
+                }
+                _ => bad(&mut run, "sim on|off | sim radius M | sim period N"),
             },
             "speed" => match num(0) {
                 Some(v) if (1.0..=5000.0).contains(&v) => run.session.player.fly_speed = v,

@@ -1,7 +1,8 @@
 //! The simulation core (M2a): a fixed 20 Hz tick, a deterministic
 //! block-update queue with neighbour notifications across chunk borders and
-//! cube-face edges, an active region around the player, and the first rule
-//! that runs on it: falling blocks (sand and gravel, by flag).
+//! cube-face edges, an active region around the player, and the rules that
+//! run on it: falling blocks (sand and gravel, by flag) and, since M2b,
+//! Andrew's 256-level water (`water.rs`).
 //!
 //! Clocks. The tick is tied to the player's fixed 60 Hz steps (every third
 //! step, `STEPS_PER_TICK`), not to wall time and not to the sky clock. The
@@ -44,13 +45,15 @@
 //! settles in the first free cell above.
 
 pub mod draw;
+pub mod water;
 
-use crate::grid::{BlockPos, CHUNK, ChunkKey, FastSet};
+use crate::grid::{BlockPos, CHUNK, ChunkKey, FastMap, FastSet};
 use crate::sha256::{Sha256, hex};
 use crate::world::{BlockId, EditStore, World};
 use glam::DVec3;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::time::Instant;
+pub use water::Boundary;
 
 /// Simulation rate.
 pub const TICK_HZ: u32 = 20;
@@ -73,12 +76,30 @@ pub struct SimConfig {
     pub radius_m: f64,
     /// `sim off` in the harness, `--no-sim` on the command line.
     pub enabled: bool,
+    /// Ticks per water step (M2b): water updates run on ticks that are a
+    /// multiple of this and wait for the next one otherwise. 1 is a cell
+    /// per tick (20 cells per second); Andrew's dial for the flow speed.
+    pub water_period: u64,
 }
 
 impl Default for SimConfig {
     fn default() -> Self {
-        Self { radius_m: 112.0, enabled: true }
+        Self { radius_m: 112.0, enabled: true, water_period: 1 }
     }
+}
+
+/// This tick's water writes, applied as one commit after the drain (water.rs).
+#[derive(Default)]
+struct Overlay {
+    writes: FastMap<PosKey, (BlockId, u8)>,
+    /// Cells a neighbour spread into this tick: they do not spread
+    /// themselves until the next, so water moves one cell sideways per tick.
+    spread_into: FastSet<PosKey>,
+    /// Cells water fell into this tick: one whose own lower neighbour also
+    /// received a fall is the middle of a moving column and waits too.
+    fell_into: FastSet<PosKey>,
+    /// Units moved this tick (falls, spreads, boundary flows).
+    moved: u64,
 }
 
 /// The canonical position key the queue sorts by: face, i, j, k packed so
@@ -285,6 +306,39 @@ pub struct SimStats {
     /// Cost of the last active-region recompute.
     pub refocus_us: u32,
     pub refocuses: u64,
+    /// Water (M2b), all in level units (255 = one full cell).
+    /// Units moved by the rule (falls, spreads, boundary flows).
+    pub water_moved: u64,
+    /// Cell writes the water rule committed.
+    pub water_writes: u64,
+    /// Units that entered the active region from generated water at its
+    /// boundary, and units that left into generated river cells there.
+    pub water_in: u64,
+    pub water_out: u64,
+    /// Units the player placed and removed.
+    pub water_placed: u64,
+    pub water_removed: u64,
+    /// Units pushed up by a block taking a water cell, and units that found
+    /// no room above (lost under a solid ceiling).
+    pub water_displaced: u64,
+    pub water_lost: u64,
+    /// Water cell updates run last tick.
+    pub water_updates_last: u32,
+    /// Last tick's cost by phase (microseconds): the water rule's two
+    /// passes, its commit (the edit store, mesh invalidations), and the
+    /// end-of-tick change-log drain that schedules the next tick.
+    pub water_rule_us: u32,
+    pub water_commit_us: u32,
+    pub absorb_us: u32,
+}
+
+impl SimStats {
+    /// Water created or destroyed by anything but the rule: what the water
+    /// inside the active region changed by, in units, if the rule itself
+    /// conserved it (the tests check it did).
+    pub fn water_balance(&self) -> i64 {
+        self.water_in as i64 - self.water_out as i64 + self.water_placed as i64 - self.water_removed as i64 - self.water_lost as i64
+    }
 }
 
 impl SimStats {
@@ -320,11 +374,31 @@ pub struct Sim {
     /// Queue, frozen or falling changed since the last snapshot.
     dirty: bool,
     pub stats: SimStats,
+    /// The water rule's tick-local writes (water.rs).
+    overlay: Overlay,
+    /// Tests inject what the boundary holds (a generated river's levels
+    /// before M2-hydro produces them).
+    #[cfg(test)]
+    pub boundary_override: Option<Box<dyn Fn(BlockPos) -> Option<Boundary>>>,
 }
 
 impl Sim {
     pub fn new(config: SimConfig) -> Self {
-        Self { config, tick: 0, queue: BTreeSet::new(), frozen: BTreeMap::new(), falling: Vec::new(), active: FastSet::default(), focus_chunk: None, ghosts: Vec::new(), dirty: false, stats: SimStats::default() }
+        Self {
+            config,
+            tick: 0,
+            queue: BTreeSet::new(),
+            frozen: BTreeMap::new(),
+            falling: Vec::new(),
+            active: FastSet::default(),
+            focus_chunk: None,
+            ghosts: Vec::new(),
+            dirty: false,
+            stats: SimStats::default(),
+            overlay: Overlay::default(),
+            #[cfg(test)]
+            boundary_override: None,
+        }
     }
 
     pub fn from_snapshot(config: SimConfig, snap: Snapshot) -> Self {
@@ -344,6 +418,7 @@ impl Sim {
         self.active.clear();
         self.focus_chunk = None;
         self.ghosts.clear();
+        self.overlay = Overlay::default();
         self.dirty = false;
     }
 
@@ -390,27 +465,21 @@ impl Sim {
     /// One line for the HUD and the harness transcript.
     pub fn describe(&self) -> String {
         format!(
-            "sim {}  tick {}  falling {}  queued {}  frozen {}  active {} chunks  tick cost {:.3} ms (avg {:.3}, max {:.3})",
+            "sim {}  tick {}  falling {}  queued {}  frozen {}  active {} chunks  water {} updates, {} moved, in {} out {}  tick cost {:.3} ms (avg {:.3}, max {:.3})",
             if self.config.enabled { "on" } else { "off" },
             self.tick,
             self.falling.len(),
             self.queue.len(),
             self.frozen_count(),
             self.active.len(),
+            self.stats.water_updates_last,
+            self.stats.water_moved,
+            self.stats.water_in,
+            self.stats.water_out,
             self.stats.last_us as f64 / 1e3,
             self.stats.avg_us() / 1e3,
             self.stats.max_us as f64 / 1e3
         )
-    }
-
-    /// The hook M2b's water rule reads boundary cells through: outside the
-    /// active region a cell takes the generator's value, so rivers keep
-    /// flowing in and out and lakes stay full (DESIGN.md, Water). Whether
-    /// an edited cell at the boundary should read its edit instead is
-    /// M2b's call; this returns the generator's block.
-    pub fn boundary_block(&self, world: &World, bp: BlockPos) -> BlockId {
-        let (key, x, y, z) = World::chunk_of(bp);
-        world.natural(key).get(x, y, z)
     }
 
     /// Schedule an update for a block.
@@ -576,38 +645,87 @@ impl Sim {
         for e in &due {
             self.queue.remove(e);
         }
+        // Sort the due, active cells by rule: blocks with gravity fall first
+        // (their removals are visible to the water rule in the same tick);
+        // replaceable cells (air and water) run the water rule. The gravity
+        // pass keeps ascending order (a column notified at once starts
+        // together, bottom first).
+        let reg = world.registry.clone();
+        let mut gravity: Vec<BlockPos> = Vec::new();
+        let mut water: Vec<(u64, PosKey)> = Vec::new();
         for (d, key) in due {
             let bp = key.pos();
             let (ck, ..) = World::chunk_of(bp);
-            if self.active.contains(&ck) {
-                self.apply(world, bp);
-                self.stats.processed += 1;
-            } else {
+            if !self.active.contains(&ck) {
                 self.frozen.entry(ck).or_default().insert((d, key));
+                continue;
+            }
+            self.stats.processed += 1;
+            let id = world.block_at(bp);
+            if reg.has_gravity(id) {
+                gravity.push(bp);
+            } else if reg.is_replaceable(id) {
+                water.push((d, key));
+            }
+        }
+        for bp in gravity {
+            self.fall_rule(world, bp);
+        }
+        self.stats.water_updates_last = 0;
+        self.stats.water_rule_us = 0;
+        self.stats.water_commit_us = 0;
+        if !water.is_empty() {
+            let period = self.config.water_period.max(1);
+            if self.tick % period == 0 {
+                // Pass 1, bottom-up: falls. Pass 2, alternating direction
+                // every water step: spreads (water.rs).
+                let t1 = Instant::now();
+                self.stats.water_updates_last = water.len() as u32;
+                for &(_, key) in &water {
+                    self.water_fall(world, key.pos());
+                }
+                if (self.tick / period) % 2 == 1 {
+                    water.reverse();
+                }
+                for &(_, key) in &water {
+                    self.water_spread(world, key.pos());
+                }
+                let t2 = Instant::now();
+                self.commit_water(world);
+                self.stats.water_rule_us = (t2 - t1).as_micros() as u32;
+                self.stats.water_commit_us = t2.elapsed().as_micros() as u32;
+            } else {
+                // Not a water step: wait for the next one.
+                let next = (self.tick / period + 1) * period;
+                for (_, key) in water {
+                    self.queue.insert((next, key));
+                }
             }
         }
         self.advance_falling(world);
+        let t3 = Instant::now();
         self.absorb(world, self.tick + 1);
+        self.stats.absorb_us = t3.elapsed().as_micros() as u32;
         self.stats.record(t0.elapsed().as_micros() as u32);
     }
 
-    /// The rules, driven by block flags. Water (M2b) plugs in here as
-    /// another flag-driven rule, reading cells outside the active region
-    /// through `boundary_block`.
-    fn apply(&mut self, world: &World, bp: BlockPos) {
+    /// The gravity rule, driven by block flags: a block with `gravity` over
+    /// a replaceable cell leaves the grid and falls.
+    fn fall_rule(&mut self, world: &World, bp: BlockPos) {
         let reg = &world.registry;
         let id = world.block_at(bp);
-        if reg.has_gravity(id) {
-            // Layer 0 rests on the floor of the world.
-            if bp.k == 0 {
-                return;
-            }
-            let below = world.block_at(BlockPos { k: bp.k - 1, ..bp });
-            if reg.is_replaceable(below) && world.set_block(bp, world.generator.blocks.air) {
-                self.falling.push(Falling { id, face: bp.face, i: bp.i, j: bp.j, z: bp.k as f64, vel: 0.0 });
-                self.stats.falls += 1;
-                self.dirty = true;
-            }
+        if !reg.has_gravity(id) {
+            return;
+        }
+        // Layer 0 rests on the floor of the world.
+        if bp.k == 0 {
+            return;
+        }
+        let below = world.block_at(BlockPos { k: bp.k - 1, ..bp });
+        if reg.is_replaceable(below) && world.set_block(bp, world.generator.blocks.air) {
+            self.falling.push(Falling { id, face: bp.face, i: bp.i, j: bp.j, z: bp.k as f64, vel: 0.0 });
+            self.stats.falls += 1;
+            self.dirty = true;
         }
     }
 
@@ -625,8 +743,10 @@ impl Sim {
         let mut keep = Vec::with_capacity(list.len());
         // Landings in one column are written as they happen, so the next block
         // up in the same column lands on top of them; everything else goes
-        // into one batch commit at the end of the tick.
-        let mut landings: Vec<(BlockPos, BlockId)> = Vec::new();
+        // into one batch commit at the end of the tick. A landing in water
+        // pushes the water up the column (`World::displace_writes`), in the
+        // same batch.
+        let mut landings: Vec<(BlockPos, BlockId, Option<u8>)> = Vec::new();
         let mut landed_in: Option<PosKey> = None;
         for mut f in list {
             let (face, i, j) = (f.face, f.i, f.j);
@@ -638,7 +758,7 @@ impl Sim {
             }
             if landed_in.is_some_and(|c| c == f.column()) {
                 // A block below in this column landed this tick: make it visible to our checks.
-                world.commit(&landings);
+                world.commit_levels(&landings);
                 landings.clear();
             }
             landed_in = None;
@@ -647,7 +767,7 @@ impl Sim {
             if !free(k0) {
                 match (k0 + 1..height).find(|&k| free(k)) {
                     Some(k) => {
-                        landings.push(self.land(f, k));
+                        self.land_into(world, f, k, &mut landings);
                         landed_in = Some(f.column());
                     }
                     None => self.stats.vanished += 1,
@@ -668,7 +788,7 @@ impl Sim {
             }
             match landed {
                 Some(k) => {
-                    landings.push(self.land(f, k));
+                    self.land_into(world, f, k, &mut landings);
                     landed_in = Some(f.column());
                 }
                 None => {
@@ -679,18 +799,27 @@ impl Sim {
             self.dirty = true;
         }
         if !landings.is_empty() {
-            world.commit(&landings);
+            world.commit_levels(&landings);
         }
         self.falling = keep;
     }
 
-    /// Record a landing (the write itself is batched by the caller).
-    fn land(&mut self, f: Falling, k: i64) -> (BlockPos, BlockId) {
+    /// Record a landing: the block's write and, when it lands in water, the
+    /// displaced water's writes above it (batched by the caller).
+    fn land_into(&mut self, world: &World, f: Falling, k: i64, batch: &mut Vec<(BlockPos, BlockId, Option<u8>)>) {
         self.stats.landings += 1;
         self.ghosts.push((Falling { z: k as f64, vel: 0.0, ..f }, self.tick));
-        (BlockPos { face: f.face, i: f.i, j: f.j, k: k as u32 }, f.id)
+        let bp = BlockPos { face: f.face, i: f.i, j: f.j, k: k as u32 };
+        let (displaced, lost) = world.displace_writes(bp);
+        let level = world.water_level_at(bp) as u64;
+        self.stats.water_displaced += level - lost as u64;
+        self.stats.water_lost += lost as u64;
+        batch.push((bp, f.id, None));
+        batch.extend(displaced);
     }
 }
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod water_tests;
