@@ -1,0 +1,27 @@
+Bugs:
+IMPORTANT: Major preformance issues when loading mesh detail and lagspikes when ascending
+Pressing G or F still resets the camera position to orbit (what pressing C does)
+Teleporting to the moon sometimes yields violent rotation jitter. The camera starts by looking directly down at the planet, so that may be part of the issue.
+Oblong side-impact craters still cast a circular halo/ray pattern around themselves.
+
+Resolved bugs:
+Overlapping regions of maria are darker where they intersect, they should be the same dark color throughout.
+Placing or breaking blocks pushes an entire chunk of blocks downward, the chunk then smoothly floats back up to the original position. This appears to stem from the feature where voxels get pushed up from below the mesh when they are loaded.
+Blocks on the moon are exaggerated vertically, they should have exactly the same size and proportions as they do on Neisor with the only difference being the size of the grid that contains them.
+
+Maria:
+See current-and-target-lunar-mare.jpg in interchange, the lunar maria (starting from the way they look right now on this seed) could benifit from the following changes:
+Keeping the centers and distribution of the lunar maria the same, increase the size of each mare so that they overlap and interconnect to a greater degree, covering a slightly greater area of the surface.
+Make the overall shape of the lunar maria much more circular, but at the same time add much more irregular noisy detail on the edges to break up the geometrical, patchy, straight-line looking formations.
+Rough target boundary: the blue line in pen, a photo of the real moon's lunar maria was already put in interchange for reference earlier.
+
+Other generation features:
+Crater ray systems currently resemble snakes. There is color banding from one end of the ray to the other (the ray's main color should be consistent), and rays appear to warp/bend back and forth (rays should be straight). I did mention that rays should be "rougher," but this should be implemented through smaller noise resembling the graininess caused by irregular particle ejection, not large scale warping of the entire band. The position of the rays should not change or warp, rather there should be texture to break up the straight, discrete rays, just like what we see in real life. Also, there are still large gaps between the longer rays at the rim/halo of the impact. These spots should probably be filled with more rays, and the overall ray distribution should be more even radially, but not necessarily in length.
+
+Local features (differed for the time being):
+-Hills
+-Continually smaller crater sizes all the way down until the tems of meters.
+
+Future additions:
+-Boulders and rocks? Potentially add block types to represent boulders/cobblestone (differ until textures are implemented), and sub-voxel block models with support for levels (like water) to represent piles of loose rocks/pebbles/rubble (differ until block models and liquid levels are implemented)
+80.909 -74.619 1229

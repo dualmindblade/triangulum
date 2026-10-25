@@ -21,9 +21,9 @@ flight holds 60 fps at 1080p.
 
 | Task | What | Who | State |
 |---|---|---|---|
-| M1-grid | `crates/cubesphere`: gnomonic, equal-angle, COBE and the smooth exact equal-area map, with exact inverses and tests | Astra | started |
-| M1-bake | `scripts/bake_world.py`: smooth, artifact-free rasters from `planet_data.npz` | Opus | started |
-| M1-inventory | `docs/feature-inventory.md`: every feature of the old viewer, how it works, which milestone ports it | Opus | started |
+| M1-grid | `crates/cubesphere`: six projections incl. the smooth exact equal-area `EqualAreaCobe`, exact inverses, tests | Astra | done |
+| M1-bake | `scripts/bake_world.py`: smooth, artifact-free rasters from `planet_data.npz`, with geology fields and automated checks | Opus | done |
+| M1-inventory | `docs/feature-inventory.md`: every feature of the old viewer, how it works, which milestone ports it | Opus | done |
 | M1a | Engine skeleton from the prototype: planet parameters, palette chunks, block definitions, generator v1 (bake sampling, 1/70 vertical scale, strata, biome surfaces, ocean), LOD up to H, renderer, free-fly camera, fps overlay, headless bench | Fable | started |
 | M1b | Player physics, block picking, break/place with a hotbar, saves of changed chunks, edits visible at distance, scripted play harness | — | next |
 | M1c | Sky and sun from the old viewer, 24-minute days, the fixed test flight, main-thread fixes, the ½ m switch | — | after |

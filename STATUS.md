@@ -13,20 +13,45 @@
 - The July process and docs are retired to `docs/archive/`. The old viewer
   still builds and runs from `viewer/`.
 
+## Done
+
+- **M1-grid** (Astra, verified by Opus, merged): `crates/cubesphere` with
+  six projections. The recommended one, `EqualAreaCobe`, is smooth, exactly
+  equal-area (1e-6) and the squarest: 14% of the surface more than 10° off
+  square. Compare all four candidates on the grid page linked above.
+
+- **M1-inventory** (Opus): `docs/feature-inventory.md` catalogues every
+  feature of the old viewer, how it worked and where it lands. Andrew's
+  specs and reference images, which were only on one disk, are now in git
+  under `docs/source/`.
+
+- **M1-bake** (Opus, verified by Opus, merged): `scripts/bake_world.py`
+  removes the old "texel artifacts" at the source. Cell-structure noise is
+  down from 18% to 0.6%, and it carries planetgen's geology (soil depth,
+  continental cores, volcanic zones, erodibility) for real strata. Run it
+  with `python scripts/bake_world.py` (about 20 s); check it with
+  `python scripts/bake_world_check.py`.
+
 ## In progress
 
-- M1a engine skeleton (Fable)
-- M1-grid equal-area map (Astra)
-- M1-bake smooth world bake (Opus)
-- M1-inventory of old features (Opus)
+- M1a engine skeleton (Fable), plus vertical-scale renders for Andrew
 
 ## Waiting on you
 
-- Nothing right now. Block size (1 m or ½ m) gets decided after you've
-  played M1.
+- **Andrew:** with 24-minute days, do the July calendar numbers still stand
+  (7-day lunar month, 84-day year)? No rush.
+- **Andrew:** pick a grid by eye if he wants something other than the
+  recommended smooth equal-area one (grid page linked above).
+- Block size (1 m or ½ m) gets decided after you've played M1.
 
-## Decided today
+## Decided
 
-See `DESIGN.md`: smooth exact equal-area grid, world height 512 blocks,
-planet 131,072 columns per face (R ≈ 90.6 km), vertical scale ≈ 1/70,
-Andrew's 256-level water rule.
+See `DESIGN.md`: the smooth equal-area grid (`EqualAreaCobe`), planet
+131,072 columns per face (R ≈ 90.6 km), Andrew's 256-level water rule.
+
+## Under review
+
+- World height: 2,048 blocks suggested (512 felt small); the engine
+  benchmark measures what height costs.
+- Vertical scale: between 1/70 (Earth's slopes) and 1 (Earth's heights);
+  Andrew decides from renders at 1/70, 1/20 and 1/8, coming with M1a.

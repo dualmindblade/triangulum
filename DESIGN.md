@@ -8,9 +8,12 @@ with their OK; record the change here with the date.
 - Cube-sphere. Each face is an N×N grid of columns; columns are radial
   prisms; layer k is the radial block index. A block is identified by
   integers (face, i, j, k).
-- Projection: a smooth, exactly equal-area map, computed numerically once
-  and shipped as a table (`crates/cubesphere`). Every block footprint has the
-  same area. Fallback if the solve misbehaves: NASA's COBE sky cube (CSC).
+- Projection: smooth and exactly equal-area, computed numerically once and
+  shipped as a table: `Projection::EqualAreaCobe` in `crates/cubesphere`
+  (2026-10-25). Every block footprint has the same area to within 1e-6, and
+  only 14% of the surface is more than 10° off square (COBE 16%, gnomonic
+  31%). Andrew can still pick another grid by eye before the first saved
+  world: https://claude.ai/artifact/7qz75zidRkhjMbVcKU3apY
 - The 8 cube corners stay. Andrew: "part of the charm".
 - Face frames match `viewer/src/planet.rs` `FACES`, so old and new data line up.
 
@@ -18,8 +21,9 @@ with their OK; record the change here with the date.
 
 - Block size s: 1 m during M1, with ½ m as a switch. Decided after M1 by
   playing both.
-- World height H, in blocks, is a power of 2. Default 512: 256 below sea
-  level, 256 above.
+- World height H, in blocks, is a power of 2, set per world. The value is
+  under review (512 felt small; 2,048 m with 512 m below sea level is the
+  suggestion). The split above and below sea level is its own setting.
 - Planet size N = k·H columns per face edge. Default N = 131,072 (k = 256).
   With equal-area blocks, R = s·N·√(6/4π) ≈ 0.691·s·N, so R ≈ 90.57 km.
 - LOD voxel sizes are 1, 2, 4 … H blocks. The coarsest LOD voxel equals the
@@ -31,8 +35,12 @@ with their OK; record the change here with the date.
 
 - planetgen keeps Earth physics at Earth's radius; the shrink happens in the
   bake.
-- Vertical scale preserves Earth's slopes: heights × R / 6,371 km ≈ 1/70.
-  Neisor's peaks become ~120 m and its deepest ocean ~150 m.
+- Vertical scale: under review. Andrew (2026-10-24): large features
+  (mountain ranges, ocean trenches) should sit somewhere between Earth-sized
+  at a local scale (vertical scale 1) and at a planetary scale (1/70, which
+  keeps Earth's slopes), and a world height around 2,048 seems about right.
+  The middle is ≈ 1/8 (peaks ~1 km, deepest trench ~1.26 km, range flanks
+  ~8× steeper than Earth's). He'll decide from renders at 1/70, 1/20 and 1/8.
 - Relief finer than planetgen's resolution comes from the engine's
   generator. Its roughness is a dial for Andrew.
 - Sampling is smooth everywhere: no visible raster texels or noise seams.
@@ -40,7 +48,9 @@ with their OK; record the change here with the date.
   biome surfaces, trees, rocks, caves, rivers, lakes, shores, ice.
   See `docs/feature-inventory.md`.
 - Clouds are a sky effect above the world height; they do not shrink 1/70.
-- Time: 24-minute days (one game minute per real second).
+- Time: 24-minute days (one game minute per real second), from Andrew's
+  October vision. His July calendar (7-day lunar month, 3 months per season,
+  84-day year, all adjustable) carries over unless he changes it: to confirm.
 
 ## Water (Andrew)
 

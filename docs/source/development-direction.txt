@@ -1,0 +1,45 @@
+What I want the game to have, eventually:
+-Have semi-realistic technological progression
+-Have a  wiring and engineering system. Blocks like wires, branches, and pipes should be able to sit side by side with or without connecting. Roots and branches should be able to be embedded in leaves and the ground and wires and plumbing should be able to be embedded in walls. The player should be able to construct car, plane, boat, submarine, and helicopter-like vehicles.
+The major inspiration for these systems would be the Create mod and Vintage Story.
+
+Major decision points, which we would like you to help determine the feasibility of:
+
+-The ability for completely seperate voxel grids for vehicles and detatched/falling objects, allowing them to move, rotate, orbit, etc. Potentially a system of structural support, either through actual physical simulation or an overhang distance? How this is to be integrated with the warped voxel grid is a massive question. Would objects that become "unanchored" transform into perfect cubes? If not, would they retain their own inherent distorted shape as a remanant of the terrain they were created from? If a vehicle traveled to a different area of the planet then, would it slowly warp to account for the change in the grid, allowing it to be reattatched? If these drawbacks are undesirable, maybe voxel physics will have to be restricted to block sliding, block updates, and cellular automata, allowing blocks to fall vertically only, and vehicles will have to be pre-built off of the voxel grid using perfect cubes, perhaps using a placing mechanic that allows the player to set down unanchored voxels, or maybe a "connector" block that sits on the warped grid, has some sort of "hinge" on of its faces, and all blocks placed on that hinge are on their own perfect voxel grid. If voxels can start on the warped grid and become fully unanchored, it doesn't make sense for them to be able to be fully reanchored onto the planetary grid without being aligned perfectly. In a normal flat voxel game these problems would be completely avoided, so I've considered using perfect cube planets with 90 degree gravity swaps at each cube edge, but this would be a massive change to the game and poses a few problems such as with low-altitude circular orbits not fitting onto the planet.
+
+-Another large decision point is the size of the voxels. I believe the current specification is 1 meter high, but I've also considered using 1/2 or 1/3 (1 foot) sized voxels. There are several reasons for this, including the thickness of walls being more realistic, easier vehicle navigability over terrain, and a higher level of detail, but this would be a significant departure from Minecraft-style building. If the voxels are smaller than a meter, a significant amount of furniture blocks like furnaces, tables, etc. will need to be multi-blocks, but multi-blocks will probably be needed for doors regardless. Significantly reducing the voxel size also complicates building and mining a bit. 1/2 and 1/3 meter voxels have 8x and 27x less area than a 1-meter voxel respectively. Though, the player will mostly be making hollow structures with walls and floors, so this really only feels like a 4x and 9x multiplier respectively. If the player wants to fill in terrain or build Egyptian pyramid-like structures with thick stone walls, perhaps an easier placement system would be desired, like being able to drag to fill areas with blocks or being able to place 2xed or 3xed voxels all at once. Mining is a more concerning change, because in order to make underground rooms and tunnels the player will need to clear out entire cubic areas. Breaking blocks should thus probably scale more easily with voxel size as well.
+
+On the speed of block-breaking and resource collection, I have created a rough rule to balance realism and gameplay, which goes as follows:
+-The world should be ~60x less wide than in real life. (Per cube face, 64x less than the nearest power of two or 50x less than 10m if we want a round number)
+-Time should move ~60x faster than in real life (24 minute days, 1 minute per second)
+-The player should be able to gather resources, mine, and build with ~60x the efficiency of real life.
+
+I'm not sure as to how inventory management should work. Perhaps the player should have seperate item space and block space, so the player is limited in the amount of items they can carry but much less limited in the amount of cubic voxels they can carry so that building is still relatively easy.
+
+Other features or changes to be made, eventually:
+
+-Currently, the blocks in the game appear to have their color determined by generation properties, and blocks can only be placed or broken in collumns. A true block palate, chunk loading and saving system, and block placement system should be implemented. Chunks should only save if a block is placed or broken.
+
+-Non-full voxel blocks such as branches, poles, placable items, and certain types of furniture
+
+-A block-update system for physics and other interactions
+
+-Water levels, water physics, and powder physics (potentially also using a level-based system, but with an angle of inclination), with vertex/mesh sloping (like minecraft)
+
+-An improved river generation system where rivers generate at a near-continuous height value using water levels and the surrounding terrain contains the water. Waterfalls would also be nice.
+
+-Additionally, rivers should keep track of the water flow in and out of the loaded chunk area so that the player can divert water without drying up the entire loaded area. For performance reasons, the water should ideally stop simulating when the water flow is laminar, and cyclic or chaotic simulation behavior should be avoided. Lakes and oceans should always be treated as having a full level outside of the loaded area so that water keeps flows inwards to prevent the water level in the loaded region from lowering and water suddenly crashing in when the loaded area shifts.
+
+-A block and texture editor
+
+-A terrain noise overhaul on earth to get rid of the "texel" artifacts between the pixelated noise octaves. Additionally, the moon generation changes outlined should be implemented.
+
+-A terrain/noise editor?
+
+I haven't been too aware of the technical aspects of the game, so I do have a couple questions.
+
+-We were originally thinking of having voxel LODs, which is why we put the Cubyz code in the interchange. Terrain meshes are absolutely needed for high distances, but it's simply much nicer to be able to see structures and more 3d-ish terrain from a longer distance without sacrificing too much preformance.
+
+-Based on our initial specifications, the game is clearly devoid of a game engine, but does it use a graphics library like OpenGL or Vulkan?
+
+-Some preformance improvements like greedy meshing would be nice.

@@ -1,0 +1,41 @@
+New feature: Solar system, planets, and seperate block grids
+For now, just work on the sun and the moon, though other stars and planets may eventually be added.
+Start by turning the sun and the moon into real, physical objects, rather than just textures that appear on the atmosphere.
+
+Moon generation notes:
+-Use the same voxel grid as Neisor does, but make the moon about as small relative to Neisor as our moon is to Earth.
+-The base layer of the moon can start with some very large-scale noise octaves.
+
+Note that the sun will not have a voxel grid, but rather a mesh. The sun may eventually have dynamic texturing and mobile mesh detail.
+
+Generation features:
+-ridges, dimple in the middle for large craters
+-ray system (radial streaks)
+-lunar mare (light and darks spots)
+-non circular craters from incidental strikes (less common because of gravity)
+-new craters in the simulation should generally add detail on top of the previous crater, overriding the terrain at the impact site and affecting terrain on the edge of the impact
+-water deposition (near poles, inside crater shadows, under the ground)
+-underground resource reservoirs
+
+Local-level noise and craters can be added. Generally, the moon should be smoother than Neisor is, like in real life.
+
+Other features:
+Time-deterministic 2-body orbital mechanics (Sun and planet interaction, planet and moon interaction, no true 3-body dynamics, but centers of gravity can be orbitally locked to another body and even though the planet and moon orbits will be roughly cirular and planar we want the ability to have elliptical/eccentric orbits for future use.
+When timeskipping, body positions will update and the camera will realign to a body's position if it is focusing on it.
+Ability to stop focusing on Neisor and enter freecam (full 3d movement, including all translations and rotations, eg. going upside-down), and the ability focus on other bodies like the moon or the sun
+Control change: Ability to use Q and E to roll in freecam, left clicking will be used to break blocks and right clicking will be used to place blocks.
+Visual change: Instead of the entire screen being either light or dark depending on whether the camera is above the day side or night side of the planet, the planet itself will be shaded.
+
+Moon improvements:
+1: Max crater size should be significantly larger (up to lunar mare sized) though there should only be a FEW craters of the larger sizes.
+2: Minimum crater size needs to be MUCH smaller and smaller-sized creators need to be waaaay more likely, like 1000 times more common than the very largest ones.
+3: WAY more craters, see image. a major lunar mare or largest-sized crater basin covers the same area that hundreds of smaller craters do.
+4: Ray improvements need to be made, at the moment they vaguely resemble a cartoonish sun ray. See image, more variation should be added between different individual rays with smaller ones being more common and filling the gaps between the larger ones. Once smaller craters pile on top of the rays they should look much better naturally. Rays should look like rough lines that taper out rather than radial bands that expand as they fade away.
+5: Rays should be significantly rarer and should not appear on large craters, see the image attatched, smallish craters like Tycho should be the primary distribution size.
+6: There should be more of the large lunar mare "cratons," at least from the seed that we rolled, and many smaller mid-sized mare should also generate. There should probably be a noise map that determines spawning and encourages larger lunar mares to cluster up and smaller ones to spawn on the edges, just as we see with the front side of our moon.
+
+Notes:
+-Crater basins on the edge of real lunar mare seem to only inherit one color, either the darker mare color, causing an expansion of the mare visually, the lighter surface color, eating away at the mare visually, or something inbetween.
+-Craters, especially larger ones, should variably appear rougher with a slightly irregular shape, see the large craters in the background shadow of the real moon image.
+-The interior of a crater's rim seems to be a more sudden change in elevation than the exterior of it's rim, which seems to level off more slowly. On larger craters, the flat section of the rim seems to be at pretty much the same level as the adjacent ground, again, see the background shadow craters.
+-The ground immediately outside of a crater containing a ray system seems to be darker and smoother at first, quickly fading into the lighter and more irregular ray system, see the Tycho crater.
