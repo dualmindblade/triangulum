@@ -37,5 +37,7 @@ things look. **Claude (Opus)** leads the agents.
    into a fresh worktree; never symlink or junction them.
 5. Windows 10. The Bash tool is usually easier than PowerShell. Kill only
    processes you started.
-6. **Licences:** the game is MIT. Cubyz (GPLv3) is ideas only. Seeds of
+6. **Push after every merge to `main`.** The repo is public; Andrew pulls it
+   to play on his own machine. Never commit credentials or saves.
+7. **Licences:** the game is MIT. Cubyz (GPLv3) is ideas only. Seeds of
    Andromeda (MIT) code may be borrowed with attribution.
