@@ -16,8 +16,10 @@
 - **The one number** (RTX 2060, 1080p, 60 s test flight, idle machine):
   **1,185 fps average, 578 fps for the worst 1% of frames, worst frame
   7.0 ms.** The target is 60 fps (16.7 ms).
-- **Next:** M3, Andrew's workshop: a live look panel and block files, so
-  he can tune the look himself (in progress).
+- **New: press F1 for Andrew's look panel.** Sky, light, fog, water,
+  every block's colours and the terrain dials, live; *Save look* writes
+  them to files in git, so his look becomes everyone's. How it works, in
+  plain words: "For Andrew: the look panel" in `game/README.md`.
 - Analysis and plan: https://claude.ai/artifact/7q7Lk9YM4DZxCX5WfcvxPo ·
   grid comparison: https://claude.ai/artifact/7qz75zidRkhjMbVcKU3apY. The
   July docs are in `docs/archive/`; the old viewer still runs from
@@ -115,6 +117,18 @@
   review 3 findings, and a harness command that finds a shore, river,
   lake, waterfall or flat spot near you.
 
+- **M3a** (Opus, verified by Opus, merged): Andrew's look panel. F1 opens
+  it; changes show at once; *Save look* writes `game/assets/look.json`
+  and `blocks.json`, and the game reloads either file within half a
+  second of an edit in a text editor. Terrain dials build a preview world
+  with saving off, so his own world is never touched. A *Screenshot*
+  button saves what he sees plus every setting behind it. I checked it by
+  writing my own look files (a 4 km atmosphere, a brighter night): the
+  sky stays blue at 1.5 km up and the night ground brightens. One look
+  change: grass blocks now have dirt sides, so tunnel ceilings are dirt,
+  and terrace steps in grassland show brown edges (one click in the panel
+  to change back). Frame rate unchanged with the panel closed.
+
 **M1 is feature-complete.** The last step is yours: play it and tell me what
 feels wrong.
 
@@ -129,7 +143,8 @@ You start walking on the hills. Click to capture the mouse (Esc releases).
 WASD walk, Space jump (swim up in water), Shift sprint, G walk/fly, left
 mouse breaks (hold to repeat), right mouse places, 1-9 pick the block, R
 drops you to the ground, F hides water, H hides the HUD, V vsync, P scenic
-places, Q saves and quits, F10 records a replay (see below). Edits save
+places, Q saves and quits, F1 opens the look panel, F10 records a replay
+(see below). Edits save
 automatically to `game/saves/Neisor/`.
 Days are 24 minutes: `[` and `]` slow down and speed up time (up to
 3,600×), and `--time 17:30` starts at golden hour.
@@ -155,13 +170,14 @@ detail (still about 500 fps).
   falling asleep, sand landing outside it, a damaged save loading as an
   empty world, saves surviving a power cut on Windows, and memory as
   edits pile up.
-- **M3a, Andrew's look panel** (Opus): F1 opens a panel with sliders for
-  the sky, light, fog, water and block colours, and for terrain dials.
-  Changes show at once and save to files in git. Grass gets dirt-coloured
-  sides, so tunnel ceilings stop being green.
 
 ## Waiting on you
 
+- **Andrew: the look panel is yours** (F1). Most of the art notes below
+  are now dials he can turn himself: atmosphere height, night brightness,
+  dusk colours, water colour, grass sides. *Save look*, then commit the
+  two files or send them. The panel has only been seen at this machine's
+  150% display scaling; tell me if it's too small or too big on yours.
 - **Try F10 once each.** Press F10, play a minute (dig, pour water, G, F,
   `[` `]`, P, R, alt-tab), press F10 again, and send the file from
   `game/replays/` (how: "Reporting a bug" in `game/README.md`). No agent
@@ -179,8 +195,8 @@ detail (still about 500 fps).
   - **Oceans from orbit** are now an even grey-blue; the deep blue before
     was a bug (space showing through). Bluer water is a colour choice.
   - **Dusk and night are weak,** and golden hour is subtle.
-  - **Underground isn't dark yet,** and grass shows on every face of a
-    grass block, so tunnel ceilings are green.
+  - **Underground isn't dark yet.** (Green tunnel ceilings are fixed:
+    grass now has dirt sides and bottom.)
   - **Distant terrace stripes** ripple on steep slopes far away.
 - **Water behaviours for Andrew to judge** (try pouring and digging):
   1. Flow speed: one block per tick (20 a second); it can be slowed.

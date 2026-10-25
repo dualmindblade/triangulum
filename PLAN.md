@@ -66,7 +66,7 @@ asking anyone.
 
 | Task | What | Who | State |
 |---|---|---|---|
-| M3a | Live look panel (F1): sky, light, fog, water, per-face block colours, distance detail, terrain dials as a preview world; `look.json` and `blocks.json` hot-reloaded; a screenshot button | Opus | started |
+| M3a | Live look panel (F1): sky, light, fog, water, per-face block colours, distance detail, terrain dials as a preview world; `look.json` and `blocks.json` hot-reloaded; a screenshot button | Opus | done |
 
 ## M4 — Things that move
 
