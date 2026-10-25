@@ -1,0 +1,30 @@
+placed 5041 sand blocks in 33.7 ms
+tick   1:   38.706 ms  falling  5041  landed     0
+tick   2:    1.623 ms  falling  5041  landed     0
+tick   3:    0.206 ms  falling  5041  landed     0
+tick   4:    0.206 ms  falling  5041  landed     0
+tick   5:    0.206 ms  falling  5041  landed     0
+tick   6:    0.319 ms  falling  5041  landed     0
+tick   7:    0.205 ms  falling  5041  landed     0
+tick   8:    0.317 ms  falling  5041  landed     0
+tick   9:    0.206 ms  falling  5041  landed     0
+tick  10:    0.319 ms  falling  5041  landed     0
+tick  11:    0.316 ms  falling  5041  landed     0
+tick  12:    0.206 ms  falling  5041  landed     0
+tick  13:    0.321 ms  falling  5041  landed     0
+tick  14:    0.316 ms  falling  5041  landed     0
+tick  15:    0.322 ms  falling  5041  landed     0
+tick  16:    0.316 ms  falling  5041  landed     0
+tick  17:    0.316 ms  falling  5041  landed     0
+tick  18:    0.319 ms  falling  5041  landed     0
+tick  19:    0.316 ms  falling  5041  landed     0
+tick  20:    0.427 ms  falling  5041  landed     0
+tick  21:    0.318 ms  falling  5041  landed     0
+tick  22:    0.316 ms  falling  5041  landed     0
+tick  23:    3.238 ms  falling  4144  landed   897
+tick  24:    4.960 ms  falling  2728  landed  2313
+tick  25:    4.249 ms  falling  1576  landed  3465
+tick  26:    2.812 ms  falling   792  landed  4249
+tick  27:    2.693 ms  falling     0  landed  5041
+falls 5041 landings 5041 vanished 0; worst tick 38.706 ms; average tick while blocks were in flight 2.361 ms over 26 ticks
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 91 filtered out; finished in 0.43s
