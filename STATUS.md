@@ -1,17 +1,24 @@
 # Status
 
-*Updated 2026-10-24 by Claude (Opus).*
+*Updated 2026-10-25 by Claude (Opus).*
 
 ## Where things stand
 
-- **Direction approved:** keep the repo, build a new engine core in `game/`
-  next to the old viewer. Analysis and plan:
-  https://claude.ai/artifact/7q7Lk9YM4DZxCX5WfcvxPo · grid comparison:
-  https://claude.ai/artifact/7qz75zidRkhjMbVcKU3apY
-- **M0 passed.** The prototype is far inside the frame budget on the 2060.
-- **M1 started.** Four tasks running in parallel; see `PLAN.md`.
-- The July process and docs are retired to `docs/archive/`. The old viewer
-  still builds and runs from `viewer/`.
+- **M1, a planet you can dig: feature-complete.** It's waiting for you two
+  to play it (commands below) and watch the video
+  (`docs/media/m1-showcase.mp4`).
+- **M2, things fall and flow: done except replays (M2c).** Sand and gravel
+  fall, water flows under Andrew's 256-level rule, Neisor has its lakes
+  and rivers, and diverting a river keeps the area wet.
+- **The one number** (RTX 2060, 1080p, 60 s test flight, idle machine):
+  **1,185 fps average, 578 fps for the worst 1% of frames, worst frame
+  7.0 ms.** The target is 60 fps (16.7 ms).
+- **Next:** M2c (replays), and M3, Andrew's workshop: a live look panel
+  and block files, so he can tune the look himself.
+- Analysis and plan: https://claude.ai/artifact/7q7Lk9YM4DZxCX5WfcvxPo ·
+  grid comparison: https://claude.ai/artifact/7qz75zidRkhjMbVcKU3apY. The
+  July docs are in `docs/archive/`; the old viewer still runs from
+  `viewer/`.
 
 ## Done
 
@@ -84,6 +91,14 @@
   step `python scripts/bake_rivers_v2.py` (about a minute); without it
   the game runs with no rivers. Saves from before are refused.
 
+- **M2b** (Fable, verified by Opus, merged): flowing water under Andrew's
+  rule, proven to settle (a quantity that strictly falls on every tick
+  with movement). Settled water costs nothing. Partial levels are drawn as
+  sloped surfaces. Water entering and leaving the loaded area is counted
+  exactly. Water is on the hotbar (key 9): left click removes, right click
+  pours. On a real river, a dug trench fills and the river keeps flowing
+  through: about 47,000 units in and 45,000 out.
+
 **M1 is feature-complete.** The last step is yours: play it and tell me what
 feels wrong.
 
@@ -118,7 +133,7 @@ detail (still about 500 fps).
 
 ## In progress
 
-- M2b: flowing water under Andrew's 256-level rule, sloped surfaces (Fable)
+
 
 ## Waiting on you
 
@@ -136,6 +151,17 @@ detail (still about 500 fps).
   - **Underground isn't dark yet,** and grass shows on every face of a
     grass block, so tunnel ceilings are green.
   - **Distant terrace stripes** ripple on steep slopes far away.
+- **Water behaviours for Andrew to judge** (try pouring and digging):
+  1. Flow speed: one block per tick (20 a second); it can be slowed.
+  2. Settled water may keep a slight lean (up to 1 level per block), so a
+     pit dug beside the sea keeps a 7 cm dip. That follows from his rule;
+     flattening it would need a second rule.
+  3. One poured block on flat ground spreads into a 4 mm sheet over up to
+     255 blocks. There's no evaporation or minimum depth.
+  4. Large bodies settle slowly: a 100 m dam break takes minutes.
+  5. Rivers stay frozen at their generated levels (costing nothing) until
+     disturbed; then that reach flows by his rule, and its steps and
+     waterfalls dissolve into a trickle fed from upstream.
 - **Andrew:** with 24-minute days, do the July calendar numbers still stand
   (7-day lunar month, 84-day year)? No rush.
 - **Andrew:** pick a grid by eye if he wants something other than the
