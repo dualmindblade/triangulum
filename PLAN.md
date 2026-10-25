@@ -52,7 +52,7 @@ river doesn't dry up the loaded area, and the frame rate holds.
 | M2b | Water: Andrew's 256-level rule, sloped water surfaces, sleeping when settled, generator values at the loaded-area edge, flow accounting; wired to the generated rivers | Fable | done |
 | M2c | Replays: a snapshot plus ordered inputs reproduce a session exactly (F10 records, `--replay` plays back and reports the first divergence), the rest of review 2 #16, a harness `find` command, review 3 #4 #6 #13 | Fable | done |
 | M1-review3 | Independent review of M2 (sim, water, rivers, saves): 13 findings (`docs/reviews/2026-10-25-engine-review3-astra.md`) | Astra | done |
-| M2-hardening | Review 3 #1 #2 #3 #5 #7 #9 #10 #12 and review 2 #17: the loaded area's moving edge, saves, memory | Fable | started |
+| M2-hardening | Review 3 #1 #2 #3 #5 #7 #9 #10 #12 and review 2 #17: the loaded area's moving edge, saves, memory | Fable | done |
 
 ## M3 — Andrew's workshop
 
