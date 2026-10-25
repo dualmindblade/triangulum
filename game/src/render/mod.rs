@@ -7,6 +7,10 @@ use crate::mesh::GRID_BYTES;
 use bytemuck::{Pod, Zeroable};
 use std::sync::mpsc;
 
+mod sky;
+pub use sky::Sky;
+pub mod reel;
+
 pub const QUAD_BYTES: u64 = 8;
 /// Largest chunk mesh one draw can address (index buffer size).
 pub const MAX_QUADS_PER_CHUNK: u32 = 1 << 17;
@@ -17,6 +21,9 @@ pub const MAX_DRAWS: usize = 1 << 17;
 pub struct CameraUniform {
     pub view_proj: [[f32; 4]; 4],
     pub inv_view_proj: [[f32; 4]; 4],
+    // Retained for compatibility with camera/bench constructors owned by
+    // other missions. SkyUniform supplies the ephemeris and optical values;
+    // the shader consumes only view matrices and fog.z (water alpha) here.
     pub sun_dir: [f32; 4],
     pub cam_up: [f32; 4],
     pub fog: [f32; 4],
@@ -102,6 +109,7 @@ pub struct GpuMesh {
 }
 
 pub struct Renderer {
+    pub sky: Sky,
     pub device: wgpu::Device,
     pub queue: wgpu::Queue,
     pub width: u32,
@@ -111,6 +119,7 @@ pub struct Renderer {
     pub color_view: wgpu::TextureView,
     depth_view: wgpu::TextureView,
     camera_buf: wgpu::Buffer,
+    sky_buf: wgpu::Buffer,
     quads_buf: wgpu::Buffer,
     grids_buf: wgpu::Buffer,
     draws_buf: wgpu::Buffer,
@@ -184,6 +193,7 @@ impl Renderer {
         };
         use wgpu::BufferUsages as U;
         let camera_buf = mk("camera", std::mem::size_of::<CameraUniform>() as u64, U::UNIFORM | U::COPY_DST);
+        let sky_buf = mk("sky", std::mem::size_of::<sky::SkyUniform>() as u64, U::UNIFORM | U::COPY_DST);
         let quads_buf = mk("quads", quad_capacity as u64 * QUAD_BYTES, U::STORAGE | U::COPY_DST);
         let grids_buf = mk("grids", slot_capacity as u64 * GRID_BYTES as u64, U::STORAGE | U::COPY_DST);
         let draws_buf = mk("draws", (MAX_DRAWS * std::mem::size_of::<DrawRecord>()) as u64, U::STORAGE | U::COPY_DST);
@@ -212,7 +222,7 @@ impl Renderer {
         let ro = wgpu::BufferBindingType::Storage { read_only: true };
         let bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("terrain-bgl"),
-            entries: &[entry(0, wgpu::BufferBindingType::Uniform), entry(1, ro), entry(2, ro), entry(3, ro), entry(4, ro)],
+            entries: &[entry(0, wgpu::BufferBindingType::Uniform), entry(1, ro), entry(2, ro), entry(3, ro), entry(4, ro), entry(5, wgpu::BufferBindingType::Uniform)],
         });
         let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("terrain-bg"),
@@ -223,6 +233,7 @@ impl Renderer {
                 wgpu::BindGroupEntry { binding: 2, resource: grids_buf.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 3, resource: draws_buf.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 4, resource: colours_buf.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 5, resource: sky_buf.as_entire_binding() },
             ],
         });
         let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -271,13 +282,14 @@ impl Renderer {
             None,
             depth(false, wgpu::CompareFunction::Greater),
         );
-        let sky_pipeline = pipeline("sky", "vs_sky", "fs_sky", None, None, depth(false, wgpu::CompareFunction::Always));
+        let sky_pipeline = pipeline("sky", "vs_sky", "fs_sky", None, None, depth(false, wgpu::CompareFunction::GreaterEqual));
         let query_set = device.create_query_set(&wgpu::QuerySetDescriptor { label: Some("ts"), ty: wgpu::QueryType::Timestamp, count: 2 });
         let query_resolve = mk("ts-resolve", 16, U::QUERY_RESOLVE | U::COPY_SRC);
         let query_read = mk("ts-read", 16, U::MAP_READ | U::COPY_DST);
         let timestamp_period = queue.get_timestamp_period();
 
         Self {
+            sky: Sky::new(),
             device,
             queue,
             width,
@@ -287,6 +299,7 @@ impl Renderer {
             color_view,
             depth_view,
             camera_buf,
+            sky_buf,
             quads_buf,
             grids_buf,
             draws_buf,
@@ -399,6 +412,8 @@ impl Renderer {
         let opaque = &opaque[..opaque.len().min(MAX_DRAWS)];
         let water = &water[..water.len().min(MAX_DRAWS - opaque.len())];
         self.queue.write_buffer(&self.camera_buf, 0, bytemuck::bytes_of(cam));
+        let sky = self.sky.uniform(cam);
+        self.queue.write_buffer(&self.sky_buf, 0, bytemuck::bytes_of(&sky));
         let (mut tris, mut wtris) = (0u64, 0u64);
         let total = opaque.len() + water.len();
         if total > 0 {
@@ -453,13 +468,15 @@ impl Renderer {
                 multiview_mask: None,
             });
             pass.set_bind_group(0, &self.bind_group, &[]);
-            pass.set_pipeline(&self.sky_pipeline);
-            pass.draw(0..3, 0..1);
             pass.set_index_buffer(self.index_buf.slice(..), wgpu::IndexFormat::Uint32);
             if !opaque.is_empty() {
                 pass.set_pipeline(&self.terrain_pipeline);
                 pass.multi_draw_indexed_indirect(&self.indirect_buf, 0, opaque.len() as u32);
             }
+            // Reversed-Z infinity: fill only pixels the opaque geometry left
+            // at clear depth. Water composites over this sky afterwards.
+            pass.set_pipeline(&self.sky_pipeline);
+            pass.draw(0..3, 0..1);
             if !water.is_empty() {
                 pass.set_pipeline(&self.water_pipeline);
                 pass.multi_draw_indexed_indirect(&self.indirect_buf, opaque.len() as u64 * 20, water.len() as u32);

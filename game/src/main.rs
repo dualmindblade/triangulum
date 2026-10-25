@@ -18,6 +18,12 @@
 //!   --no-vsync --size WxH --hide-water --markers --backend vulkan|dx12
 //!   --frames N --skip-flight --only pose,pose --label TEXT --which a,b
 //!   --screenshot PATH --exit-after SECS   (app: save a frame with the HUD, then quit)
+//! Sky: --time HH:MM (or decimal hours, local solar time at spawn; default 12:00)
+//!   --time-scale F (1; 0 freezes) --day-length SECS (1440)
+//!   --lunar-month-days N (7) --months-per-season N (3) --year-days N (84)
+//!   year-days must equal 4 * months-per-season * lunar-month-days
+//!   [ slows time, ] speeds time (0, 0.1, 1, 10, 60, 600, 3600x)
+//!   --sky-reel --out DIR  (settled 1080p sky comparison, four poses/four times)
 
 pub mod app;
 pub mod bench;
@@ -30,6 +36,7 @@ pub mod player;
 pub mod render;
 pub mod session;
 pub mod sha256;
+pub mod sky;
 pub mod stream;
 pub mod ui;
 pub mod world;
@@ -47,6 +54,13 @@ use world::save::SaveDir;
 use world::{EditStore, Registry};
 
 struct Args {
+    sky_reel: bool,
+    time: f64,
+    time_scale: f64,
+    day_length: Option<f64>,
+    lunar_month_days: Option<f64>,
+    months_per_season: Option<u32>,
+    year_days: Option<f64>,
     world: String,
     blocks: String,
     seed: Option<u64>,
@@ -93,6 +107,13 @@ struct Args {
 fn parse_args() -> Args {
     let root = env!("CARGO_MANIFEST_DIR");
     let mut a = Args {
+        sky_reel: false,
+        time: 12.0,
+        time_scale: 1.0,
+        day_length: None,
+        lunar_month_days: None,
+        months_per_season: None,
+        year_days: None,
         world: format!("{root}/assets/world.json"),
         blocks: format!("{root}/assets/blocks.json"),
         seed: None,
@@ -139,6 +160,13 @@ fn parse_args() -> Args {
     while let Some(k) = it.next() {
         let mut val = || it.next().unwrap_or_else(|| panic!("missing value after {k}"));
         match k.as_str() {
+            "--sky-reel" => a.sky_reel = true,
+            "--time" => a.time = sky::parse_hour(&val()).unwrap_or_else(|e| fail(&e)),
+            "--time-scale" => a.time_scale = val().parse().unwrap(),
+            "--day-length" => a.day_length = Some(val().parse().unwrap()),
+            "--lunar-month-days" => a.lunar_month_days = Some(val().parse().unwrap()),
+            "--months-per-season" => a.months_per_season = Some(val().parse().unwrap()),
+            "--year-days" => a.year_days = Some(val().parse().unwrap()),
             "--world" => a.world = val(),
             "--blocks" => a.blocks = val(),
             "--seed" => a.seed = Some(val().parse().unwrap()),
@@ -216,6 +244,15 @@ fn main() {
         rayon::ThreadPoolBuilder::new().num_threads(args.threads).build_global().unwrap();
     }
     let mut config = WorldConfig::load(&args.world).unwrap_or_else(|e| fail(&e));
+    let mut sky_settings = sky::Settings::load(&args.world).unwrap_or_else(|e| fail(&e));
+    if let Some(v) = args.day_length { sky_settings.day_length_s = v; }
+    if let Some(v) = args.lunar_month_days { sky_settings.lunar_month_days = v; }
+    if let Some(v) = args.months_per_season { sky_settings.months_per_season = v; }
+    if let Some(v) = args.year_days { sky_settings.year_days = v; }
+    sky_settings.validate().unwrap_or_else(|e| fail(&e));
+    if !args.time_scale.is_finite() || !(0.0..=3600.0).contains(&args.time_scale) {
+        fail("--time-scale must be finite and in [0, 3600]");
+    }
     // A relative bake path in world.json is relative to the game/ directory,
     // so the engine runs from any current directory.
     if Path::new(&config.bake).is_relative() {
@@ -238,7 +275,7 @@ fn main() {
     let bake_sha = world::save::bake_identity(&config.bake).unwrap_or_else(|e| fail(&format!("bake identity: {e}")));
 
     // Saves: load before the engine exists so a mismatch refuses early.
-    let tools = args.bench || args.shots || args.find_places || args.probe;
+    let tools = args.bench || args.shots || args.find_places || args.probe || args.sky_reel;
     let edits = Arc::new(EditStore::new());
     let save_dir = if args.no_save || tools {
         None
@@ -287,7 +324,17 @@ fn main() {
         rayon::current_num_threads()
     );
     let engine = Arc::new(engine);
+    let start_dir = args.at.map_or_else(|| engine.presets()[0].dir, |(lat, lon, _)| grid::Planet::dir_of_lat_lon_deg(lat, lon));
+    let seconds = sky_settings.starting_seconds(args.time, start_dir.y.atan2(start_dir.x));
+    let ephemeris = sky_settings.at(seconds);
+    let (sun_lat, sun_lon) = grid::Planet::lat_lon_deg(ephemeris.sun);
+    println!("sky: absolute {seconds:.6}s, local start {:.2}h, speed {}x, day {}s, lunar month {}d, {} months/season, year {}d; sun lat {sun_lat:.6} lon {sun_lon:.6}", args.time, args.time_scale, sky_settings.day_length_s, sky_settings.lunar_month_days, sky_settings.months_per_season, sky_settings.year_days);
+    sky::install(sky::Startup { settings: sky_settings, radius: p.radius, clock: sky::Clock { seconds, speed: args.time_scale } });
     let out = |default: &str| args.out.clone().unwrap_or_else(|| format!("{root}/{default}"));
+    if args.sky_reel {
+        render::reel::run(engine, &out("out/m1c-sky/engine"), args.backend.as_deref());
+        return;
+    }
 
     if args.probe {
         // Height profile along 96 columns around --at, in the lattice i direction.
