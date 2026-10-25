@@ -29,7 +29,7 @@ flight holds 60 fps at 1080p.
 | M1-terrain | Landforms between the bake's scale and the metre scale (ridges, valleys, escarpments, mesas), plus four generator review fixes | Opus | done |
 | M1-review | Independent review of the merged engine by a different model family: 15 findings, routed to M1b, M1-terrain and M1c (`docs/reviews/2026-10-25-M1a-astra.md`) | Astra | done |
 | M1c-sky | Sky, sun, stars and fog from the old viewer, 24-minute days, day/night lighting | Astra | done |
-| M1c-stream | Non-overlapping coverage tree with incremental traversal (finer distant detail), review findings #8 #9 #11 #12 #15, chunk keys per body, sneak key, skipping buried chunks via `classify` | Fable | started |
+| M1c-stream | Non-overlapping coverage tree with incremental traversal (finer distant detail), review findings #8 #9 #11 #12 #15, chunk keys per body, sneak key, skipping buried chunks via `classify` | Fable | done |
 
 ## M2 — Things fall and flow
 
