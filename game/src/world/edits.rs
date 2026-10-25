@@ -5,6 +5,11 @@
 //! applies this overlay after it. The store also tracks which chunks are
 //! unsaved (dirty) and which loaded chunks at any LOD must be remeshed
 //! (invalidated), so saving and streaming stay out of the edit path.
+//!
+//! A spatial index keyed by ancestor chunk (every LOD up to `INDEX_LODS`)
+//! answers "which edited chunks lie under this coarse chunk?" without a
+//! scan, so generating a coarse chunk costs the edits near it, not every
+//! edit on the planet.
 
 use super::BlockId;
 use super::chunk::{VOXELS, index};
@@ -12,15 +17,31 @@ use crate::grid::{ChunkKey, FastMap, FastSet};
 use std::sync::RwLock;
 use std::time::Instant;
 
+/// Ancestors indexed per edited chunk: LODs 1..=INDEX_LODS (a chunk at LOD
+/// 15 is 2^20 blocks wide, more than any supported face).
+const INDEX_LODS: u8 = 15;
+
 #[derive(Default)]
 struct Inner {
     chunks: FastMap<ChunkKey, Vec<BlockId>>,
+    /// Edited LOD-0 chunks under each ancestor (LODs 1..=INDEX_LODS).
+    under: FastMap<ChunkKey, Vec<ChunkKey>>,
     dirty: FastSet<ChunkKey>,
     invalidated: Vec<ChunkKey>,
     last_edit: Option<Instant>,
     first_dirty: Option<Instant>,
     /// Bumps on every change (cheap "anything new?" check).
     generation: u64,
+}
+
+impl Inner {
+    fn index(&mut self, key: ChunkKey) {
+        let mut anc = key;
+        for _ in 0..INDEX_LODS {
+            anc = anc.parent().expect("lod < 63");
+            self.under.entry(anc).or_default().push(key);
+        }
+    }
 }
 
 #[derive(Default)]
@@ -69,17 +90,31 @@ impl EditStore {
         self.inner.read().unwrap().chunks.keys().copied().collect()
     }
 
+    /// The edited LOD-0 chunks inside `anc` (itself, at LOD 0).
+    pub fn edited_under(&self, anc: ChunkKey) -> Vec<ChunkKey> {
+        let g = self.inner.read().unwrap();
+        if anc.lod == 0 {
+            return if g.chunks.contains_key(&anc) { vec![anc] } else { Vec::new() };
+        }
+        if anc.lod > INDEX_LODS {
+            return g.chunks.keys().filter(|k| anc.contains(k)).copied().collect();
+        }
+        g.under.get(&anc).cloned().unwrap_or_default()
+    }
+
     /// Set one block. `natural` produces the generator's dense chunk when
     /// this chunk is edited for the first time. Returns whether anything
     /// changed. Marks the chunk dirty; the caller computes invalidations.
     pub fn set(&self, key: ChunkKey, x: usize, y: usize, z: usize, id: BlockId, natural: impl FnOnce() -> Vec<BlockId>) -> bool {
         debug_assert_eq!(key.lod, 0);
         let mut g = self.inner.write().unwrap();
-        let dense = g.chunks.entry(key).or_insert_with(|| {
+        if !g.chunks.contains_key(&key) {
             let d = natural();
             assert_eq!(d.len(), VOXELS);
-            d
-        });
+            g.chunks.insert(key, d);
+            g.index(key);
+        }
+        let dense = g.chunks.get_mut(&key).expect("just inserted");
         let slot = &mut dense[index(x, y, z)];
         if *slot == id {
             return false;
@@ -97,7 +132,9 @@ impl EditStore {
     pub fn insert_chunk(&self, key: ChunkKey, dense: Vec<BlockId>, dirty: bool) {
         assert_eq!(dense.len(), VOXELS);
         let mut g = self.inner.write().unwrap();
-        g.chunks.insert(key, dense);
+        if g.chunks.insert(key, dense).is_none() {
+            g.index(key);
+        }
         if dirty {
             let now = Instant::now();
             g.dirty.insert(key);
@@ -166,7 +203,7 @@ mod tests {
     #[test]
     fn set_tracks_change_and_dirt() {
         let s = EditStore::new();
-        let key = ChunkKey { face: 1, lod: 0, cx: 3, cy: 4, cz: 5 };
+        let key = ChunkKey::neisor(1, 0, 3, 4, 5);
         let natural = || vec![1u16; VOXELS];
         assert!(!s.set(key, 0, 0, 0, 1, natural), "same block is not a change");
         assert_eq!(s.len(), 1, "the chunk becomes authoritative on first touch");
@@ -184,5 +221,35 @@ mod tests {
         s.push_invalidated([key, key, ChunkKey { lod: 1, ..key }]);
         assert_eq!(s.take_invalidated().len(), 2);
         assert!(s.take_invalidated().is_empty());
+    }
+
+    #[test]
+    fn the_ancestor_index_finds_edits_under_a_coarse_chunk() {
+        let s = EditStore::new();
+        let natural = || vec![1u16; VOXELS];
+        let a = ChunkKey::neisor(2, 0, 100, 200, 17);
+        let b = ChunkKey::neisor(2, 0, 101, 200, 17); // same LOD-1 parent as a
+        let c = ChunkKey::neisor(2, 0, 160, 200, 17); // same LOD-8 ancestor, not LOD-7
+        let d = ChunkKey::neisor(3, 0, 100, 200, 17); // another face
+        for k in [a, b, c, d] {
+            s.set(k, 0, 0, 0, 0, natural);
+        }
+        s.insert_chunk(a, natural(), false); // re-inserting does not double-index
+        let under = |anc: ChunkKey| {
+            let mut v = s.edited_under(anc);
+            v.sort();
+            v
+        };
+        assert_eq!(under(a.parent().unwrap()), vec![a, b]);
+        assert_eq!(under(ChunkKey::neisor(2, 5, 100 >> 5, 200 >> 5, 17 >> 5)), vec![a, b]);
+        assert_eq!(under(ChunkKey::neisor(2, 7, 100 >> 7, 200 >> 7, 17 >> 7)), vec![a, b]);
+        assert_eq!(under(ChunkKey::neisor(2, 7, 160 >> 7, 200 >> 7, 17 >> 7)), vec![c]);
+        assert_eq!(under(ChunkKey::neisor(2, 8, 0, 0, 0)), vec![a, b, c]);
+        assert_eq!(under(ChunkKey::neisor(2, 6, 3, 200 >> 6, 17 >> 6)), Vec::<ChunkKey>::new());
+        assert_eq!(under(ChunkKey::neisor(3, 9, 0, 0, 0)), vec![d]);
+        assert_eq!(under(a), vec![a]);
+        assert_eq!(under(ChunkKey::neisor(2, 0, 5, 5, 5)), Vec::<ChunkKey>::new());
+        // Beyond the indexed LODs it falls back to a scan and still answers.
+        assert_eq!(under(ChunkKey::neisor(2, 16, 0, 0, 0)), vec![a, b, c]);
     }
 }

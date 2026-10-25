@@ -516,9 +516,9 @@ mod tests {
     fn determinism_across_runs_and_thread_counts() {
         let g = test_generator();
         let keys = [
-            ChunkKey { face: 2, lod: 0, cx: 3295, cy: 1813, cz: 16 },
-            ChunkKey { face: 2, lod: 3, cx: 400, cy: 220, cz: 2 },
-            ChunkKey { face: 0, lod: 9, cx: 3, cy: 5, cz: 0 },
+            ChunkKey::neisor(2, 0, 3295, 1813, 16),
+            ChunkKey::neisor(2, 3, 400, 220, 2),
+            ChunkKey::neisor(0, 9, 3, 5, 0),
         ];
         let once: Vec<Vec<u8>> = keys.iter().map(|k| g.generate(*k).chunk.to_bytes()).collect();
         for threads in [1usize, 8] {
@@ -541,7 +541,7 @@ mod tests {
         let (f, i, j) = g.planet.lattice_of_dir(dir);
         let h = g.ground_height_m(dir);
         let k = g.planet.sea_level as f64 + h;
-        let key = ChunkKey { face: f, lod: 0, cx: i as u32 / 32, cy: j as u32 / 32, cz: (k as u32) / 32 };
+        let key = ChunkKey::neisor(f, 0, i as u32 / 32, j as u32 / 32, (k as u32) / 32);
         let generated = g.generate(key);
         let top = generated.ids[pidx(0, 0, 32)];
         let bottom = generated.ids[pidx(0, 0, -1)];

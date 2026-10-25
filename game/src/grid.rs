@@ -357,10 +357,16 @@ pub struct BlockPos {
     pub k: u32,
 }
 
-/// A 32^3 chunk at LOD `lod` (voxel = 2^lod blocks). cx, cy index the
-/// footprint on the face, cz the vertical slab.
+/// The body a lattice belongs to. Neisor is 0; the moon and vehicle grids
+/// get their own ids later, so a chunk key never means two places.
+pub type BodyId = u8;
+pub const BODY_NEISOR: BodyId = 0;
+
+/// A 32^3 chunk at LOD `lod` (voxel = 2^lod blocks) of body `body`. cx, cy
+/// index the footprint on the face, cz the vertical slab.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct ChunkKey {
+    pub body: BodyId,
     pub face: u8,
     pub lod: u8,
     pub cx: u32,
@@ -368,9 +374,10 @@ pub struct ChunkKey {
     pub cz: u32,
 }
 
-/// A chunk column footprint: every chunk with the same (face, lod, cx, cy).
+/// A chunk column footprint: every chunk with the same (body, face, lod, cx, cy).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct FootprintKey {
+    pub body: BodyId,
     pub face: u8,
     pub lod: u8,
     pub cx: u32,
@@ -378,6 +385,12 @@ pub struct FootprintKey {
 }
 
 impl ChunkKey {
+    /// A key on Neisor.
+    #[inline]
+    pub const fn neisor(face: u8, lod: u8, cx: u32, cy: u32, cz: u32) -> Self {
+        Self { body: BODY_NEISOR, face, lod, cx, cy, cz }
+    }
+
     /// Blocks per voxel.
     #[inline]
     pub fn voxel_blocks(&self) -> u64 {
@@ -399,30 +412,32 @@ impl ChunkKey {
 
     #[inline]
     pub fn footprint(&self) -> FootprintKey {
-        FootprintKey { face: self.face, lod: self.lod, cx: self.cx, cy: self.cy }
+        FootprintKey { body: self.body, face: self.face, lod: self.lod, cx: self.cx, cy: self.cy }
     }
 
     pub fn parent(&self) -> Option<ChunkKey> {
-        (self.lod < 63).then(|| ChunkKey {
-            face: self.face,
-            lod: self.lod + 1,
-            cx: self.cx / 2,
-            cy: self.cy / 2,
-            cz: self.cz / 2,
-        })
+        (self.lod < 63).then(|| ChunkKey { lod: self.lod + 1, cx: self.cx / 2, cy: self.cy / 2, cz: self.cz / 2, ..*self })
     }
 
     /// The eight children at the next finer LOD (lod must be > 0).
     pub fn children(&self) -> [ChunkKey; 8] {
-        let (f, l) = (self.face, self.lod - 1);
         let (x, y, z) = (self.cx * 2, self.cy * 2, self.cz * 2);
-        let mut out = [ChunkKey { face: f, lod: l, cx: x, cy: y, cz: z }; 8];
+        let mut out = [ChunkKey { lod: self.lod - 1, cx: x, cy: y, cz: z, ..*self }; 8];
         for (n, c) in out.iter_mut().enumerate() {
             c.cx = x + (n as u32 & 1);
             c.cy = y + ((n as u32 >> 1) & 1);
             c.cz = z + ((n as u32 >> 2) & 1);
         }
         out
+    }
+
+    /// Is `other` this chunk or one of its descendants (same body and face)?
+    pub fn contains(&self, other: &ChunkKey) -> bool {
+        if other.body != self.body || other.face != self.face || other.lod > self.lod {
+            return false;
+        }
+        let d = self.lod - other.lod;
+        other.cx >> d == self.cx && other.cy >> d == self.cy && other.cz >> d == self.cz
     }
 }
 
@@ -432,13 +447,71 @@ impl FootprintKey {
         (CHUNK as u64) << self.lod
     }
     pub fn children(&self) -> [FootprintKey; 4] {
-        let (f, l, x, y) = (self.face, self.lod - 1, self.cx * 2, self.cy * 2);
+        let (l, x, y) = (self.lod - 1, self.cx * 2, self.cy * 2);
         [
-            FootprintKey { face: f, lod: l, cx: x, cy: y },
-            FootprintKey { face: f, lod: l, cx: x + 1, cy: y },
-            FootprintKey { face: f, lod: l, cx: x, cy: y + 1 },
-            FootprintKey { face: f, lod: l, cx: x + 1, cy: y + 1 },
+            FootprintKey { lod: l, cx: x, cy: y, ..*self },
+            FootprintKey { lod: l, cx: x + 1, cy: y, ..*self },
+            FootprintKey { lod: l, cx: x, cy: y + 1, ..*self },
+            FootprintKey { lod: l, cx: x + 1, cy: y + 1, ..*self },
         ]
+    }
+}
+
+/// A conservative bounding sphere of a chunk's rendered geometry.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Bounds {
+    pub centre: DVec3,
+    pub radius: f64,
+}
+
+impl Planet {
+    /// Bounding sphere of everything a chunk can draw. The renderer warps a
+    /// chunk through a bilinear curvature grid whose corners are the exact
+    /// lattice points at the chunk's radial floor plus `up * z`; every
+    /// rendered point therefore lies in the convex hull of the grid corners
+    /// at the two radial extremes (lattice floor k0 and k0 + 32 voxels), and
+    /// a sphere containing those corners contains the hull. The corners
+    /// farthest from the chunk's axis are the footprint's own four corners
+    /// (the footprint is a convex spherical quad), so the radius is the
+    /// largest distance from the mid-radius centre to those eight points,
+    /// with a small margin for the grid's interior corners and f32 rounding.
+    /// A chunk that sticks out of the world height is clipped to it (the
+    /// mesher emits nothing above the top layer).
+    pub fn chunk_bounds(&self, key: ChunkKey) -> Bounds {
+        let e = key.extent_blocks() as f64;
+        let (i0, j0, k0) = key.origin_blocks();
+        let (i0, j0, k0) = (i0 as f64, j0 as f64, k0 as f64);
+        let (r0, r1) = (self.radius_at(k0), self.radius_at((k0 + e).min(self.height as f64)));
+        let centre = self.dir(key.face, i0 + e * 0.5, j0 + e * 0.5) * (0.5 * (r0 + r1));
+        let mut r2 = 0.0f64;
+        for (di, dj) in [(0.0, 0.0), (e, 0.0), (0.0, e), (e, e)] {
+            let d = self.dir(key.face, i0 + di, j0 + dj);
+            r2 = r2.max((d * r0 - centre).length_squared()).max((d * r1 - centre).length_squared());
+        }
+        Bounds { centre, radius: r2.sqrt() * 1.002 + 0.5 }
+    }
+
+    /// Express a lattice point of the neighbouring face `other` in `face`'s
+    /// own continuous coordinates, past the shared side: the inverse of one
+    /// step of `wrap`. None when the faces do not share a side.
+    pub fn extended_coords(&self, face: u8, other: u8, i: f64, j: f64) -> Option<(f64, f64)> {
+        let n = self.n as f64;
+        let side = (0..4u8).find(|&e| self.edges[face as usize][e as usize].face == other)?;
+        let m = self.edges[face as usize][side as usize];
+        // Depth into `other` from the shared side and the coordinate along it.
+        let (t, u) = match m.edge {
+            0 => (i, j),
+            1 => (n - i, j),
+            2 => (j, i),
+            _ => (n - j, i),
+        };
+        let u = if m.flip { n - u } else { u };
+        Some(match side {
+            0 => (-t, u),
+            1 => (n + t, u),
+            2 => (u, -t),
+            _ => (u, n + t),
+        })
     }
 }
 
@@ -592,7 +665,7 @@ mod tests {
         // LOD alignment: voxel x of chunk (lod L, cx) covers lattice columns
         // [i0 + x 2^L, i0 + (x+1) 2^L), and the eight children tile the parent.
         for lod in 1..=9u8 {
-            let k = ChunkKey { face: 2, lod, cx: 5, cy: 3, cz: 1 };
+            let k = ChunkKey::neisor(2, lod, 5, 3, 1);
             let (i0, j0, k0) = k.origin_blocks();
             assert_eq!(i0, 5 * 32 << lod);
             assert_eq!(k.voxel_blocks(), 1 << lod);
@@ -621,6 +694,93 @@ mod tests {
         assert_eq!(p.chunks_per_column(0), 64);
         assert_eq!(p.chunks_per_column(9), 1); // sticks out of H and is clipped
         assert_eq!(p.chunks_per_edge(9), 8);
+    }
+
+    /// Every curvature-grid corner the mesher emits (5x5 per footprint, at
+    /// the chunk's radial floor and ceiling) lies inside the chunk's
+    /// bounding sphere, including next to a cube corner where the lattice
+    /// is most skewed (review #9: the old half*sqrt(3)*1.05 radius was
+    /// 30.1 m there against a 33.8 m corner).
+    #[test]
+    fn chunk_bounds_contain_every_grid_corner_near_a_cube_corner() {
+        let p = planet();
+        let corner_l0 = ChunkKey::neisor(0, 0, 4095, 4095, 16);
+        let mut keys = vec![
+            corner_l0,
+            ChunkKey::neisor(0, 0, 0, 4095, 16),
+            ChunkKey::neisor(3, 0, 0, 0, 20),
+            ChunkKey::neisor(0, 9, 7, 7, 0),
+            ChunkKey::neisor(5, 9, 0, 0, 0),
+            ChunkKey::neisor(2, 4, 255, 0, 2),
+            ChunkKey::neisor(2, 6, 10, 12, 0),
+            ChunkKey::neisor(1, 2, 1023, 500, 10),
+        ];
+        // A pseudo-random spread over every face and LOD.
+        let mut s = 0x9E37_79B9u64;
+        for _ in 0..200 {
+            s = s.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            let lod = ((s >> 33) % 10) as u8;
+            let per_edge = p.chunks_per_edge(lod);
+            let per_col = p.chunks_per_column(lod);
+            keys.push(ChunkKey::neisor(((s >> 43) % 6) as u8, lod, ((s >> 13) as u32) % per_edge, ((s >> 23) as u32) % per_edge, ((s >> 3) as u32) % per_col));
+        }
+        let mut worst_slack = f64::MAX;
+        for key in keys {
+            let b = p.chunk_bounds(key);
+            let e = key.extent_blocks() as f64;
+            let (i0, j0, k0) = key.origin_blocks();
+            let (i0, j0, k0) = (i0 as f64, j0 as f64, k0 as f64);
+            let mut farthest = 0.0f64;
+            for gy in 0..=4 {
+                for gx in 0..=4 {
+                    let d = p.dir(key.face, i0 + e * gx as f64 / 4.0, j0 + e * gy as f64 / 4.0);
+                    for r in [p.radius_at(k0), p.radius_at((k0 + e).min(p.height as f64))] {
+                        farthest = farthest.max((d * r - b.centre).length());
+                    }
+                }
+            }
+            assert!(farthest <= b.radius, "{key:?}: grid corner {farthest:.3} m from the centre, radius {:.3}", b.radius);
+            worst_slack = worst_slack.min(b.radius - farthest);
+            // Not absurdly loose either: within 2 % + 1 m of the tightest sphere about this centre.
+            assert!(b.radius <= farthest * 1.02 + 1.0, "{key:?}: radius {:.3} vs farthest corner {farthest:.3}", b.radius);
+        }
+        println!("smallest slack {worst_slack:.4} m");
+        // The review's numbers, reproduced: the old radius misses the corner.
+        let old = 16.0 * 3f64.sqrt() * 1.05 + 1.0;
+        let b = p.chunk_bounds(corner_l0);
+        assert!(b.radius > 33.8 && old < 33.8, "old {old:.2}, new {:.2}", b.radius);
+    }
+
+    #[test]
+    fn extended_coords_inverts_wrap_at_every_side() {
+        let g = Planet::new(1.0, 512, 256, 4096);
+        let n = g.n as f64;
+        for face in 0..6u8 {
+            for (i, j) in [(n + 3.5, 100.5), (-2.5, 100.5), (100.5, n + 0.5), (100.5, -7.5), (n + 1.5, n - 0.5)] {
+                let (f, wi, wj) = g.wrap(face, i, j);
+                assert_ne!(f, face);
+                let (bi, bj) = g.extended_coords(face, f, wi, wj).expect("adjacent");
+                assert!((bi - i).abs() < 1e-9 && (bj - j).abs() < 1e-9, "face {face} ({i}, {j}) -> {f} ({wi}, {wj}) -> ({bi}, {bj})");
+            }
+            // The opposite face shares no side.
+            let opposite = (0..6u8).find(|&o| o != face && (0..4).all(|e| g.edges[face as usize][e].face != o)).unwrap();
+            assert!(g.extended_coords(face, opposite, 1.0, 1.0).is_none());
+        }
+    }
+
+    #[test]
+    fn keys_know_their_descendants() {
+        let k = ChunkKey::neisor(2, 3, 5, 6, 1);
+        assert!(k.contains(&k));
+        for c in k.children() {
+            assert!(k.contains(&c));
+            for g in c.children() {
+                assert!(k.contains(&g) && c.contains(&g) && !g.contains(&k));
+            }
+        }
+        assert!(!k.contains(&ChunkKey::neisor(2, 3, 4, 6, 1)));
+        assert!(!k.contains(&ChunkKey { body: 1, ..k }));
+        assert!(!k.contains(&ChunkKey::neisor(3, 2, 10, 12, 2)));
     }
 
     #[test]
