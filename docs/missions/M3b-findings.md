@@ -1,6 +1,8 @@
 # M3b: add blocks and paint their textures in the game (Opus, 2026-10-25)
 
-Branch `worktree-agent-a1a7e5673c85056ef`. Evidence in `M3b-evidence/`.
+Branch `worktree-agent-a1a7e5673c85056ef`, merged with main after
+M2-hardening (8fc787b); everything below was re-run on the merged tree.
+Evidence in `M3b-evidence/`.
 Andrew's how-to is in `game/README.md` ("Adding a block", "Painting a
 texture"); the engineering is "Blocks and textures (M3b)" there.
 
@@ -58,8 +60,8 @@ any block changed the end hash of every replay recorded before.
 
 Now:
 - **Header** (`world/save.rs`, one hunk in `Header::check` and one new
-  function `extend_header_blocks` called from `flush`; nothing else in
-  `save.rs`): a saved name may be the block's current name or one in its
+  function `extend_header_blocks` called from `flush_with`, on M2-hardening's
+  `SaveFs` path with its directory sync; nothing else in `save.rs`): a saved name may be the block's current name or one in its
   `"was"`; blocks appended since the header was written are added to it on
   the next save. A renumbering is still refused, and the message now says
   how a hand rename should keep the old name.
@@ -78,7 +80,11 @@ Now:
   replay recording first, like a terrain preview.
 
 These touch Fable's files (`save.rs`, `sim/mod.rs`, `session.rs`) in small
-separate hunks; please check them against M2-hardening when merging.
+separate hunks; the merge with M2-hardening conflicted only in `flush`
+(resolved onto its `SaveFs` calls) and in `main.rs` (the bake identity now
+comes from the loaded bake). M2-hardening's `RULES_VERSION` (2) in replay
+headers is independent of this: a replay from before M2-hardening is
+refused by version, whatever blocks exist.
 
 ## Evidence
 
@@ -97,8 +103,11 @@ separate hunks; please check them against M2-hardening when merging.
   restarted on the same save: it loads, the bricks are there, key 1 is
   the textured clay brick.
 - **Frames unchanged with no textures**: `m1-done`, `m3a-look` and
-  `m3a-tunnel` rendered with the pre-M3b build and this one: every 3D pixel
-  identical; the only differences are the HUD's "tick cost" timing text.
+  `m3a-tunnel` rendered with main's build (M2-hardening, no M3b) and with
+  the merged M3b build: every pixel outside the HUD's stats box identical
+  in all 18 frames; inside it only the "tick cost" timing text differs.
+- The far, shimmer and orientation checks below ran on the M3b build
+  before the merge; the merge touched no rendering code.
 - **A painted block near and far** (`far_painted_brick_sheet.jpg`): the
   live session's bricks seen from 12 m, 100 m, 300 m and 1 km, against the
   same bricks flat at the picture's average colour: at 1 km 8 pixels
@@ -113,12 +122,64 @@ separate hunks; please check them against M2-hardening when merging.
 - **Orientation** (`orientation_check.jpg`): an asymmetric "F" texture
   reads upright and unmirrored on all four sides of a pillar; on tops it is
   rotated, never mirrored.
-- **Tests**: BENCH_TESTS
-- **Play scripts**: PLAY_SCRIPTS
-- **Bench** (provisional: two other agents' `triangulum` processes and
-  cargo were running): BENCH_TABLE
+- **Tests**: `cargo test --release` on the merged tree: 165 passed, 0
+  failed (14 ignored, as before). New: the registry (add, rename, fall,
+  hide, write, merge, refusals), blocks.json with textures round-trip,
+  textures (sRGB, linear-light mips, resampling, PNG round trip, fill,
+  hot reload of a texture file, paint/save/revert), the editor (lines,
+  undo), the workshop (painting an example makes a copy and Save look
+  writes it; blocks.json edited on disk brings a block in live; add,
+  rename, fall and hotbar through a real session), and
+  `compat_tests.rs`: a save and a replay made before a block was added
+  load and replay exactly after it, live and after a restart, a renamed
+  block's save still loads, and a block that now falls is still caught.
+  With the state-hash change reverted, the replay part fails ("the end
+  state hash DIFFERS"), so the test guards it.
+- **Play scripts** on the merged tree, all pass: m1-done (94 asserts),
+  tunnel-wall-reload (18), edge-corner-flight (17), m2a-sand (95),
+  m2b-water (97), m2b-boundary (44), m2b-river (41), m2c-replay (29),
+  m2c-video-driver (21), m3a-tunnel (20), m3a-look; and the new
+  `m3b-hotbar.play` (11 asserts; `--blocks scripts/m3b-look/blocks.json`):
+  the live session's clay brick on key 1 through the new harness command
+  `hotbar`, built into a wall (`m3b_hotbar_wall_near.jpg`).
+- **Across builds** (`compat-main-build.txt`): a save and a replay
+  recorded by main's build (M2-hardening, no M3b) load and replay exactly
+  in this build with a block added to blocks.json: 7 of 7 checks and the
+  end state hash match.
+- **Bench, provisional** (another session's game window and cargo were
+  running; `bench-merged-provisional.txt`): three interleaved runs each of
+  main's build, this build with no textures, and this build with every
+  solid block textured (20 pictures). Flight average fps, best of three:
+  1,094 / 1,053 / 1,046; 1% low, best of three: 420 / 330 / 366 (the 60
+  fps target is 16.7 ms a frame; the worst frame in the best runs is 5.0 /
+  8.7 / 5.4 ms). The wall clock swung by up to 40% between runs of the same
+  build, so those differences are noise. The GPU time is steadier: flight
+  GPU average 0.37-0.38 ms on main, 0.39-0.40 ms on this build with no
+  textures, 0.40 ms with every block textured. So textures cost nothing
+  measurable on top, but the texture path itself (two more interpolated
+  values and the derivatives in the fragment shader) costs about 0.02 ms of
+  GPU a frame even with no textures, about 5% of a 0.38 ms frame. The
+  frames themselves are unchanged. The first bench round, before the merge,
+  was too contaminated to use and is not reported.
+
+## Found by driving the window, fixed after the session
+
+- After *Add block* the panel did not scroll to the new block (it does
+  now). The file dialog opened in Documents, not the textures folder (a
+  relative path; now absolute). A rename left the old name in the file's
+  hotbar (it worked through `was`; now the hotbar is renamed too). The
+  hotbar caption showed `red_brick` (now "red brick").
+- From review: the "fixed name" rule used the compiled-in blocks.json, so
+  Andrew's own blocks would have become un-renamable once committed (now
+  the generator's blocks); `default_hotbar` skipped hidden blocks, so
+  hiding a shipped block would have moved keys 1-9 under the play scripts
+  (now fixed whatever is hidden).
 
 ## Not verified
+
+- A clean bench: the machine was never idle (see above). Whether the
+  0.02 ms GPU cost with no textures is real needs an idle run; if it is,
+  a separate pipeline for textured faces would remove it.
 
 - Readability at 100% display scaling (this machine runs at 150%).
 - Dropping a PNG on the window: the code path is egui's dropped files,
@@ -127,6 +188,8 @@ separate hunks; please check them against M2-hardening when merging.
 - The file dialog opening in the textures folder: the session's dialog
   opened in Documents (the folder was a relative path); fixed to an
   absolute path afterwards but not seen again.
+- Clicking *Yes, make it fall* in the window (the warning and *Cancel*
+  were driven; the change itself is tested through a session).
 - *Make this the default* and terrain previews with textures on, and
   `texture_size` 32 in the running game (unit-tested resampling only).
 - Andrew's machine, and a pull of someone else's blocks.json while playing
@@ -162,5 +225,9 @@ separate hunks; please check them against M2-hardening when merging.
   strafing). The pre-M3b build draws it identically at the same pose, so it
   is an existing crack between terrain quads showing a dirt side, not M3b.
   Worth a look in the streaming or mesher work.
-- **Bench contamination**: other agents' processes were running throughout;
-  a "wait for a quiet minute" helper (M3a's suggestion) is still missing.
+- **Bench contamination**: other sessions' processes ran throughout (cargo,
+  and a `triangulum` game window started without arguments). I tried a
+  "wait for a quiet minute" check (no triangulum/cargo/rustc, CPU < 12%)
+  before each run; it never passed because idle leftover processes and a
+  game window idling at vsync count as busy. A useful version needs to
+  know which processes belong to the run, or a lock the agents share.

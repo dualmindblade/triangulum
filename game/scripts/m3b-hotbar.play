@@ -9,25 +9,26 @@
 #
 # The harness keeps the default hotbar whatever blocks.json says, so the
 # script puts clay_brick on key 1 itself, builds a wall five wide and two
-# high on flat ground, checks every block, and shoots it near (the picture),
-# from 300 m and from 1 km (its average colour: a far voxel samples the
-# texture's 1 x 1 mip level).
+# high on flat ground, checks every block, and shoots it with the hotbar.
+# (The same picture from 12 m to 1 km, against a flat block of its average
+# colour, is docs/missions/M3b-evidence/far_painted_brick_sheet.jpg.)
 
 hotbar clay_brick,dirt,grass,sand,gravel,snow,ice,dry_grass,water
 find flat
 select 1
 assert selected_block == clay_brick
 
-# ---- the bottom row, two blocks ahead -----------------------------------
+# ---- the bottom row, two blocks ahead (outer columns before inner ones: a
+# ray to a corner column grazes its neighbour) -----------------------------
 aim 2 -2 -0.5
 tap place
 aim 2 -1 -0.5
 tap place
 aim 2 0 -0.5
 tap place
-aim 2 1 -0.5
-tap place
 aim 2 2 -0.5
+tap place
+aim 2 1 -0.5
 tap place
 # ---- the top row, on the bottom row's top faces ---------------------------
 aim 2 -2 1.0
@@ -36,9 +37,9 @@ aim 2 -1 1.0
 tap place
 aim 2 0 1.0
 tap place
-aim 2 1 1.0
-tap place
 aim 2 2 1.0
+tap place
+aim 2 1 1.0
 tap place
 assert block_rel[2,-2,0] == clay_brick
 assert block_rel[2,-1,0] == clay_brick
@@ -52,19 +53,7 @@ assert block_rel[2,1,1] == clay_brick
 assert block_rel[2,2,1] == clay_brick
 
 # ---- near: the picture, and the hotbar with the new block on key 1 --------
-lookaxis +i -12
+lookaxis +i -8
+hold s 1.0
+lookaxis +i -8
 shot wall_near
-
-# ---- away along -i, looking back -------------------------------------------
-mode fly
-speed 50
-hold space 0.4
-lookaxis -i 0
-hold w 6
-lookaxis +i -4
-shot wall_300m
-lookaxis -i 0
-hold w 14
-hold space 0.4
-lookaxis +i -2.3
-shot wall_1km

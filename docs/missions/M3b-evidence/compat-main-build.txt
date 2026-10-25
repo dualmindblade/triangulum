@@ -1,0 +1,19 @@
+A save and a replay recorded by main's build (M2-hardening, no M3b), loaded and
+played by the merged M3b build with blocks.json extended (scripts/m3b-look: clay_brick added).
+
+== main's build runs out/m3b/compat/old-build.play (places, saves, records a replay)
+  saved 1 chunk(s)
+  recording a replay to out/m3b/compat/old\old-build.replay
+  saved 1 chunk(s)
+done in 0.1 s: 0 asserts, 0 failed, 0 errors
+
+== this build loads main's save
+blocks: 20 definitions from scripts/m3b-look/blocks.json
+save saves/_m3b_oldsave: 1 edited chunk(s) loaded
+> assert edits > 0
+  assert ok: edits > 0 (actual 1)
+done in 0.0 s: 1 asserts, 0 failed, 0 errors
+
+== this build plays main's replay (--replay)
+replayed 360 steps (6.0 s), 17 events; 7 of 7 checks matched; the end state hash matches (d6afb61903d6ecb1..)
+replay OK: the session reproduced exactly

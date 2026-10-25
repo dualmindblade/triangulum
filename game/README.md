@@ -730,8 +730,7 @@ All three must pass.
 
 `scripts/m3b-hotbar.play` (run with `--blocks scripts/m3b-look/blocks.json`)
 builds a wall of the painted `clay_brick` block from the M3b session on key
-1, checks its blocks, and shoots it near, at 300 m and at 1 km (where it
-shows the picture's average colour).
+1 (the `hotbar` command), checks its blocks, and shoots it with the hotbar.
 
 `scripts/m2c-replay.play` goes to its sites with `find`, records a replay
 with the same recorder F10 uses (a sand collapse, digging at a river bank,
