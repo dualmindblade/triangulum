@@ -48,6 +48,12 @@
   sun, stars, fog and lighting, matched side by side against the old viewer
   at noon, golden hour, dusk and night. 24-minute days.
 
+- **M1-terrain** (Opus, verified by Opus, merged): real landforms: ridges,
+  gullied flanks, river valleys, mesas on hard dry rock. Oceans stay blue
+  from orbit, and a cube-edge seam is fixed. Before/after sheets at every
+  vertical scale: `docs/missions/M1-terrain-evidence/`. Saves from before
+  this change are refused (the terrain under them changed).
+
 ## Play it yourself
 
 ```
@@ -71,18 +77,15 @@ cargo run --release -- --vscale 0.125 --height 4096 --sea-level 1536    # 1/8
 cargo run --release -- --block-size 0.5 --n 262144 --height 4096 --sea-level 1024 --vscale 0.05 --save saves/half   # half-metre blocks
 ```
 
-Known look issues that aren't decisions: missing mid-size landforms (the
-new landforms are done and being merged), ripple patterns on distant steep
-terrain, and oceans that turn grey rock
-from very high up (being fixed now). To bridge a gap you place blocks on a
-face you can see; walking backwards off an edge while placing needs a sneak
-key, coming in M1c.
+Known issues: 1/8 is too slow to fly yet (being fixed now), ripple
+patterns on distant steep terrain, and gully stripes that can look combed
+on gentle hills (Andrew's call). To bridge a gap you place blocks on a face
+you can see; a sneak key for building while backing off an edge is coming.
 
 ## In progress
 
-- M1-terrain: ridges, valleys and escarpments, plus four generator bugs
-  from the review, including the far oceans (Opus)
-- M1c-stream: streaming robustness and finer distant detail (Fable)
+- M1c-stream: streaming robustness, finer distant detail, making 1/8
+  flyable, the sneak key (Fable)
 
 ## Waiting on you
 

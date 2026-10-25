@@ -215,12 +215,28 @@ impl Run {
         let mut faces = std::collections::BTreeSet::new();
         let mut cpu = Vec::with_capacity(n);
         let mut nodes_max = 0usize;
+        let (mut tree_max, mut recv_max, mut lists_max) = (0.0f64, 0.0f64, 0.0f64);
+        let (mut split_max, mut range_max, mut misses_max) = (0.0f64, 0.0f64, 0usize);
+        let (mut ranges_inflight_max, mut range_job_max) = (0usize, 0u32);
+        let (mut policy_max, mut structure_max, mut counts_max) = (0.0f64, 0.0f64, 0.0f64);
         let t0 = Instant::now();
         for _ in 0..n {
             self.session.step(&input, STEP);
             let cam = self.session.player.camera();
             let s = self.harness.frame(&cam);
             cpu.push(s.cpu_ms);
+            let st = &self.harness.streamer.stats;
+            tree_max = tree_max.max(st.traverse_ms);
+            recv_max = recv_max.max(st.recv_ms);
+            lists_max = lists_max.max(st.cull_ms);
+            split_max = split_max.max(st.split_ms);
+            range_max = range_max.max(st.range_ms);
+            misses_max = misses_max.max(st.range_misses);
+            ranges_inflight_max = ranges_inflight_max.max(st.ranges_inflight);
+            policy_max = policy_max.max(st.policy_ms);
+            structure_max = structure_max.max(st.structure_ms);
+            counts_max = counts_max.max(st.counts_ms);
+            range_job_max = range_job_max.max(st.range_job_us);
             let r = self.harness.streamer.check_cover();
             if !r.ok() {
                 violations += 1;
@@ -249,11 +265,16 @@ impl Run {
             m.insert("travel_cpu_avg_ms".into(), avg.into());
             m.insert("travel_cpu_p99_ms".into(), p99.into());
             m.insert("travel_cpu_max_ms".into(), max.into());
+            m.insert("travel_tree_max_ms".into(), tree_max.into());
+            m.insert("travel_results_max_ms".into(), recv_max.into());
+            m.insert("travel_lists_max_ms".into(), lists_max.into());
+            m.insert("travel_range_jobs_max".into(), ranges_inflight_max.into());
         }
+        let wall = t0.elapsed().as_secs_f64();
+        let faces_s = faces_s.join(",");
+        let job_ms = range_job_max as f64 / 1e3;
         self.say(format!(
-            "  travel {n} frames in {:.1} s: faces {} ; cover violations {violations} (overlaps max {overlaps}, gaps max {gaps}, uncovered max {uncovered}); nodes max {nodes_max}; cpu avg {avg:.2} ms p99 {p99:.2} max {max:.2}",
-            t0.elapsed().as_secs_f64(),
-            faces_s.join(",")
+            "  travel {n} frames in {wall:.1} s: faces {faces_s}; cover violations {violations} (overlaps max {overlaps}, gaps max {gaps}, uncovered max {uncovered}); nodes max {nodes_max}; cpu avg {avg:.2} ms p99 {p99:.2} max {max:.2}; worst phases: tree {tree_max:.2} (policy {policy_max:.2}, structure {structure_max:.2} of which splits {split_max:.2}, counts {counts_max:.2}; inline ranges {range_max:.2} / {misses_max}), results {recv_max:.2}, draw lists {lists_max:.2}; range jobs in flight max {ranges_inflight_max}, worst {job_ms:.2} ms"
         ));
     }
 

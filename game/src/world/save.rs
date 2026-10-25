@@ -30,7 +30,7 @@ pub const FORMAT_VERSION: u32 = 2;
 /// because saves, not generation, care about it). A save made with another
 /// generator version is refused: its edits sit in terrain that no longer
 /// exists around them.
-pub const GENERATOR_VERSION: u32 = 1;
+pub const GENERATOR_VERSION: u32 = 2; // 2: landforms v2 (ridges, gullies, valleys, mesas)
 
 const CHUNK_MAGIC: &[u8; 4] = b"TRC2";
 
@@ -73,6 +73,13 @@ pub struct Identity {
     pub columns_per_face: u32,
     pub vertical_scale: Option<f64>,
     pub roughness: f64,
+    /// Landform strength dial; absent in version-1 headers.
+    #[serde(default = "default_landform")]
+    pub landform: f64,
+}
+
+fn default_landform() -> f64 {
+    1.0
 }
 
 impl Identity {
@@ -86,6 +93,7 @@ impl Identity {
             columns_per_face: config.columns_per_face,
             vertical_scale: config.vertical_scale,
             roughness: config.roughness,
+            landform: config.landform,
         }
     }
 }
@@ -148,6 +156,9 @@ impl Header {
         }
         if have.roughness != want.roughness {
             bad.push(format!("roughness {} vs {}", have.roughness, want.roughness));
+        }
+        if have.landform != want.landform {
+            bad.push(format!("landform {} vs {}", have.landform, want.landform));
         }
         if self.generator_version != GENERATOR_VERSION {
             bad.push(format!("generator version {} vs {}", self.generator_version, GENERATOR_VERSION));
@@ -336,7 +347,7 @@ mod tests {
     const BAKE: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 
     fn config() -> WorldConfig {
-        WorldConfig { name: "test".into(), seed: 42, block_size_m: 1.0, world_height: 2048, sea_level: 512, columns_per_face: 131072, bake: String::new(), vertical_scale: None, roughness: 1.0 }
+        WorldConfig { name: "test".into(), seed: 42, block_size_m: 1.0, world_height: 2048, sea_level: 512, columns_per_face: 131072, bake: String::new(), vertical_scale: None, roughness: 1.0, landform: 1.0 }
     }
 
     fn registry() -> Registry {

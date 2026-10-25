@@ -463,7 +463,7 @@ mod tests {
         let bake = Arc::new(bake::open("C:/code/triangulum/game/assets/world/seed42").expect("world bake"));
         let planet = Planet::new(1.0, 2048, 512, 131072);
         let vscale = planet.radius / 6_371_000.0;
-        let generator = Arc::new(Generator::new(planet, bake, 42, vscale, 1.0, &registry).unwrap());
+        let generator = Arc::new(Generator::new(planet, bake, 42, vscale, 1.0, 1.0, &registry).unwrap());
         World::new(generator, registry, Arc::new(EditStore::new()))
     }
 

@@ -67,7 +67,16 @@ pub struct WorldConfig {
     pub bake: String,
     /// None = R / 6,371,000 m (Earth slopes, ~1/70).
     pub vertical_scale: Option<f64>,
+    /// Amplitude of the engine's fine relief (metre to ~50 m texture).
     pub roughness: f64,
+    /// Strength of the engine's landforms between the bake's scale and
+    /// ~50 m: ridges, valley networks, escarpments, mesas (0 = none).
+    #[serde(default = "one")]
+    pub landform: f64,
+}
+
+fn one() -> f64 {
+    1.0
 }
 
 impl WorldConfig {

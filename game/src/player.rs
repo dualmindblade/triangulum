@@ -793,8 +793,9 @@ mod tests {
         run(&mut pl, &w, &p, Input { forward: true, down: true, ..Default::default() }, 240);
         let f = Frame::at(&p, pl.pos);
         assert!(pl.on_ground && (f.k - 600.0).abs() < 1e-6, "still on the platform: k = {}", f.k);
-        let lead = f.i + 0.3 / f.mi;
-        assert!(lead <= 1004.0 + 1e-6 && lead > 1003.99, "leading edge held at the platform's edge: {lead}");
+        // Like Minecraft, the box may overhang until its trailing edge is at the platform's edge.
+        let trail = f.i - 0.3 / f.mi;
+        assert!(trail <= 1004.0 + 1e-6 && trail > 1003.99, "trailing edge held at the platform's edge: {trail}");
         // Sideways and backwards too.
         for input in [Input { back: true, down: true, ..Default::default() }, Input { left: true, down: true, ..Default::default() }, Input { right: true, down: true, ..Default::default() }] {
             let mut pl = standing(&p, 2, 1000.5, 2000.5, 600);

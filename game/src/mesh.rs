@@ -334,7 +334,7 @@ mod tests {
         let bake = std::sync::Arc::new(crate::worldgen::bake::open("C:/code/triangulum/game/assets/world/seed42").expect("world bake"));
         let planet = Planet::new(1.0, 2048, 512, 131072);
         let vscale = planet.radius / 6_371_000.0;
-        (Generator::new(planet, bake, 42, vscale, 1.0, &registry).unwrap(), registry)
+        (Generator::new(planet, bake, 42, vscale, 1.0, 1.0, &registry).unwrap(), registry)
     }
 
     #[test]

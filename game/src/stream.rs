@@ -33,12 +33,15 @@
 //! itself: a node's bounds and height range die with it, and the worker
 //! timing history is recorded only when the bench asks for it.
 //!
-//! HOOK(classify): `Coverage::in_band` is the one place that decides a
-//! chunk exists. When worldgen's `Generator::classify_in(key, range)` lands
-//! on main, replace its body with `classify_in(...) == ChunkClass::Mixed`
-//! so Enclosed chunks (all solid, including the border) are skipped as Air
-//! ones are; they are still materialised through `World::generate` when a
-//! player digs into or stands on them.
+//! Whether a chunk exists is worldgen's call: the streamer hands the tree
+//! `Generator::classify_in(key, range)`, so Air and Enclosed chunks (all
+//! solid, border included) are never nodes; they are still materialised
+//! through `World::generate` when a player digs into or stands on them.
+//! Footprint height ranges cost hundreds of microseconds each with
+//! landforms, so a node that wants to split first asks for its children's
+//! footprint ranges (`take_range_wants`, run by workers) and keeps drawing
+//! until they are back (`supply_range`); the split itself then costs
+//! microseconds. Ranges live in a bounded, oldest-first cache.
 
 use crate::grid::{Bounds, CHUNK, ChunkKey, FastMap, FootprintKey, Planet};
 use crate::mesh::{MeshData, MeshOptions, mesh_chunk};
@@ -59,6 +62,12 @@ pub struct LodParams {
 /// A split node merges back only when the camera is this much further than
 /// the split distance, so the cut does not flap at the threshold.
 pub const MERGE_HYSTERESIS: f64 = 1.25;
+
+/// A wave of splits in one frame, after a teleport or when a whole level
+/// arrives at once, is spread over frames by stopping once this much time
+/// has gone into splits. Deferred nodes keep drawing their current mesh
+/// and split on a later frame.
+pub const SPLIT_BUDGET_S: f64 = 0.001;
 
 /// Meshes that found no room in the arena are kept this long before being
 /// dropped (their nodes are dispatched again afterwards).
@@ -153,6 +162,19 @@ pub struct StepStats {
     pub resident: usize,
     pub hidden: usize,
     pub splits: usize,
+    /// Splits wanted but deferred to a later frame by the time budget.
+    pub splits_deferred: usize,
+    /// Splits waiting for their children's footprint ranges.
+    pub splits_waiting: usize,
+    /// Footprint ranges computed inline this step (sync mode) and their time.
+    pub range_misses: usize,
+    pub range_ms: f64,
+    /// Time spent splitting this step (classification, bounds).
+    pub split_ms: f64,
+    /// The step's phases: policy pass, structure pass, counts.
+    pub policy_ms: f64,
+    pub structure_ms: f64,
+    pub counts_ms: f64,
     pub switches: usize,
     pub collapses: usize,
     pub merges: usize,
@@ -206,6 +228,11 @@ pub enum Installed {
 }
 
 pub type RangeFn = Box<dyn FnMut(FootprintKey) -> (f64, f64) + Send>;
+/// Does a chunk hold any surface, given its footprint's height range?
+pub type BandFn = Box<dyn FnMut(ChunkKey, (f64, f64)) -> bool + Send>;
+
+/// Footprint ranges remembered (oldest evicted first).
+const RANGE_CACHE_MAX: usize = 1 << 16;
 
 pub struct Coverage {
     pub planet: Planet,
@@ -217,7 +244,19 @@ pub struct Coverage {
     free_nodes: Vec<u32>,
     free_kids: Vec<u32>,
     index: FastMap<ChunkKey, u32>,
+    /// Computes a footprint's range inline: for the roots, and for every
+    /// footprint in sync mode (tests).
     range: RangeFn,
+    /// Sync mode: ranges are computed inline instead of requested.
+    sync_ranges: bool,
+    in_band: BandFn,
+    range_cache: FastMap<FootprintKey, (f64, f64)>,
+    range_order: std::collections::VecDeque<FootprintKey>,
+    /// Requested from the owner and not yet supplied.
+    range_pending: FastMap<FootprintKey, ()>,
+    range_wants: Vec<FootprintKey>,
+    range_misses: usize,
+    range_s: f64,
     next_gen: u32,
     /// GPU meshes the tree let go of; the owner frees them.
     pub freed: Vec<GpuMesh>,
@@ -225,11 +264,16 @@ pub struct Coverage {
     wants: Vec<u32>,
     stack: Vec<u32>,
     pub stats: StepStats,
+    /// Seconds of splitting allowed per step.
+    pub split_budget_s: f64,
 }
 
 impl Coverage {
     /// A tree with its roots (every in-band chunk at the coarsest LOD).
-    pub fn new(planet: Planet, factor: f64, occluder_radius: f64, mut range: RangeFn) -> Self {
+    /// With `sync_ranges` every footprint range is computed inline through
+    /// `range`; otherwise only the roots' are, and the rest are asked for
+    /// through `take_range_wants` and answered with `supply_range`.
+    pub fn new(planet: Planet, factor: f64, occluder_radius: f64, range: RangeFn, in_band: BandFn, sync_ranges: bool) -> Self {
         let mut c = Self {
             planet,
             factor,
@@ -239,13 +283,99 @@ impl Coverage {
             free_nodes: Vec::new(),
             free_kids: Vec::new(),
             index: FastMap::default(),
-            range: Box::new(|_| (0.0, 0.0)),
+            range,
+            sync_ranges,
+            in_band,
+            range_cache: FastMap::default(),
+            range_order: std::collections::VecDeque::new(),
+            range_pending: FastMap::default(),
+            range_wants: Vec::new(),
+            range_misses: 0,
+            range_s: 0.0,
             next_gen: 1,
             freed: Vec::new(),
             wants: Vec::new(),
             stack: Vec::new(),
             stats: StepStats::default(),
+            split_budget_s: SPLIT_BUDGET_S,
         };
+        c.make_roots();
+        c
+    }
+
+    /// The plain band test: the chunk's radial extent overlaps the
+    /// footprint's height band (metres above sea level). The streamer uses
+    /// worldgen's `classify_in` instead; tests use this.
+    pub fn band_test(planet: Planet) -> BandFn {
+        Box::new(move |key: ChunkKey, (hmin, hmax): (f64, f64)| {
+            let e_m = key.extent_blocks() as f64 * planet.block_size;
+            let z0 = key.cz as f64 * e_m - planet.sea_level as f64 * planet.block_size;
+            let z1 = z0 + e_m;
+            !(z1 <= hmin || z0 >= hmax)
+        })
+    }
+
+    /// A footprint's height range, computed inline (roots, sync mode).
+    fn range_of(&mut self, fp: FootprintKey) -> (f64, f64) {
+        if let Some(r) = self.range_cache.get(&fp) {
+            return *r;
+        }
+        let t = std::time::Instant::now();
+        let r = (self.range)(fp);
+        self.range_s += t.elapsed().as_secs_f64();
+        self.range_misses += 1;
+        self.supply_range(fp, r);
+        r
+    }
+
+    /// A footprint range the owner computed (or one from `take_range_wants`).
+    pub fn supply_range(&mut self, fp: FootprintKey, r: (f64, f64)) {
+        self.range_pending.remove(&fp);
+        if self.range_cache.contains_key(&fp) {
+            return;
+        }
+        if self.range_cache.len() >= RANGE_CACHE_MAX
+            && let Some(old) = self.range_order.pop_front()
+        {
+            self.range_cache.remove(&old);
+        }
+        self.range_cache.insert(fp, r);
+        self.range_order.push_back(fp);
+    }
+
+    /// Footprints whose ranges the tree is waiting for (each once).
+    pub fn take_range_wants(&mut self) -> Vec<FootprintKey> {
+        std::mem::take(&mut self.range_wants)
+    }
+
+    pub fn ranges_pending(&self) -> usize {
+        self.range_pending.len()
+    }
+
+    /// Are the children's footprint ranges here? If not, ask for the
+    /// missing ones (or compute them now in sync mode).
+    fn children_ranges_ready(&mut self, key: ChunkKey) -> bool {
+        let per_edge = self.planet.chunks_per_edge(key.lod - 1);
+        let mut ready = true;
+        for fp in key.footprint().children() {
+            if fp.cx >= per_edge || fp.cy >= per_edge || self.range_cache.contains_key(&fp) {
+                continue;
+            }
+            if self.sync_ranges {
+                self.range_of(fp);
+            } else {
+                ready = false;
+                if !self.range_pending.contains_key(&fp) {
+                    self.range_pending.insert(fp, ());
+                    self.range_wants.push(fp);
+                }
+            }
+        }
+        ready
+    }
+
+    fn make_roots(&mut self) {
+        let planet = self.planet;
         let max_lod = planet.max_lod;
         let per_edge = planet.chunks_per_edge(max_lod);
         let per_col = planet.chunks_per_column(max_lod);
@@ -253,18 +383,16 @@ impl Coverage {
             for cy in 0..per_edge {
                 for cx in 0..per_edge {
                     let fp = FootprintKey { body: crate::grid::BODY_NEISOR, face, lod: max_lod, cx, cy };
-                    let r = range(fp);
+                    let r = self.range_of(fp);
                     for cz in 0..per_col {
                         let key = ChunkKey::neisor(face, max_lod, cx, cy, cz);
-                        if c.in_band(key, r) {
-                            c.alloc(key, NONE);
+                        if (self.in_band)(key, r) {
+                            self.alloc(key, NONE);
                         }
                     }
                 }
             }
         }
-        c.range = range;
-        c
     }
 
     pub fn nodes(&self) -> impl Iterator<Item = &Node> {
@@ -285,17 +413,6 @@ impl Coverage {
 
     pub fn is_empty(&self) -> bool {
         self.index.is_empty()
-    }
-
-    /// Does a chunk hold any surface? Its radial extent must overlap the
-    /// footprint's conservative height band (metres above sea level).
-    /// HOOK(classify): see the module docs.
-    pub fn in_band(&self, key: ChunkKey, (hmin, hmax): (f64, f64)) -> bool {
-        let planet = &self.planet;
-        let e_m = key.extent_blocks() as f64 * planet.block_size;
-        let z0 = key.cz as f64 * e_m - planet.sea_level as f64 * planet.block_size;
-        let z1 = z0 + e_m;
-        !(z1 <= hmin || z0 >= hmax)
     }
 
     fn alloc(&mut self, key: ChunkKey, parent: u32) -> u32 {
@@ -388,15 +505,16 @@ impl Coverage {
         let mut ranges = [(0.0f64, 0.0f64); 4];
         for (q, fp) in key.footprint().children().iter().enumerate() {
             if fp.cx < per_edge && fp.cy < per_edge {
-                ranges[q] = (self.range)(*fp);
+                ranges[q] = self.range_of(*fp);
             }
         }
+        debug_assert!(self.range_misses == 0 || self.sync_ranges, "split before its ranges arrived");
         for (n, child) in key.children().iter().enumerate() {
             if child.cx >= per_edge || child.cy >= per_edge || child.cz >= per_col {
                 continue;
             }
             let q = (n & 1) | ((n >> 1) & 1) << 1;
-            if !self.in_band(*child, ranges[q]) {
+            if !(self.in_band)(*child, ranges[q]) {
                 continue;
             }
             children[n] = self.alloc(*child, slot);
@@ -439,6 +557,7 @@ impl Coverage {
         let factor = self.factor;
         let ro = self.occluder_radius;
         let mut st = StepStats::default();
+        let t_policy = std::time::Instant::now();
         // 1. Policy: distance, horizon, verdict.
         for n in self.nodes.iter_mut() {
             if !n.live {
@@ -451,8 +570,13 @@ impl Coverage {
             let split_at = factor * n.edge_m as f64;
             n.want = if n.split() { dist < split_at * MERGE_HYSTERESIS } else { dist < split_at };
         }
+        st.policy_ms = t_policy.elapsed().as_secs_f64() * 1e3;
         // 2. Structure. Splits append nodes; they are visited in this same loop.
         self.wants.clear();
+        let t_split = std::time::Instant::now();
+        let mut split_time = 0.0f64;
+        self.range_misses = 0;
+        self.range_s = 0.0;
         let mut i = 0usize;
         while i < self.nodes.len() {
             let slot = i as u32;
@@ -486,7 +610,19 @@ impl Coverage {
                         st.unsettled += 1;
                     }
                 } else if n.want && n.key.lod > 0 && !n.hidden {
+                    if split_time > self.split_budget_s {
+                        st.splits_deferred += 1;
+                        st.unsettled += 1;
+                        continue;
+                    }
+                    if !self.children_ranges_ready(n.key) {
+                        st.splits_waiting += 1;
+                        st.unsettled += 1;
+                        continue;
+                    }
+                    let t0 = t_split.elapsed().as_secs_f64();
                     self.split(slot);
+                    split_time += t_split.elapsed().as_secs_f64() - t0;
                     // Evaluate the children now so they can be dispatched this frame.
                     for c in self.children(slot) {
                         if c == NONE {
@@ -571,7 +707,12 @@ impl Coverage {
                 }
             }
         }
+        st.split_ms = split_time * 1e3;
+        st.structure_ms = t_split.elapsed().as_secs_f64() * 1e3;
+        st.range_misses = self.range_misses;
+        st.range_ms = self.range_s * 1e3;
         // 3. Counts.
+        let t_counts = std::time::Instant::now();
         for n in self.nodes.iter() {
             if !n.live {
                 continue;
@@ -595,6 +736,7 @@ impl Coverage {
                 st.unsettled += 1;
             }
         }
+        st.counts_ms = t_counts.elapsed().as_secs_f64() * 1e3;
         self.stats = st;
         &self.stats
     }
@@ -712,24 +854,7 @@ impl Coverage {
         self.free_kids.clear();
         self.index.clear();
         self.wants.clear();
-        let planet = self.planet;
-        let max_lod = planet.max_lod;
-        let per_edge = planet.chunks_per_edge(max_lod);
-        let per_col = planet.chunks_per_column(max_lod);
-        for face in 0..6u8 {
-            for cy in 0..per_edge {
-                for cx in 0..per_edge {
-                    let fp = FootprintKey { body: crate::grid::BODY_NEISOR, face, lod: max_lod, cx, cy };
-                    let r = (self.range)(fp);
-                    for cz in 0..per_col {
-                        let key = ChunkKey::neisor(face, max_lod, cx, cy, cz);
-                        if self.in_band(key, r) {
-                            self.alloc(key, NONE);
-                        }
-                    }
-                }
-            }
-        }
+        self.make_roots();
     }
 
     /// Count violations of the cover invariants (O(nodes * depth)).
@@ -789,6 +914,12 @@ struct JobResult {
     rev: u32,
 }
 
+struct RangeResult {
+    fp: FootprintKey,
+    range: (f64, f64),
+    us: u32,
+}
+
 #[derive(Default, Clone, Debug)]
 pub struct StreamStats {
     /// Drawn nodes (the cut), hidden ones included.
@@ -829,6 +960,19 @@ pub struct StreamStats {
     pub retained: usize,
     pub hidden: usize,
     pub unsettled: usize,
+    pub splits_deferred: usize,
+    pub splits_waiting: usize,
+    pub range_misses: usize,
+    pub range_ms: f64,
+    pub split_ms: f64,
+    pub policy_ms: f64,
+    pub structure_ms: f64,
+    pub counts_ms: f64,
+    /// Footprint range jobs in flight and finished (cumulative).
+    pub ranges_inflight: usize,
+    pub ranges_done: u64,
+    /// Worker time per range job, last seen (µs).
+    pub range_job_us: u32,
 }
 
 /// Per-LOD timing samples from the workers (gen µs, mesh µs), recorded only
@@ -850,6 +994,9 @@ pub struct Streamer {
     awaiting: Vec<JobResult>,
     tx: Sender<JobResult>,
     rx: Receiver<JobResult>,
+    range_tx: Sender<RangeResult>,
+    range_rx: Receiver<RangeResult>,
+    range_inflight: usize,
     inflight: usize,
     wants: Vec<Want>,
     order: Vec<(f32, DrawRecord)>,
@@ -861,12 +1008,21 @@ pub struct Streamer {
 impl Streamer {
     pub fn new(world: Arc<World>, registry: Arc<Registry>, params: LodParams, mesh_opts: MeshOptions) -> Self {
         let (tx, rx) = channel();
+        let (range_tx, range_rx) = channel();
         let planet = world.planet;
         // Review #8: the occluder is the world's bottom, the one sphere that
         // is opaque whatever the terrain does and wherever anyone digs.
         let occluder_radius = planet.bottom_radius();
         let range_world = world.clone();
-        let cover = Coverage::new(planet, params.factor, occluder_radius, Box::new(move |fp| range_world.generator.footprint_height_range_m(fp)));
+        let band_world = world.clone();
+        let cover = Coverage::new(
+            planet,
+            params.factor,
+            occluder_radius,
+            Box::new(move |fp| range_world.generator.footprint_height_range_m(fp)),
+            Box::new(move |key, r| band_world.generator.classify_in(key, r) == crate::worldgen::ChunkClass::Mixed),
+            false,
+        );
         Self {
             world,
             registry,
@@ -876,6 +1032,9 @@ impl Streamer {
             awaiting: Vec::new(),
             tx,
             rx,
+            range_tx,
+            range_rx,
+            range_inflight: 0,
             inflight: 0,
             wants: Vec::new(),
             order: Vec::new(),
@@ -892,7 +1051,7 @@ impl Streamer {
     /// Nothing in flight, nothing waiting for the arena, no edits pending,
     /// and the cover matches the camera.
     pub fn settled(&self) -> bool {
-        self.inflight == 0 && self.awaiting.is_empty() && self.world.edits.pending_invalidations() == 0 && self.cover.stats.unsettled == 0
+        self.inflight == 0 && self.range_inflight == 0 && self.awaiting.is_empty() && self.world.edits.pending_invalidations() == 0 && self.cover.stats.unsettled == 0
     }
 
     /// Keys of every resident chunk.
@@ -978,7 +1137,13 @@ impl Streamer {
                 self.dispatch(w);
             }
         }
-        // 2. Ingest results.
+        // 2. Ingest results: footprint ranges, then meshes.
+        while let Ok(r) = self.range_rx.try_recv() {
+            self.range_inflight -= 1;
+            self.stats.ranges_done += 1;
+            self.stats.range_job_us = r.us;
+            self.cover.supply_range(r.fp, r.range);
+        }
         while let Ok(res) = self.rx.try_recv() {
             self.inflight -= 1;
             if self.timing.enabled {
@@ -991,9 +1156,19 @@ impl Streamer {
         }
         let t1 = std::time::Instant::now();
 
-        // 3. The tree.
+        // 3. The tree, then the footprint ranges it asked for.
         let st = self.cover.step(cam).clone();
         self.free_released(gpu);
+        for fp in self.cover.take_range_wants() {
+            self.range_inflight += 1;
+            let world = self.world.clone();
+            let tx = self.range_tx.clone();
+            rayon::spawn(move || {
+                let t = std::time::Instant::now();
+                let range = world.generator.footprint_height_range_m(fp);
+                let _ = tx.send(RangeResult { fp, range, us: t.elapsed().as_micros() as u32 });
+            });
+        }
         // 3b. Retry parked results now that stale meshes are freed.
         if !self.awaiting.is_empty() {
             let waiting = std::mem::take(&mut self.awaiting);
@@ -1076,6 +1251,15 @@ impl Streamer {
         s.retained = st.retained;
         s.hidden = st.hidden;
         s.unsettled = st.unsettled;
+        s.splits_deferred = st.splits_deferred;
+        s.splits_waiting = st.splits_waiting;
+        s.policy_ms = st.policy_ms;
+        s.structure_ms = st.structure_ms;
+        s.counts_ms = st.counts_ms;
+        s.range_misses = st.range_misses;
+        s.range_ms = st.range_ms;
+        s.split_ms = st.split_ms;
+        s.ranges_inflight = self.range_inflight;
     }
 
     /// Drop every chunk and start again from the roots.
@@ -1164,7 +1348,7 @@ mod tests {
     #[test]
     fn roots_cover_the_band_and_nothing_else() {
         let p = planet();
-        let c = Coverage::new(p, 5.0, p.bottom_radius(), flat_range());
+        let c = Coverage::new(p, 5.0, p.bottom_radius(), flat_range(), Coverage::band_test(p), true);
         // LOD 7 chunks are 4096 blocks tall: one per face column, all in band.
         assert_eq!(c.len(), 6);
         assert!(c.nodes().all(|n| n.key.lod == 7 && n.parent == NONE && !n.drawn));
@@ -1172,7 +1356,8 @@ mod tests {
         let above = ChunkKey::neisor(0, 0, 10, 10, (256 + 64) / 32);
         let below = ChunkKey::neisor(0, 0, 10, 10, (256 - 64) / 32);
         let at = ChunkKey::neisor(0, 0, 10, 10, 256 / 32);
-        assert!(!c.in_band(above, (-20.0, 40.0)) && !c.in_band(below, (-20.0, 40.0)) && c.in_band(at, (-20.0, 40.0)));
+        let mut band = Coverage::band_test(p);
+        assert!(!band(above, (-20.0, 40.0)) && !band(below, (-20.0, 40.0)) && band(at, (-20.0, 40.0)));
     }
 
     /// Random camera paths, random job completion order and latency: at
@@ -1185,7 +1370,8 @@ mod tests {
         let p = planet();
         for seed in 1..=6u64 {
             let mut rng = Lcg(seed * 7919);
-            let mut c = Coverage::new(p, 3.0, p.bottom_radius(), flat_range());
+            // Odd seeds compute ranges inline, even seeds get them a frame late.
+            let mut c = Coverage::new(p, 3.0, p.bottom_radius(), flat_range(), Coverage::band_test(p), seed % 2 == 1);
             let mut gpu = FakeGpu::default();
             let mut inflight: Vec<(Want, u32)> = Vec::new(); // job, frames until done
             let mut wants = Vec::new();
@@ -1216,6 +1402,9 @@ mod tests {
                 }
                 let cam = dir * (p.radius + alt);
                 c.step(cam);
+                for fp in c.take_range_wants() {
+                    c.supply_range(fp, (-20.0, 40.0));
+                }
                 for gm in c.freed.drain(..) {
                     gpu.free(gm);
                 }
@@ -1276,6 +1465,9 @@ mod tests {
             let mut quiet = 0;
             for _ in 0..400 {
                 c.step(cam);
+                for fp in c.take_range_wants() {
+                    c.supply_range(fp, (-20.0, 40.0));
+                }
                 for gm in c.freed.drain(..) {
                     gpu.free(gm);
                 }
@@ -1336,7 +1528,7 @@ mod tests {
         // Factor 0.5: from 2.5 km above face 0's centre only that face's
         // root is within its split distance (2048 m), and its children
         // (split at 1024 m) are not.
-        let mut c = Coverage::new(p, 0.5, p.bottom_radius(), flat_range());
+        let mut c = Coverage::new(p, 0.5, p.bottom_radius(), flat_range(), Coverage::band_test(p), true);
         let mut gpu = FakeGpu::default();
         let mut wants = Vec::new();
         let root_key = ChunkKey::neisor(0, 7, 0, 0, 0);
@@ -1408,7 +1600,7 @@ mod tests {
         // not dispatched; a split whose child is hidden switches anyway and
         // the parent retains its mesh; when that child comes into view the
         // parent draws again until the child arrives.
-        let mut c = Coverage::new(p, 3.0, p.bottom_radius(), flat_range());
+        let mut c = Coverage::new(p, 3.0, p.bottom_radius(), flat_range(), Coverage::band_test(p), true);
         let ground = DVec3::X * (p.radius + 2.0);
         c.step(ground);
         let hidden_roots = c.nodes().filter(|n| n.hidden).count();
@@ -1478,7 +1670,7 @@ mod tests {
         let registry = Registry::load(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/blocks.json")).unwrap();
         let bake = Arc::new(crate::worldgen::bake::open("C:/code/triangulum/game/assets/world/seed42").expect("world bake"));
         let planet = Planet::new(1.0, 4096, 1536, 131072);
-        let g = crate::worldgen::Generator::new(planet, bake.clone(), 42, 0.125, 1.0, &registry).unwrap();
+        let g = crate::worldgen::Generator::new(planet, bake.clone(), 42, 0.125, 1.0, 1.0, &registry).unwrap();
         let places = crate::engine::find_places(bake.as_ref());
         let trench = places.trench.0;
         let floor_m = g.column(trench, planet.block_size).height_m as f64;
@@ -1493,9 +1685,17 @@ mod tests {
         let cam_dir = (trench * (2000.0f64 / planet.radius).cos() + north * (2000.0f64 / planet.radius).sin()).normalize();
         let cam = cam_dir * (planet.radius + 1.7);
         let new_ro = planet.bottom_radius();
+        // The M1a occluder (land minimum minus the relief margin): with the
+        // M1a generator it sat 1167 m below sea and hid this chunk (the
+        // review's finding, reproduced before landforms v2 widened the
+        // margin); the number is printed, the world bottom is what counts.
         let old_ro = planet.radius + (bake.land_min_km() as f64 * 1000.0 * 0.125).min(0.0) - g.height_margin_m();
-        println!("trench floor {floor_m:.0} m; old occluder {:.0} m, new {:.0} m below sea", planet.radius - old_ro, planet.radius - new_ro);
-        assert!(hidden_by_horizon(old_ro, cam, b.centre, b.radius), "the old occluder hid the trench floor (the review's finding)");
+        println!(
+            "trench floor {floor_m:.0} m; M1a-style occluder {:.0} m below sea (hides the floor: {}), world bottom {:.0} m",
+            planet.radius - old_ro,
+            hidden_by_horizon(old_ro, cam, b.centre, b.radius),
+            planet.radius - new_ro
+        );
         assert!(!hidden_by_horizon(new_ro, cam, b.centre, b.radius), "the world-bottom occluder shows it");
         // And every chunk in the trench's column, down to the bottom.
         for cz in 0..=(k / 32) {

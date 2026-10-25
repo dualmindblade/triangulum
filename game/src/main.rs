@@ -7,16 +7,19 @@
 //!   cargo run --release -- --bench --out out/run1
 //!   cargo run --release -- --shots --out out/shots --vscale 0.125 --sea-level 1024
 //!   cargo run --release -- --find-places
+//!   cargo run --release -- --landform-shots --out out/lf --label after   # landform evidence renders
+//!   cargo run --release -- --terrain-map --out out/maps    # plan-view hillshades of the landform places
+//!   cargo run --release -- --terrain-stats --out out/stats # slope, fidelity, anisotropy, LOD checks
 //!
 //! World settings come from `assets/world.json`; every one can be overridden:
-//!   --seed N --block-size S --height H --sea-level K --n N --bake DIR --vscale F --roughness F
+//!   --seed N --block-size S --height H --sea-level K --n N --bake DIR --vscale F --roughness F --landform F
 //! (a relative "bake" in world.json is resolved against the game/ directory)
 //! Saves: --save DIR (default saves/<world name>)  --no-save  --keep-save (harness: keep its save)
 //! Player: --walk | --fly (default: walk when starting within 50 m of the ground)
 //!   --hotbar stone,dirt,...  (blocks on keys 1-9; default: the first nine solid blocks)
 //! Other options: --lod-factor F (5) --threads N --no-ao --no-split --skirt N
 //!   --no-vsync --size WxH --hide-water --markers --backend vulkan|dx12
-//!   --frames N --skip-flight --only pose,pose --label TEXT --which a,b
+//!   --frames N --skip-flight --only pose,pose --label TEXT --which a,b --map-px N
 //!   --screenshot PATH --exit-after SECS   (app: save a frame with the HUD, then quit)
 //! Sky: --time HH:MM (or decimal hours, local solar time at spawn; default 12:00)
 //!   --time-scale F (1; 0 freezes) --day-length SECS (1440)
@@ -30,6 +33,7 @@ pub mod bench;
 pub mod camera;
 pub mod engine;
 pub mod grid;
+pub mod landform_shots;
 pub mod mesh;
 pub mod play;
 pub mod player;
@@ -71,12 +75,17 @@ struct Args {
     bake: Option<String>,
     vscale: Option<f64>,
     roughness: Option<f64>,
+    landform: Option<f64>,
     at: Option<(f64, f64, f64)>,
     look: Option<(f64, f64)>,
     bench: bool,
     shots: bool,
     find_places: bool,
     probe: bool,
+    landform_shots: bool,
+    terrain_map: bool,
+    terrain_stats: bool,
+    map_px: usize,
     play: Option<String>,
     out: Option<String>,
     save: Option<String>,
@@ -124,12 +133,17 @@ fn parse_args() -> Args {
         bake: None,
         vscale: None,
         roughness: None,
+        landform: None,
         at: None,
         look: None,
         bench: false,
         shots: false,
         find_places: false,
         probe: false,
+        landform_shots: false,
+        terrain_map: false,
+        terrain_stats: false,
+        map_px: 768,
         play: None,
         out: None,
         save: None,
@@ -177,6 +191,7 @@ fn parse_args() -> Args {
             "--bake" => a.bake = Some(val()),
             "--vscale" => a.vscale = Some(val().parse().unwrap()),
             "--roughness" => a.roughness = Some(val().parse().unwrap()),
+            "--landform" => a.landform = Some(val().parse().unwrap()),
             "--at" => {
                 let lat: f64 = val().parse().unwrap();
                 let lon: f64 = val().parse().unwrap();
@@ -192,6 +207,10 @@ fn parse_args() -> Args {
             "--shots" => a.shots = true,
             "--find-places" => a.find_places = true,
             "--probe" => a.probe = true,
+            "--landform-shots" => a.landform_shots = true,
+            "--terrain-map" => a.terrain_map = true,
+            "--terrain-stats" => a.terrain_stats = true,
+            "--map-px" => a.map_px = val().parse().unwrap(),
             "--play" => a.play = Some(val()),
             "--out" => a.out = Some(val()),
             "--save" => a.save = Some(val()),
@@ -266,6 +285,7 @@ fn main() {
     if let Some(v) = &args.bake { config.bake = v.clone(); }
     if let Some(v) = args.vscale { config.vertical_scale = Some(v); }
     if let Some(v) = args.roughness { config.roughness = v; }
+    if let Some(v) = args.landform { config.landform = v; }
 
     let t0 = std::time::Instant::now();
     let registry = Arc::new(Registry::load(&args.blocks).unwrap_or_else(|e| fail(&e)));
@@ -308,7 +328,7 @@ fn main() {
     }
     let p = engine.planet;
     println!(
-        "planet {}: s = {} m, H = {} blocks (sea level {}), N = {}, R = {:.3} km, vertical scale {:.5} (1/{:.1}), roughness {}, max LOD {} ({} m voxels), lod factor {}, {} rayon threads",
+        "planet {}: s = {} m, H = {} blocks (sea level {}), N = {}, R = {:.3} km, vertical scale {:.5} (1/{:.1}), {}, max LOD {} ({} m voxels), lod factor {}, {} rayon threads",
         engine.config.name,
         p.block_size,
         p.height,
@@ -317,7 +337,7 @@ fn main() {
         p.radius / 1000.0,
         engine.vscale(),
         1.0 / engine.vscale(),
-        engine.config.roughness,
+        engine.generator.describe_relief(),
         p.max_lod,
         p.voxel_m(p.max_lod),
         lod.factor,
@@ -372,6 +392,47 @@ fn main() {
             let k = p.sea_level as f64 + engine.ground(pr.dir) / p.block_size;
             println!("preset {}: lat {lat:.4} lon {lon:.4} alt {} m AGL heading {} pitch {}; lattice face {f} i {i:.0} j {j:.0} ground k {k:.0}", pr.name, pr.alt_agl, pr.heading_deg, pr.pitch_deg);
         }
+        return;
+    }
+    if args.landform_shots {
+        landform_shots::run_landform_shots(engine, landform_shots::LandformShotOptions { out: out("out/run"), backend: args.backend, which: args.which, label: args.label });
+        return;
+    }
+    if args.terrain_map || args.terrain_stats {
+        let g = &engine.generator;
+        let places = worldgen::inspect::find_land_places(engine.bake.as_ref());
+        let named = landform_shots::places_with_names(&places);
+        let out_dir = out("out/run");
+        let _ = std::fs::create_dir_all(&out_dir);
+        let mut report = format!("# terrain inspection: {}\n\nvertical scale 1/{:.1}, s = {} m, {}\n\n", args.label, 1.0 / engine.vscale(), p.block_size, g.describe_relief());
+        for (name, dir) in &named {
+            let (lat, lon) = grid::Planet::lat_lon_deg(*dir);
+            let b = engine.bake.sample(*dir);
+            report.push_str(&format!(
+                "- {name}: lat {lat:.4} lon {lon:.4} (bake: elev {:.3} km, rough {:.3} km, uplift {:.2}, erodibility {:.2}, flow {:.2}, temp {:.1} C, precip {:.0} mm, ocean {:.2})\n",
+                b.elev_km, b.rough_km, b.uplift, b.erodibility, b.flow_log10, b.temp_c, b.precip_mm, b.ocean
+            ));
+        }
+        if args.terrain_map {
+            report.push_str("\n## maps\n\n");
+            report.push_str(&worldgen::inspect::terrain_maps(g, &named, &out_dir, args.map_px));
+        }
+        if args.terrain_stats {
+            let t = std::time::Instant::now();
+            report.push_str("\n## slope (rise over run)\n\n");
+            report.push_str(&worldgen::inspect::slope_report(g, &named));
+            report.push_str("\n## large-scale fidelity\n\n");
+            report.push_str(&worldgen::inspect::fidelity_report(g));
+            report.push_str("\n## lattice artifacts (aspect anisotropy)\n\n");
+            report.push_str(&worldgen::inspect::anisotropy_report(g));
+            report.push_str("\n## LOD consistency\n\n");
+            report.push_str(&worldgen::inspect::lod_report(g));
+            report.push_str(&format!("\n(stats took {:.1} s)\n", t.elapsed().as_secs_f64()));
+        }
+        print!("{report}");
+        let path = format!("{out_dir}/terrain.md");
+        std::fs::write(&path, report).unwrap();
+        println!("wrote {path}");
         return;
     }
     if args.bench {
