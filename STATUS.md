@@ -188,6 +188,11 @@ detail (still about 500 fps).
   dusk colours, water colour, grass sides. *Save look*, then commit the
   two files or send them. The panel has only been seen at this machine's
   150% display scaling; tell me if it's too small or too big on yours.
+- **Andrew: texture size** (open decision, M3b). Block textures are
+  16 x 16 pixels. One setting, `"texture_size"` near the top of
+  `game/assets/blocks.json`, makes them 32 x 32: finer, and four times the
+  painting. Pictures of the other size are resized when read, so it can
+  change later without losing anything.
 - **Try F10 once each.** Press F10, play a minute (dig, pour water, G, F,
   `[` `]`, P, R, alt-tab), press F10 again, and send the file from
   `game/replays/` (how: "Reporting a bug" in `game/README.md`). No agent

@@ -24,6 +24,11 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1.0.150"
 cubesphere = { path = "../crates/cubesphere" }
 
+# The look panel's "Import PNG..." file dialog (M3b; MIT). Elsewhere a PNG
+# dropped on the window imports it.
+[target.'cfg(windows)'.dependencies]
+rfd = "0.17.2"
+
 [profile.release]
 opt-level = 3
 debug = 1

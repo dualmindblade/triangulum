@@ -425,7 +425,7 @@ impl Run {
         Hud {
             block: pick.map(|hit| (hit.block, engine.registry.def(hit.id).name.clone(), hit.t)),
             mode: if p.mode == Mode::Walk { "walk".into() } else { "fly".into() },
-            hotbar: engine.hotbar.iter().map(|&id| (engine.registry.def(id).name.clone(), engine.registry.def(id).color)).collect(),
+            hotbar: engine.hotbar.iter().map(|&id| (engine.registry.def(id).label(), engine.registry.colour(id))).collect(),
             selected: p.selected,
             outline: pick.map_or(Vec::new(), |hit| outline_segments(&engine.planet, cam, w as f64 / h as f64, w, h, hit.face, hit.cell)),
             ..Default::default()

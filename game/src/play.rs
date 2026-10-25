@@ -51,6 +51,9 @@
 //!   sim radius M            active region radius in metres (--sim-radius)
 //!   sim period N            ticks per water step (--water-period; 1)
 //!   select N                hotbar slot 1-9
+//!   hotbar A,B,...          what keys 1-9 hold, by block name (M3b; the
+//!                           harness otherwise keeps the default hotbar,
+//!                           whatever blocks.json says)
 //!   speed M_PER_S           fly speed (scroll wheel), 1..5000
 //!   travel SECONDS [KEYS]   like hold (default "w"), but every step also
 //!                           streams and renders a frame and checks the
@@ -384,7 +387,7 @@ impl Run {
             mode: if p.mode == Mode::Walk { "walk".into() } else { "fly".into() },
             on_ground: p.on_ground,
             in_water: p.in_water,
-            hotbar: engine.hotbar.iter().map(|&id| (engine.registry.def(id).name.clone(), engine.registry.def(id).color)).collect(),
+            hotbar: engine.hotbar.iter().map(|&id| (engine.registry.def(id).label(), engine.registry.colour(id))).collect(),
             selected: p.selected,
             outline: pick.map_or(Vec::new(), |hit| outline_segments(&engine.planet, &cam, aspect, w, h, hit.face, hit.cell)),
             edits: engine.edits.len(),
@@ -842,6 +845,15 @@ pub fn run_play(session: Session, opts: PlayOptions) -> i32 {
                     let _ = run.session.apply(Action::Select(n as usize - 1));
                 }
                 _ => bad(&mut run, "select 1..9"),
+            },
+            "hotbar" => match args.first().map(|names| run.session.engine.registry.hotbar_from(names)) {
+                Some(Ok(_)) if run.session.recording() => bad(&mut run, "hotbar: not while a replay is being recorded"),
+                Some(Ok(ids)) => {
+                    run.session.engine = Arc::new(run.session.engine.with_hotbar(ids));
+                    run.harness.set_engine(run.session.engine.clone());
+                }
+                Some(Err(e)) => bad(&mut run, &format!("hotbar: {e}")),
+                None => bad(&mut run, "hotbar NAME,NAME,... (1 to 9 block names)"),
             },
             "water" => match args.first().map(|s| s.to_lowercase()).as_deref() {
                 Some(v @ ("on" | "off")) => {

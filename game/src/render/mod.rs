@@ -1,7 +1,8 @@
 //! wgpu side: one big quad storage buffer with a free-list allocator,
 //! per-chunk curvature grid slots, per-frame draw records drawn with
 //! multi-draw-indirect (opaque pass, then translucent water), a sky
-//! triangle, timestamp queries and PNG readback.
+//! triangle, timestamp queries and PNG readback. Block textures (M3b) are
+//! one texture array with mipmaps (`textures.rs`).
 
 use crate::mesh::GRID_BYTES;
 use bytemuck::{Pod, Zeroable};
@@ -10,6 +11,8 @@ use std::sync::mpsc;
 mod sky;
 pub use sky::Sky;
 pub mod reel;
+pub mod textures;
+use textures::Picture;
 
 pub const QUAD_BYTES: u64 = 8;
 /// Largest chunk mesh one draw can address (index buffer size).
@@ -129,6 +132,14 @@ pub struct Renderer {
     colours_buf: wgpu::Buffer,
     /// Entries the colour buffer holds (it grows when blocks are added).
     colours_cap: usize,
+    /// Block textures (M3b): `tex_layers` layers of `tex_size` squared,
+    /// with every mip level; at least one layer, so the bind group always
+    /// has a texture even when no block uses one.
+    block_tex: wgpu::Texture,
+    block_view: wgpu::TextureView,
+    block_sampler: wgpu::Sampler,
+    pub tex_size: u32,
+    tex_layers: u32,
     bind_layout: wgpu::BindGroupLayout,
     bind_group: wgpu::BindGroup,
     terrain_pipeline: wgpu::RenderPipeline,
@@ -224,11 +235,39 @@ impl Renderer {
             count: None,
         };
         let ro = wgpu::BufferBindingType::Storage { read_only: true };
+        let tex_entry = wgpu::BindGroupLayoutEntry {
+            binding: 6,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: true }, view_dimension: wgpu::TextureViewDimension::D2Array, multisampled: false },
+            count: None,
+        };
+        let samp_entry = wgpu::BindGroupLayoutEntry { binding: 7, visibility: wgpu::ShaderStages::FRAGMENT, ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering), count: None };
         let bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("terrain-bgl"),
-            entries: &[entry(0, wgpu::BufferBindingType::Uniform), entry(1, ro), entry(2, ro), entry(3, ro), entry(4, ro), entry(5, wgpu::BufferBindingType::Uniform)],
+            entries: &[entry(0, wgpu::BufferBindingType::Uniform), entry(1, ro), entry(2, ro), entry(3, ro), entry(4, ro), entry(5, wgpu::BufferBindingType::Uniform), tex_entry, samp_entry],
         });
-        let bind_group = make_bind_group(&device, &bgl, [&camera_buf, &quads_buf, &grids_buf, &draws_buf, &colours_buf, &sky_buf]);
+        // Block textures: what main installed (M3b), or one blank layer.
+        let installed = textures::installed();
+        let tex_size = installed.map_or(crate::world::blocks::DEFAULT_TEXTURE_SIZE, |t| t.size);
+        let pictures: Vec<&Picture> = installed.map_or(Vec::new(), |t| t.pictures.iter().collect());
+        let tex_layers = (pictures.len() as u32).max(1).next_power_of_two().max(4);
+        let (block_tex, block_view) = make_block_texture(&device, tex_size, tex_layers);
+        for (i, p) in pictures.iter().enumerate() {
+            write_layer(&queue, &block_tex, i as u32, p);
+        }
+        // Pixel art up close (nearest), the mip chain far away (linear
+        // between levels): the 1 x 1 level is the average colour.
+        let block_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("block-textures"),
+            address_mode_u: wgpu::AddressMode::Repeat,
+            address_mode_v: wgpu::AddressMode::Repeat,
+            address_mode_w: wgpu::AddressMode::ClampToEdge,
+            mag_filter: wgpu::FilterMode::Nearest,
+            min_filter: wgpu::FilterMode::Linear,
+            mipmap_filter: wgpu::MipmapFilterMode::Linear,
+            ..Default::default()
+        });
+        let bind_group = make_bind_group(&device, &bgl, [&camera_buf, &quads_buf, &grids_buf, &draws_buf, &colours_buf, &sky_buf], &block_view, &block_sampler);
         let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: None,
             bind_group_layouts: &[Some(&bgl)],
@@ -300,6 +339,11 @@ impl Renderer {
             index_buf,
             colours_buf,
             colours_cap: colours.len().max(1),
+            block_tex,
+            block_view,
+            block_sampler,
+            tex_size,
+            tex_layers,
             bind_layout: bgl,
             bind_group,
             terrain_pipeline,
@@ -359,9 +403,41 @@ impl Renderer {
                 usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
                 mapped_at_creation: false,
             });
-            self.bind_group = make_bind_group(&self.device, &self.bind_layout, [&self.camera_buf, &self.quads_buf, &self.grids_buf, &self.draws_buf, &self.colours_buf, &self.sky_buf]);
+            self.rebind();
         }
         self.queue.write_buffer(&self.colours_buf, 0, bytemuck::cast_slice(colours));
+    }
+
+    fn rebind(&mut self) {
+        self.bind_group = make_bind_group(&self.device, &self.bind_layout, [&self.camera_buf, &self.quads_buf, &self.grids_buf, &self.draws_buf, &self.colours_buf, &self.sky_buf], &self.block_view, &self.block_sampler);
+    }
+
+    /// Replace every block texture (M3b): `pictures[layer]`, all of
+    /// `size`. The array is rebuilt when it is too small or the size
+    /// changed; the colour table names the layers each face samples.
+    pub fn set_textures(&mut self, size: u32, pictures: &[&Picture]) {
+        let need = (pictures.len() as u32).max(1);
+        if size != self.tex_size || need > self.tex_layers {
+            self.tex_size = size;
+            self.tex_layers = need.next_power_of_two().max(4);
+            let (t, v) = make_block_texture(&self.device, size, self.tex_layers);
+            self.block_tex = t;
+            self.block_view = v;
+            self.rebind();
+        }
+        for (i, p) in pictures.iter().enumerate() {
+            write_layer(&self.queue, &self.block_tex, i as u32, p);
+        }
+    }
+
+    /// Replace one layer's picture (painting in the panel, a file edited on
+    /// disk). False when the layer does not fit: call `set_textures`.
+    pub fn set_texture_layer(&mut self, layer: u32, picture: &Picture) -> bool {
+        if layer >= self.tex_layers || picture.size != self.tex_size {
+            return false;
+        }
+        write_layer(&self.queue, &self.block_tex, layer, picture);
+        true
     }
 
     pub fn resize(&mut self, width: u32, height: u32) {
@@ -595,10 +671,43 @@ impl Renderer {
     }
 }
 
-/// The terrain bind group: camera, quads, grids, draws, colours, sky.
-fn make_bind_group(device: &wgpu::Device, layout: &wgpu::BindGroupLayout, bufs: [&wgpu::Buffer; 6]) -> wgpu::BindGroup {
-    let entries: Vec<wgpu::BindGroupEntry> = bufs.iter().enumerate().map(|(i, b)| wgpu::BindGroupEntry { binding: i as u32, resource: b.as_entire_binding() }).collect();
+/// The terrain bind group: camera, quads, grids, draws, colours, sky,
+/// then the block textures and their sampler (M3b).
+fn make_bind_group(device: &wgpu::Device, layout: &wgpu::BindGroupLayout, bufs: [&wgpu::Buffer; 6], tex: &wgpu::TextureView, sampler: &wgpu::Sampler) -> wgpu::BindGroup {
+    let mut entries: Vec<wgpu::BindGroupEntry> = bufs.iter().enumerate().map(|(i, b)| wgpu::BindGroupEntry { binding: i as u32, resource: b.as_entire_binding() }).collect();
+    entries.push(wgpu::BindGroupEntry { binding: 6, resource: wgpu::BindingResource::TextureView(tex) });
+    entries.push(wgpu::BindGroupEntry { binding: 7, resource: wgpu::BindingResource::Sampler(sampler) });
     device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("terrain-bg"), layout, entries: &entries })
+}
+
+/// The block texture array: `layers` layers of `size` squared, sRGB, with
+/// every mip level down to 1 x 1.
+fn make_block_texture(device: &wgpu::Device, size: u32, layers: u32) -> (wgpu::Texture, wgpu::TextureView) {
+    let tex = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("block-textures"),
+        size: wgpu::Extent3d { width: size, height: size, depth_or_array_layers: layers },
+        mip_level_count: size.ilog2() + 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba8UnormSrgb,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    });
+    let view = tex.create_view(&wgpu::TextureViewDescriptor { dimension: Some(wgpu::TextureViewDimension::D2Array), ..Default::default() });
+    (tex, view)
+}
+
+/// Upload one picture and its mip chain into a layer.
+fn write_layer(queue: &wgpu::Queue, tex: &wgpu::Texture, layer: u32, p: &Picture) {
+    for (level, data) in p.mips().iter().enumerate() {
+        let s = (p.size >> level).max(1);
+        queue.write_texture(
+            wgpu::TexelCopyTextureInfo { texture: tex, mip_level: level as u32, origin: wgpu::Origin3d { x: 0, y: 0, z: layer }, aspect: wgpu::TextureAspect::All },
+            data,
+            wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(4 * s), rows_per_image: Some(s) },
+            wgpu::Extent3d { width: s, height: s, depth_or_array_layers: 1 },
+        );
+    }
 }
 
 pub fn write_png(path: &str, width: u32, height: u32, rgba: &[u8]) {

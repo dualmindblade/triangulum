@@ -163,6 +163,12 @@ impl Engine {
         self.with_markers(self.markers.clone(), hide_water, markers_on)
     }
 
+    /// The same engine with other blocks on keys 1-9 (M3b: the workshop's
+    /// hotbar slots).
+    pub fn with_hotbar(&self, hotbar: Vec<BlockId>) -> Engine {
+        Engine { hotbar, ..self.shallow() }
+    }
+
     /// The same engine, sharing everything behind an Arc.
     fn shallow(&self) -> Engine {
         Engine {

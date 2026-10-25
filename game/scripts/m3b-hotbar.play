@@ -1,0 +1,59 @@
+# M3b: a block added in the look panel, on the hotbar, in the world.
+#
+# clay_brick (block 19) was added and painted in the real window during the
+# M3b session (the panel's Add a block, Start from the block's colour,
+# pencil, fill, pick colour, undo, Save look). scripts/m3b-look/ holds that
+# look: the shipped blocks plus clay_brick and its picture. Run with
+#
+#   cargo run --release -- --play scripts/m3b-hotbar.play --blocks scripts/m3b-look/blocks.json
+#
+# The harness keeps the default hotbar whatever blocks.json says, so the
+# script puts clay_brick on key 1 itself, builds a wall five wide and two
+# high on flat ground, checks every block, and shoots it with the hotbar.
+# (The same picture from 12 m to 1 km, against a flat block of its average
+# colour, is docs/missions/M3b-evidence/far_painted_brick_sheet.jpg.)
+
+hotbar clay_brick,dirt,grass,sand,gravel,snow,ice,dry_grass,water
+find flat
+select 1
+assert selected_block == clay_brick
+
+# ---- the bottom row, two blocks ahead (outer columns before inner ones: a
+# ray to a corner column grazes its neighbour) -----------------------------
+aim 2 -2 -0.5
+tap place
+aim 2 -1 -0.5
+tap place
+aim 2 0 -0.5
+tap place
+aim 2 2 -0.5
+tap place
+aim 2 1 -0.5
+tap place
+# ---- the top row, on the bottom row's top faces ---------------------------
+aim 2 -2 1.0
+tap place
+aim 2 -1 1.0
+tap place
+aim 2 0 1.0
+tap place
+aim 2 2 1.0
+tap place
+aim 2 1 1.0
+tap place
+assert block_rel[2,-2,0] == clay_brick
+assert block_rel[2,-1,0] == clay_brick
+assert block_rel[2,0,0] == clay_brick
+assert block_rel[2,1,0] == clay_brick
+assert block_rel[2,2,0] == clay_brick
+assert block_rel[2,-2,1] == clay_brick
+assert block_rel[2,-1,1] == clay_brick
+assert block_rel[2,0,1] == clay_brick
+assert block_rel[2,1,1] == clay_brick
+assert block_rel[2,2,1] == clay_brick
+
+# ---- near: the picture, and the hotbar with the new block on key 1 --------
+lookaxis +i -8
+hold s 1.0
+lookaxis +i -8
+shot wall_near

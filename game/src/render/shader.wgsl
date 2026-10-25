@@ -33,6 +33,7 @@ struct Sky {
     moon: vec4<f32>,       // moonlight rgb
     water: vec4<f32>,      // opacity, edge opacity, glint, glint sharpness
     underwater: vec4<f32>, // rgb, strength
+    tex: vec4<f32>,        // M3b: blocks per metre (textures tile once per block)
 };
 
 struct Draw {
@@ -55,6 +56,10 @@ struct Grid {
 @group(0) @binding(3) var<storage, read> draws: array<Draw>;
 @group(0) @binding(4) var<storage, read> colours: array<vec4<f32>>;
 @group(0) @binding(5) var<uniform> sky: Sky;
+// Block textures (M3b, render/textures.rs): one layer per picture, sRGB,
+// with every mip level; nearest up close, the mip chain far away.
+@group(0) @binding(6) var block_tex: texture_2d_array<f32>;
+@group(0) @binding(7) var block_samp: sampler;
 
 struct VOut {
     @builtin(position) pos: vec4<f32>,
@@ -64,6 +69,10 @@ struct VOut {
     @location(3) @interpolate(flat) side: f32,
     @location(4) view: vec3<f32>,
     @location(5) normal: vec3<f32>,
+    // Texture coordinates in blocks along the face, and the layer the face
+    // samples (-1: its flat colour).
+    @location(6) uv: vec2<f32>,
+    @location(7) @interpolate(flat) layer: i32,
 };
 
 // Lagrange weights of the five grid corners (at 0, 1, 2, 3, 4) for t in [0, 4].
@@ -200,8 +209,22 @@ fn vertex(vi: u32, ii: u32, water: bool) -> VOut {
     var out: VOut;
     out.pos = cam.view_proj * vec4<f32>(world, 1.0);
     // Three colours per block (M3a): top, sides, bottom (world/blocks.rs).
+    // Alpha (M3b) is the texture layer the face samples, or -1 for none.
     let face = select(1u, select(2u, 0u, sign == 1u), axis == 2u);
-    out.color = colours[block * 3u + face].rgb;
+    let entry = colours[block * 3u + face];
+    out.color = entry.rgb;
+    out.layer = i32(entry.w);
+    // Texture coordinates in blocks (M3b), so a texture tiles once per
+    // block on a greedy quad of many blocks and on a coarse voxel of many
+    // blocks alike, and seen from outside every face reads left to right
+    // with its top up (sides) or north up (tops).
+    var tuv: vec2<f32>;
+    switch axis {
+        case 0u: { tuv = vec2<f32>(select(-lp.y, lp.y, sign == 1u), -lp.z); }
+        case 1u: { tuv = vec2<f32>(select(lp.x, -lp.x, sign == 1u), -lp.z); }
+        default: { tuv = vec2<f32>(select(-lp.x, lp.x, sign == 1u), -lp.y); }
+    }
+    out.uv = tuv * (d.voxel * sky.tex.x);
     // July risers 0.90, undersides 0.55 (the look's side and underside
     // shades); no extra darkening from the old 0.72 riser multiplier or a
     // normal inferred from integer terraces.
@@ -223,7 +246,17 @@ fn vs_main(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> 
 
 @fragment
 fn fs_main(in: VOut) -> @location(0) vec4<f32> {
-    let col = lighting(in.color * in.face_shade * in.ao, normalize(in.normal), in.view);
+    // Block textures (M3b): the derivatives are taken here, in uniform
+    // control flow, so the sample in the branch picks its mip level (the
+    // 1 x 1 level, the average colour, far away). A flat face never
+    // samples and keeps exactly the colour it had.
+    let gx = dpdx(in.uv);
+    let gy = dpdy(in.uv);
+    var base = in.color;
+    if (in.layer >= 0) {
+        base = textureSampleGrad(block_tex, block_samp, in.uv, in.layer, gx, gy).rgb;
+    }
+    let col = lighting(base * in.face_shade * in.ao, normalize(in.normal), in.view);
     return vec4<f32>(atmosphere(col, in.view), 1.0);
 }
 

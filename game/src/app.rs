@@ -261,7 +261,8 @@ impl App {
         {
             let raw = gfx.egui_state.take_egui_input(&gfx.window);
             let (w, h) = (gfx.config.width, gfx.config.height);
-            let hud = self.hud_info(gpu_ms, &cam, aspect, w, h);
+            let mut hud = self.hud_info(gpu_ms, &cam, aspect, w, h);
+            hud.hotbar_tex = self.workshop.hotbar_thumbs(&self.egui_ctx, &self.session.engine.hotbar);
             let stats = self.show_stats;
             let workshop = &mut self.workshop;
             let full = self.egui_ctx.run_ui(raw, |ui| {
@@ -341,7 +342,8 @@ impl App {
             mode: if p.mode == Mode::Walk { "walk".into() } else { "fly".into() },
             on_ground: p.on_ground,
             in_water: p.in_water,
-            hotbar: engine.hotbar.iter().map(|&id| (engine.registry.def(id).name.clone(), engine.registry.colour(id))).collect(),
+            hotbar: engine.hotbar.iter().map(|&id| (engine.registry.def(id).label(), engine.registry.colour(id))).collect(),
+            hotbar_tex: Vec::new(),
             selected: p.selected,
             outline,
             edits: engine.edits.len(),
