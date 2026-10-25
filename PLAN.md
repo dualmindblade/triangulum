@@ -50,7 +50,9 @@ river doesn't dry up the loaded area, and the frame rate holds.
 | M1-hardening | Review 2 #6 (picking across face edges), #7 (tunnel walls missing after reload), #8 (stranded stale meshes), #9 (water seams at real triangle edges), #10 (collision at face transitions); #17 (edit-history memory) deferred | Fable | done |
 | M2-hydro | Generated lakes and rivers as water at rest (levels from planetgen, near-continuous river surfaces, waterfalls), gated by a no-water-walls containment test | Opus | done |
 | M2b | Water: Andrew's 256-level rule, sloped water surfaces, sleeping when settled, generator values at the loaded-area edge, flow accounting; wired to the generated rivers | Fable | done |
-| M2c | Replays: a snapshot plus ordered inputs reproduce a session exactly (F10 records, `--replay` plays back and reports the first divergence), the rest of review 2 #16, a harness `find` command | Fable | started |
+| M2c | Replays: a snapshot plus ordered inputs reproduce a session exactly (F10 records, `--replay` plays back and reports the first divergence), the rest of review 2 #16, a harness `find` command, review 3 #4 #6 #13 | Fable | started |
+| M1-review3 | Independent review of M2 (sim, water, rivers, saves): 13 findings (`docs/reviews/2026-10-25-engine-review3-astra.md`) | Astra | done |
+| M2-hardening | Review 3 #1 #2 #3 #5 #7 #9 #10 #12 and review 2 #17: the loaded area's moving edge, saves, memory | — | after M2c |
 
 ## M3 — Andrew's workshop
 
