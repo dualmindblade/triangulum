@@ -1,0 +1,397 @@
+bake loaded and hashed in 0.60s: equal-angle world bake C:/code/triangulum/game/assets/world/seed42 (1024x1024 per face, land min -3.67 km, rough max 5.61 km, with soil and geology fields, 20504 river links and 771 lakes)
+blocks: 19 definitions from C:\code\triangulum\.claude\worktrees\agent-ada8dcccdde4731a1\game/assets/blocks.json
+save C:\code\triangulum\.claude\worktrees\agent-ada8dcccdde4731a1\game/saves/_play/m1-done: reset
+save C:\code\triangulum\.claude\worktrees\agent-ada8dcccdde4731a1\game/saves/_play/m1-done: 0 edited chunk(s) loaded
+planet Neisor: s = 1 m, H = 2048 blocks (sea level 512), N = 131072, R = 90.569 km, vertical scale 0.01422 (1/70.3), landforms v2, roughness 1, landform 1, max LOD 9 (512 m voxels), lod factor 5, 16 rayon threads
+sky: absolute 1142.541665s, local start 12.00h, speed 1x, day 1440s, lunar month 7d, 3 months/season, year 84d; sun lat 11.020410 lon 117.474432
+simulation: 20 Hz tick, 112 m active radius; resumed at tick 0 with 0 queued, 0 frozen, 0 falling
+adapter: NVIDIA GeForce RTX 2060 (Vulkan, DiscreteGpu)
+quad buffer: 512 MB (67 M quads); grid slots 131072
+play scripts/m1-done.play -> C:/Users/Austin/AppData/Local/Temp/claude/C--code-triangulum/d342b492-b4e1-4ca0-aed0-a98693098744/scratchpad/final-scripts/frames/m1-done
+> atblock 2 107156 57519 2000
+> lookaxis +i 0
+> assert mode == walk
+  assert ok: mode == walk (actual walk)
+> assert on_ground == true
+  assert ok: on_ground == true (actual true)
+> assert block_rel[0,0,-1] != air
+  assert ok: block_rel[0,0,-1] != air (actual grass)
+> assert block_rel[0,0,0] == air
+  assert ok: block_rel[0,0,0] == air (actual air)
+> assert block_rel[0,0,1] == air
+  assert ok: block_rel[0,0,1] == air (actual air)
+> shot 01_start
+  shot 01_start: C:/Users/Austin/AppData/Local/Temp/claude/C--code-triangulum/d342b492-b4e1-4ca0-aed0-a98693098744/scratchpad/final-scripts/frames/m1-done/01_start.png (settled in 2.5 s / 1464 frames; 865 draws)
+  state 01_start: walk lat -4.56491 lon 117.47484 alt 44.00 m (agl 0.13) face 2 i 107156 j 57519 k 556 ground true water false crosshair null edits 0 dirty 0
+> mode fly
+> select 1
+> assert selected_block == stone
+  assert ok: selected_block == stone (actual stone)
+> aim 0 0 -0.5
+> assert crosshair != none
+  assert ok: crosshair != none (actual grass)
+> tap place
+  place: face 2 i 107156 j 57519 k 556
+> assert block_rel[0,0,0] == stone
+  assert ok: block_rel[0,0,0] == stone (actual stone)
+> hold space 0.05
+> aim 0 0 -0.5
+> assert crosshair == stone
+  assert ok: crosshair == stone (actual stone)
+> tap place
+  place: face 2 i 107156 j 57519 k 557
+> assert block_rel[0,0,0] == stone
+  assert ok: block_rel[0,0,0] == stone (actual stone)
+> assert block_rel[0,0,-1] == stone
+  assert ok: block_rel[0,0,-1] == stone (actual stone)
+> hold space 0.05
+> aim 0 0 -0.5
+> tap place
+  place: face 2 i 107156 j 57519 k 558
+> assert block_rel[0,0,0] == stone
+  assert ok: block_rel[0,0,0] == stone (actual stone)
+> hold space 0.05
+> aim 0 0 -0.5
+> tap place
+  place: face 2 i 107156 j 57519 k 559
+> assert block_rel[0,0,0] == stone
+  assert ok: block_rel[0,0,0] == stone (actual stone)
+> hold space 0.05
+> aim 0 0 -0.5
+> tap place
+  place: face 2 i 107156 j 57519 k 560
+> assert block_rel[0,0,0] == stone
+  assert ok: block_rel[0,0,0] == stone (actual stone)
+> assert block_rel[0,0,-4] == stone
+  assert ok: block_rel[0,0,-4] == stone (actual stone)
+> assert edits >= 1
+  assert ok: edits >= 1 (actual 1)
+> mode walk
+> atblock 2 107156 57519 2000
+> assert block_rel[0,0,-1] == stone
+  assert ok: block_rel[0,0,-1] == stone (actual stone)
+> mode fly
+> lookaxis +i 0
+> hold w 0.05
+> hold ctrl 0.05
+> aim -0.5 0 0.5
+> assert crosshair == stone
+  assert ok: crosshair == stone (actual stone)
+> tap place
+  place: face 2 i 107157 j 57519 k 560
+> assert block_rel[0,0,0] == stone
+  assert ok: block_rel[0,0,0] == stone (actual stone)
+> assert block_rel[-1,0,0] == stone
+  assert ok: block_rel[-1,0,0] == stone (actual stone)
+> mode walk
+> atblock 2 107157 57519 2000
+> assert block_rel[0,0,-1] == stone
+  assert ok: block_rel[0,0,-1] == stone (actual stone)
+> mode fly
+> lookaxis +i 0
+> hold w 0.05
+> hold ctrl 0.05
+> aim -0.5 0 0.5
+> assert crosshair == stone
+  assert ok: crosshair == stone (actual stone)
+> tap place
+  place: face 2 i 107158 j 57519 k 560
+> assert block_rel[0,0,0] == stone
+  assert ok: block_rel[0,0,0] == stone (actual stone)
+> mode walk
+> atblock 2 107158 57519 2000
+> assert block_rel[0,0,-1] == stone
+  assert ok: block_rel[0,0,-1] == stone (actual stone)
+> mode fly
+> lookaxis +i 0
+> hold w 0.05
+> hold ctrl 0.05
+> aim -0.5 0 0.5
+> tap place
+  place: face 2 i 107159 j 57519 k 560
+> assert block_rel[0,0,0] == stone
+  assert ok: block_rel[0,0,0] == stone (actual stone)
+> mode walk
+> atblock 2 107159 57519 2000
+> assert block_rel[0,0,-1] == stone
+  assert ok: block_rel[0,0,-1] == stone (actual stone)
+> mode fly
+> lookaxis +i 0
+> hold w 0.05
+> hold ctrl 0.05
+> aim -0.5 0 0.5
+> tap place
+  place: face 2 i 107160 j 57519 k 560
+> assert block_rel[0,0,0] == stone
+  assert ok: block_rel[0,0,0] == stone (actual stone)
+> mode walk
+> atblock 2 107160 57519 2000
+> assert block_rel[0,0,-1] == stone
+  assert ok: block_rel[0,0,-1] == stone (actual stone)
+> mode fly
+> lookaxis +i 0
+> hold w 0.05
+> hold ctrl 0.05
+> aim -0.5 0 0.5
+> tap place
+  place: face 2 i 107161 j 57519 k 560
+> assert block_rel[0,0,0] == stone
+  assert ok: block_rel[0,0,0] == stone (actual stone)
+> mode walk
+> atblock 2 107161 57519 2000
+> assert block_rel[0,0,-1] == stone
+  assert ok: block_rel[0,0,-1] == stone (actual stone)
+> mode fly
+> lookaxis +i 0
+> hold w 0.05
+> hold ctrl 0.05
+> aim -0.5 0 0.5
+> tap place
+  place: face 2 i 107162 j 57519 k 560
+> assert block_rel[0,0,0] == stone
+  assert ok: block_rel[0,0,0] == stone (actual stone)
+> assert edits >= 1
+  assert ok: edits >= 1 (actual 1)
+> mode walk
+> atblock 2 107156 57519 2000
+> lookaxis +i 0
+> hold w 1.0
+> assert on_ground == true
+  assert ok: on_ground == true (actual true)
+> assert speed > 4
+  assert ok: speed > 4 (actual 4.299999999998656)
+> assert block_rel[0,0,-1] == stone
+  assert ok: block_rel[0,0,-1] == stone (actual stone)
+> assert block_rel[0,0,-2] == air
+  assert ok: block_rel[0,0,-2] == air (actual air)
+> assert block_rel[0,0,-3] == air
+  assert ok: block_rel[0,0,-3] == air (actual air)
+> tap jump
+> wait 0.25
+> assert on_ground == false
+  assert ok: on_ground == false (actual false)
+> wait 1
+> assert on_ground == true
+  assert ok: on_ground == true (actual true)
+> assert block_rel[0,0,-1] == stone
+  assert ok: block_rel[0,0,-1] == stone (actual stone)
+> atblock 2 107153 57516 2000
+> mode fly
+> hold space 0.3
+> aim 6.0 3.0 -3.0
+> shot 04_bridge
+  shot 04_bridge: C:/Users/Austin/AppData/Local/Temp/claude/C--code-triangulum/d342b492-b4e1-4ca0-aed0-a98693098744/scratchpad/final-scripts/frames/m1-done/04_bridge.png (settled in 0.0 s / 16 frames; 838 draws)
+  state 04_bridge: fly lat -4.56666 lon 117.47268 alt 50.00 m (agl 6.49) face 2 i 107153 j 57516 k 562 ground false water false crosshair null edits 1 dirty 1
+> mode walk
+> atblock 2 107152 57519 2000
+> assert on_ground == true
+  assert ok: on_ground == true (actual true)
+> aim 0 0 -0.5
+> assert crosshair != none
+  assert ok: crosshair != none (actual grass)
+> tap break
+  break: face 2 i 107152 j 57519 k 554
+> wait 0.6
+> assert on_ground == true
+  assert ok: on_ground == true (actual true)
+> assert block_rel[0,0,1] == air
+  assert ok: block_rel[0,0,1] == air (actual air)
+> aim 0 0 -0.5
+> tap break
+  break: face 2 i 107152 j 57519 k 553
+> wait 0.6
+> assert on_ground == true
+  assert ok: on_ground == true (actual true)
+> assert block_rel[0,0,2] == air
+  assert ok: block_rel[0,0,2] == air (actual air)
+> aim 0 0 -0.5
+> tap break
+  break: face 2 i 107152 j 57519 k 552
+> wait 0.6
+> aim 0 0 -0.5
+> tap break
+  break: face 2 i 107152 j 57519 k 551
+> wait 0.6
+> aim 0 0 -0.5
+> tap break
+  break: face 2 i 107152 j 57519 k 550
+> wait 0.6
+> assert on_ground == true
+  assert ok: on_ground == true (actual true)
+> assert block_rel[0,0,0] == air
+  assert ok: block_rel[0,0,0] == air (actual air)
+> assert block_rel[0,0,1] == air
+  assert ok: block_rel[0,0,1] == air (actual air)
+> assert block_rel[0,0,2] == air
+  assert ok: block_rel[0,0,2] == air (actual air)
+> assert block_rel[0,0,3] == air
+  assert ok: block_rel[0,0,3] == air (actual air)
+> assert block_rel[0,0,4] == air
+  assert ok: block_rel[0,0,4] == air (actual air)
+> assert block_rel[0,0,-1] != air
+  assert ok: block_rel[0,0,-1] != air (actual sandstone)
+> aim -1 0 1.5
+> assert crosshair != none
+  assert ok: crosshair != none (actual limestone)
+> tap break
+  break: face 2 i 107151 j 57519 k 551
+> assert block_rel[-1,0,1] == air
+  assert ok: block_rel[-1,0,1] == air (actual air)
+> aim -1 0 0.5
+> tap break
+  break: face 2 i 107151 j 57519 k 550
+> assert block_rel[-1,0,0] == air
+  assert ok: block_rel[-1,0,0] == air (actual air)
+> lookaxis -i 0
+> hold w 0.5
+> assert on_ground == true
+  assert ok: on_ground == true (actual true)
+> assert block_rel[1,0,0] == air
+  assert ok: block_rel[1,0,0] == air (actual air)
+> assert block_rel[1,0,1] == air
+  assert ok: block_rel[1,0,1] == air (actual air)
+> assert block_rel[-1,0,0] != air
+  assert ok: block_rel[-1,0,0] != air (actual limestone)
+> aim -1 0 1.5
+> tap break
+  break: face 2 i 107150 j 57519 k 551
+> assert block_rel[-1,0,1] == air
+  assert ok: block_rel[-1,0,1] == air (actual air)
+> aim -1 0 0.5
+> tap break
+  break: face 2 i 107150 j 57519 k 550
+> assert block_rel[-1,0,0] == air
+  assert ok: block_rel[-1,0,0] == air (actual air)
+> lookaxis -i 0
+> hold w 0.5
+> assert block_rel[1,0,0] == air
+  assert ok: block_rel[1,0,0] == air (actual air)
+> aim -1 0 1.5
+> tap break
+  break: face 2 i 107149 j 57519 k 551
+> assert block_rel[-1,0,1] == air
+  assert ok: block_rel[-1,0,1] == air (actual air)
+> aim -1 0 0.5
+> tap break
+  break: face 2 i 107149 j 57519 k 550
+> assert block_rel[-1,0,0] == air
+  assert ok: block_rel[-1,0,0] == air (actual air)
+> lookaxis -i 0
+> hold w 0.5
+> assert block_rel[1,0,0] == air
+  assert ok: block_rel[1,0,0] == air (actual air)
+> aim -1 0 1.5
+> tap break
+  break: face 2 i 107148 j 57519 k 551
+> assert block_rel[-1,0,1] == air
+  assert ok: block_rel[-1,0,1] == air (actual air)
+> aim -1 0 0.5
+> tap break
+  break: face 2 i 107148 j 57519 k 550
+> assert block_rel[-1,0,0] == air
+  assert ok: block_rel[-1,0,0] == air (actual air)
+> lookaxis -i 0
+> hold w 0.5
+> assert on_ground == true
+  assert ok: on_ground == true (actual true)
+> assert block_rel[0,0,0] == air
+  assert ok: block_rel[0,0,0] == air (actual air)
+> assert block_rel[0,0,1] == air
+  assert ok: block_rel[0,0,1] == air (actual air)
+> assert block_rel[0,0,-1] != air
+  assert ok: block_rel[0,0,-1] != air (actual sandstone)
+> assert block_rel[-1,0,0] != air
+  assert ok: block_rel[-1,0,0] != air (actual limestone)
+> assert block_rel[4,0,0] == air
+  assert ok: block_rel[4,0,0] == air (actual air)
+> assert block_rel[4,0,5] == air
+  assert ok: block_rel[4,0,5] == air (actual air)
+> assert edits >= 1
+  assert ok: edits >= 1 (actual 1)
+> lookaxis +i 5
+> shot 03_tunnel
+  shot 03_tunnel: C:/Users/Austin/AppData/Local/Temp/claude/C--code-triangulum/d342b492-b4e1-4ca0-aed0-a98693098744/scratchpad/final-scripts/frames/m1-done/03_tunnel.png (settled in 0.0 s / 15 frames; 865 draws)
+  state 03_tunnel: walk lat -4.56502 lon 117.46905 alt 38.00 m (agl -4.42) face 2 i 107148 j 57519 k 550 ground true water false crosshair "limestone" edits 1 dirty 1
+> atblock 2 107159 57519 2000
+> assert block_rel[0,0,-1] == stone
+  assert ok: block_rel[0,0,-1] == stone (actual stone)
+> mode fly
+> hold ctrl 0.15
+> aim 0 0 2.5
+> assert crosshair == stone
+  assert ok: crosshair == stone (actual stone)
+> shot 04_under_bridge
+  shot 04_under_bridge: C:/Users/Austin/AppData/Local/Temp/claude/C--code-triangulum/d342b492-b4e1-4ca0-aed0-a98693098744/scratchpad/final-scripts/frames/m1-done/04_under_bridge.png (settled in 0.0 s / 22 frames; 6 draws)
+  state 04_under_bridge: fly lat -4.56487 lon 117.47696 alt 46.00 m (agl 1.66) face 2 i 107159 j 57519 k 558 ground false water false crosshair "stone" edits 1 dirty 1
+> mode walk
+> atblock 2 107159 57519 2000
+> save
+  saved 1 chunk(s)
+> assert dirty == 0
+  assert ok: dirty == 0 (actual 0)
+> reload
+  reloaded 1 chunk(s) from disk
+> assert edits >= 1
+  assert ok: edits >= 1 (actual 1)
+> atblock 2 107156 57519 2000
+> assert block_rel[0,0,-1] == stone
+  assert ok: block_rel[0,0,-1] == stone (actual stone)
+> assert block_rel[0,0,-5] == stone
+  assert ok: block_rel[0,0,-5] == stone (actual stone)
+> atblock 2 107157 57519 2000
+> assert block_rel[0,0,-1] == stone
+  assert ok: block_rel[0,0,-1] == stone (actual stone)
+> assert block_rel[0,0,-2] == air
+  assert ok: block_rel[0,0,-2] == air (actual air)
+> atblock 2 107162 57519 2000
+> assert block_rel[0,0,-1] == stone
+  assert ok: block_rel[0,0,-1] == stone (actual stone)
+> assert block_rel[0,0,-2] == air
+  assert ok: block_rel[0,0,-2] == air (actual air)
+> assert block_rel[1,0,-1] == air
+  assert ok: block_rel[1,0,-1] == air (actual air)
+> atblock 2 107152 57519 2000
+> assert block_rel[0,0,0] == air
+  assert ok: block_rel[0,0,0] == air (actual air)
+> assert block_rel[0,0,4] == air
+  assert ok: block_rel[0,0,4] == air (actual air)
+> assert block_rel[0,0,-1] != air
+  assert ok: block_rel[0,0,-1] != air (actual sandstone)
+> assert block_rel[-1,0,0] == air
+  assert ok: block_rel[-1,0,0] == air (actual air)
+> assert block_rel[-4,0,1] == air
+  assert ok: block_rel[-4,0,1] == air (actual air)
+> assert block_rel[-5,0,0] != air
+  assert ok: block_rel[-5,0,0] != air (actual limestone)
+> lookaxis -i 5
+> shot 05_reloaded
+  shot 05_reloaded: C:/Users/Austin/AppData/Local/Temp/claude/C--code-triangulum/d342b492-b4e1-4ca0-aed0-a98693098744/scratchpad/final-scripts/frames/m1-done/05_reloaded.png (settled in 2.9 s / 1348 frames; 799 draws)
+  state 05_reloaded: walk lat -4.56496 lon 117.47203 alt 38.00 m (agl -5.14) face 2 i 107152 j 57519 k 550 ground true water false crosshair "dirt" edits 1 dirty 0
+> atblock 2 107159 57519 2000
+> mode fly
+> lookaxis -j 0
+> hold w 15
+> hold space 2
+> lookaxis +j -7.9
+> shot 06_bridge_300m
+  shot 06_bridge_300m: C:/Users/Austin/AppData/Local/Temp/claude/C--code-triangulum/d342b492-b4e1-4ca0-aed0-a98693098744/scratchpad/final-scripts/frames/m1-done/06_bridge_300m.png (settled in 1.4 s / 79 frames; 1020 draws)
+  state 06_bridge_300m: fly lat -4.75447 lon 117.47136 alt 89.00 m (agl 41.33) face 2 i 107159 j 57187 k 601 ground false water false crosshair null edits 1 dirty 0
+> lookaxis -j 0
+> hold w 12.5
+> hold space 1
+> lookaxis +j -6.4
+> shot 06_bridge_550m
+  shot 06_bridge_550m: C:/Users/Austin/AppData/Local/Temp/claude/C--code-triangulum/d342b492-b4e1-4ca0-aed0-a98693098744/scratchpad/final-scripts/frames/m1-done/06_bridge_550m.png (settled in 1.6 s / 98 frames; 1053 draws)
+  state 06_bridge_550m: fly lat -4.91240 lon 117.46656 alt 109.00 m (agl 63.59) face 2 i 107159 j 56910 k 621 ground false water false crosshair null edits 1 dirty 0
+> lookaxis -j 0
+> hold w 22.5
+> hold space 1.5
+> lookaxis +j -5.2
+> shot 07_bridge_1km
+  shot 07_bridge_1km: C:/Users/Austin/AppData/Local/Temp/claude/C--code-triangulum/d342b492-b4e1-4ca0-aed0-a98693098744/scratchpad/final-scripts/frames/m1-done/07_bridge_1km.png (settled in 2.4 s / 140 frames; 1077 draws)
+  state 07_bridge_1km: fly lat -5.19660 lon 117.45771 alt 139.00 m (agl 97.31) face 2 i 107159 j 56413 k 651 ground false water false crosshair null edits 1 dirty 0
+> bench 120
+  bench 120 frames: wall avg 3.61 ms (p95 12.35, worst 14.49) = 277 fps; gpu avg 0.58 ms; 1077 draws
+> assert bench_fps > 60
+  assert ok: bench_fps > 60 (actual 277.3791095159757)
+done in 14.2 s: 94 asserts, 0 failed, 0 errors

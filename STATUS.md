@@ -7,12 +7,11 @@
 - **M1, a planet you can dig: feature-complete.** It's waiting for you two
   to play it (commands below) and watch the video
   (`docs/media/m1-showcase.mp4`).
-- **M2, things fall and flow: built; hardening next.** Sand and gravel
-  fall, water flows under Andrew's 256-level rule, Neisor has its lakes
-  and rivers, and diverting a river keeps the area wet. **F10 records a
-  bug as a replay file** that plays back exactly. Astra's third review
-  found edge cases (the worst: water can stall at the old edge of the
-  simulated area after you walk on); those are being fixed now.
+- **M2, things fall and flow: done.** Sand and gravel fall, water flows
+  under Andrew's 256-level rule, Neisor has its lakes and rivers, and
+  diverting a river keeps the area wet. **F10 records a bug as a replay
+  file** that plays back exactly. Astra's third review found edge cases;
+  all but two minor ones are fixed.
 - **The one number** (RTX 2060, 1080p, 60 s test flight, idle machine):
   **1,185 fps average, 578 fps for the worst 1% of frames, worst frame
   7.0 ms.** The target is 60 fps (16.7 ms).
@@ -129,6 +128,18 @@
   and terrace steps in grassland show brown edges (one click in the panel
   to change back). Frame rate unchanged with the panel closed.
 
+- **M2-hardening** (Fable, verified by Opus, merged): Astra's third
+  review. Water no longer stalls at the old edge of the simulated area
+  after you walk on; a river crossing that edge keeps flowing; sand
+  waits at the edge instead of landing outside it. Saves are written so
+  a power cut can't lose one that was reported saved (by Windows' own
+  rules; a real power cut wasn't tested). A damaged save is refused
+  instead of loading as an empty world, and planets too big for the
+  simulation are refused with a clear message. I checked both by hand,
+  and that a save from the previous build still loads. Edits use about
+  a quarter of the memory they did. Replays recorded before this are
+  refused (the simulation's rules changed); record new ones.
+
 **M1 is feature-complete.** The last step is yours: play it and tell me what
 feels wrong.
 
@@ -165,11 +176,6 @@ detail (still about 500 fps).
 
 ## In progress
 
-- **M2-hardening** (Fable): fixes for Astra's third review. Water stalling
-  at the old edge of the simulated area, a river crossing that edge
-  falling asleep, sand landing outside it, a damaged save loading as an
-  empty world, saves surviving a power cut on Windows, and memory as
-  edits pile up.
 - **M3b, blocks and textures** (Opus): Andrew adds a new block from the
   look panel, puts any block on the hotbar, and paints its textures in a
   pixel editor (or imports a PNG). Existing saves keep loading. Nothing

@@ -1,0 +1,390 @@
+bake loaded and hashed in 0.72s: equal-angle world bake C:/code/triangulum/game/assets/world/seed42 (1024x1024 per face, land min -3.67 km, rough max 5.61 km, with soil and geology fields, 20504 river links and 771 lakes)
+blocks: 19 definitions from C:\code\triangulum\.claude\worktrees\agent-ada8dcccdde4731a1\game/assets/blocks.json
+save C:\code\triangulum\.claude\worktrees\agent-ada8dcccdde4731a1\game/saves/_play/m2a-sand: reset
+save C:\code\triangulum\.claude\worktrees\agent-ada8dcccdde4731a1\game/saves/_play/m2a-sand: 0 edited chunk(s) loaded
+planet Neisor: s = 1 m, H = 2048 blocks (sea level 512), N = 131072, R = 90.569 km, vertical scale 0.01422 (1/70.3), landforms v2, roughness 1, landform 1, max LOD 9 (512 m voxels), lod factor 5, 16 rayon threads
+sky: absolute 1142.541665s, local start 12.00h, speed 1x, day 1440s, lunar month 7d, 3 months/season, year 84d; sun lat 11.020410 lon 117.474432
+simulation: 20 Hz tick, 112 m active radius; resumed at tick 0 with 0 queued, 0 frozen, 0 falling
+adapter: NVIDIA GeForce RTX 2060 (Vulkan, DiscreteGpu)
+quad buffer: 512 MB (67 M quads); grid slots 131072
+play scripts/m2a-sand.play -> C:/Users/Austin/AppData/Local/Temp/claude/C--code-triangulum/d342b492-b4e1-4ca0-aed0-a98693098744/scratchpad/final-scripts/frames/m2a-sand
+> atblock 2 107155 57531 2000
+> assert mode == walk
+  assert ok: mode == walk (actual walk)
+> assert on_ground == true
+  assert ok: on_ground == true (actual true)
+> assert sim_enabled == true
+  assert ok: sim_enabled == true (actual true)
+> assert falling == 0
+  assert ok: falling == 0 (actual 0)
+> aim 0 0 -0.5
+> tap break
+  break: face 2 i 107155 j 57531 k 554
+> wait 0.6
+> aim 0 0 -0.5
+> tap break
+  break: face 2 i 107155 j 57531 k 553
+> wait 0.6
+> aim 0 0 -0.5
+> tap break
+  break: face 2 i 107155 j 57531 k 552
+> wait 0.6
+> assert on_ground == true
+  assert ok: on_ground == true (actual true)
+> assert block_rel[0,0,1] == air
+  assert ok: block_rel[0,0,1] == air (actual air)
+> assert block_rel[0,0,2] == air
+  assert ok: block_rel[0,0,2] == air (actual air)
+> assert block_rel[0,0,-1] != air
+  assert ok: block_rel[0,0,-1] != air (actual limestone)
+> lookaxis +i 0
+> aim 1 0 1.5
+> assert crosshair != none
+  assert ok: crosshair != none (actual dirt)
+> tap break
+  break: face 2 i 107156 j 57531 k 553
+> assert block_rel[1,0,1] == air
+  assert ok: block_rel[1,0,1] == air (actual air)
+> aim 1 0 0.5
+> tap break
+  break: face 2 i 107156 j 57531 k 552
+> assert block_rel[1,0,0] == air
+  assert ok: block_rel[1,0,0] == air (actual air)
+> assert block_rel[1,0,2] != air
+  assert ok: block_rel[1,0,2] != air (actual grass)
+> assert block_rel[1,0,-1] != air
+  assert ok: block_rel[1,0,-1] != air (actual limestone)
+> atblock 2 107156 57531 2000
+> assert block_rel[0,0,-1] != air
+  assert ok: block_rel[0,0,-1] != air (actual grass)
+> assert block_rel[0,0,-2] == air
+  assert ok: block_rel[0,0,-2] == air (actual air)
+> assert block_rel[0,0,-3] == air
+  assert ok: block_rel[0,0,-3] == air (actual air)
+> mode fly
+> select 4
+> assert selected_block == sand
+  assert ok: selected_block == sand (actual sand)
+> aim 0 0 -0.5
+> tap place
+  place: face 2 i 107156 j 57531 k 555
+> assert block_rel[0,0,0] == sand
+  assert ok: block_rel[0,0,0] == sand (actual sand)
+> hold space 0.05
+> aim 0 0 -0.5
+> tap place
+  place: face 2 i 107156 j 57531 k 556
+> assert block_rel[0,0,0] == sand
+  assert ok: block_rel[0,0,0] == sand (actual sand)
+> hold space 0.05
+> aim 0 0 -0.5
+> tap place
+  place: face 2 i 107156 j 57531 k 557
+> assert block_rel[0,0,0] == sand
+  assert ok: block_rel[0,0,0] == sand (actual sand)
+> hold space 0.05
+> select 5
+> assert selected_block == gravel
+  assert ok: selected_block == gravel (actual gravel)
+> aim 0 0 -0.5
+> tap place
+  place: face 2 i 107156 j 57531 k 558
+> assert block_rel[0,0,0] == gravel
+  assert ok: block_rel[0,0,0] == gravel (actual gravel)
+> assert block_rel[0,0,-3] == sand
+  assert ok: block_rel[0,0,-3] == sand (actual sand)
+> tick 5
+  ticked 39 -> 44: sim on  tick 44  falling 0  queued 0  frozen 0  active 358 chunks  water 0 updates, 0 moved, in 0 out 0  tick cost 0.001 ms (avg 0.019, max 0.745)
+> assert falling == 0
+  assert ok: falling == 0 (actual 0)
+> assert queued == 0
+  assert ok: queued == 0 (actual 0)
+> mode walk
+> atblock 2 107149 57531 2000
+> mode fly
+> hold space 0.15
+> aim 7 0 -1.0
+> shot 01_tower
+  shot 01_tower: C:/Users/Austin/AppData/Local/Temp/claude/C--code-triangulum/d342b492-b4e1-4ca0-aed0-a98693098744/scratchpad/final-scripts/frames/m2a-sand/01_tower.png (settled in 2.6 s / 1684 frames; 850 draws)
+  state 01_tower: fly lat -4.55815 lon 117.47012 alt 45.00 m (agl 2.68) face 2 i 107149 j 57531 k 557 ground false water false crosshair null edits 1 dirty 1
+> mode walk
+> atblock 2 107155 57531 2000
+> assert block_rel[0,0,-1] != air
+  assert ok: block_rel[0,0,-1] != air (actual limestone)
+> assert block_rel[1,0,0] == air
+  assert ok: block_rel[1,0,0] == air (actual air)
+> lookaxis +i 0
+> aim 1 0 2.5
+> assert crosshair != none
+  assert ok: crosshair != none (actual grass)
+> assert crosshair != sand
+  assert ok: crosshair != sand (actual grass)
+> tap break
+  break: face 2 i 107156 j 57531 k 554
+> assert block_rel[1,0,2] == air
+  assert ok: block_rel[1,0,2] == air (actual air)
+> assert falling == 0
+  assert ok: falling == 0 (actual 0)
+> tick 1
+  ticked 47 -> 48: sim on  tick 48  falling 1  queued 7  frozen 0  active 358 chunks  water 3 updates, 0 moved, in 0 out 0  tick cost 0.014 ms (avg 0.017, max 0.745)
+> assert falling == 1
+  assert ok: falling == 1 (actual 1)
+> assert falling_rel[1,0] == 1
+  assert ok: falling_rel[1,0] == 1 (actual 1)
+> tick 1
+  ticked 48 -> 49: sim on  tick 49  falling 2  queued 7  frozen 0  active 358 chunks  water 6 updates, 0 moved, in 0 out 0  tick cost 0.009 ms (avg 0.017, max 0.745)
+> assert falling == 2
+  assert ok: falling == 2 (actual 2)
+> tick 1
+  ticked 49 -> 50: sim on  tick 50  falling 3  queued 7  frozen 0  active 358 chunks  water 6 updates, 0 moved, in 0 out 0  tick cost 0.007 ms (avg 0.017, max 0.745)
+> assert falling == 3
+  assert ok: falling == 3 (actual 3)
+> tick 1
+  ticked 50 -> 51: sim on  tick 51  falling 4  queued 7  frozen 0  active 358 chunks  water 6 updates, 0 moved, in 0 out 0  tick cost 0.009 ms (avg 0.017, max 0.745)
+> assert falling == 4
+  assert ok: falling == 4 (actual 4)
+> assert falls == 4
+  assert ok: falls == 4 (actual 4)
+> mode walk
+> atblock 2 107149 57531 2000
+> mode fly
+> hold space 0.15
+> aim 7 0 -1.0
+> shot 02_collapse_a
+  shot 02_collapse_a: C:/Users/Austin/AppData/Local/Temp/claude/C--code-triangulum/d342b492-b4e1-4ca0-aed0-a98693098744/scratchpad/final-scripts/frames/m2a-sand/02_collapse_a.png (settled in 0.0 s / 13 frames; 850 draws)
+  state 02_collapse_a: fly lat -4.55815 lon 117.47012 alt 45.00 m (agl 2.68) face 2 i 107149 j 57531 k 557 ground false water false crosshair null edits 1 dirty 1
+> tick 3
+  ticked 54 -> 57: sim on  tick 57  falling 3  queued 7  frozen 0  active 358 chunks  water 0 updates, 0 moved, in 0 out 0  tick cost 0.010 ms (avg 0.016, max 0.745)
+> shot 02_collapse_b
+  shot 02_collapse_b: C:/Users/Austin/AppData/Local/Temp/claude/C--code-triangulum/d342b492-b4e1-4ca0-aed0-a98693098744/scratchpad/final-scripts/frames/m2a-sand/02_collapse_b.png (settled in 0.0 s / 13 frames; 850 draws)
+  state 02_collapse_b: fly lat -4.55815 lon 117.47012 alt 45.00 m (agl 2.68) face 2 i 107149 j 57531 k 557 ground false water false crosshair null edits 1 dirty 1
+> tick 3
+  ticked 57 -> 60: sim on  tick 60  falling 0  queued 7  frozen 0  active 358 chunks  water 2 updates, 0 moved, in 0 out 0  tick cost 0.005 ms (avg 0.015, max 0.745)
+> shot 02_collapse_c
+  shot 02_collapse_c: C:/Users/Austin/AppData/Local/Temp/claude/C--code-triangulum/d342b492-b4e1-4ca0-aed0-a98693098744/scratchpad/final-scripts/frames/m2a-sand/02_collapse_c.png (settled in 0.0 s / 13 frames; 850 draws)
+  state 02_collapse_c: fly lat -4.55815 lon 117.47012 alt 45.00 m (agl 2.68) face 2 i 107149 j 57531 k 557 ground false water false crosshair null edits 1 dirty 1
+> tick 30
+  ticked 60 -> 90: sim on  tick 90  falling 0  queued 0  frozen 0  active 358 chunks  water 0 updates, 0 moved, in 0 out 0  tick cost 0.001 ms (avg 0.011, max 0.745)
+> assert falling == 0
+  assert ok: falling == 0 (actual 0)
+> assert landings == 4
+  assert ok: landings == 4 (actual 4)
+> assert vanished == 0
+  assert ok: vanished == 0 (actual 0)
+> assert queued == 0
+  assert ok: queued == 0 (actual 0)
+> shot 02_collapse_d_landed
+  shot 02_collapse_d_landed: C:/Users/Austin/AppData/Local/Temp/claude/C--code-triangulum/d342b492-b4e1-4ca0-aed0-a98693098744/scratchpad/final-scripts/frames/m2a-sand/02_collapse_d_landed.png (settled in 0.0 s / 10 frames; 850 draws)
+  state 02_collapse_d_landed: fly lat -4.55815 lon 117.47012 alt 45.00 m (agl 2.68) face 2 i 107149 j 57531 k 557 ground false water false crosshair null edits 1 dirty 1
+> mode walk
+> atblock 2 107156 57531 2000
+> assert block_rel[0,0,-1] == gravel
+  assert ok: block_rel[0,0,-1] == gravel (actual gravel)
+> assert block_rel[0,0,-2] == sand
+  assert ok: block_rel[0,0,-2] == sand (actual sand)
+> assert block_rel[0,0,-3] == sand
+  assert ok: block_rel[0,0,-3] == sand (actual sand)
+> assert block_rel[0,0,-4] == sand
+  assert ok: block_rel[0,0,-4] == sand (actual sand)
+> assert block_rel[0,0,-5] != air
+  assert ok: block_rel[0,0,-5] != air (actual limestone)
+> assert block_rel[0,0,-5] != sand
+  assert ok: block_rel[0,0,-5] != sand (actual limestone)
+> assert block_rel[0,0,0] == air
+  assert ok: block_rel[0,0,0] == air (actual air)
+> assert block_rel[0,0,1] == air
+  assert ok: block_rel[0,0,1] == air (actual air)
+> assert block_rel[0,0,2] == air
+  assert ok: block_rel[0,0,2] == air (actual air)
+> atblock 2 107155 57531 2000
+> assert block_rel[1,0,0] == sand
+  assert ok: block_rel[1,0,0] == sand (actual sand)
+> assert block_rel[1,0,1] == sand
+  assert ok: block_rel[1,0,1] == sand (actual sand)
+> assert block_rel[0,0,0] == air
+  assert ok: block_rel[0,0,0] == air (actual air)
+> atblock 2 107154 57525 2000
+> assert on_ground == true
+  assert ok: on_ground == true (actual true)
+> aim 0 0 -0.5
+> tap break
+  break: face 2 i 107154 j 57525 k 554
+> wait 0.6
+> aim 0 0 -0.5
+> tap break
+  break: face 2 i 107154 j 57525 k 553
+> wait 0.6
+> aim 0 0 -0.5
+> tap break
+  break: face 2 i 107154 j 57525 k 552
+> wait 0.6
+> assert block_rel[0,0,2] == air
+  assert ok: block_rel[0,0,2] == air (actual air)
+> lookaxis +i 0
+> aim 1 0 1.5
+> tap break
+  break: face 2 i 107155 j 57525 k 553
+> aim 1 0 0.5
+> tap break
+  break: face 2 i 107155 j 57525 k 552
+> assert block_rel[1,0,0] == air
+  assert ok: block_rel[1,0,0] == air (actual air)
+> assert block_rel[1,0,1] == air
+  assert ok: block_rel[1,0,1] == air (actual air)
+> hold w 0.5
+> assert block_rel[0,0,2] != air
+  assert ok: block_rel[0,0,2] != air (actual grass)
+> aim 0 0 -0.5
+> tap break
+  break: face 2 i 107155 j 57525 k 551
+> wait 0.6
+> aim 0 0 -0.5
+> tap break
+  break: face 2 i 107155 j 57525 k 550
+> wait 0.6
+> aim 0 0 -0.5
+> tap break
+  break: face 2 i 107155 j 57525 k 549
+> wait 0.6
+> aim 0 0 -0.5
+> tap break
+  break: face 2 i 107155 j 57525 k 548
+> wait 0.6
+> assert on_ground == true
+  assert ok: on_ground == true (actual true)
+> assert block_rel[0,0,4] == air
+  assert ok: block_rel[0,0,4] == air (actual air)
+> assert block_rel[0,0,5] == air
+  assert ok: block_rel[0,0,5] == air (actual air)
+> assert block_rel[0,0,6] != air
+  assert ok: block_rel[0,0,6] != air (actual grass)
+> sim off
+  sim off  tick 184  falling 0  queued 0  frozen 0  active 358 chunks  water 0 updates, 0 moved, in 0 out 0  tick cost 0.001 ms (avg 0.001, max 0.745)
+> assert sim_enabled == false
+  assert ok: sim_enabled == false (actual false)
+> atblock 2 107155 57525 2000
+> assert block_rel[0,0,-1] != air
+  assert ok: block_rel[0,0,-1] != air (actual grass)
+> assert block_rel[0,0,-2] == air
+  assert ok: block_rel[0,0,-2] == air (actual air)
+> mode fly
+> select 4
+> aim 0 0 -0.5
+> tap place
+  place: face 2 i 107155 j 57525 k 555
+> hold space 0.05
+> aim 0 0 -0.5
+> tap place
+  place: face 2 i 107155 j 57525 k 556
+> hold space 0.05
+> select 5
+> aim 0 0 -0.5
+> tap place
+  place: face 2 i 107155 j 57525 k 557
+> assert block_rel[0,0,0] == gravel
+  assert ok: block_rel[0,0,0] == gravel (actual gravel)
+> assert block_rel[0,0,-1] == sand
+  assert ok: block_rel[0,0,-1] == sand (actual sand)
+> assert block_rel[0,0,-2] == sand
+  assert ok: block_rel[0,0,-2] == sand (actual sand)
+> mode walk
+> atblock 2 107154 57525 2000
+> lookaxis +i 0
+> aim 1 0 2.5
+> assert crosshair != none
+  assert ok: crosshair != none (actual grass)
+> tap break
+  break: face 2 i 107155 j 57525 k 554
+> assert block_rel[1,0,2] == air
+  assert ok: block_rel[1,0,2] == air (actual air)
+> tick 5
+  ticked 184 -> 184: sim off  tick 184  falling 0  queued 0  frozen 0  active 358 chunks  water 0 updates, 0 moved, in 0 out 0  tick cost 0.001 ms (avg 0.001, max 0.745)
+> assert falling == 0
+  assert ok: falling == 0 (actual 0)
+> assert block_rel[1,0,3] == sand
+  assert ok: block_rel[1,0,3] == sand (actual sand)
+> sim on
+  sim on  tick 184  falling 0  queued 0  frozen 0  active 358 chunks  water 0 updates, 0 moved, in 0 out 0  tick cost 0.001 ms (avg 0.001, max 0.745)
+> tick 1
+  ticked 184 -> 185: sim on  tick 185  falling 3  queued 17  frozen 0  active 358 chunks  water 16 updates, 0 moved, in 0 out 0  tick cost 0.017 ms (avg 0.001, max 0.745)
+> assert falling == 3
+  assert ok: falling == 3 (actual 3)
+> assert falling_rel[1,0] == 3
+  assert ok: falling_rel[1,0] == 3 (actual 3)
+> tick 1
+  ticked 185 -> 186: sim on  tick 186  falling 3  queued 0  frozen 0  active 358 chunks  water 17 updates, 0 moved, in 0 out 0  tick cost 0.007 ms (avg 0.001, max 0.745)
+> assert falling == 3
+  assert ok: falling == 3 (actual 3)
+> save
+  saved 1 chunk(s)
+> assert dirty == 0
+  assert ok: dirty == 0 (actual 0)
+> reload
+  reloaded 1 chunk(s) from disk
+> assert falling == 3
+  assert ok: falling == 3 (actual 3)
+> assert sim_tick > 0
+  assert ok: sim_tick > 0 (actual 186)
+> mode walk
+> atblock 2 107150 57525 2000
+> mode fly
+> hold space 0.15
+> aim 5 0 -1.0
+> shot 03_reloaded_midfall
+  shot 03_reloaded_midfall: C:/Users/Austin/AppData/Local/Temp/claude/C--code-triangulum/d342b492-b4e1-4ca0-aed0-a98693098744/scratchpad/final-scripts/frames/m2a-sand/03_reloaded_midfall.png (settled in 2.4 s / 1139 frames; 836 draws)
+  state 03_reloaded_midfall: fly lat -4.56156 lon 117.47072 alt 46.00 m (agl 3.47) face 2 i 107150 j 57525 k 558 ground false water false crosshair null edits 1 dirty 0
+> tick 40
+  ticked 189 -> 229: sim on  tick 229  falling 0  queued 0  frozen 0  active 358 chunks  water 0 updates, 0 moved, in 0 out 0  tick cost 0.001 ms (avg 0.017, max 0.673)
+> assert falling == 0
+  assert ok: falling == 0 (actual 0)
+> assert vanished == 0
+  assert ok: vanished == 0 (actual 0)
+> shot 03_reloaded_landed
+  shot 03_reloaded_landed: C:/Users/Austin/AppData/Local/Temp/claude/C--code-triangulum/d342b492-b4e1-4ca0-aed0-a98693098744/scratchpad/final-scripts/frames/m2a-sand/03_reloaded_landed.png (settled in 0.0 s / 12 frames; 836 draws)
+  state 03_reloaded_landed: fly lat -4.56156 lon 117.47072 alt 46.00 m (agl 3.47) face 2 i 107150 j 57525 k 558 ground false water false crosshair null edits 1 dirty 1
+> mode walk
+> atblock 2 107155 57525 2000
+> assert block_rel[0,0,-1] == gravel
+  assert ok: block_rel[0,0,-1] == gravel (actual gravel)
+> assert block_rel[0,0,-2] == sand
+  assert ok: block_rel[0,0,-2] == sand (actual sand)
+> assert block_rel[0,0,-3] == sand
+  assert ok: block_rel[0,0,-3] == sand (actual sand)
+> assert block_rel[0,0,-4] != air
+  assert ok: block_rel[0,0,-4] != air (actual sandstone)
+> assert block_rel[0,0,-4] != sand
+  assert ok: block_rel[0,0,-4] != sand (actual sandstone)
+> assert block_rel[0,0,0] == air
+  assert ok: block_rel[0,0,0] == air (actual air)
+> assert block_rel[0,0,1] == air
+  assert ok: block_rel[0,0,1] == air (actual air)
+> assert block_rel[0,0,2] == air
+  assert ok: block_rel[0,0,2] == air (actual air)
+> assert block_rel[0,0,3] == air
+  assert ok: block_rel[0,0,3] == air (actual air)
+> assert block_rel[0,0,4] == air
+  assert ok: block_rel[0,0,4] == air (actual air)
+> atblock 2 107154 57525 2000
+> assert block_rel[0,0,0] == air
+  assert ok: block_rel[0,0,0] == air (actual air)
+> assert block_rel[0,0,-1] != air
+  assert ok: block_rel[0,0,-1] != air (actual limestone)
+> assert block_rel[1,0,0] == air
+  assert ok: block_rel[1,0,0] == air (actual air)
+> assert block_rel[1,0,1] == air
+  assert ok: block_rel[1,0,1] == air (actual air)
+> assert tick_ms_avg < 2
+  assert ok: tick_ms_avg < 2 (actual 0.01727906976744186)
+> state final
+  state final: walk lat -4.56151 lon 117.47354 alt 40.00 m (agl -3.13) face 2 i 107154 j 57525 k 552 ground true water false crosshair "limestone" edits 1 dirty 1
+> atblock 2 107149 57528 2000
+> mode fly
+> hold space 0.25
+> aim 7 3 -2.5
+> shot 04_both_scenes
+  shot 04_both_scenes: C:/Users/Austin/AppData/Local/Temp/claude/C--code-triangulum/d342b492-b4e1-4ca0-aed0-a98693098744/scratchpad/final-scripts/frames/m2a-sand/04_both_scenes.png (settled in 0.0 s / 10 frames; 842 draws)
+  state 04_both_scenes: fly lat -4.55986 lon 117.47007 alt 47.00 m (agl 4.62) face 2 i 107149 j 57528 k 559 ground false water false crosshair null edits 1 dirty 1
+> bench 60
+  bench 60 frames: wall avg 1.23 ms (p95 2.98, worst 3.47) = 813 fps; gpu avg 0.54 ms; 842 draws
+saved 1 chunk(s) at exit
+done in 7.7 s: 95 asserts, 0 failed, 0 errors

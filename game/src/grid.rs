@@ -188,6 +188,15 @@ impl Planet {
         if sea_level == 0 || sea_level >= height {
             return Err(format!("sea level {sea_level} must lie inside (0, H = {height})"));
         }
+        // The simulation's position key packs i and j in 20 bits and k in
+        // 16 (`sim::PosKey`); past that, positions alias (review 3 #10).
+        let (max_n, max_h) = (crate::sim::PosKey::MAX_N, crate::sim::PosKey::MAX_H);
+        if n > max_n {
+            return Err(format!("N = {n} columns per face edge is more than the simulation's position key holds: at most {max_n} (2^20; sim::PosKey packs i and j in 20 bits)"));
+        }
+        if height > max_h {
+            return Err(format!("H = {height} layers is more than the simulation's position key holds: at most {max_h} (2^16; sim::PosKey packs k in 16 bits)"));
+        }
         // The coarsest voxel is H blocks (the cap). A voxel grid can only
         // place sea level exactly when the voxel size divides the sea level,
         // so LODs coarser than the largest power of two dividing sea_level
@@ -667,6 +676,23 @@ mod tests {
         assert!(Planet::try_new(1.0, 2048, 256, 131072).is_ok());
         assert!(Planet::try_new(1.0, 2048, 1024 + 512, 131072).is_ok(), "1536 = 6 x 256");
         assert!(Planet::try_new(0.5, 2048, 512, 262144).is_ok());
+    }
+
+    /// Review 3 #10: the simulation's position key packs i and j in 20 bits
+    /// and k in 16. A world past that would alias positions (in a release
+    /// build, (face 0, i 2^20) is (face 1, i 0)), so it is refused at
+    /// startup with the limit named.
+    #[test]
+    fn worlds_past_the_simulation_key_are_refused() {
+        let wide = Planet::try_new(1.0, 2048, 512, 2_097_152);
+        assert!(wide.is_err(), "N = 2,097,152 was accepted");
+        let err = wide.unwrap_err();
+        assert!(err.contains("1048576"), "{err}");
+        let tall = Planet::try_new(1.0, 131_072, 32_768, 1_048_576);
+        assert!(tall.is_err(), "H = 131,072 was accepted");
+        assert!(tall.unwrap_err().contains("65536"));
+        assert!(Planet::try_new(1.0, 2048, 512, 1_048_576).is_ok(), "the largest N the key holds");
+        assert!(Planet::try_new(1.0, 65_536, 16_384, 1_048_576).is_ok(), "and the largest H");
     }
 
     #[test]

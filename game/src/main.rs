@@ -342,10 +342,12 @@ fn main() {
         sky_settings.validate().unwrap_or_else(|e| fail(&e));
     }
 
+    // Refuse an unsupported world before spending time on the bake (review 3 #10).
+    grid::Planet::try_new(config.block_size_m, config.world_height, config.sea_level, config.columns_per_face).unwrap_or_else(|e| fail(&format!("world settings: {e}")));
     let t0 = std::time::Instant::now();
     let registry = Arc::new(Registry::load(&args.blocks).unwrap_or_else(|e| fail(&e)));
     let bake: Arc<dyn worldgen::bake::Bake> = Arc::new(worldgen::bake::open(&config.bake).unwrap_or_else(|e| fail(&format!("load bake {}: {e}", config.bake))));
-    println!("bake loaded in {:.2}s: {}", t0.elapsed().as_secs_f64(), bake.describe());
+    println!("bake loaded and hashed in {:.2}s: {}", t0.elapsed().as_secs_f64(), bake.describe());
     println!("blocks: {} definitions from {}", registry.len(), args.blocks);
     // Block textures (M3b): every PNG blocks.json names, from the textures
     // folder beside it, installed for every renderer.
@@ -357,7 +359,8 @@ fn main() {
         println!("textures: {} picture(s) of {} x {} px from {}", textures.len(), textures.size, textures.size, textures.dir.display());
     }
     render::textures::install(render::textures::Installed { block_m: config.block_size_m, size: textures.size, pictures: textures.pictures().into_iter().cloned().collect() });
-    let bake_sha = world::save::bake_identity(&config.bake).unwrap_or_else(|e| fail(&format!("bake identity: {e}")));
+    // The identity of the bytes just loaded, not of the files as they are now (review 3 #5).
+    let bake_sha = bake.identity().map(str::to_string).unwrap_or_else(|| fail(&format!("bake identity: {} has no meta.json to identify it by", config.bake)));
 
     // Saves: load before the engine exists so a mismatch refuses early.
     let tools = args.bench || args.shots || args.find_places || args.probe || args.sky_reel;

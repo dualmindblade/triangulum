@@ -23,6 +23,20 @@
 //!
 //! Files `commit.json` does not name are leftovers of an interrupted save;
 //! loading ignores them and the next save removes the ones it supersedes.
+//!
+//! Durability (review 3 #1, `flush`): a generation's chunk and simulation
+//! files have names no committed generation uses, so they are written in
+//! place and flushed to the device (`FlushFileBuffers` / `fsync`); then
+//! their directories are flushed; then `commit.json` is published by a
+//! durable replace (Windows: `MoveFileExW` with `MOVEFILE_WRITE_THROUGH`,
+//! which returns only once the rename is on the disk; Unix: `rename` and an
+//! `fsync` of the directory) and the save directory flushed. Only then are
+//! the revisions acknowledged and the previous generation's superseded
+//! files removed, so until the new generation is durable the previous one
+//! stays whole on disk. Any flush failure is an error (the save is retried;
+//! nothing is acknowledged or removed). All of this goes through `SaveFs`,
+//! so the tests check the order and every failure point.
+//!
 //! Every file is verified against its recorded digest, every chunk key
 //! against the world's bounds and every palette id against the registry
 //! before anything is installed (review #14). Dirty chunks are acknowledged
@@ -37,9 +51,9 @@ use super::edits::EditStore;
 use super::{BlockId, Chunk, Registry};
 pub use crate::grid::BODY_NEISOR;
 use crate::grid::{ChunkKey, FastMap, Planet, WorldConfig};
-use crate::sha256::{Sha256, hex, sha256};
+use crate::sha256::{hex, sha256};
 use serde::{Deserialize, Serialize};
-use std::io::{Read, Write as _};
+use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
@@ -67,89 +81,17 @@ pub fn projection_table_sha256() -> &'static str {
     DIGEST.get_or_init(|| hex(&sha256(EQUAL_AREA_COBE_TABLE)))
 }
 
-/// One raster of the bake as the digest cache remembers it.
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-struct BakeFile {
-    name: String,
-    len: u64,
-    mtime_ns: u64,
-}
-
-/// `content.sha256.json` beside the bake: the content digest and what it
-/// was computed from, so a start-up only re-hashes 550 MB when a raster
-/// changed size or time.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-struct BakeDigestCache {
-    meta_sha256: String,
-    files: Vec<BakeFile>,
-    digest: String,
-}
-
-/// The bake's identity: SHA-256 over meta.json and the full contents of
-/// every face raster (review #4: sizes and names alone let a same-size bake
-/// with other values pass), and over `hydro.bin` (rivers and lakes) when the
-/// bake has one. Hashing the rasters is cached beside the bake, keyed on the
-/// rasters' names, sizes and modification times (the cache holds the
-/// rasters' digest only, so engines that do not read hydro.bin share it); a
-/// bake copied elsewhere is hashed once more and gets the same digest.
+/// The bake's identity from its files as they are now: SHA-256 over
+/// meta.json and the full contents of every face raster (review #4: sizes
+/// and names alone let a same-size bake with other values pass), and over
+/// `hydro.bin` when the bake has one (`worldgen::bake::BakeIdentity`). The
+/// game itself takes the identity the loader hashed from the bytes it
+/// loaded (`Bake::identity`, review 3 #5); this is for tools and tests.
+/// Nothing is cached: the old cache beside the bake (content.sha256.json,
+/// keyed on names, sizes and times) vouched for contents it never saw, and
+/// is no longer read or written.
 pub fn bake_identity(dir: &str) -> Result<String, String> {
-    let rasters = raster_identity(dir)?;
-    let hydro = Path::new(dir).join("hydro.bin");
-    match std::fs::read(&hydro) {
-        Ok(bytes) => {
-            let mut h = Sha256::new();
-            h.update(rasters.as_bytes());
-            h.update(b"hydro.bin");
-            h.update(&sha256(&bytes));
-            Ok(hex(&h.finish()))
-        }
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(rasters),
-        Err(e) => Err(format!("read {}: {e}", hydro.display())),
-    }
-}
-
-fn raster_identity(dir: &str) -> Result<String, String> {
-    let dir = Path::new(dir);
-    let meta_path = dir.join("meta.json");
-    let meta = std::fs::read(&meta_path).map_err(|e| format!("read {}: {e}", meta_path.display()))?;
-    let meta_sha256 = hex(&sha256(&meta));
-    let mut files = Vec::new();
-    for face in 0..6 {
-        let name = format!("face_{face}.bin");
-        let md = std::fs::metadata(dir.join(&name)).map_err(|e| format!("stat {}: {e}", dir.join(&name).display()))?;
-        let mtime_ns = md.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map_or(0, |d| d.as_nanos() as u64);
-        files.push(BakeFile { name, len: md.len(), mtime_ns });
-    }
-    let cache_path = dir.join("content.sha256.json");
-    if let Ok(text) = std::fs::read_to_string(&cache_path) {
-        if let Ok(c) = serde_json::from_str::<BakeDigestCache>(&text) {
-            if c.meta_sha256 == meta_sha256 && c.files == files && c.digest.len() == 64 {
-                return Ok(c.digest);
-            }
-        }
-    }
-    let mut h = Sha256::new();
-    h.update(&meta);
-    let mut buf = vec![0u8; 8 << 20];
-    for f in &files {
-        h.update(f.name.as_bytes());
-        h.update(&f.len.to_le_bytes());
-        let p = dir.join(&f.name);
-        let mut file = std::fs::File::open(&p).map_err(|e| format!("open {}: {e}", p.display()))?;
-        loop {
-            let n = file.read(&mut buf).map_err(|e| format!("read {}: {e}", p.display()))?;
-            if n == 0 {
-                break;
-            }
-            h.update(&buf[..n]);
-        }
-    }
-    let digest = hex(&h.finish());
-    // Best effort: an unwritable bake directory just hashes again next time.
-    if let Ok(text) = serde_json::to_string_pretty(&BakeDigestCache { meta_sha256, files, digest: digest.clone() }) {
-        let _ = std::fs::write(&cache_path, text);
-    }
-    Ok(digest)
+    crate::worldgen::bake::content_identity(dir)
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -352,6 +294,27 @@ impl SaveDir {
         self.header_path().exists()
     }
 
+    /// Is there a save here (review 3 #2)? Ok(false): no header and nothing
+    /// committed, an absent save, which loads as the natural world. Ok(true):
+    /// a header (with or without a commit yet). Err: a commit without its
+    /// header. That save is damaged, not empty: loading it as an empty
+    /// world would drop its chunks while its simulation state resumed, and
+    /// the next save would write a fresh header over the old generation.
+    pub fn present(&self) -> Result<bool, String> {
+        if self.header_path().exists() {
+            return Ok(true);
+        }
+        if self.commit_path().exists() {
+            let tmp = self.path.join("header.tmp");
+            let hint = if tmp.exists() { " (a header.tmp is there: a header write was interrupted)" } else { "" };
+            return Err(format!(
+                "refusing to use {}: commit.json is there but header.json is missing{hint}, so the save is damaged, not empty. Put back header.json from a backup, or move the directory away to start a new save",
+                self.path.display()
+            ));
+        }
+        Ok(false)
+    }
+
     pub fn read_header(&self) -> Result<Option<Header>, String> {
         let p = self.header_path();
         if !p.exists() {
@@ -362,16 +325,21 @@ impl SaveDir {
     }
 
     pub fn write_header(&self, config: &WorldConfig, registry: &Registry, bake_sha256: &str) -> Result<(), String> {
+        self.write_header_with(&OsFs, config, registry, bake_sha256)
+    }
+
+    fn write_header_with(&self, fs: &dyn SaveFs, config: &WorldConfig, registry: &Registry, bake_sha256: &str) -> Result<(), String> {
         std::fs::create_dir_all(&self.path).map_err(|e| format!("create {}: {e}", self.path.display()))?;
         let h = Header::for_world(config, registry, bake_sha256);
         let text = serde_json::to_string_pretty(&h).map_err(|e| e.to_string())?;
-        write_atomic(&self.header_path(), text.as_bytes())
+        write_atomic(fs, &self.header_path(), text.as_bytes())?;
+        sync_dir(fs, &self.path)
     }
 
     /// M3b: blocks added to blocks.json since the header was written are
     /// recorded in it (only the block table changes), so the header names
     /// every id a chunk of this save can hold.
-    fn extend_header_blocks(&self, registry: &Registry) -> Result<(), String> {
+    fn extend_header_blocks(&self, fs: &dyn SaveFs, registry: &Registry) -> Result<(), String> {
         let Some(mut h) = self.read_header()? else { return Ok(()) };
         let known = h.blocks.iter().map(|(id, _)| *id).max();
         let new: Vec<(BlockId, String)> = registry.defs().iter().filter(|d| known.is_none_or(|k| d.id > k) && !d.name.starts_with("unused_")).map(|d| (d.id, d.name.clone())).collect();
@@ -380,7 +348,8 @@ impl SaveDir {
         }
         h.blocks.extend(new);
         let text = serde_json::to_string_pretty(&h).map_err(|e| e.to_string())?;
-        write_atomic(&self.header_path(), text.as_bytes())
+        write_atomic(fs, &self.header_path(), text.as_bytes())?;
+        sync_dir(fs, &self.path)
     }
 
     /// The current generation; None when nothing was ever committed.
@@ -411,6 +380,9 @@ impl SaveDir {
     /// The simulation state as committed (`sim::Snapshot::from_bytes` reads
     /// it); None when the save has none.
     pub fn read_sim(&self) -> Result<Option<Vec<u8>>, String> {
+        if !self.present()? {
+            return Ok(None);
+        }
         match self.read_commit()?.and_then(|c| c.sim) {
             Some(f) => self.read_verified(&f.file, &f.sha256).map(Some),
             None => Ok(None),
@@ -440,11 +412,15 @@ impl SaveDir {
     }
 
     /// Load every committed chunk into `store` after checking the header,
-    /// each file's digest, each key's bounds and each palette id. A missing
-    /// save is an empty one.
+    /// each file's digest, each key's bounds and each palette id. An absent
+    /// save is an empty one; a commit without its header is refused
+    /// (`present`).
     pub fn load_into(&self, config: &WorldConfig, registry: &Registry, bake_sha256: &str, store: &EditStore) -> Result<LoadReport, String> {
-        let Some(header) = self.read_header()? else {
+        if !self.present()? {
             return Ok(LoadReport { chunks: 0, warnings: Vec::new(), generation: 0 });
+        }
+        let Some(header) = self.read_header()? else {
+            return Err(format!("refusing to load {}: header.json disappeared while loading", self.path.display()));
         };
         let warnings = header.check(config, registry, bake_sha256).map_err(|e| format!("refusing to load {}: {e}", self.path.display()))?;
         let generation = self.read_commit()?.map_or(0, |c| c.generation);
@@ -471,20 +447,25 @@ impl SaveDir {
     }
 
     /// Write one generation: the header (if missing), every dirty chunk
-    /// and, when given, the simulation state, each to a new file; then
-    /// switch `commit.json` to the new generation in one rename; then
-    /// acknowledge the written revisions to the store and remove the files
-    /// the new generation superseded. Returns how many chunks were
+    /// and, when given, the simulation state, each to a new file, flushed;
+    /// then their directories; then switch `commit.json` to the new
+    /// generation in one durable replace; then acknowledge the written
+    /// revisions to the store and remove the files the new generation
+    /// superseded (module doc, "Durability"). Returns how many chunks were
     /// written. Nothing is created when there is nothing to write.
     pub fn flush(&self, store: &EditStore, config: &WorldConfig, registry: &Registry, bake_sha256: &str, sim: Option<&[u8]>) -> Result<usize, String> {
+        self.flush_with(&OsFs, store, config, registry, bake_sha256, sim)
+    }
+
+    pub(crate) fn flush_with(&self, fs: &dyn SaveFs, store: &EditStore, config: &WorldConfig, registry: &Registry, bake_sha256: &str, sim: Option<&[u8]>) -> Result<usize, String> {
         let dirty = store.dirty_snapshot();
         if dirty.is_empty() && sim.is_none() {
             return Ok(0);
         }
-        if !self.exists() {
-            self.write_header(config, registry, bake_sha256)?;
+        if !self.present()? {
+            self.write_header_with(fs, config, registry, bake_sha256)?;
         } else {
-            self.extend_header_blocks(registry)?;
+            self.extend_header_blocks(fs, registry)?;
         }
         let dir = self.chunks_dir();
         std::fs::create_dir_all(&dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
@@ -498,7 +479,8 @@ impl SaveDir {
             assert_eq!(d.key.body, BODY_NEISOR, "a Neisor save holds Neisor chunks");
             let file = Self::chunk_file(d.key, generation);
             let bytes = chunk_file_bytes(d.key, &Chunk::from_dense(&d.ids, d.water.as_deref()));
-            write_atomic(&self.path.join(&file), &bytes)?;
+            // A name no committed generation uses: written in place.
+            write_new(fs, &self.path.join(&file), &bytes)?;
             let entry = CommitEntry { key: key_array(d.key), file, sha256: hex(&sha256(&bytes)) };
             match index.get(&entry.key) {
                 Some(&i) => {
@@ -513,18 +495,27 @@ impl SaveDir {
         }
         if let Some(bytes) = sim {
             let file = format!("sim.g{generation}.bin");
-            write_atomic(&self.path.join(&file), bytes)?;
+            write_new(fs, &self.path.join(&file), bytes)?;
             if let Some(old) = commit.sim.replace(CommitFile { file, sha256: hex(&sha256(bytes)) }) {
                 superseded.push(old.file);
             }
         }
+        // The new generation's files and their names are on the device...
+        if !dirty.is_empty() {
+            sync_dir(fs, &dir)?;
+        }
+        sync_dir(fs, &self.path)?;
+        // ...before the commit that names them is published, durably.
         commit.generation = generation;
         commit.chunks.sort_by_key(|e| e.key);
         let text = serde_json::to_string_pretty(&commit).map_err(|e| e.to_string())?;
-        write_atomic(&self.commit_path(), text.as_bytes())?;
+        write_atomic(fs, &self.commit_path(), text.as_bytes())?;
+        sync_dir(fs, &self.path)?;
+        // Only now is the previous generation no longer needed.
         store.acknowledge(&acked);
         for f in superseded {
-            let _ = std::fs::remove_file(self.path.join(f));
+            // A file that will not go is garbage, not damage: loading ignores it.
+            let _ = fs.remove(&self.path.join(f));
         }
         Ok(dirty.len())
     }
@@ -578,15 +569,21 @@ impl SaveDir {
         if let Some((bad, _)) = files.iter().find(|(n, _)| !is_save_file_name(n)) {
             return Err(format!("refusing a save image with the file name {bad:?}"));
         }
-        if self.exists() {
+        if self.exists() || self.commit_path().exists() {
             return Err(format!("{} already holds a save; a save image is only installed into an empty directory", self.path.display()));
         }
         std::fs::create_dir_all(self.chunks_dir()).map_err(|e| format!("create {}: {e}", self.chunks_dir().display()))?;
         // commit.json last, as `flush` does.
-        for (name, bytes) in files.iter().filter(|(n, _)| n != "commit.json").chain(files.iter().filter(|(n, _)| n == "commit.json")) {
-            write_atomic(&self.path.join(name), bytes)?;
+        let fs = OsFs;
+        for (name, bytes) in files.iter().filter(|(n, _)| n != "commit.json") {
+            write_atomic(&fs, &self.path.join(name), bytes)?;
         }
-        Ok(())
+        sync_dir(&fs, &self.chunks_dir())?;
+        sync_dir(&fs, &self.path)?;
+        for (name, bytes) in files.iter().filter(|(n, _)| n == "commit.json") {
+            write_atomic(&fs, &self.path.join(name), bytes)?;
+        }
+        sync_dir(&fs, &self.path)
     }
 }
 
@@ -621,25 +618,116 @@ fn parse_chunk_file(bytes: &[u8]) -> Result<(ChunkKey, Chunk), String> {
     Ok((key, chunk))
 }
 
-/// Write via a temporary file, fsync it and rename it over the destination
-/// (a rename replaces atomically on Windows and on Unix), so a crash never
-/// leaves a torn or missing file. The directory is synced where the
-/// platform allows it (Unix).
-fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
-    let tmp = path.with_extension("tmp");
-    {
-        let mut f = std::fs::File::create(&tmp).map_err(|e| format!("create {}: {e}", tmp.display()))?;
-        f.write_all(bytes).map_err(|e| format!("write {}: {e}", tmp.display()))?;
-        f.sync_all().map_err(|e| format!("sync {}: {e}", tmp.display()))?;
+/// The file operations a save makes, so the tests can record their order
+/// and fail any one of them (review 3 #1). `OsFs` is the real one.
+pub(crate) trait SaveFs {
+    /// Create or truncate `path`, write `bytes` and flush them to the device.
+    fn write_synced(&self, path: &Path, bytes: &[u8]) -> std::io::Result<()>;
+    /// Replace `to` by `from` so that the rename is on the device when this
+    /// returns (Windows: write-through; Unix: rename, then the directory).
+    fn replace_durably(&self, from: &Path, to: &Path) -> std::io::Result<()>;
+    /// Flush a directory's entries to the device.
+    fn sync_dir(&self, dir: &Path) -> std::io::Result<()>;
+    fn remove(&self, path: &Path) -> std::io::Result<()>;
+}
+
+/// The real file system.
+pub(crate) struct OsFs;
+
+impl SaveFs for OsFs {
+    fn write_synced(&self, path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+        let mut f = std::fs::File::create(path)?;
+        f.write_all(bytes)?;
+        f.sync_all()
     }
-    std::fs::rename(&tmp, path).map_err(|e| format!("rename {} -> {}: {e}", tmp.display(), path.display()))?;
-    #[cfg(unix)]
-    if let Some(dir) = path.parent() {
-        if let Ok(d) = std::fs::File::open(dir) {
-            let _ = d.sync_all();
+
+    fn replace_durably(&self, from: &Path, to: &Path) -> std::io::Result<()> {
+        #[cfg(windows)]
+        {
+            windows::move_write_through(from, to)
+        }
+        #[cfg(not(windows))]
+        {
+            std::fs::rename(from, to)?;
+            match to.parent() {
+                Some(dir) => self.sync_dir(dir),
+                None => Ok(()),
+            }
         }
     }
-    Ok(())
+
+    fn sync_dir(&self, dir: &Path) -> std::io::Result<()> {
+        #[cfg(windows)]
+        {
+            windows::flush_directory(dir)
+        }
+        #[cfg(not(windows))]
+        {
+            std::fs::File::open(dir)?.sync_all()
+        }
+    }
+
+    fn remove(&self, path: &Path) -> std::io::Result<()> {
+        std::fs::remove_file(path)
+    }
+}
+
+#[cfg(windows)]
+mod windows {
+    use std::os::windows::ffi::OsStrExt;
+    use std::path::Path;
+
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn MoveFileExW(existing: *const u16, new: *const u16, flags: u32) -> i32;
+    }
+    const MOVEFILE_REPLACE_EXISTING: u32 = 0x1;
+    /// "The function does not return until the file is actually moved on
+    /// the disk" (the Win32 documentation of MoveFileExW).
+    const MOVEFILE_WRITE_THROUGH: u32 = 0x8;
+    /// Lets CreateFile open a directory.
+    const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
+
+    fn wide(p: &Path) -> Vec<u16> {
+        p.as_os_str().encode_wide().chain(Some(0)).collect()
+    }
+
+    pub fn move_write_through(from: &Path, to: &Path) -> std::io::Result<()> {
+        let (f, t) = (wide(from), wide(to));
+        // SAFETY: two NUL-terminated UTF-16 paths that outlive the call.
+        let ok = unsafe { MoveFileExW(f.as_ptr(), t.as_ptr(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) };
+        if ok == 0 { Err(std::io::Error::last_os_error()) } else { Ok(()) }
+    }
+
+    /// FlushFileBuffers on the directory. It needs a handle with write
+    /// access (a read-only handle is refused with "access denied"); NTFS
+    /// takes it and commits the directory's entries.
+    pub fn flush_directory(dir: &Path) -> std::io::Result<()> {
+        use std::os::windows::fs::OpenOptionsExt;
+        std::fs::OpenOptions::new().read(true).write(true).custom_flags(FILE_FLAG_BACKUP_SEMANTICS).open(dir)?.sync_all()
+    }
+}
+
+/// A file under a name nothing committed uses (a new generation's chunk or
+/// simulation file): written in place and flushed. A crash leaves at most
+/// a torn file that no commit names, overwritten by the next attempt.
+fn write_new(fs: &dyn SaveFs, path: &Path, bytes: &[u8]) -> Result<(), String> {
+    fs.write_synced(path, bytes).map_err(|e| format!("write {}: {e}", path.display()))
+}
+
+/// Replace a file that a reader may be using (`commit.json`, `header.json`)
+/// all-or-nothing and durably: a temporary file, flushed, then a durable
+/// replace (`SaveFs::replace_durably`). A crash leaves the old file or the
+/// new one, never a torn or missing one, and when this returns the new one
+/// is on the device.
+fn write_atomic(fs: &dyn SaveFs, path: &Path, bytes: &[u8]) -> Result<(), String> {
+    let tmp = path.with_extension("tmp");
+    fs.write_synced(&tmp, bytes).map_err(|e| format!("write {}: {e}", tmp.display()))?;
+    fs.replace_durably(&tmp, path).map_err(|e| format!("replace {} by {}: {e}", path.display(), tmp.display()))
+}
+
+fn sync_dir(fs: &dyn SaveFs, dir: &Path) -> Result<(), String> {
+    fs.sync_dir(dir).map_err(|e| format!("flush the directory {}: {e}", dir.display()))
 }
 
 #[cfg(test)]
@@ -671,7 +759,7 @@ mod tests {
     /// Review #4: the identity follows the rasters' contents, with a cache
     /// that only skips the hashing while names, sizes and times are unchanged.
     #[test]
-    fn bake_identity_follows_the_contents_and_caches_the_digest() {
+    fn bake_identity_follows_the_contents() {
         let dir = std::env::temp_dir().join(format!("triangulum-bake-id-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
@@ -682,8 +770,8 @@ mod tests {
         }
         let a = bake_identity(dir.to_str().unwrap()).unwrap();
         assert_eq!(a.len(), 64);
-        assert!(dir.join("content.sha256.json").exists(), "the digest is cached beside the bake");
-        assert_eq!(bake_identity(dir.to_str().unwrap()).unwrap(), a, "the cache answers the same");
+        assert!(!dir.join("content.sha256.json").exists(), "nothing is cached beside the bake (review 3 #5)");
+        assert_eq!(bake_identity(dir.to_str().unwrap()).unwrap(), a, "the same files, the same identity");
         std::fs::write(dir.join("face_3.bin"), vec![0u8; 999]).unwrap();
         let b = bake_identity(dir.to_str().unwrap()).unwrap();
         assert_ne!(a, b, "a raster of another size is another bake");
@@ -694,12 +782,65 @@ mod tests {
         std::thread::sleep(std::time::Duration::from_millis(20));
         std::fs::write(dir.join("face_3.bin"), vec![1u8; 103]).unwrap();
         assert_eq!(bake_identity(dir.to_str().unwrap()).unwrap(), c);
-        // A stale cache file is ignored when the rasters do not match it.
         std::fs::write(dir.join("face_3.bin"), vec![0u8; 103]).unwrap();
         assert_ne!(bake_identity(dir.to_str().unwrap()).unwrap(), c);
         std::fs::write(dir.join("meta.json"), b"{\"seed\": 43}").unwrap();
         assert_ne!(bake_identity(dir.to_str().unwrap()).unwrap(), a);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Review 3 #5: the cache may not vouch for contents it cannot see. A
+    /// raster rewritten with other bytes of the same size, its modification
+    /// time put back, is another bake.
+    #[test]
+    fn bake_identity_follows_contents_even_when_size_and_time_match() {
+        let dir = std::env::temp_dir().join(format!("triangulum-bake-same-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("meta.json"), b"{\"seed\": 42}").unwrap();
+        for f in 0..6 {
+            std::fs::write(dir.join(format!("face_{f}.bin")), vec![f as u8; 4096]).unwrap();
+        }
+        let a = bake_identity(dir.to_str().unwrap()).unwrap();
+        let face = dir.join("face_3.bin");
+        let mtime = std::fs::metadata(&face).unwrap().modified().unwrap();
+        std::fs::write(&face, vec![0xEEu8; 4096]).unwrap();
+        std::fs::File::options().write(true).open(&face).unwrap().set_modified(mtime).unwrap();
+        assert_eq!(std::fs::metadata(&face).unwrap().len(), 4096);
+        assert_eq!(std::fs::metadata(&face).unwrap().modified().unwrap(), mtime, "same size, same time");
+        let b = bake_identity(dir.to_str().unwrap()).unwrap();
+        assert_ne!(a, b, "other bytes are another bake, whatever the file times say");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Review 3 #2: a committed save whose header.json is gone is damaged,
+    /// not absent. Loading it as an empty world dropped its chunks while
+    /// its simulation state resumed against natural terrain, and the next
+    /// save wrote a fresh header over the old generation.
+    #[test]
+    fn a_committed_save_without_its_header_is_refused_not_loaded_empty() {
+        let dir = temp_dir("headless");
+        let (cfg, reg) = (config(), registry());
+        let store = EditStore::new();
+        store.set(ChunkKey::neisor(2, 0, 100, 200, 17), 1, 2, 3, 4, || vec![1; VOXELS]);
+        dir.flush(&store, &cfg, &reg, BAKE, Some(b"sim-state")).unwrap();
+        std::fs::remove_file(dir.header_path()).unwrap();
+        let loaded = dir.load_into(&cfg, &reg, BAKE, &EditStore::new());
+        assert!(loaded.is_err(), "a save with commit.json but no header.json must not load: {:?}", loaded.map(|r| r.chunks));
+        let err = loaded.unwrap_err();
+        assert!(err.contains("header.json"), "{err}");
+        assert!(dir.read_sim().is_err(), "nor may its simulation state resume");
+        store.set(ChunkKey::neisor(2, 0, 100, 200, 17), 1, 2, 4, 4, || vec![1; VOXELS]);
+        assert!(dir.flush(&store, &cfg, &reg, BAKE, None).is_err(), "a save is not given a new header behind its back");
+        assert!(!dir.header_path().exists());
+        // An absent save is still an empty one; so is a header with nothing committed yet.
+        let absent = temp_dir("absent");
+        assert_eq!(absent.load_into(&cfg, &reg, BAKE, &EditStore::new()).unwrap().chunks, 0);
+        assert_eq!(absent.read_sim().unwrap(), None);
+        absent.write_header(&cfg, &reg, BAKE).unwrap();
+        assert_eq!(absent.load_into(&cfg, &reg, BAKE, &EditStore::new()).unwrap().chunks, 0);
+        let _ = std::fs::remove_dir_all(&dir.path);
+        let _ = std::fs::remove_dir_all(&absent.path);
     }
 
     #[test]
@@ -953,6 +1094,183 @@ mod tests {
         assert!(after.chunks.iter().any(|e| e.file == before.chunks.iter().find(|e| e.key == key_array(b)).unwrap().file));
         assert!(!dir.path.join("sim.g1.bin").exists(), "the superseded sim file is removed");
         let _ = std::fs::remove_dir_all(&dir.path);
+    }
+
+    /// Every file operation a save makes, in order, relative to the save
+    /// directory; it fails the operation numbered `fail_at` (and does it
+    /// for real otherwise).
+    struct RecordingFs {
+        root: PathBuf,
+        log: std::cell::RefCell<Vec<String>>,
+        fail_at: Option<usize>,
+    }
+
+    impl RecordingFs {
+        fn new(root: &Path, fail_at: Option<usize>) -> Self {
+            Self { root: root.to_path_buf(), log: Default::default(), fail_at }
+        }
+        fn rel(&self, p: &Path) -> String {
+            let r = p.strip_prefix(&self.root).unwrap_or(p).to_string_lossy().replace('\\', "/");
+            if r.is_empty() { ".".into() } else { r }
+        }
+        fn op(&self, what: String) -> std::io::Result<()> {
+            let n = self.log.borrow().len();
+            self.log.borrow_mut().push(what);
+            if self.fail_at == Some(n) { Err(std::io::Error::other("injected failure")) } else { Ok(()) }
+        }
+        fn ops(&self) -> Vec<String> {
+            self.log.borrow().clone()
+        }
+    }
+
+    impl SaveFs for RecordingFs {
+        fn write_synced(&self, path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+            self.op(format!("write {}", self.rel(path)))?;
+            OsFs.write_synced(path, bytes)
+        }
+        fn replace_durably(&self, from: &Path, to: &Path) -> std::io::Result<()> {
+            self.op(format!("replace {} -> {}", self.rel(from), self.rel(to)))?;
+            OsFs.replace_durably(from, to)
+        }
+        fn sync_dir(&self, dir: &Path) -> std::io::Result<()> {
+            self.op(format!("sync_dir {}", self.rel(dir)))?;
+            OsFs.sync_dir(dir)
+        }
+        fn remove(&self, path: &Path) -> std::io::Result<()> {
+            self.op(format!("remove {}", self.rel(path)))?;
+            OsFs.remove(path)
+        }
+    }
+
+    /// Generation 1 (chunks a and b, state "sim-1") on disk, then a and c
+    /// edited: the store ready for generation 2.
+    fn two_generations(tag: &str) -> (SaveDir, EditStore, [ChunkKey; 3]) {
+        let dir = temp_dir(tag);
+        let (cfg, reg) = (config(), registry());
+        let store = EditStore::new();
+        let keys = [ChunkKey::neisor(2, 0, 100, 200, 17), ChunkKey::neisor(2, 0, 100, 200, 16), ChunkKey::neisor(3, 0, 5, 6, 7)];
+        store.set(keys[0], 0, 0, 0, 4, || vec![1; VOXELS]);
+        store.set(keys[1], 0, 0, 0, 5, || vec![1; VOXELS]);
+        dir.flush(&store, &cfg, &reg, BAKE, Some(b"sim-1")).unwrap();
+        store.set(keys[0], 0, 0, 0, 6, || vec![1; VOXELS]);
+        store.set(keys[2], 0, 0, 0, 7, || vec![1; VOXELS]);
+        (dir, store, keys)
+    }
+
+    /// Review 3 #1: the order of a save. The new generation's files are
+    /// written and flushed, then their directories, then commit.json is
+    /// published by a durable replace and the directory flushed, and only
+    /// after that are the superseded files of the previous generation
+    /// removed (the store is acknowledged at the same point).
+    #[test]
+    fn a_save_makes_its_new_generation_durable_before_it_lets_go_of_the_old_one() {
+        let (dir, store, _) = two_generations("order");
+        let (cfg, reg) = (config(), registry());
+        let fs = RecordingFs::new(&dir.path, None);
+        assert_eq!(dir.flush_with(&fs, &store, &cfg, &reg, BAKE, Some(b"sim-2")).unwrap(), 2);
+        let ops = fs.ops();
+        println!("{ops:#?}");
+        let at = |s: &str| ops.iter().position(|o| o == s).unwrap_or_else(|| panic!("{s} not in {ops:?}"));
+        let commit_write = at("write commit.tmp");
+        let publish = at("replace commit.tmp -> commit.json");
+        assert_eq!(publish, commit_write + 1, "the commit is published right after it is written and flushed");
+        for (i, o) in ops.iter().enumerate() {
+            if o.starts_with("write chunks/") || o == "write sim.g2.bin" {
+                assert!(i < commit_write && o.contains(".g2."), "{o} is a generation-2 file written before the commit");
+            }
+            if o.starts_with("remove ") {
+                assert!(i > publish + 1, "{o} only after the published commit is flushed");
+                assert!(o.contains(".g1."), "{o} is a superseded generation-1 file");
+            }
+        }
+        let last_file = ops.iter().rposition(|o| o.starts_with("write chunks/") || o == "write sim.g2.bin").unwrap();
+        let dirs_before: Vec<&String> = ops[last_file..commit_write].iter().collect();
+        assert!(dirs_before.contains(&&"sync_dir chunks".to_string()) && dirs_before.contains(&&"sync_dir .".to_string()), "the new files' directories are flushed before the commit: {dirs_before:?}");
+        assert_eq!(ops[publish + 1], "sync_dir .", "and the save directory after it");
+        assert_eq!(ops.iter().filter(|o| o.starts_with("remove ")).count(), 2, "a's generation-1 file and sim.g1.bin");
+        assert_eq!(store.dirty_count(), 0);
+        let _ = std::fs::remove_dir_all(&dir.path);
+    }
+
+    /// Review 3 #1: whichever step fails (a file's flush, a directory's, the
+    /// publication), the save reports it, acknowledges nothing (the next
+    /// save writes it all again) and removes nothing: the previous
+    /// generation stays whole and loads. A failed removal of a superseded
+    /// file is only garbage left behind; the save stands.
+    #[test]
+    fn a_failure_at_any_step_of_a_save_keeps_the_previous_generation() {
+        let (dir, store, _) = two_generations("count");
+        let (cfg, reg) = (config(), registry());
+        let fs = RecordingFs::new(&dir.path, None);
+        dir.flush_with(&fs, &store, &cfg, &reg, BAKE, Some(b"sim-2")).unwrap();
+        let ops = fs.ops();
+        let _ = std::fs::remove_dir_all(&dir.path);
+        for (i, op) in ops.iter().enumerate() {
+            let (dir, store, keys) = two_generations(&format!("fail{i}"));
+            let gen1_files: Vec<PathBuf> = std::fs::read_dir(dir.chunks_dir()).unwrap().map(|e| e.unwrap().path()).chain([dir.path.join("sim.g1.bin")]).collect();
+            let fs = RecordingFs::new(&dir.path, Some(i));
+            let result = dir.flush_with(&fs, &store, &cfg, &reg, BAKE, Some(b"sim-2"));
+            let back = EditStore::new();
+            let report = dir.load_into(&cfg, &reg, BAKE, &back).unwrap_or_else(|e| panic!("failing {op}: the save no longer loads: {e}"));
+            if op.starts_with("remove ") {
+                assert!(result.is_ok(), "failing {op}: a removal that fails is not a failed save");
+                assert_eq!(report.generation, 2);
+                continue;
+            }
+            assert!(result.is_err(), "failing {op} was not reported");
+            assert_eq!(store.dirty_count(), 2, "failing {op}: nothing acknowledged");
+            for f in &gen1_files {
+                assert!(f.exists(), "failing {op}: {} was removed", f.display());
+            }
+            // The commit on disk is generation 1, or 2 when only the flush after
+            // its publication failed; either way it loads whole.
+            match report.generation {
+                1 => {
+                    assert_eq!(back.get(keys[0], 0, 0, 0), Some(4), "failing {op}: generation 1's a");
+                    assert_eq!(back.get(keys[2], 0, 0, 0), None);
+                    assert_eq!(dir.read_sim().unwrap().as_deref(), Some(&b"sim-1"[..]));
+                }
+                2 => {
+                    assert!(op.starts_with("sync_dir") && i > ops.iter().position(|o| o == "replace commit.tmp -> commit.json").unwrap(), "failing {op}: published early");
+                    assert_eq!(back.get(keys[0], 0, 0, 0), Some(6));
+                    assert_eq!(back.get(keys[2], 0, 0, 0), Some(7));
+                }
+                g => panic!("failing {op}: generation {g}"),
+            }
+            assert_eq!(back.get(keys[1], 0, 0, 0), Some(5), "failing {op}: b");
+            // And the next save, with nothing failing, goes through.
+            assert!(dir.flush(&store, &cfg, &reg, BAKE, Some(b"sim-3")).is_ok());
+            assert_eq!(store.dirty_count(), 0);
+            let _ = std::fs::remove_dir_all(&dir.path);
+        }
+        println!("{} failure points checked: {ops:?}", ops.len());
+    }
+
+    /// Not part of `cargo test`: what a save of N dirty chunks costs (the
+    /// game saves on its main thread). `cargo test --release -- --ignored
+    /// save_cost --nocapture --test-threads=1`.
+    #[test]
+    #[ignore]
+    fn save_cost_by_dirty_chunks() {
+        let (cfg, reg) = (config(), registry());
+        for n in [1u32, 100, 400] {
+            let dir = temp_dir(&format!("cost{n}"));
+            let store = EditStore::new();
+            for m in 0..n {
+                store.set(ChunkKey::neisor(2, 0, m % 64, m / 64, 17), 1, 2, 3, 4, || vec![1; VOXELS]);
+            }
+            let t = std::time::Instant::now();
+            dir.flush(&store, &cfg, &reg, BAKE, Some(b"sim-1")).unwrap();
+            let first = t.elapsed().as_secs_f64() * 1e3;
+            for m in 0..n {
+                store.set(ChunkKey::neisor(2, 0, m % 64, m / 64, 17), 1, 2, 3, 5, || vec![1; VOXELS]);
+            }
+            let t = std::time::Instant::now();
+            dir.flush(&store, &cfg, &reg, BAKE, Some(b"sim-2")).unwrap();
+            let second = t.elapsed().as_secs_f64() * 1e3;
+            println!("save of {n:4} dirty chunks: first {first:7.1} ms ({:.2} ms per chunk), again {second:7.1} ms ({:.2} ms per chunk)", first / n as f64, second / n as f64);
+            let _ = std::fs::remove_dir_all(&dir.path);
+        }
     }
 
     #[test]

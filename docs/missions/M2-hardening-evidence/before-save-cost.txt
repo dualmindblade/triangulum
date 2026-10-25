@@ -1,0 +1,24 @@
+   Compiling cubesphere v0.1.0 (C:\Users\Austin\AppData\Local\Temp\claude\C--code-triangulum\d342b492-b4e1-4ca0-aed0-a98693098744\scratchpad\main-src\crates\cubesphere)
+   Compiling triangulum v0.1.0 (C:\Users\Austin\AppData\Local\Temp\claude\C--code-triangulum\d342b492-b4e1-4ca0-aed0-a98693098744\scratchpad\main-src\game)
+warning: variable does not need to be mutable
+    --> src\stream.rs:1783:13
+     |
+1783 |         let mut drain = |c: &mut Coverage, gpu: &mut FakeGpu, wants: &mut Vec<Want>| {
+     |             ----^^^^^
+     |             |
+     |             help: remove this `mut`
+     |
+     = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: `triangulum` (bin "triangulum" test) generated 1 warning (run `cargo fix --bin "triangulum" -p triangulum --tests` to apply 1 suggestion)
+    Finished `release` profile [optimized + debuginfo] target(s) in 27.30s
+     Running unittests src\main.rs (target\release\deps\triangulum-73c9c76b6e7088ab.exe)
+
+running 1 test
+test world::save::tests::save_cost_by_dirty_chunks ... save of    1 dirty chunks: first    18.9 ms (18.88 ms per chunk), again    16.1 ms (16.09 ms per chunk)
+save of  100 dirty chunks: first   294.4 ms (2.94 ms per chunk), again   320.5 ms (3.20 ms per chunk)
+save of  400 dirty chunks: first  1057.5 ms (2.64 ms per chunk), again  1058.5 ms (2.65 ms per chunk)
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 143 filtered out; finished in 2.86s
+

@@ -596,6 +596,188 @@ fn boundary_cells_read_as_reservoirs_walls_or_drains_and_are_never_written() {
     }
 }
 
+/// The site chunk in the air and two foci for a one-metre region: `near`
+/// (only the chunk and its -i neighbour are active) and `both` (the chunk
+/// and its +i neighbour, the focus on their shared side).
+fn edge_site(w: &World) -> (ChunkKey, (u32, u32, u32), DVec3, DVec3) {
+    let (g, _) = site(w);
+    let p = w.planet;
+    let ck = World::chunk_of(BlockPos { k: g.k + 12, ..g }).0;
+    let (i0, j0, k0) = ck.origin_blocks();
+    let (i0, j0, k0) = (i0 as u32, j0 as u32, k0 as u32);
+    let near = p.pos(ck.face, i0 as f64 + 1.0, j0 as f64 + 16.0, k0 as f64 + 16.0);
+    let both = p.pos(ck.face, i0 as f64 + 32.0, j0 as f64 + 16.0, k0 as f64 + 16.0);
+    (ck, (i0, j0, k0), near, both)
+}
+
+/// Review 3 #3: water at rest against the edge of the active region (air
+/// beyond it, which the rule reads as a wall) flows on when the region
+/// grows over that edge. Before, only the outside cell woke, and an empty
+/// cell cannot pull water, so the water stayed dammed at the old edge.
+#[test]
+fn water_dammed_at_the_old_edge_flows_on_when_the_region_grows() {
+    let w = test_world();
+    let (ck, (i0, j0, k0), near, both) = edge_site(&w);
+    let next = ChunkKey { cx: ck.cx + 1, ..ck };
+    // An 8 x 3 trough along +i, i0 + 28 ..= i0 + 35: half in each chunk.
+    let o = BlockPos { face: ck.face, i: i0 + 27, j: j0 + 10, k: k0 + 4 };
+    build_box(&w, o, 8, 3, 2);
+    let water = w.water_id();
+    let cell = |dx: u32, dy: u32| BlockPos { i: o.i + dx, j: o.j + dy, k: o.k + 1, ..o };
+    let fill: Vec<(BlockPos, BlockId, Option<u8>)> = (1..=4).flat_map(|dx| (1..=3).map(move |dy| (cell(dx, dy), water, Some(FULL)))).collect();
+    assert_eq!(w.commit_levels(&fill), 12);
+    let mut sim = Sim::new(SimConfig { radius_m: 1.0, ..SimConfig::default() });
+    for _ in 0..50 {
+        sim.step(&w, near);
+    }
+    assert!(sim.is_active(ck) && !sim.is_active(next), "the trough's +i half is outside the region");
+    assert_eq!(sim.queued(), 0, "at rest against the edge");
+    let far = |w: &World| -> u64 { (5..=8).flat_map(|dx| (1..=3).map(move |dy| (dx, dy))).map(|(dx, dy)| w.water_level_at(cell(dx, dy)) as u64).sum() };
+    assert_eq!(far(&w), 0, "nothing crossed into the inactive half");
+    // The region grows over the edge: the water must find the empty half.
+    let mut ticks = 0;
+    for _ in 0..600 {
+        sim.step(&w, both);
+        ticks += 1;
+        if sim.queued() == 0 {
+            break;
+        }
+    }
+    println!("after the region grew: settled in {ticks} ticks, {} units in the far half", far(&w));
+    assert!(sim.is_active(next));
+    assert!(far(&w) >= 4 * 255, "the water flowed on across the old edge: {} units in the far half", far(&w));
+    assert_eq!(water_total(&w.edits), 12 * 255, "conserved");
+    assert_at_rest(&w, &sim);
+}
+
+/// Review 3 #3, both chunks joining at once: water at rest against the
+/// edge, the player away (both chunks out of the region), then back where
+/// both are in it. The pair between two chunks that joined together is
+/// woken too.
+#[test]
+fn water_dammed_at_an_old_edge_flows_on_when_both_sides_return_together() {
+    let w = test_world();
+    let (ck, (i0, j0, k0), near, both) = edge_site(&w);
+    let next = ChunkKey { cx: ck.cx + 1, ..ck };
+    let o = BlockPos { face: ck.face, i: i0 + 27, j: j0 + 10, k: k0 + 4 };
+    build_box(&w, o, 8, 3, 2);
+    let water = w.water_id();
+    let cell = |dx: u32, dy: u32| BlockPos { i: o.i + dx, j: o.j + dy, k: o.k + 1, ..o };
+    let fill: Vec<(BlockPos, BlockId, Option<u8>)> = (1..=4).flat_map(|dx| (1..=3).map(move |dy| (cell(dx, dy), water, Some(FULL)))).collect();
+    w.commit_levels(&fill);
+    let mut sim = Sim::new(SimConfig { radius_m: 1.0, ..SimConfig::default() });
+    for _ in 0..50 {
+        sim.step(&w, near);
+    }
+    assert_eq!(sim.queued(), 0);
+    let away = w.planet.pos(ck.face, i0 as f64 - 200.0, j0 as f64 + 16.0, k0 as f64 + 16.0);
+    for _ in 0..5 {
+        sim.step(&w, away);
+    }
+    assert!(!sim.is_active(ck) && !sim.is_active(next));
+    for _ in 0..600 {
+        sim.step(&w, both);
+        if sim.queued() == 0 {
+            break;
+        }
+    }
+    let far: u64 = (5..=8).flat_map(|dx| (1..=3).map(move |dy| (dx, dy))).map(|(dx, dy)| w.water_level_at(cell(dx, dy)) as u64).sum();
+    assert!(far >= 4 * 255, "the water flowed on: {far} units in the far half");
+    assert_eq!(water_total(&w.edits), 12 * 255);
+    assert!(sim.stats.pairs_woken > 0);
+}
+
+/// Review 3 #3, the vertical case: water resting on the floor of the active
+/// region (air below it, outside) falls when the region grows down.
+#[test]
+fn water_held_up_by_the_old_edge_falls_when_the_region_grows_below_it() {
+    let w = test_world();
+    let (g, _) = site(&w);
+    let p = w.planet;
+    // A chunk boundary in the air: k0 is the first layer of the chunk.
+    let ck = World::chunk_of(BlockPos { k: g.k + 36, ..g }).0;
+    let (i0, j0, k0) = ck.origin_blocks();
+    let (i0, j0, k0) = (i0 as u32, j0 as u32, k0 as u32);
+    let below = ChunkKey { cz: ck.cz - 1, ..ck };
+    // A 3 x 3 shaft, floor at k0 - 3 (in the chunk below), interior k0 - 2 ..= k0 + 1.
+    let o = BlockPos { face: ck.face, i: i0 + 10, j: j0 + 10, k: k0 - 3 };
+    build_basin(&w, o, 3, 4);
+    // Water in the active chunk's bottom layer, above the empty cells below the edge.
+    fill_layer(&w, o, 3, 3);
+    let top = p.pos(ck.face, i0 as f64 + 16.0, j0 as f64 + 16.0, k0 as f64 + 31.0);
+    let low = p.pos(ck.face, i0 as f64 + 16.0, j0 as f64 + 16.0, k0 as f64 - 0.5);
+    let mut sim = Sim::new(SimConfig { radius_m: 1.0, ..SimConfig::default() });
+    for _ in 0..20 {
+        sim.step(&w, top);
+    }
+    assert!(sim.is_active(ck) && !sim.is_active(below));
+    assert_eq!(sim.queued(), 0);
+    let layer = |w: &World, dz: u32| -> u64 { (1..=3).flat_map(|dx| (1..=3).map(move |dy| (dx, dy))).map(|(dx, dy)| w.water_level_at(BlockPos { i: o.i + dx, j: o.j + dy, k: o.k + dz, ..o }) as u64).sum() };
+    assert_eq!(layer(&w, 3), 9 * 255, "held up at the edge");
+    for _ in 0..100 {
+        sim.step(&w, low);
+    }
+    assert!(sim.is_active(below));
+    assert_eq!(layer(&w, 1), 9 * 255, "the water fell to the shaft's floor once the region reached it");
+    assert_eq!(layer(&w, 3), 0);
+    assert_eq!(water_total(&w.edits), 9 * 255);
+}
+
+/// Review 3 #3: growing the region over untouched generated water wakes
+/// none of it (a held river stays held, costing nothing).
+#[test]
+fn growing_the_region_over_untouched_water_wakes_nothing() {
+    let w = test_world();
+    let (sea, land) = find_shore(&w);
+    let p = w.planet;
+    let focus = p.pos(land.face, land.i as f64 + 0.5, land.j as f64 + 0.5, land.k as f64 + 2.0);
+    let mut sim = Sim::new(SimConfig { radius_m: 1.0, ..SimConfig::default() });
+    sim.step(&w, focus);
+    let small = sim.active_chunks();
+    sim.set_radius(112.0);
+    for _ in 0..5 {
+        sim.step(&w, p.pos(sea.face, sea.i as f64 - 40.5, sea.j as f64 + 0.5, sea.k as f64 + 2.0));
+    }
+    assert!(sim.active_chunks() > small);
+    assert_eq!(sim.stats.processed, 0, "no update ran");
+    assert_eq!(w.edits.len(), 0);
+}
+
+/// Review 3 #9: a cell that takes in from the boundary and passes on the
+/// same amount ends where it started; it must stay scheduled, or a steady
+/// throughflow falls asleep and its accounting stops.
+#[test]
+fn a_steady_throughflow_at_the_boundary_keeps_flowing() {
+    let w = test_world();
+    let (ck, (i0, j0, k0), near, _) = edge_site(&w);
+    let (_, stone, ..) = ids(&w);
+    // The cell in the chunk's +i,+j corner: both those neighbours are outside the region.
+    let c = BlockPos { face: ck.face, i: i0 + 31, j: j0 + 31, k: k0 + 10 };
+    w.commit(&[(BlockPos { k: c.k - 1, ..c }, stone), (BlockPos { i: c.i - 1, ..c }, stone), (BlockPos { j: c.j - 1, ..c }, stone)]);
+    let reservoir = BlockPos { i: c.i + 1, ..c };
+    let drain = BlockPos { j: c.j + 1, ..c };
+    let mut sim = Sim::new(SimConfig { radius_m: 1.0, ..SimConfig::default() });
+    sim.boundary_override = Some(Box::new(move |bp| {
+        if bp == reservoir {
+            Some(Boundary::Water { level: 200, drains: false })
+        } else if bp == drain {
+            Some(Boundary::Water { level: 50, drains: true })
+        } else {
+            None
+        }
+    }));
+    sim.step(&w, near);
+    assert!(sim.is_active(ck) && !sim.is_active(World::chunk_of(reservoir).0) && !sim.is_active(World::chunk_of(drain).0));
+    assert!(w.set_water(c, w.water_id(), 100));
+    for _ in 0..20 {
+        sim.step(&w, near);
+    }
+    // Each tick: 50 in from the reservoir (half of 200 - 100), 50 on to the drain.
+    assert_eq!(w.water_level_at(c), 100);
+    assert_eq!((sim.stats.water_in, sim.stats.water_out), (20 * 50, 20 * 50), "a steady throughflow, counted every tick");
+    assert!(sim.queued() > 0, "still flowing");
+}
+
 /// Not part of `cargo test`: the tick cost of a large pour (a 20 x 20 x 5
 /// block of water, 2,000 cells, released five layers above a basin floor)
 /// and a dam break (a 50 x 20 x 10 lake, 10,000 cells, whose wall into an

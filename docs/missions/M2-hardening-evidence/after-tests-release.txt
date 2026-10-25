@@ -1,0 +1,186 @@
+   Compiling triangulum v0.1.0 (C:\code\triangulum\.claude\worktrees\agent-ada8dcccdde4731a1\game)
+warning: variable does not need to be mutable
+    --> src\stream.rs:1783:13
+     |
+1783 |         let mut drain = |c: &mut Coverage, gpu: &mut FakeGpu, wants: &mut Vec<Want>| {
+     |             ----^^^^^
+     |             |
+     |             help: remove this `mut`
+     |
+     = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: field `colours_buf` is never read
+   --> src\render\mod.rs:128:5
+    |
+111 | pub struct Renderer {
+    |            -------- field in this struct
+...
+128 |     colours_buf: wgpu::Buffer,
+    |     ^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `triangulum` (bin "triangulum" test) generated 2 warnings (run `cargo fix --bin "triangulum" -p triangulum --tests` to apply 1 suggestion)
+    Finished `release` profile [optimized + debuginfo] target(s) in 19.25s
+     Running unittests src\main.rs (target\release\deps\triangulum-b50a41b5327e5812.exe)
+
+running 153 tests
+test grid::tests::chunk_counts_tile_the_world ... ok
+test grid::tests::border_columns_continue_onto_the_neighbour_at_every_edge_and_lod ... ok
+test grid::tests::corners_continue_onto_the_third_face ... ok
+test grid::tests::edge_maps_are_mutual_and_cover_the_cube ... ok
+test grid::tests::extended_coords_inverts_wrap_at_every_side ... ok
+test grid::tests::coarse_voxel_covers_exactly_2_to_the_l_fine_columns ... ok
+test grid::tests::lat_lon_round_trip ... ok
+test grid::tests::radius_follows_the_equal_area_convention ... ok
+test grid::tests::unsupported_configurations_are_rejected_with_a_reason ... ok
+test grid::tests::worlds_past_the_simulation_key_are_refused ... ok
+test grid::tests::n_must_divide_by_h - should panic ... ok
+test grid::tests::keys_know_their_descendants ... ok
+test grid::tests::lattice_round_trip ... ok
+test player::tests::picking_across_a_face_edge_names_the_neighbours_block ... ok
+test player::tests::falls_onto_the_floor_and_rests_exactly_on_it ... ok
+test player::tests::picking_finds_the_facing_block_and_its_normal ... ok
+test player::tests::a_wall_just_past_the_edge_stops_the_walk_without_overlap ... ok
+test grid::tests::chunk_bounds_contain_every_grid_corner_near_a_cube_corner ... ok
+test player::tests::standing_in_a_thin_film_is_not_swimming ... ok
+test replay::tests::replay_cost ... ignored
+test player::tests::walking_across_a_face_edge_along_a_wall_keeps_the_box_out_of_it ... ok
+test player::tests::half_metre_blocks_size_the_box_in_blocks ... ok
+test sha256::tests::sha256_speed ... ignored
+test player::tests::walls_stop_the_box_and_a_jump_clears_a_block ... ok
+test player::tests::swims_in_water_and_floats_up ... ok
+test sim::tests::a_falling_block_draws_as_the_cube_of_its_id ... ok
+test player::tests::walks_across_a_face_edge_and_round_a_corner ... ok
+test sha256::tests::the_sha_instructions_agree_with_the_portable_code ... ok
+test sha256::tests::known_vectors ... ok
+test sim::tests::edit_memory_and_costs_by_edited_chunks ... ignored
+test player::tests::sneaking_holds_the_edge_and_walking_falls_off ... ok
+test sim::tests::pos_key_round_trips_and_orders_canonically ... ok
+test sim::tests::a_falling_block_waits_at_the_edge_of_the_active_region ... ok
+test sim::tests::snapshot_bytes_round_trip_and_reject_damage ... ok
+test sim::tests::stress_five_thousand_sand_blocks_falling_at_once ... ignored
+test mesh::tests::water_surfaces_meet_across_lod_boundaries_with_the_radius_correction ... ok
+test mesh::tests::quads_are_well_formed_and_ao_costs_are_reported ... ok
+test mesh::tests::emitted_sea_edges_meet_across_an_lod_boundary ... ok
+test sim::tests::sand_collapses_in_a_chain_and_a_column_drains_in_order ... ok
+test sim::tests::tick_is_three_player_steps ... ok
+test sim::tests::neighbours_cross_chunk_borders_and_face_edges_but_not_the_world_top_or_floor ... ok
+test sim::tests::a_landing_whose_displaced_water_would_leave_the_region_waits ... ok
+test sim::tests::a_reload_keeps_the_active_region_it_was_computed_for ... ok
+test sim::tests::a_block_built_into_a_falling_blocks_path_makes_it_settle_above_it ... ok
+test replay::tests::a_replay_recorded_under_other_simulation_rules_is_refused ... ok
+test sim::tests::the_hash_covers_the_simulation_settings ... ok
+test sim::water_tests::a_pour_falls_as_a_column_then_spreads_and_the_potential_strictly_falls ... ok
+test replay::tests::a_tap_shorter_than_a_frame_still_counts ... ok
+test sim::water_tests::a_falling_block_displaces_water_upward_and_a_sealed_pool_loses_it ... ok
+test sim::tests::updates_outside_the_active_region_wait_and_persist_and_run_when_it_arrives ... ok
+test replay::tests::record_then_replay_gives_the_same_state ... ok
+test sim::water_tests::a_full_basin_rests_until_touched_and_a_lake_drains_through_a_channel_to_its_sill ... ok
+test sim::water_tests::a_steady_throughflow_at_the_boundary_keeps_flowing ... ok
+test sim::water_tests::a_pit_dug_at_the_shore_fills_from_the_sea_and_the_sea_stays_full ... ok
+test sim::water_tests::water_stress_large_pour_and_dam_break ... ignored
+test sim::tests::the_hash_is_the_same_across_a_save_and_a_reload_in_the_middle ... ok
+test sky::tests::default_calendar_and_bad_parameters ... ok
+test sky::tests::ephemeris_is_seekable_and_stars_rotate_with_inertial_frame ... ok
+test sky::tests::seek_local_time_at_any_longitude_without_camera_following ... ok
+test sky::tests::speed_change_has_no_jump_and_pause_does_not_advance ... ok
+test sim::tests::the_hash_is_the_same_across_rayon_pools_of_one_and_eight_threads ... ok
+test stream::tests::a_stale_resident_mesh_is_requested_again_when_its_replacement_is_lost ... ok
+test sim::water_tests::a_write_that_changes_nothing_leaves_no_chunk_and_no_trace_in_the_hash ... ok
+test stream::tests::an_edited_enclosed_chunk_becomes_a_node ... ok
+test sim::water_tests::sloped_water_surfaces_share_corners_and_are_watertight ... ok
+test stream::tests::roots_cover_the_band_and_nothing_else ... ok
+test stream::tests::switches_are_atomic_and_fallbacks_are_kept ... ok
+test world::blocks::tests::contradictory_flags_are_refused ... ok
+test world::blocks::tests::loads_the_shipped_definitions ... ok
+test world::chunk::tests::bytes_round_trip_and_reject_damage ... ok
+test world::chunk::tests::many_ids_round_trip ... ok
+test world::chunk::tests::palette_round_trip ... ok
+test world::chunk::tests::uniform_fast_path ... ok
+test world::edits::tests::acknowledging_a_stale_revision_keeps_the_chunk_dirty ... ok
+test world::edits::tests::emptying_water_cell_by_cell_does_not_rescan_the_chunk ... ok
+test world::edits::tests::packed_ids_hold_what_was_written_through_every_width ... ok
+test world::edits::tests::set_tracks_change_and_dirt ... ok
+test world::edits::tests::the_ancestor_index_finds_edits_under_a_coarse_chunk ... ok
+test sim::water_tests::one_cell_spreads_evenly_then_the_basin_levels_and_rests ... ok
+test world::edits::tests::the_store_holds_water_levels_and_a_batch_commits_under_one_lock ... ok
+test world::save::tests::a_committed_save_without_its_header_is_refused_not_loaded_empty ... ok
+test sim::water_tests::water_dammed_at_an_old_edge_flows_on_when_both_sides_return_together ... ok
+test world::save::tests::a_save_image_installs_and_loads_like_the_store_it_came_from ... ok
+test world::save::tests::a_save_makes_its_new_generation_durable_before_it_lets_go_of_the_old_one ... ok
+test world::save::tests::bake_identity_follows_contents_even_when_size_and_time_match ... ok
+test world::save::tests::an_interrupted_save_leaves_the_previous_generation_whole ... ok
+test world::save::tests::mismatched_manifest_is_refused_with_the_reasons ... ok
+test world::save::tests::bake_identity_follows_the_contents ... ok
+test world::save::tests::missing_save_is_empty_and_damaged_files_are_reported ... ok
+test world::save::tests::out_of_bounds_duplicate_and_unknown_id_chunks_are_refused ... ok
+test world::save::tests::save_cost_by_dirty_chunks ... ignored
+test world::save::tests::the_projection_table_is_the_documented_one ... ok
+test world::save::tests::round_trip_only_the_changed_chunks ... ok
+test sim::water_tests::water_dammed_at_the_old_edge_flows_on_when_the_region_grows ... ok
+test world::save::tests::the_simulation_state_rides_along_with_a_flush ... ok
+test world::save::tests::water_levels_round_trip_exactly ... ok
+test replay::tests::harness_pokes_are_recorded_as_poses_and_replay_exactly ... ok
+test replay::tests::a_replay_never_touches_the_real_save ... ok
+test sim::water_tests::water_held_up_by_the_old_edge_falls_when_the_region_grows_below_it ... ok
+test world::save::tests::a_failure_at_any_step_of_a_save_keeps_the_previous_generation ... ok
+test sim::water_tests::water_waits_for_its_period_and_the_period_is_in_the_hash ... ok
+test worldgen::bake::tests::the_identity_is_hashed_from_the_bytes_that_were_loaded ... ok
+test sim::water_tests::boundary_cells_read_as_reservoirs_walls_or_drains_and_are_never_written ... ok
+test worldgen::hydro::tests::channel_shape_grows_with_discharge ... ok
+test worldgen::hydro::tests::wendland_derivative_matches_finite_differences ... ok
+test worldgen::hydro_tests::hydro_lake_survey ... ignored
+test worldgen::hydro_tests::hydro_places ... ignored
+test worldgen::hydro_tests::hydro_probe ... ignored
+test worldgen::hydro_tests::hydro_stats ... ignored
+test worldgen::hydro_tests::profile_hydro_chunks ... ignored
+test worldgen::hydro_tests::profile_hydro_parts ... ignored
+test sim::water_tests::growing_the_region_over_untouched_water_wakes_nothing ... ok
+test replay::tests::a_corrupted_replay_reports_its_first_divergence ... ok
+test worldgen::hydro_tests::water_is_contained_wide ... ignored
+test stream::tests::a_chunk_whose_padding_holds_an_edit_exists ... ok
+test worldgen::landform::tests::gully_moments_match_constants ... ok
+test worldgen::landform::tests::noise_constants_match_measured_moments ... ok
+test worldgen::landform::tests::terrace_preserves_the_mean_and_is_continuous ... ok
+test worldgen::bake::tests::elevation_gradient_matches_finite_differences ... ok
+test worldgen::noise::tests::gully2d_is_bounded_continuous_and_follows_the_stripe_direction ... ok
+test worldgen::noise::tests::noise2d_derivative_matches_finite_differences_and_is_bounded ... ok
+test sim::tests::the_same_inputs_give_the_same_hash_twice_and_the_scenario_is_not_trivial ... ok
+test worldgen::noise::tests::noise_is_bounded_zero_at_lattice_and_seeded ... ok
+test worldgen::strata::tests::beds_are_2_to_6_blocks_and_fold_gently ... ok
+test worldgen::noise::tests::fast_sin_cos_is_accurate ... ok
+test worldgen::strata::tests::cached_rock_lookup_matches_the_plain_one ... ok
+test worldgen::landform::tests::gully_stripes_run_downhill_on_a_plain_slope ... ok
+test stream::tests::occluder_never_hides_the_trench_floor ... ok
+test stream::tests::coverage_tree_invariants_under_random_camera_paths ... ok
+test worldgen::bake::tests::new_bake_samples_smoothly_and_agrees_with_the_old_one_roughly ... ok
+test worldgen::bake::tests::the_real_bake_keeps_the_identity_saves_recorded ... ok
+test world::tests::edits_are_authoritative_and_reach_neighbours ... ok
+test world::tests::coarse_halo_invalidation_steps_a_whole_voxel ... ok
+test world::tests::hiding_water_does_not_change_what_an_edit_makes_authoritative ... ok
+test world::tests::edits_propagate_to_coarse_lods ... ok
+test worldgen::tests::profile_column_parts ... ignored
+test replay::tests::the_same_inputs_at_different_frame_rates_give_the_same_world ... ok
+test worldgen::tests::enclosed_chunks_hold_the_full_per_block_result ... ok
+test worldgen::tests::determinism_across_runs_and_thread_counts ... ok
+test worldgen::tests::bedrock_floor_at_layer_zero ... ok
+test worldgen::tests::coarse_lods_keep_the_ocean ... ok
+test worldgen::tests::no_seam_across_cube_edges ... ok
+test worldgen::tests::surface_chunk_has_air_above_and_rock_below ... ok
+test worldgen::tests::world_ceiling_exposes_clipped_terrain ... ok
+test worldgen::tests::landform_height_is_lod_consistent ... ok
+test worldgen::tests::chunk_grid_matches_direct_columns ... ok
+test worldgen::tests::every_ocean_column_is_opaque_underneath ... ok
+test worldgen::tests::landform_height_is_deterministic ... ok
+test world::tests::edits_cross_the_face_edge_into_coarse_padding ... ok
+test worldgen::tests::footprint_bounds_contain_every_sampled_column ... ok
+test worldgen::tests::landform_averages_out_over_kilometres ... ok
+test worldgen::hydro_tests::water_agrees_across_lods has been running for over 60 seconds
+test worldgen::hydro_tests::water_is_contained has been running for over 60 seconds
+test worldgen::hydro_tests::water_is_contained ... ok
+test worldgen::hydro_tests::water_agrees_across_lods ... ok
+
+test result: ok. 139 passed; 0 failed; 14 ignored; 0 measured; 0 filtered out; finished in 130.31s
+
+tests exit 0
