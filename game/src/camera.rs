@@ -65,7 +65,7 @@ impl Camera {
         let (_, _, up) = self.vectors();
         let alt = self.altitude(planet).max(0.0);
         // Fog range grows with altitude; sky darkens toward space.
-        let fog_range = 9_000.0 + 3.0 * alt;
+        let fog_range = 30_000.0 + 3.0 * alt;
         let dark = ((alt - 20_000.0) / 130_000.0).clamp(0.0, 1.0);
         let dark = dark * dark * (3.0 - 2.0 * dark);
         CameraUniform {

@@ -470,7 +470,9 @@ pub fn run_shots(engine: Arc<Engine>, opts: ShotOptions) {
         let cam_dir = engine.offset_dir(trench_dir, hd, reach);
         let (heading, dist) = engine.heading_to(cam_dir, trench_dir);
         let ground = engine.generator.column(cam_dir, p.block_size).height_m.max(bottom_m as f32) as f64;
-        let alt = (ground + (depth * 0.05).max(40.0)).max(floor + depth * 0.35);
+        // High enough that the floor is above the curvature horizon: the
+        // drop over `reach` on this planet is reach^2 / 2R, plus a margin.
+        let alt = ground + reach * reach / (2.0 * p.radius) + 150.0;
         let pitch = ((floor - alt) / dist).atan().to_degrees();
         let clipped = if trench_h < bottom_m { format!(", floor clipped at bedrock {bottom_m:.0} m (true {trench_h:.0} m)") } else { String::new() };
         shots.push(Shot {

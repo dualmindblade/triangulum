@@ -2,6 +2,7 @@
 //!
 //!   cargo run --release                         # fly (WASD, mouse, scroll speed, P presets)
 //!   cargo run --release -- --at 12.5 -40.2 300  # start at lat, lon, altitude (m above sea)
+//!   cargo run --release -- --at 12.5 -40.2 300 --look 45 -20   # plus heading and pitch (deg)
 //!   cargo run --release -- --bench --out out/run1
 //!   cargo run --release -- --shots --out out/shots --vscale 0.125 --sea-level 1024
 //!   cargo run --release -- --find-places
@@ -46,6 +47,7 @@ struct Args {
     vscale: Option<f64>,
     roughness: Option<f64>,
     at: Option<(f64, f64, f64)>,
+    look: Option<(f64, f64)>,
     bench: bool,
     shots: bool,
     find_places: bool,
@@ -85,6 +87,7 @@ fn parse_args() -> Args {
         vscale: None,
         roughness: None,
         at: None,
+        look: None,
         bench: false,
         shots: false,
         find_places: false,
@@ -128,6 +131,11 @@ fn parse_args() -> Args {
                 let lon: f64 = val().parse().unwrap();
                 let alt: f64 = val().parse().unwrap();
                 a.at = Some((lat, lon, alt));
+            }
+            "--look" => {
+                let heading: f64 = val().parse().unwrap();
+                let pitch: f64 = val().parse().unwrap();
+                a.look = Some((heading, pitch));
             }
             "--bench" => a.bench = true,
             "--shots" => a.shots = true,
@@ -254,7 +262,8 @@ fn main() {
     let start = match args.at {
         Some((lat, lon, alt)) => {
             let dir = grid::Planet::dir_of_lat_lon_deg(lat, lon);
-            engine.camera_asl(dir, alt, 0.0, if alt > 2000.0 { -45.0 } else { 0.0 })
+            let (heading, pitch) = args.look.unwrap_or((0.0, if alt > 2000.0 { -45.0 } else { 0.0 }));
+            engine.camera_asl(dir, alt, heading, pitch)
         }
         None => {
             let pr = &engine.presets()[0];

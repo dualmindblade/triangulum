@@ -19,7 +19,7 @@ Branch `worktree-agent-a79bc8ba92cdccc0c`, crate `game/`. Evidence in
 | `mesh` | binary greedy meshing into 8-byte quads, per-vertex AO (merges only across equal AO), separate water quads, quads split at curvature-grid cells. |
 | `stream` | an octree of cubic chunks per face chosen by 3D distance (factor 5 screen-size policy from the prototype), chunks outside their footprint's terrain band never visited, horizon culling, rayon jobs, ancestor/descendant fallbacks, draw lists (opaque front-to-back, water back-to-front). |
 | `render` | wgpu 30: MDI vertex pulling, colours from the registry, AO, translucent water pass (premultiplied blend, no depth write, both faces), sky gradient with a sun disc, distance fog, timestamp queries, PNG readback. |
-| `app` | window, free-fly camera (WASD, mouse look on click/Esc, Space/Ctrl, scroll 1 m/s..5 km/s, Shift boost, P presets, V vsync, F water, H hud, R to ground), `--at LAT LON ALT`, egui 0.35 HUD (fps, 1 % low over 5 s, GPU/CPU ms, chunks per LOD drawn and loaded, lat/lon/alt, crosshair block lattice coords and name), `--screenshot PATH --exit-after S`. |
+| `app` | window, free-fly camera (WASD, mouse look on click/Esc, Space/Ctrl, scroll 1 m/s..5 km/s, Shift boost, P presets, V vsync, F water, H hud, R to ground), `--at LAT LON ALT` (`--look HEADING PITCH`), egui 0.35 HUD (fps, 1 % low over 5 s, GPU/CPU ms, chunks per LOD drawn and loaded, lat/lon/alt, crosshair block lattice coords and name), `--screenshot PATH --exit-after S`. |
 | `bench` | `--bench`: the seven static poses, the 60 s flight, AO cost, worker costs, `results.md` + PNGs. `--shots`: Andrew's vertical-scale renders with marker columns and captions. |
 | `ui` | the HUD and captions, painted through a small wgpu-30 egui painter (egui-wgpu 0.35 pins wgpu 29). |
 
@@ -257,7 +257,7 @@ AO quads only merge across equal corner values, so cliffs and step edges fragmen
 
 Water is translucent (premultiplied alpha 0.62 with a Fresnel-ish ramp and
 a sun glint), drawn after the opaque pass with depth test but no depth
-write, both faces, sorted back to front. Cost: WATER_COST.
+write, both faces, sorted back to front. Cost in the coast view (`docs/missions/M1a-evidence/hud_coast_water.png`, 400 m over the steep coast, water filling half the frame): 0.01 M water triangles on top of 0.26 M opaque, 0.30 ms GPU against 0.20 ms over land at the same altitude; 1021 draws. Translucent is affordable and is what ships.
 
 ### Andrew's vertical-scale renders
 
@@ -265,14 +265,14 @@ Six places x four configurations: 1/70 and 1/20 at H 2048 / sea 512, 1/8 at
 H 2048 / sea 1024 (trench clipped at bedrock, caption says so) and 1/8 at
 H 4096 / sea 1536. Contact sheets (full size, 2904x1688):
 
-- `C:\code	riangulum\.claude\worktreesgent-a79bc8ba92cdccc0c\game\outs\sheet_a_range_ground.png`
-- `C:\code	riangulum\.claude\worktreesgent-a79bc8ba92cdccc0c\game\outs\sheet_b_range_1km.png`
-- `C:\code	riangulum\.claude\worktreesgent-a79bc8ba92cdccc0c\game\outs\sheet_c_range_silhouette.png`
-- `C:\code	riangulum\.claude\worktreesgent-a79bc8ba92cdccc0c\game\outs\sheet_d_trench.png`
-- `C:\code	riangulum\.claude\worktreesgent-a79bc8ba92cdccc0c\game\outs\sheet_e_coast_shelf.png`
-- `C:\code	riangulum\.claude\worktreesgent-a79bc8ba92cdccc0c\game\outs\sheet_f_strata_cut.png`
+- `C:/code/triangulum/.claude/worktrees/agent-a79bc8ba92cdccc0c/game/out/vs/sheet_a_range_ground.png`
+- `C:/code/triangulum/.claude/worktrees/agent-a79bc8ba92cdccc0c/game/out/vs/sheet_b_range_1km.png`
+- `C:/code/triangulum/.claude/worktrees/agent-a79bc8ba92cdccc0c/game/out/vs/sheet_c_range_silhouette.png`
+- `C:/code/triangulum/.claude/worktrees/agent-a79bc8ba92cdccc0c/game/out/vs/sheet_d_trench.png`
+- `C:/code/triangulum/.claude/worktrees/agent-a79bc8ba92cdccc0c/game/out/vs/sheet_e_coast_shelf.png`
+- `C:/code/triangulum/.claude/worktrees/agent-a79bc8ba92cdccc0c/game/out/vs/sheet_f_strata_cut.png`
 
-The single renders are under `game\outs\{s70_h2048,s20_h2048,s8_h2048,s8_h4096}\`.
+The single renders are under `C:/code/triangulum/.claude/worktrees/agent-a79bc8ba92cdccc0c/game/out/vs/{s70_h2048,s20_h2048,s8_h2048,s8_h4096}/`.
 
 Readings from the sheets:
 - At 1/70 the planet is flat at human scale: the highest range is 121 m, so
@@ -281,6 +281,11 @@ Readings from the sheets:
   km wide) is invisible from anywhere.
 - At 1/20 the range is 428 m; from the ground it is still a slope of
   1-block steps, from 1 km up it reads as rolling relief.
+- The trench is a slot one planetgen cell wide that the bake's 30 km
+  smoothing turns into a modest valley: at 1/8 with H 2048 (floor clipped
+  at -1024 m) it reads as a valley between hills; at 1/8 with H 4096 from
+  8 km it is a crease at the foot of the far wall. Nothing at 1/70 or 1/20
+  reads as a trench.
 - At 1/8 the range is 1072 m and the coast shot finally looks like a coast:
   a shelf, a steep slope and a 667 m basin (`sheet_e_coast_shelf.png`,
   bottom right). The ground shot shows a 20 % slope as a staircase of 1 m
@@ -294,11 +299,14 @@ Readings from the sheets:
   allows.
 - The relief dial at its default did not look broken once the slope cap was
   in; before the cap, 1/8 and 1/20 mountains were a thicket of metre cliffs.
+- Fog: the distance fog starts from 30 km (plus three times the altitude)
+  for these renders; the prototype's 9 km range hid the 8-12 km trench and
+  silhouette subjects entirely. The same range ships in the app for now.
 
 ### Strata
 
 `docs/missions/M1a-evidence/strata_cut_1_70.png` and
-`sheet_f_strata_cut.png`: a 48 m quarry pit on the hills, 28 m deep, seen
+`docs/missions/M1a-evidence/sheet_f_strata_cut.png`: a 48 m quarry pit on the hills, 28 m deep, seen
 from its floor. Grass and dirt over 2-6 block beds in the five tints, hard
 edges, the fold visible as stepped bed boundaries across the wall.
 
