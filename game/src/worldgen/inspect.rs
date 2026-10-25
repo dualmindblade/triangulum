@@ -60,7 +60,7 @@ pub fn find_land_places(bake: &dyn Bake) -> LandPlaces {
     let mut river = (DVec3::Z, f64::MIN);
     let mut plain = (DVec3::Z, f64::MIN);
     let mut mesa = (DVec3::Z, f64::MIN);
-    let probe = super::landform::Landform { seed: 0, radius: 90_569.2, vscale: 0.05, landform: 1.0, roughness: 1.0 };
+    let probe = super::landform::Landform { seed: 0, radius: 90_569.2, vscale: 0.05, landform: 1.0, roughness: 1.0, valleys: true };
     for f in 0..6u8 {
         for row in (8..res - 8).step_by(2) {
             for col in (8..res - 8).step_by(2) {

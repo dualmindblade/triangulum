@@ -3,14 +3,18 @@
 The new engine: a planet-sized cube-sphere voxel world you can walk on, dig
 into, build on and come back to. This is the M2a state: walk, fly, dig,
 build, save, the July sky and lighting (M1c), and the first simulation:
-sand and gravel fall.
+sand and gravel fall. Since M2-hydro the world has planetgen's lakes and
+rivers as water at rest.
 
 ## Running
 
 You need Rust (stable, MSVC on Windows) and the baked planet. The bake is
-not in git: either run `python scripts/bake_world.py` from the repo root
-(about 20 s; it needs `output/seed42_r8` from planetgen) or copy
+not in git: either run `python scripts/bake_world.py` and then
+`python scripts/bake_rivers_v2.py` from the repo root (about 20 s and 60 s;
+they need `output/seed42_r8` from planetgen) or copy
 `game/assets/world/seed42/` from a machine that has it. Copy, never symlink.
+Without `hydro.bin` (the second script's output) the world has no lakes or
+rivers, only the sea and dry valleys.
 
 ```
 cd game
@@ -164,6 +168,40 @@ active chunks and the tick cost. Idle ticks cost microseconds; a 5,041-block
 slab in flight costs about a millisecond a tick, with the mass start (68 ms)
 and the landing ticks (5-11 ms) as the known spikes.
 
+## Lakes and rivers (M2-hydro)
+
+The generator puts planetgen's lakes and rivers into the world as water at
+rest (`src/worldgen/hydro.rs`; the bake is `scripts/bake_rivers_v2.py`,
+which writes `hydro.bin` and `hydro.json` beside the rasters). Every column
+may have a water surface; cells below it that are not solid hold water, with
+the exact level (1-255 of a block) at LOD 0 and whole voxels further out:
+
+- **Lakes** (771 on Neisor) are flat at their level, with a sandy beach and a
+  low apron where the land around dips below the water. A lake's level never
+  stands more than 25 m (Earth scale) above the bake's own shore.
+- **Rivers** (20,504 links of the drainage graph, every one carrying more
+  than 120 m³/s) run in meandering channels 4-32 m wide, in a valley a metre
+  above the water. Gentle reaches are a smooth surface at rest (it leans at
+  most 0.6 levels per block); steeper ones are pools separated by cascades
+  of up to a block, and drops of 3 blocks or more are waterfalls (up to 24
+  blocks each) in a short gorge, with a plunge pool and a one-voxel water
+  curtain. Rivers meet the sea at sea level and lakes at the lake's level.
+- **No water walls:** water is always held by ground at least 0.6 blocks
+  above it, or by water within one level of it, except where a river drops
+  on purpose (its steps and falls). The gates are `cargo test --release
+  water_is_contained` (lake shores and 140 km of rivers) and
+  `water_agrees_across_lods`; `-- --ignored water_is_contained_wide` sweeps
+  a tenth of the whole network (about 1,000 km, a few minutes).
+
+Partial levels are not drawn yet: a water cell is drawn as a full block, so
+a surface shows at the top of the cell that holds it (flush with the banks,
+which stand a block above), and a gently sloping river shows a one-block
+step wherever its level crosses a block boundary. M2b draws the levels.
+
+Evidence shots of a lake shore, a river reach, a waterfall, a river mouth
+and a river crossing a cube edge, from the ground and from 300 m:
+`python scripts/hydro_shots.py` (frames in `out/play/<site>/`).
+
 ## Saves
 
 Only chunks that changed are saved, whatever changed them (you or the
@@ -202,7 +240,9 @@ keeps the water in the saved chunk.
 
 The bake's identity is a SHA-256 of its rasters' contents, cached in
 `content.sha256.json` beside the bake and recomputed (a few seconds) when a
-raster's size or time changes.
+raster's size or time changes, combined with the SHA-256 of `hydro.bin`
+when the bake has one. Saves made before the lakes and rivers (generator
+version 2) are refused.
 
 Coarse LODs rebuild from edited data: a coarse voxel shows the topmost
 solid block in it when that block was placed by an edit (a one-block bridge
@@ -340,10 +380,18 @@ persisting, and the determinism hash across two runs, rayon pools of 1 and
 `C:/code/triangulum/game/assets/world/seed42`. The 5,041-block stress test
 is `cargo test --release -- --ignored stress`.
 
+The water tests (`src/worldgen/hydro_tests.rs`, they need `hydro.bin`)
+check every generated water cell around 1,537 lake shores and along 300
+river links for walls, perched water and rest, and coarse LODs against
+LOD 0; `HYDRO_VSCALE=0.125` runs them at 1/8. Ignored helpers there measure
+generation cost before and after (`profile_hydro_chunks`), find the evidence
+sites (`hydro_places`) and print the water model at a column
+(`hydro_probe`, with `HYDRO_PROBE="face i j"`).
+
 ## Known gaps (M2a)
 
-- No water simulation yet (M2b); water is still full or absent, though the
-  store and the saves now carry a level per block.
+- No water simulation yet (M2b): generated water sits still, and water
+  levels are not drawn (every water cell is a full block).
 - Falling blocks pass through each other and through the player; a block
   that lands in your cell pushes you up.
 - Chunks entirely below every surface (`Enclosed`) are never streamed

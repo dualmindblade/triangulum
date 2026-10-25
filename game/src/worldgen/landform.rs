@@ -145,6 +145,9 @@ pub struct Landform {
     pub landform: f64,
     /// Andrew's roughness dial: scales the fine roughness.
     pub roughness: f64,
+    /// Carve valleys along the discharge field's ridges (`valley`). Off when
+    /// the bake has a river network: `hydro.rs` carves real courses instead.
+    pub valleys: bool,
 }
 
 #[inline]
@@ -200,7 +203,7 @@ impl Landform {
         let fac = 0.3 + 0.7 * smoothstep(0.0, 3.0, elev_m) * smoothstep(0.5, 0.05, s.ocean);
         // The discharge on a river's axis can exceed the local value by the
         // ridge's own height; half a decade covers the bake's ridges.
-        let valley_m = if self.landform > 0.0 && s.flow_smooth > VALLEY_FLOW_LO - 0.5 { 2.0 + 0.3 * relief0 * self.landform + CHANNEL_DEPTH_M } else { 0.0 };
+        let valley_m = if self.landform > 0.0 && self.valleys && s.flow_smooth > VALLEY_FLOW_LO - 0.5 { 2.0 + 0.3 * relief0 * self.landform + CHANNEL_DEPTH_M } else { 0.0 };
         Local { relief: relief0 * self.landform, lam_d, rugged, mesa, step_m, fac, valley_m }
     }
 
@@ -257,7 +260,7 @@ impl Landform {
         }
         // River valleys along the ridges of planetgen's discharge.
         let mut river = 0.0;
-        if self.landform > 0.0 {
+        if self.landform > 0.0 && self.valleys {
             let base = s.elev_km * 1000.0 * self.vscale;
             let (h, r) = self.valley(s, &local, base + dh, base);
             dh = h - base;
@@ -656,7 +659,7 @@ mod tests {
     /// across the slope, hardly along it.
     #[test]
     fn gully_stripes_run_downhill_on_a_plain_slope() {
-        let lf = Landform { seed: 7, radius: 90_569.2, vscale: 0.125, landform: 1.0, roughness: 0.0 };
+        let lf = Landform { seed: 7, radius: 90_569.2, vscale: 0.125, landform: 1.0, roughness: 0.0, valleys: true };
         let l = Local { relief: 60.0, lam_d: 900.0, rugged: 0.0, mesa: 0.0, step_m: 10.0, fac: 1.0, valley_m: 0.0 };
         let face = 2u8;
         for &(gx0, gy0) in &[(0.3f64, 0.0f64), (0.0, 0.3), (0.21, -0.21)] {

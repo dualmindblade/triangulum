@@ -52,7 +52,7 @@ pub const FORMAT_VERSION: u32 = 3;
 /// because saves, not generation, care about it). A save made with another
 /// generator version is refused: its edits sit in terrain that no longer
 /// exists around them.
-pub const GENERATOR_VERSION: u32 = 2; // 2: landforms v2 (ridges, gullies, valleys, mesas)
+pub const GENERATOR_VERSION: u32 = 3; // 2: landforms v2 (ridges, gullies, valleys, mesas); 3: lakes and rivers (hydro.bin)
 
 const CHUNK_MAGIC: &[u8; 4] = b"TRC2";
 
@@ -87,10 +87,28 @@ struct BakeDigestCache {
 
 /// The bake's identity: SHA-256 over meta.json and the full contents of
 /// every face raster (review #4: sizes and names alone let a same-size bake
-/// with other values pass). Hashing is cached beside the bake, keyed on the
-/// rasters' names, sizes and modification times; a bake copied elsewhere
-/// is hashed once more and gets the same digest.
+/// with other values pass), and over `hydro.bin` (rivers and lakes) when the
+/// bake has one. Hashing the rasters is cached beside the bake, keyed on the
+/// rasters' names, sizes and modification times (the cache holds the
+/// rasters' digest only, so engines that do not read hydro.bin share it); a
+/// bake copied elsewhere is hashed once more and gets the same digest.
 pub fn bake_identity(dir: &str) -> Result<String, String> {
+    let rasters = raster_identity(dir)?;
+    let hydro = Path::new(dir).join("hydro.bin");
+    match std::fs::read(&hydro) {
+        Ok(bytes) => {
+            let mut h = Sha256::new();
+            h.update(rasters.as_bytes());
+            h.update(b"hydro.bin");
+            h.update(&sha256(&bytes));
+            Ok(hex(&h.finish()))
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(rasters),
+        Err(e) => Err(format!("read {}: {e}", hydro.display())),
+    }
+}
+
+fn raster_identity(dir: &str) -> Result<String, String> {
     let dir = Path::new(dir);
     let meta_path = dir.join("meta.json");
     let meta = std::fs::read(&meta_path).map_err(|e| format!("read {}: {e}", meta_path.display()))?;

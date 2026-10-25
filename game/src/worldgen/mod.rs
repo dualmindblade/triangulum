@@ -15,17 +15,24 @@
 //! - `generate(key)`: always the full, correct contents (strata, bedrock,
 //!   water, markers) whatever the classification.
 //!
+//! Water (`hydro.rs`): a column may have a water surface W (the sea where
+//! the ocean mask is positive, a lake inside its zone, a river inside its
+//! channel); the terrain is shaped so the water is held at rest.
+//!
 //! Voxel rules, in order (`block_at`): above the world is air, below it
-//! bedrock; in an ocean column the voxel holding sea level is water at every
-//! LOD (a coarse voxel must not lose the sea to the rock below it), or opaque
-//! deep ocean where that voxel is also the world's bottom voxel (nothing
-//! would back the translucent water); layer 0 is bedrock (at coarse LODs the
-//! bottom voxel is solid, bedrock where only the floor makes it so);
-//! otherwise solid below the surface, water below sea level in ocean
-//! columns, air above. Every column therefore has an opaque voxel inside the
+//! bedrock; at a coarse LOD, in a wet column (ground below W) the voxel
+//! whose top is W rounded to the voxel grid is water (a coarse voxel must
+//! not lose the sea or a lake to the ground under it), or opaque deep ocean
+//! where that voxel is also the world's bottom voxel (nothing would back the
+//! translucent water); layer 0 is bedrock (at coarse LODs the bottom voxel
+//! is solid, bedrock where only the floor makes it so); otherwise solid
+//! below the ground; a cell that is not solid holds water below W (at LOD 0
+//! with its exact level, 1..255; at coarse LODs full, in wet columns only);
+//! air above. Every ocean column therefore has an opaque voxel inside the
 //! world at or below sea level, at every LOD.
 
 pub mod bake;
+pub mod hydro;
 pub mod inspect;
 pub mod landform;
 pub mod noise;
@@ -36,6 +43,7 @@ use crate::world::chunk::VOXELS;
 use crate::world::{BlockId, Chunk, Registry};
 use bake::Bake;
 use glam::DVec3;
+use hydro::{Cands, Hydro, LakeAt, WaterKind};
 use landform::{Landform, Local};
 use noise::gradient_noise;
 use std::sync::Arc;
@@ -115,12 +123,21 @@ pub struct Marker {
 }
 
 /// One terrain column sampled at a voxel centre.
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug)]
 pub struct Column {
     /// Surface height, metres above sea level (relief included).
     pub height_m: f32,
-    /// Ocean column: water fills [height, 0).
+    /// Ocean column: the sea's water fills [height, 0).
     pub ocean: bool,
+    /// Water surface over this column (m above sea; NEG_INFINITY for none).
+    /// Cells that are not solid below it hold water (see `block_at`).
+    pub water_m: f64,
+    pub water_kind: WaterKind,
+    /// Lake bed or lake shore band: sand.
+    pub lake_sand: bool,
+    /// Right beside a river channel: keeps its soil however steep the
+    /// channel edge (no bare-rock rim along every river).
+    pub river_bank: bool,
     pub temp_c: f32,
     pub precip: f32,
     /// Ocean-mask fraction (near-shore indicator).
@@ -135,6 +152,35 @@ pub struct Column {
     pub geo: GeoHint,
     /// 0..1: river channel bed (gravel).
     pub river: f32,
+}
+
+impl Default for Column {
+    fn default() -> Self {
+        Self {
+            height_m: 0.0,
+            ocean: false,
+            water_m: f64::NEG_INFINITY,
+            water_kind: WaterKind::None,
+            lake_sand: false,
+            river_bank: false,
+            temp_c: 0.0,
+            precip: 0.0,
+            shore: 0.0,
+            dither: 0.0,
+            strata_off: 0.0,
+            soil_km: 0.0,
+            geo: GeoHint::default(),
+            river: 0.0,
+        }
+    }
+}
+
+impl Column {
+    /// Ground below the water surface.
+    #[inline]
+    pub fn wet(&self) -> bool {
+        self.water_m > self.height_m as f64
+    }
 }
 
 /// Surface and soil of a column once the slope is known.
@@ -177,8 +223,26 @@ pub struct Generator {
     pub markers: Vec<Marker>,
     /// Debug: generate no water (ocean columns stay dry so the floor shows).
     pub hide_water: bool,
+    /// Lakes and rivers (None when the bake has no `hydro.bin`: then the
+    /// landform carves dry valleys along the discharge field instead).
+    pub hydro: Option<Arc<Hydro>>,
     /// Largest |landform| anywhere (m), for global bounds.
     max_relief_m: f64,
+}
+
+/// What the generator knows about the water at one column (for the
+/// simulation, the containment test and tools).
+#[derive(Clone, Debug)]
+pub struct WaterInfo {
+    /// Ground and water surface (m above sea; NEG_INFINITY for no water).
+    pub ground_m: f64,
+    pub surface_m: f64,
+    pub kind: WaterKind,
+    /// River links whose channel contains the column: (link, arc length m).
+    pub channels: Vec<(u32, f64)>,
+    /// Downstream direction (unit, tangent to the sphere) and discharge
+    /// (m^3/s, planetgen's) of the nearest channel, if any.
+    pub flow: Option<(DVec3, f64)>,
 }
 
 /// Result of generating one chunk.
@@ -199,10 +263,47 @@ impl Generator {
             .map(|n| registry.id(n))
             .collect::<Result<Vec<_>, _>>()?;
         let strata = Strata::new(beds, planet.block_size, planet.radius, seed);
-        let lf = Landform { seed: seed ^ 0x1A4D_F0E1, radius: planet.radius, vscale, landform, roughness };
+        let hydro = bake.hydro().map(|d| Arc::new(Hydro::new(d, planet.radius, planet.block_size, vscale, seed)));
+        let lf = Landform { seed: seed ^ 0x1A4D_F0E1, radius: planet.radius, vscale, landform, roughness, valleys: hydro.is_none() };
         let elev_max = (0..6u8).map(|f| bake.elev_range_km(f, -1.0, -1.0, 1.0, 1.0).1).fold(f32::MIN, f32::max) as f64;
         let max_relief_m = lf.bound_m(lf.relief_bound_m(bake.rough_max_km() as f64, elev_max));
-        Ok(Self { planet, bake, seed, vscale, roughness, landform, lf, blocks, strata, skirt: 2, markers: Vec::new(), hide_water: false, max_relief_m })
+        Ok(Self { planet, bake, seed, vscale, roughness, landform, lf, blocks, strata, skirt: 2, markers: Vec::new(), hide_water: false, hydro, max_relief_m })
+    }
+
+    /// LOD of a voxel size.
+    #[inline]
+    fn lod_of(&self, voxel_m: f64) -> u8 {
+        (voxel_m / self.planet.block_size).max(1.0).log2().round() as u8
+    }
+
+    /// Hydrology candidates for a disc of radius `r` m around `dir`.
+    pub fn hydro_cands(&self, dir: DVec3, r: f64) -> Option<Cands> {
+        self.hydro.as_ref().map(|h| h.cands(dir, r))
+    }
+
+    /// River channels containing a column at a voxel size: (link, arc
+    /// length m). Pure geometry: it does not depend on the terrain.
+    pub fn channels_at(&self, dir: DVec3, voxel_m: f64) -> Vec<(u32, f64)> {
+        let Some(h) = &self.hydro else { return Vec::new() };
+        let cands = h.cands(dir, 0.0);
+        let mut rivers = Vec::new();
+        h.rivers_at(dir, &cands, voxel_m, &mut rivers);
+        h.channels_at(&rivers, voxel_m, self.lod_of(voxel_m))
+    }
+
+    /// The water at one column, sampled for voxels of `voxel_m`.
+    pub fn water_info(&self, dir: DVec3, voxel_m: f64) -> WaterInfo {
+        let c = self.column(dir, voxel_m);
+        let mut channels = Vec::new();
+        let mut flow = None;
+        if let Some(h) = &self.hydro {
+            let cands = h.cands(dir, 0.0);
+            let mut rivers = Vec::new();
+            h.rivers_at(dir, &cands, voxel_m, &mut rivers);
+            channels = h.channels_at(&rivers, voxel_m, self.lod_of(voxel_m));
+            flow = h.flow_at(&rivers, voxel_m).map(|(t, q, _, _)| (t, q));
+        }
+        WaterInfo { ground_m: c.height_m as f64, surface_m: c.water_m, kind: c.water_kind, channels, flow }
     }
 
     /// One line naming the relief model and its dials (captions, logs).
@@ -223,17 +324,41 @@ impl Generator {
 
     /// The column plus the landform's displacement and local parameters.
     fn column_full(&self, dir: DVec3, voxel_m: f64) -> (Column, f64, Local) {
-        self.column_from(dir, voxel_m, None, None)
+        self.column_from(dir, voxel_m, None, None, None)
     }
 
     /// A column, with the landform's coarse part optionally given
-    /// (interpolated from a chunk's grid; see `chunk_columns`).
-    fn column_from(&self, dir: DVec3, voxel_m: f64, coarse: Option<(f64, f64, f64, f64)>, strata_off: Option<f64>) -> (Column, f64, Local) {
+    /// (interpolated from a chunk's grid; see `chunk_columns`) and the
+    /// hydrology candidates of the chunk (found here when not given).
+    fn column_from(&self, dir: DVec3, voxel_m: f64, coarse: Option<(f64, f64, f64, f64)>, strata_off: Option<f64>, cands: Option<&Cands>) -> (Column, f64, Local) {
         let s = self.bake.sample(dir);
         let base = s.elev_km * 1000.0 * self.vscale;
         let strata_off = strata_off.unwrap_or_else(|| self.strata.column_offset_m(dir));
         let lf = self.lf.sample_with(dir, &s, voxel_m, strata_off, coarse);
-        let mut h = base + lf.dh;
+        // Lakes and rivers near this column.
+        let own;
+        let hx = match (&self.hydro, cands) {
+            (Some(h), Some(c)) => Some((h, c)),
+            (Some(h), None) => {
+                own = h.cands(dir, 0.0);
+                Some((h, &own))
+            }
+            _ => None,
+        };
+        let mut rivers = Vec::new();
+        let lake = match hx {
+            Some((h, c)) if !c.is_empty() => {
+                h.rivers_at(dir, c, voxel_m, &mut rivers);
+                h.lake_at(dir, &c.cells, voxel_m)
+            }
+            _ => LakeAt::default(),
+        };
+        // The landform fades out over lakes (their beds and shores are the bake's).
+        let dh = match hx {
+            Some((h, _)) if !lake.is_empty() => lf.dh * h.lake_damp(&lake),
+            _ => lf.dh,
+        };
+        let mut h = base + dh;
         // Inland, ground pushed below sea level is held just above it; toward
         // the sea that hold fades out (continuously in the ocean mask, so no
         // cliff follows the mask's texels) and such ground floods: coves,
@@ -242,14 +367,28 @@ impl Generator {
             let hold = 1.0 - smoothstep(0.0, SEA_MASK, s.ocean);
             h += hold * (soft_floor(h, LAND_FLOOR_M, 1.0) - h);
         }
-        let ocean = h < 0.0 && s.ocean > 0.0;
+        let (water_m, water_kind, channel, lake_sand, river_bank) = match hx {
+            Some((hy, _)) if !lake.is_empty() || !rivers.is_empty() => {
+                let sh = hy.shape(dir, h, &lake, &rivers, s.ocean, lf.local.rugged, voxel_m, self.lod_of(voxel_m));
+                h = sh.h;
+                (sh.water, sh.kind, sh.channel, sh.lake_floor || sh.lake_shore, sh.bank)
+            }
+            _ if s.ocean > 0.0 => (0.0, WaterKind::Ocean, 0.0, false, false),
+            _ => (f64::NEG_INFINITY, WaterKind::None, 0.0, false, false),
+        };
+        let ocean = water_kind == WaterKind::Ocean && h < water_m;
+        let river = if self.hydro.is_some() { channel } else { lf.river };
         // Lapse rate on the landform's own height, in Earth-equivalent km.
-        let lapse = (LAPSE_C_PER_KM * lf.dh / self.vscale / 1000.0).clamp(-12.0, 12.0);
+        let lapse = (LAPSE_C_PER_KM * dh / self.vscale / 1000.0).clamp(-12.0, 12.0);
         let p = dir * self.planet.radius;
         let dither = gradient_noise(p / 41.0 + DVec3::splat(3.1), self.seed ^ 0xD17) as f32;
         let col = Column {
             height_m: h as f32,
             ocean,
+            water_m,
+            water_kind,
+            lake_sand,
+            river_bank,
             temp_c: (s.temp_c - lapse) as f32,
             precip: s.precip_mm as f32,
             shore: s.ocean as f32,
@@ -261,15 +400,16 @@ impl Generator {
                 volcanic: s.volcanic as f32,
                 hardness: if s.erodibility > 0.0 { (1.0 / s.erodibility).clamp(0.0, 1.0) as f32 } else { 0.0 },
             },
-            river: lf.river as f32,
+            river: river as f32,
         };
-        (col, lf.dh, lf.local)
+        (col, dh, lf.local)
     }
 
-    /// Ground height (m above sea level) under a direction; water counts as 0.
+    /// Ground height (m above sea level) under a direction; water counts as
+    /// its surface.
     pub fn ground_height_m(&self, dir: DVec3) -> f64 {
         let c = self.column(dir, self.planet.block_size);
-        if c.ocean && !self.hide_water { 0.0 } else { c.height_m as f64 }
+        if c.wet() && !self.hide_water { c.water_m } else { c.height_m as f64 }
     }
 
     /// Conservative (min, max) of the bake elevation (km) over the columns a
@@ -378,8 +518,24 @@ impl Generator {
             }
         }
         let margin = dmax + 1.5 * sub + 2.0 * voxel_m;
+        // Lakes and rivers: lake damping pulls the landform toward zero, and
+        // the hydrology moves ground and water within its own range.
+        let hyd = self.hydro.as_ref().and_then(|h| {
+            let centre = planet.dir(fp.face, i0 + 0.5 * size, j0 + 0.5 * size);
+            let c = h.cands(centre, Self::footprint_radius_m(planet, size));
+            let damped = !c.cells.is_empty();
+            h.height_range(&c).map(|r| (r, damped))
+        });
+        if let Some((_, true)) = hyd {
+            lo = lo.min(0.0);
+            hi = hi.max(0.0);
+        }
         let mut hmin = emin * 1000.0 * self.vscale + lo - margin;
         let mut hmax = emax * 1000.0 * self.vscale + hi + margin;
+        if let Some(((a, b), _)) = hyd {
+            hmin = hmin.min(a);
+            hmax = hmax.max(b);
+        }
         // The land floor lifts low dry land to just above sea level; the sea surface is at 0.
         if hmin < LAND_FLOOR_M + 1.0 {
             hmax = hmax.max(LAND_FLOOR_M + 1.0);
@@ -408,6 +564,13 @@ impl Generator {
         let ceiling_m = (planet.height as f64 - planet.sea_level as f64) * planet.block_size;
         hmin = hmin.min(ceiling_m);
         (hmin, hmax)
+    }
+
+    /// Radius (m) of a disc around a footprint's centre that covers its
+    /// padded columns (`size` blocks on a side), with room for the grid's
+    /// departure from square.
+    fn footprint_radius_m(planet: &Planet, size: f64) -> f64 {
+        0.8 * (size * (CHUNK as f64 + 2.0) / CHUNK as f64) * planet.block_size + 2.0
     }
 
     /// Cheap classification from the footprint bounds (call
@@ -467,11 +630,20 @@ impl Generator {
             let floor = if deep { b.gravel } else { b.sand };
             return Surface { top: floor, soil: floor, soil_m: 2.0 * s };
         }
-        if c.river > 0.5 + 0.2 * d {
+        if c.river > 0.5 + 0.2 * d || (c.wet() && c.water_kind == WaterKind::River) {
             // A river bed: gravel over sand.
             return Surface { top: b.gravel, soil: b.sand, soil_m: 2.0 * s };
         }
-        if slope > 0.95 + 0.25 * d {
+        if c.wet() && c.water_kind == WaterKind::Lake {
+            // A lake bed: sand in the shallows, gravel deeper.
+            let deep = c.water_m - c.height_m as f64 > (2.5 + d as f64) * s as f64;
+            let floor = if deep { b.gravel } else { b.sand };
+            return Surface { top: floor, soil: b.sand, soil_m: 2.0 * s };
+        }
+        if c.lake_sand {
+            return Surface { top: b.sand, soil: b.sand, soil_m: soil_m.max(2.0 * s) };
+        }
+        if slope > 0.95 + 0.25 * d && !c.river_bank {
             return Surface { top: b.stone, soil: b.stone, soil_m: 0.0 };
         }
         if t < -3.0 {
@@ -491,49 +663,80 @@ impl Generator {
         }
     }
 
-    /// Block for the voxel covering layers [k_lo, k_lo + 2^lod) of a column
-    /// (k_lo >= 0 and below the world top; the caller handles the rest).
-    /// `z_lo` is the voxel's bottom in metres above sea level.
+    /// Block and water level for the voxel covering layers [k_lo, k_lo + 2^lod)
+    /// of a column (k_lo >= 0 and below the world top; the caller handles
+    /// the rest). `z_lo` is the voxel's bottom in metres above sea level.
     #[inline]
-    fn block_at(&self, c: &Column, sf: &Surface, z_lo: f64, voxel_m: f64, k_lo: f64, lod: u8, rock: &mut RockCache) -> BlockId {
+    #[allow(clippy::too_many_arguments)]
+    fn block_at(&self, c: &Column, sf: &Surface, z_lo: f64, voxel_m: f64, k_lo: f64, lod: u8, rock: &mut RockCache) -> (BlockId, u8) {
         let b = &self.blocks;
         let h = c.height_m as f64;
         let z_hi = z_lo + voxel_m;
         let centre = z_lo + 0.5 * voxel_m;
-        let water = c.ocean && !self.hide_water;
-        // The sea surface survives every LOD: the voxel holding sea level in
-        // an ocean column is water, however much of it lies below the floor.
-        if water && z_lo < 0.0 && z_hi >= 0.0 && !(lod == 0 && k_lo == 0.0) {
-            // The top water voxel freezes in the cold.
-            if c.temp_c + 1.5 * c.dither < -4.0 {
-                return b.ice;
+        let w = if self.hide_water { f64::NEG_INFINITY } else { c.water_m };
+        let wet = w > h;
+        // The top water voxel freezes in the cold.
+        let cold = c.temp_c + 1.5 * c.dither < -4.0;
+        // LOD 0: the column's water is one integer of levels, T = round(255 W / s),
+        // spread over its cells (a cell holds T - 255 k, clamped to 0..255).
+        let lod0 = |kz: i64| -> (u8, bool) {
+            let t = (w / self.planet.block_size * 255.0).round() as i64;
+            let l = (t - 255 * kz).clamp(0, 255) as u8;
+            (l, l >= 1 && t - 255 * (kz + 1) <= 0)
+        };
+        let kz = (z_lo / self.planet.block_size).round() as i64;
+        let w_r = (w / voxel_m).round() * voxel_m;
+        // The water surface survives every LOD: in a wet column the voxel
+        // holding it is water, however much of it lies below the ground.
+        if wet && !(lod == 0 && k_lo == 0.0) {
+            let (top, level) = if lod == 0 {
+                let (l, top) = lod0(kz);
+                (top, l)
+            } else {
+                ((z_hi - w_r).abs() < 1e-6 * voxel_m && h < w_r, 255)
+            };
+            if top {
+                if cold {
+                    return (b.ice, 0);
+                }
+                // When it is also the world's bottom voxel (it spans everything
+                // below sea level: L9 at sea level 512), nothing opaque lies
+                // under it and translucent water would show the sky through the
+                // planet (review 2 #12). It is opaque deep ocean instead, coloured
+                // like the next finer LOD's water over its rock floor. Below this
+                // LOD a floor voxel or the bedrock voxel always backs the water.
+                return if k_lo == 0.0 { (b.deep_ocean, 0) } else { (b.water, level) };
             }
-            // When it is also the world's bottom voxel (it spans everything
-            // below sea level: L9 at sea level 512), nothing opaque lies
-            // under it and translucent water would show the sky through the
-            // planet (review 2 #12). It is opaque deep ocean instead, coloured
-            // like the next finer LOD's water over its rock floor. Below this
-            // LOD a floor voxel or the bedrock voxel always backs the water.
-            return if k_lo == 0.0 { b.deep_ocean } else { b.water };
         }
         // World floor: layer 0 is bedrock; a coarse bottom voxel is solid.
         if k_lo == 0.0 && (lod == 0 || h <= centre) {
-            return b.bedrock;
+            return (b.bedrock, 0);
         }
         if h > centre {
             let depth = h - centre;
-            return if depth < voxel_m {
+            let id = if depth < voxel_m {
                 sf.top
             } else if depth < voxel_m + sf.soil_m as f64 {
                 sf.soil
             } else {
                 self.strata.rock_at_cached(centre, c.strata_off as f64, c.geo, rock)
             };
+            return (id, 0);
         }
-        if water && centre < 0.0 {
-            return b.water;
+        // Not solid: water below the surface. At LOD 0 in any column with a
+        // surface (a cell the ground just misses still fills to it); at a
+        // coarse LOD in wet columns, up to the snapped surface.
+        if lod == 0 {
+            if w > z_lo {
+                let (l, top) = lod0(kz);
+                if l >= 1 {
+                    return if top && cold { (b.ice, 0) } else { (b.water, l) };
+                }
+            }
+        } else if wet && z_hi <= w_r + 1e-6 * voxel_m {
+            return (b.water, 255);
         }
-        b.air
+        (b.air, 0)
     }
 
     /// The padded 34 x 34 column grid of a chunk at its LOD.
@@ -553,6 +756,9 @@ impl Generator {
         let (i0, j0) = (i0 as f64, j0 as f64);
         let col_dir = |x: i32, y: i32| planet.dir(key.face, i0 + (x as f64 + 0.5) * vox_blocks, j0 + (y as f64 + 0.5) * vox_blocks);
         let grid = Landform::grid_cut(voxel_m).and_then(|cut| self.coarse_grid(key, cut, &col_dir).map(|n| (cut, n)));
+        // Lakes and rivers that can reach this chunk, found once.
+        let size = key.extent_blocks() as f64;
+        let cands = self.hydro_cands(planet.dir(key.face, i0 + 0.5 * size, j0 + 0.5 * size), Self::footprint_radius_m(planet, size)).unwrap_or_default();
         let mut cols = vec![Column::default(); PAD * PAD];
         for x in -1..=CHUNK as i32 {
             for y in -1..=CHUNK as i32 {
@@ -563,7 +769,7 @@ impl Generator {
                     }
                     None => (None, None),
                 };
-                cols[((x + 1) as usize) * PAD + (y + 1) as usize] = self.column_from(col_dir(x, y), voxel_m, coarse, off).0;
+                cols[((x + 1) as usize) * PAD + (y + 1) as usize] = self.column_from(col_dir(x, y), voxel_m, coarse, off, Some(&cands)).0;
             }
         }
         cols
@@ -601,7 +807,7 @@ impl Generator {
         let sea = planet.sea_level as f64 * planet.block_size;
         let mut cols = self.chunk_columns(key);
         let water_on = !self.hide_water;
-        let top_max = cols.iter().map(|c| if c.ocean && water_on { c.height_m.max(0.0) } else { c.height_m }).fold(f32::MIN, f32::max);
+        let top_max = cols.iter().map(|c| if water_on && c.water_m > f64::NEG_INFINITY { c.height_m.max(c.water_m as f32 + voxel_m as f32) } else { c.height_m }).fold(f32::MIN, f32::max);
         // All air (border included): the padded bottom voxel is above every
         // surface and the water, and above the bedrock floor. Markers are
         // still stamped below, so this is the full result, not a shortcut.
@@ -647,8 +853,8 @@ impl Generator {
                         if k_lo >= world_top {
                             continue; // above the world: air
                         }
-                        let mut id = if k_lo < 0.0 {
-                            self.blocks.bedrock // below the world
+                        let (mut id, level) = if k_lo < 0.0 {
+                            (self.blocks.bedrock, 0) // below the world
                         } else {
                             self.block_at(c, sf, k_lo * planet.block_size - sea, voxel_m, k_lo, lod, &mut rock)
                         };
@@ -662,7 +868,8 @@ impl Generator {
                         }
                         ids[pidx(x, y, z)] = id;
                         if id == self.blocks.water && (0..CHUNK as i32).contains(&x) && (0..CHUNK as i32).contains(&y) && (0..CHUNK as i32).contains(&z) {
-                            water.get_or_insert_with(|| vec![0u8; VOXELS])[crate::world::chunk::index(x as usize, y as usize, z as usize)] = 255;
+                            // Border water (the deep ocean's skirt) is full.
+                            water.get_or_insert_with(|| vec![0u8; VOXELS])[crate::world::chunk::index(x as usize, y as usize, z as usize)] = level.max(1);
                         }
                     }
                 }
@@ -784,3 +991,6 @@ fn soft_floor(h: f64, floor: f64, k: f64) -> f64 {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod hydro_tests;
