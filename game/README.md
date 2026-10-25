@@ -39,7 +39,7 @@ mode when higher; `--walk` and `--fly` force it.
 | mouse | look |
 | W A S D | walk (fly: move along the view) |
 | Space | jump; swim up; fly up |
-| Ctrl | swim down; fly down |
+| Ctrl | sneak: slow, and never off an edge (build a bridge by backing up); swim down; fly down |
 | Shift | sprint (fly: 4× speed) |
 | G | toggle walk / fly |
 | left mouse | break the targeted block (hold to repeat) |

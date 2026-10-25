@@ -102,6 +102,9 @@ impl Engine {
     ) -> Result<Self, String> {
         let planet = Planet::try_new(config.block_size_m, config.world_height, config.sea_level, config.columns_per_face)?;
         let vscale = config.vertical_scale.unwrap_or(planet.radius / 6_371_000.0);
+        // TODO(landforms): when Opus's landforms v2 lands it adds a `landform`
+        // dial to WorldConfig; pass it here (and in `rebuild`) explicitly,
+        // next to roughness, and drop the process-wide default main.rs sets.
         let mut generator = Generator::new(planet, bake.clone(), config.seed, vscale, config.roughness, &registry)?;
         generator.skirt = skirt;
         generator.hide_water = hide_water;
