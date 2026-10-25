@@ -35,7 +35,9 @@
 //! water is in motion.
 //! Every cell written in a tick is scheduled again for the next, whether or
 //! not its level changed: the middle of a falling column gives and receives
-//! the same amount and must still run.
+//! the same amount and must still run. So is a cell that exchanged water
+//! with the boundary and ended where it started (review 3 #9: a steady
+//! throughflow from a reservoir into a drain used to fall asleep).
 //!
 //! **Why it settles.** Define the potential over every water cell
 //!   Phi = sum over cells of (A * k + L) * L,   A = `POTENTIAL_LAYER_WEIGHT` = 1024,
@@ -186,6 +188,7 @@ impl Sim {
         if !reg.is_replaceable(id) {
             return;
         }
+        let flux = self.stats.water_in + self.stats.water_out;
         let mut level = start;
         if level < FULL && p.k + 1 < world.planet.height {
             let above = BlockPos { k: p.k + 1, ..p };
@@ -219,8 +222,19 @@ impl Sim {
                 self.overlay.moved += d as u64;
             }
         }
+        self.finish_cell(world, p, start, level, flux);
+    }
+
+    /// Record a cell's own new level; a cell that exchanged water with the
+    /// boundary and came out where it started (a steady throughflow: in
+    /// from a reservoir, on into a drain) writes nothing but still runs
+    /// next tick (review 3 #9: it used to fall asleep, and the flow and its
+    /// accounting stopped while the source and the drain were unchanged).
+    fn finish_cell(&mut self, world: &World, p: BlockPos, start: u8, level: u8, flux: u64) {
         if level != start {
             self.write(world, p, level, Receipt::Own);
+        } else if self.stats.water_in + self.stats.water_out != flux {
+            self.overlay.exchanged.insert(PosKey::of(p));
         }
     }
 
@@ -241,6 +255,7 @@ impl Sim {
         if !reg.is_replaceable(id) {
             return;
         }
+        let flux = self.stats.water_in + self.stats.water_out;
         let mut level = start;
         let (i, j, k) = (p.i as i64, p.j as i64, p.k as i64);
         let lateral: [Option<BlockPos>; 4] = [(-1, 0), (1, 0), (0, -1), (0, 1)].map(|(di, dj)| world.resolve_block(p.face, i + di, j + dj, k));
@@ -314,9 +329,7 @@ impl Sim {
                 level = m as u8;
             }
         }
-        if level != start {
-            self.write(world, p, level, Receipt::Own);
-        }
+        self.finish_cell(world, p, start, level, flux);
     }
 
     /// Commit this tick's water writes as one batch, in key order.
@@ -325,6 +338,13 @@ impl Sim {
         self.overlay.moved = 0;
         self.overlay.spread_into.clear();
         self.overlay.fell_into.clear();
+        let next = self.tick + 1;
+        if !self.overlay.exchanged.is_empty() {
+            for key in self.overlay.exchanged.drain() {
+                self.queue.insert((next, key));
+            }
+            self.dirty = true;
+        }
         if self.overlay.writes.is_empty() {
             return;
         }
@@ -335,7 +355,6 @@ impl Sim {
         // A cell that gave and received the same amount (the middle of a
         // falling column) has not changed, so the change log will not
         // schedule it; water moved through it, so it runs again next tick.
-        let next = self.tick + 1;
         for (key, _) in writes {
             self.queue.insert((next, key));
         }

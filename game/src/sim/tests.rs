@@ -258,6 +258,121 @@ fn updates_outside_the_active_region_wait_and_persist_and_run_when_it_arrives() 
     assert_eq!(sim3.falling()[0].z, z_before, "frozen mid-air");
 }
 
+/// Review 3 #7: a falling block never changes an inactive chunk. Its sweep
+/// stops at the floor of the active region and it waits there, unchanged,
+/// until the region reaches further; the same for a block that has to
+/// settle above a cell built into it and for the water a landing displaces.
+#[test]
+fn a_falling_block_waits_at_the_edge_of_the_active_region() {
+    let w = test_world();
+    let (g, _) = site(&w);
+    let p = w.planet;
+    let (air, stone, sand, _) = ids(&w);
+    let col = |k: u32| BlockPos { k, ..g };
+    // kb: the first layer of a chunk in the air above the site.
+    let kb = ((g.k + 8) / 32 + 1) * 32;
+    let upper = World::chunk_of(col(kb)).0;
+    let lower = World::chunk_of(col(kb - 1)).0;
+    assert!(w.set_block(col(kb - 3), stone), "a shelf in the chunk below");
+    let at = |k: f64| p.pos(g.face, g.i as f64 + 0.5, g.j as f64 + 0.5, k);
+    let focus = at((kb + 31) as f64);
+    let mut sim = Sim::new(SimConfig { radius_m: 1.0, ..SimConfig::default() });
+    sim.step(&w, focus);
+    assert!(sim.is_active(upper) && !sim.is_active(lower), "only the upper chunk is active");
+    // A sand block at terminal speed a tenth of a layer above the edge: one
+    // tick carries it 3.5 layers, past the edge.
+    let start = Falling { id: sand, face: g.face, i: g.i, j: g.j, z: kb as f64 + 0.1, vel: -TERMINAL_M_S / p.block_size };
+    sim.restore(Snapshot { tick: sim.tick(), falling: vec![start], focus: Some(focus), ..Default::default() });
+    sim.step(&w, focus);
+    assert_eq!(w.block_at(col(kb - 2)), air, "nothing landed in the inactive chunk");
+    assert_eq!(sim.stats.landings, 0);
+    assert_eq!(sim.falling().len(), 1, "it waits at the edge");
+    let held = sim.falling()[0];
+    assert_eq!(held.z, kb as f64, "at the floor of the region");
+    for _ in 0..5 {
+        sim.step(&w, focus);
+    }
+    assert_eq!(sim.falling(), &[held], "unchanged while it waits");
+    // The region reaches down: it lands on the shelf.
+    for _ in 0..20 {
+        sim.step(&w, at(kb as f64 - 0.5));
+    }
+    assert!(sim.falling().is_empty());
+    assert_eq!(w.block_at(col(kb - 2)), sand, "landed on the shelf");
+
+    // A block in a cell something was built into settles in the first free
+    // cell above, but not above the region's top.
+    let mut sim = Sim::new(SimConfig { radius_m: 1.0, ..SimConfig::default() });
+    let mid = at((kb + 16) as f64);
+    sim.step(&w, mid);
+    let above = World::chunk_of(col(kb + 32)).0;
+    assert!(sim.is_active(upper) && !sim.is_active(above));
+    assert!(w.set_block(col(kb + 31), stone));
+    let inside = Falling { id: sand, face: g.face, i: g.i, j: g.j, z: (kb + 31) as f64 + 0.5, vel: -1.0 };
+    sim.restore(Snapshot { tick: sim.tick(), falling: vec![inside], focus: Some(mid), ..Default::default() });
+    sim.step(&w, mid);
+    assert_eq!(w.block_at(col(kb + 32)), air, "the free cell above is outside the region: not written");
+    assert_eq!(sim.falling(), &[inside], "it waits");
+    sim.step(&w, at((kb + 32) as f64));
+    assert!(sim.is_active(above));
+    assert!(sim.falling().is_empty());
+    assert_eq!(w.block_at(col(kb + 32)), sand, "settled once the cell above was in the region");
+}
+
+/// Review 3 #7, the displacement: a landing in water pushes the water up
+/// its column; when the column runs out of the active region, the landing
+/// waits instead of writing the inactive chunk above.
+#[test]
+fn a_landing_whose_displaced_water_would_leave_the_region_waits() {
+    let w = test_world();
+    let (g, _) = site(&w);
+    let p = w.planet;
+    let (air, stone, sand, _) = ids(&w);
+    let water = w.water_id();
+    let kb = ((g.k + 8) / 32 + 1) * 32;
+    let col = |k: u32| BlockPos { k, ..g };
+    // A one-cell shaft of stone from kb + 19 to kb + 41, full of water from
+    // kb + 20 to kb + 40: the column crosses into the chunk above.
+    let mut writes = vec![(col(kb + 19), stone, None)];
+    for k in kb + 20..=kb + 41 {
+        for (di, dj) in [(-1i64, 0i64), (1, 0), (0, -1), (0, 1)] {
+            writes.push((BlockPos { i: (g.i as i64 + di) as u32, j: (g.j as i64 + dj) as u32, k, ..g }, stone, None));
+        }
+        if k <= kb + 40 {
+            writes.push((col(k), water, Some(255)));
+        }
+    }
+    w.commit_levels(&writes);
+    let focus = p.pos(g.face, g.i as f64 + 0.5, g.j as f64 + 0.5, (kb + 16) as f64);
+    let mut sim = Sim::new(SimConfig { radius_m: 1.0, ..SimConfig::default() });
+    for _ in 0..3 {
+        sim.step(&w, focus);
+    }
+    let upper = World::chunk_of(col(kb)).0;
+    let above = World::chunk_of(col(kb + 32)).0;
+    assert!(sim.is_active(upper) && !sim.is_active(above));
+    assert_eq!(w.water_level_at(col(kb + 41)), 0);
+    let f = Falling { id: sand, face: g.face, i: g.i, j: g.j, z: kb as f64 + 21.5, vel: 0.0 };
+    sim.restore(Snapshot { tick: sim.tick(), falling: vec![f], focus: Some(focus), ..Default::default() });
+    for _ in 0..30 {
+        sim.step(&w, focus);
+    }
+    assert_eq!(w.block_and_level_at(col(kb + 41)), (air, 0), "no water pushed into the inactive chunk");
+    assert_eq!(w.block_at(col(kb + 20)), water, "not landed: it waits above the water");
+    assert_eq!(sim.falling().len(), 1);
+    assert_eq!(sim.stats.water_lost, 0);
+    // The region grows up: the landing goes through, and the water rises into the free cell.
+    let up = p.pos(g.face, g.i as f64 + 0.5, g.j as f64 + 0.5, (kb + 32) as f64);
+    for _ in 0..30 {
+        sim.step(&w, up);
+    }
+    assert!(sim.is_active(above));
+    assert!(sim.falling().is_empty());
+    assert_eq!(w.block_at(col(kb + 20)), sand);
+    assert_eq!(w.water_level_at(col(kb + 41)), 255, "the displaced cell");
+    assert_eq!(sim.stats.water_displaced, 255);
+}
+
 /// The scripted session the determinism tests run: a tower on a floating
 /// base that straddles a chunk boundary, a 3 x 3 slab dropped at once, a
 /// far block that stays frozen, a dig and a block built into a fall; and
@@ -511,6 +626,116 @@ fn stress_five_thousand_sand_blocks_falling_at_once() {
     assert_eq!(sim.stats.falls, (side * side) as u64);
     assert_eq!(sim.stats.landings + sim.stats.vanished, (side * side) as u64);
     assert!(sim.falling().is_empty());
+}
+
+/// The process's private bytes (Windows), for the memory measurement.
+#[cfg(windows)]
+fn private_bytes() -> usize {
+    #[repr(C)]
+    #[derive(Default)]
+    struct Counters {
+        cb: u32,
+        page_faults: u32,
+        peak_working_set: usize,
+        working_set: usize,
+        quota_peak_paged: usize,
+        quota_paged: usize,
+        quota_peak_nonpaged: usize,
+        quota_nonpaged: usize,
+        pagefile: usize,
+        peak_pagefile: usize,
+        private: usize,
+    }
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn GetCurrentProcess() -> isize;
+        fn K32GetProcessMemoryInfo(process: isize, counters: *mut Counters, cb: u32) -> i32;
+    }
+    let mut c = Counters { cb: std::mem::size_of::<Counters>() as u32, ..Default::default() };
+    // SAFETY: a valid pseudo-handle and a correctly sized, writable struct.
+    let ok = unsafe { K32GetProcessMemoryInfo(GetCurrentProcess(), &mut c, c.cb) };
+    assert!(ok != 0, "K32GetProcessMemoryInfo failed");
+    c.private
+}
+#[cfg(not(windows))]
+fn private_bytes() -> usize {
+    0
+}
+
+/// Not part of `cargo test` (review 2 #17): what edited chunks cost as they
+/// pile up. For 100, 1,000 and 10,000 edited chunks (one block each, dry or
+/// one water cell each): the memory they hold, the state hash, the first
+/// tick (each edit's seven updates frozen far from the player), crossing
+/// chunk borders with that many frozen chunks, and the simulation snapshot
+/// a save writes. Run alone:
+/// `cargo test --release -- --ignored edit_memory --nocapture --test-threads=1`
+/// (EDIT_COUNTS=100,1000 to pick the sizes).
+#[test]
+#[ignore]
+fn edit_memory_and_costs_by_edited_chunks() {
+    let counts: Vec<usize> = std::env::var("EDIT_COUNTS").ok().map(|s| s.split(',').filter_map(|x| x.trim().parse().ok()).collect()).unwrap_or(vec![100, 1000, 10_000]);
+    for &n in &counts {
+        for wet in [false, true] {
+            let w = test_world();
+            let (g, focus) = site(&w);
+            let p = w.planet;
+            let marker = w.registry.id("marker_red").unwrap();
+            let side = (n as f64).sqrt().ceil() as u32;
+            let gc = World::chunk_of(g).0;
+            // Chunks high in the air (layers 1600..1631), 320 m and more from the player.
+            let keys: Vec<ChunkKey> = (0..n as u32).map(|m| ChunkKey::neisor(g.face, 0, (gc.cx + 10 + m % side) % p.chunks_per_edge(0), (gc.cy + 10 + m / side) % p.chunks_per_edge(0), 50)).collect();
+            let bytes0 = private_bytes();
+            let t = Instant::now();
+            for k in &keys {
+                let (i0, j0, k0) = k.origin_blocks();
+                let bp = BlockPos { face: k.face, i: i0 as u32 + 16, j: j0 as u32 + 16, k: k0 as u32 + 16 };
+                let changed = if wet { w.set_water(bp, w.water_id(), 200) } else { w.set_block(bp, marker) };
+                assert!(changed);
+            }
+            let make_ms = t.elapsed().as_secs_f64() * 1e3;
+            let bytes1 = private_bytes();
+            assert_eq!(w.edits.len(), n);
+            let per_chunk = (bytes1 as f64 - bytes0 as f64) / n as f64;
+            let sim0 = Sim::new(SimConfig::default());
+            let peak0 = private_bytes();
+            let t = Instant::now();
+            let _ = sim0.state_hash(&w);
+            let hash_ms = t.elapsed().as_secs_f64() * 1e3;
+            let t = Instant::now();
+            let _ = sim0.state_hash(&w);
+            let hash2_ms = t.elapsed().as_secs_f64() * 1e3;
+            let _ = peak0;
+            let mut sim = Sim::new(SimConfig::default());
+            let t = Instant::now();
+            sim.step(&w, focus);
+            let first_ms = t.elapsed().as_secs_f64() * 1e3;
+            assert_eq!(sim.frozen_count(), 7 * n, "seven frozen updates per edit");
+            let (mut worst, mut sum) = (0u32, 0u64);
+            let steps = 20;
+            for s in 0..steps {
+                let f = p.pos(g.face, g.i as f64 + 0.5 + 32.0 * ((s + 1) % 2) as f64, g.j as f64 + 0.5, g.k as f64 + 2.0);
+                let before = sim.stats.refocuses;
+                sim.step(&w, f);
+                assert_eq!(sim.stats.refocuses, before + 1, "every step crosses a chunk border");
+                worst = worst.max(sim.stats.refocus_us);
+                sum += sim.stats.refocus_us as u64;
+            }
+            let t = Instant::now();
+            let snap = sim.snapshot(&w).to_bytes();
+            let snap_ms = t.elapsed().as_secs_f64() * 1e3;
+            println!(
+                "{n:6} {} chunks: {:6.1} KiB each ({:.0} MB), made in {make_ms:.0} ms; state hash {hash_ms:.0} ms (again {hash2_ms:.0} ms); first tick {first_ms:.1} ms; refocus avg {:.3} ms worst {:.3} ms with {} frozen chunks; sim snapshot {snap_ms:.1} ms, {} KB",
+                if wet { "wet" } else { "dry" },
+                per_chunk / 1024.0,
+                (bytes1 as f64 - bytes0 as f64) / 1e6,
+                sum as f64 / steps as f64 / 1e3,
+                worst as f64 / 1e3,
+                n,
+                snap.len() / 1000
+            );
+            println!("        the edit store's own count: {:.1} KiB of ids and levels per chunk", w.edits.heap_bytes() as f64 / n as f64 / 1024.0);
+        }
+    }
 }
 
 #[test]

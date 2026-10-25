@@ -1,0 +1,1 @@
+error: world settings: N = 2097152 columns per face edge is more than the simulation's position key holds: at most 1048576 (2^20; sim::PosKey packs i and j in 20 bits)

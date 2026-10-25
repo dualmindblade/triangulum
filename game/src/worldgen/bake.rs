@@ -14,7 +14,7 @@
 use cubesphere::FACES;
 use glam::DVec3;
 use std::f64::consts::FRAC_PI_4;
-use std::io::{self, Read, Seek, SeekFrom};
+use std::io;
 
 /// Climate, terrain and geology fields at one direction.
 #[derive(Clone, Copy, Debug, Default)]
@@ -87,6 +87,89 @@ pub trait Bake: Send + Sync {
     fn hydro(&self) -> Option<&super::hydro::HydroData> {
         None
     }
+    /// The bake's identity (`BakeIdentity`): the SHA-256 of the bytes this
+    /// bake was loaded from, which saves and replays record. None when it
+    /// has none (a bake without meta.json, a test bake).
+    fn identity(&self) -> Option<&str> {
+        None
+    }
+}
+
+/// The bake's identity, computed over the bytes the loader consumed
+/// (review 3 #5): SHA-256 over meta.json, then each face raster's file
+/// name, length (u64, little-endian) and full contents in face order; with
+/// a `hydro.bin`, the SHA-256 over that hex digest, the name `hydro.bin` and
+/// the SHA-256 of its bytes. This is the digest saves recorded before (it
+/// came from a separate pass over the files, cached on their names, sizes
+/// and times, which neither proved what the loader had read nor noticed a
+/// raster rewritten with its size and time kept), so existing saves still
+/// match. Hashing at SHA-NI speed (1.7 GB/s here) costs about 0.35 s for
+/// the 560 MB bake, alongside the parsing; without the instructions about
+/// 2.2 s.
+pub struct BakeIdentity {
+    h: crate::sha256::Sha256,
+}
+
+impl BakeIdentity {
+    pub fn new(meta: &[u8]) -> Self {
+        let mut h = crate::sha256::Sha256::new();
+        h.update(meta);
+        Self { h }
+    }
+
+    /// The next face raster, in face order.
+    pub fn face(&mut self, name: &str, bytes: &[u8]) {
+        self.h.update(name.as_bytes());
+        self.h.update(&(bytes.len() as u64).to_le_bytes());
+        self.h.update(bytes);
+    }
+
+    pub fn finish(self, hydro: Option<&[u8]>) -> String {
+        use crate::sha256::{Sha256, hex, sha256};
+        let rasters = hex(&self.h.finish());
+        match hydro {
+            Some(bytes) => {
+                let mut h = Sha256::new();
+                h.update(rasters.as_bytes());
+                h.update(b"hydro.bin");
+                h.update(&sha256(bytes));
+                hex(&h.finish())
+            }
+            None => rasters,
+        }
+    }
+}
+
+/// The face raster file names of a bake: the world bake's `file_pattern`
+/// when its meta.json gives one, `face_{0..5}.bin` otherwise.
+fn face_names(meta: Option<&serde_json::Value>) -> Vec<String> {
+    let pattern = meta.and_then(|m| m["layout"]["file_pattern"].as_str()).unwrap_or("face_{face}.bin").to_string();
+    (0..6).map(|f| pattern.replace("{face}", &f.to_string())).collect()
+}
+
+/// The identity of the bake in `dir` from its files as they are now,
+/// without loading it (tools and tests; the game takes `Bake::identity`,
+/// from the bytes it loaded). Same digest as `BakeIdentity`.
+pub fn content_identity(dir: &str) -> Result<String, String> {
+    let path = |name: &str| format!("{dir}/{name}");
+    let meta = std::fs::read(path("meta.json")).map_err(|e| format!("read {}: {e}", path("meta.json")))?;
+    let json = serde_json::from_slice::<serde_json::Value>(&meta).ok().filter(|j| j.get("format").and_then(|f| f.as_str()) == Some("triangulum-world-raster"));
+    let mut id = BakeIdentity::new(&meta);
+    for name in face_names(json.as_ref()) {
+        let bytes = std::fs::read(path(&name)).map_err(|e| format!("read {}: {e}", path(&name)))?;
+        id.face(&name, &bytes);
+    }
+    let hydro = read_optional(&path("hydro.bin")).map_err(|e| format!("read {}: {e}", path("hydro.bin")))?;
+    Ok(id.finish(hydro.as_deref()))
+}
+
+/// The whole file, or None when it does not exist.
+fn read_optional(path: &str) -> io::Result<Option<Vec<u8>>> {
+    match std::fs::read(path) {
+        Ok(b) => Ok(Some(b)),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(e),
+    }
 }
 
 #[derive(Default)]
@@ -119,31 +202,40 @@ pub struct RasterBake {
     rough_max_km: f32,
     dir: String,
     hydro: Option<super::hydro::HydroData>,
+    /// `BakeIdentity` of the bytes loaded; None without a meta.json.
+    identity: Option<String>,
 }
 
 /// Open whichever bake lives in `dir`: the new one if it has a meta.json
-/// in the world-raster format, else the old viewer layout.
+/// in the world-raster format, else the old viewer layout. Every file is
+/// read once, whole, and the identity is hashed from those same bytes, so
+/// it names exactly what was loaded (review 3 #5).
 pub fn open(dir: &str) -> io::Result<RasterBake> {
-    let meta = format!("{dir}/meta.json");
-    if let Ok(text) = std::fs::read_to_string(&meta)
-        && let Ok(json) = serde_json::from_str::<serde_json::Value>(&text)
+    let meta = read_optional(&format!("{dir}/meta.json"))?;
+    if let Some(bytes) = &meta
+        && let Ok(json) = serde_json::from_slice::<serde_json::Value>(bytes)
         && json.get("format").and_then(|f| f.as_str()) == Some("triangulum-world-raster")
     {
-        return RasterBake::load_world(dir, &json);
+        return RasterBake::load_world(dir, &json, bytes);
     }
-    RasterBake::load_old(dir)
+    RasterBake::load_old(dir, meta.as_deref())
 }
 
-fn read_f32_layer(file: &mut std::fs::File, offset: u64, n: usize) -> io::Result<Vec<f32>> {
-    file.seek(SeekFrom::Start(offset))?;
-    let mut raw = vec![0u8; n * 4];
-    file.read_exact(&mut raw)?;
-    Ok(raw.chunks_exact(4).map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]])).collect())
+/// Planar f32 layer `n` texels long at byte `offset` of a raster file.
+fn f32_layer(raw: &[u8], offset: u64, n: usize, name: &str) -> io::Result<Vec<f32>> {
+    let at = offset as usize;
+    let bytes = raw.get(at..at + n * 4).ok_or_else(|| io::Error::other(format!("{name}: layer at byte {offset} runs past the end of the file ({} bytes)", raw.len())))?;
+    Ok(bytes.chunks_exact(4).map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]])).collect())
 }
 
 impl RasterBake {
-    /// The new world bake described by its meta.json.
-    pub fn load_world(dir: &str, meta: &serde_json::Value) -> io::Result<Self> {
+    /// The bytes' identity (`BakeIdentity`).
+    pub fn identity(&self) -> Option<&str> {
+        self.identity.as_deref()
+    }
+
+    /// The new world bake described by its meta.json (`meta_bytes`, as read).
+    pub fn load_world(dir: &str, meta: &serde_json::Value, meta_bytes: &[u8]) -> io::Result<Self> {
         let layout = &meta["layout"];
         let res = layout["resolution"].as_u64().ok_or_else(|| io::Error::other("meta.json: no resolution"))? as usize;
         if layout["projection"].as_str() != Some("equal_angle") || layout["edge_inclusive"].as_bool() != Some(true) {
@@ -159,35 +251,56 @@ impl RasterBake {
             f["offset"].as_u64().ok_or_else(|| io::Error::other(format!("field {name}: no offset")))
         };
         let n = res * res;
+        let names: Vec<String> = (0..6).map(|f| pattern.replace("{face}", &f.to_string())).collect();
+        debug_assert_eq!(names, face_names(Some(meta)));
+        let mut id = BakeIdentity::new(meta_bytes);
         let mut faces = Vec::with_capacity(6);
-        for fi in 0..6 {
-            let path = format!("{dir}/{}", pattern.replace("{face}", &fi.to_string()));
-            let mut file = std::fs::File::open(&path)?;
-            let mut rd = |name: &str| read_f32_layer(&mut file, offset(name)?, n);
-            let mut face = Face {
-                elev_km: rd("elevation_km")?,
-                rough_km: rd("rough_km")?,
-                temp_c: rd("temp_mean_c")?,
-                precip: rd("precip_mm_yr")?,
-                ocean: rd("ocean_frac")?,
-                soil_km: rd("soil_km")?,
-                continental: rd("continental_frac")?,
-                volcanic: rd("volcanic_frac")?,
-                erodibility: rd("erodibility")?,
-                uplift: rd("uplift")?,
-                flow_log10: rd("flow_log10")?,
-                lake: rd("lake_frac")?,
-                ..Default::default()
-            };
-            let (pyr_min, pyr_max) = build_pyramid(&face.elev_km, res);
-            let (_, pyr_rough) = build_pyramid(&face.rough_km, res);
-            face.pyr_min = pyr_min;
-            face.pyr_max = pyr_max;
-            face.pyr_rough = pyr_rough;
+        for name in &names {
+            let path = format!("{dir}/{name}");
+            let raw = std::fs::read(&path)?;
+            // Hash these bytes on a second thread while they are parsed.
+            let (face, back) = std::thread::scope(|scope| -> io::Result<(Face, BakeIdentity)> {
+                let raw = &raw;
+                let hasher = scope.spawn(move || {
+                    id.face(name, raw);
+                    id
+                });
+                let rd = |field: &str| f32_layer(raw, offset(field)?, n, &path);
+                let parsed = (|| -> io::Result<Face> {
+                    let mut face = Face {
+                        elev_km: rd("elevation_km")?,
+                        rough_km: rd("rough_km")?,
+                        temp_c: rd("temp_mean_c")?,
+                        precip: rd("precip_mm_yr")?,
+                        ocean: rd("ocean_frac")?,
+                        soil_km: rd("soil_km")?,
+                        continental: rd("continental_frac")?,
+                        volcanic: rd("volcanic_frac")?,
+                        erodibility: rd("erodibility")?,
+                        uplift: rd("uplift")?,
+                        flow_log10: rd("flow_log10")?,
+                        lake: rd("lake_frac")?,
+                        ..Default::default()
+                    };
+                    let (pyr_min, pyr_max) = build_pyramid(&face.elev_km, res);
+                    let (_, pyr_rough) = build_pyramid(&face.rough_km, res);
+                    face.pyr_min = pyr_min;
+                    face.pyr_max = pyr_max;
+                    face.pyr_rough = pyr_rough;
+                    Ok(face)
+                })();
+                let id = hasher.join().expect("the hashing thread");
+                Ok((parsed?, id))
+            })?;
+            id = back;
             faces.push(face);
         }
         let mut bake = Self::finish(res, faces, true, true, dir);
-        bake.hydro = super::hydro::HydroData::load(&format!("{dir}/hydro.bin"))?;
+        let hydro = read_optional(&format!("{dir}/hydro.bin"))?;
+        if let Some(bytes) = &hydro {
+            bake.hydro = Some(super::hydro::HydroData::parse(bytes)?);
+        }
+        bake.identity = Some(id.finish(hydro.as_deref()));
         Ok(bake)
     }
 
@@ -195,11 +308,15 @@ impl RasterBake {
     /// n = res*res): [0,4n) elev_km f32; [4n,5n) koppen u8 (255 = ocean);
     /// [5n,9n) rough_km; [9n,13n) precip_mm_yr; [13n,17n) temp_c;
     /// [17n,21n) flow_log10. Gnomonic, edge-inclusive: texel x = (a*0.5+0.5)*(res-1).
-    pub fn load_old(dir: &str) -> io::Result<Self> {
+    pub fn load_old(dir: &str, meta: Option<&[u8]>) -> io::Result<Self> {
         let mut faces = Vec::with_capacity(6);
         let mut res = 0usize;
+        let mut id = meta.map(BakeIdentity::new);
         for fi in 0..6 {
             let raw = std::fs::read(format!("{dir}/face_{fi}.bin"))?;
+            if let Some(id) = &mut id {
+                id.face(&format!("face_{fi}.bin"), &raw);
+            }
             let n = raw.len() / 21;
             res = (n as f64).sqrt() as usize;
             if res * res * 21 != raw.len() {
@@ -229,7 +346,11 @@ impl RasterBake {
                 pyr_rough,
             });
         }
-        Ok(Self::finish(res, faces, false, false, dir))
+        let mut bake = Self::finish(res, faces, false, false, dir);
+        // The old layout has no hydro.bin reader; one beside it is still part of its identity.
+        let hydro = read_optional(&format!("{dir}/hydro.bin"))?;
+        bake.identity = id.map(|id| id.finish(hydro.as_deref()));
+        Ok(bake)
     }
 
     fn finish(res: usize, faces: Vec<Face>, equiangular: bool, has_geology: bool, dir: &str) -> Self {
@@ -245,7 +366,7 @@ impl RasterBake {
                 rough_max = rough_max.max(*r);
             }
         }
-        Self { res, faces, equiangular, has_geology, land_min_km: land_min, rough_max_km: rough_max, dir: dir.to_string(), hydro: None }
+        Self { res, faces, equiangular, has_geology, land_min_km: land_min, rough_max_km: rough_max, dir: dir.to_string(), hydro: None, identity: None }
     }
 
     /// Texel parameter in [-1, 1] for a gnomonic coordinate.
@@ -540,6 +661,10 @@ impl Bake for RasterBake {
     fn hydro(&self) -> Option<&super::hydro::HydroData> {
         self.hydro.as_ref()
     }
+
+    fn identity(&self) -> Option<&str> {
+        self.identity.as_deref()
+    }
 }
 
 fn build_pyramid(elev: &[f32], res: usize) -> (Vec<Vec<f32>>, Vec<Vec<f32>>) {
@@ -617,6 +742,84 @@ pub fn chart_uv(face: u8, dir: DVec3) -> (f64, f64) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A tiny world bake (4 x 4 texels per face) in `dir`, every elevation
+    /// texel of face 0 at `elev` km.
+    fn tiny_bake(dir: &std::path::Path, elev: f32) {
+        let names = ["elevation_km", "rough_km", "temp_mean_c", "precip_mm_yr", "ocean_frac", "soil_km", "continental_frac", "volcanic_frac", "erodibility", "uplift", "flow_log10", "lake_frac"];
+        let n = 16usize;
+        let fields: Vec<serde_json::Value> = names.iter().enumerate().map(|(i, name)| serde_json::json!({"name": name, "type": "f32", "offset": i * n * 4})).collect();
+        let meta = serde_json::json!({"format": "triangulum-world-raster", "layout": {"resolution": 4, "projection": "equal_angle", "edge_inclusive": true, "file_pattern": "face_{face}.bin"}, "fields": fields});
+        std::fs::create_dir_all(dir).unwrap();
+        std::fs::write(dir.join("meta.json"), serde_json::to_vec(&meta).unwrap()).unwrap();
+        for f in 0..6 {
+            let mut bytes = Vec::new();
+            for (i, _) in names.iter().enumerate() {
+                let v = if i == 0 { if f == 0 { elev } else { 0.5 } } else { 0.25 };
+                for _ in 0..n {
+                    bytes.extend_from_slice(&v.to_le_bytes());
+                }
+            }
+            std::fs::write(dir.join(format!("face_{f}.bin")), bytes).unwrap();
+        }
+    }
+
+    /// Review 3 #5: the identity is the digest of the bytes the loader
+    /// consumed. Before, main loaded the bake and then hashed the files
+    /// again: a bake swapped in between was loaded as one bake and recorded
+    /// as another. Here the files change after the load; the loaded bake
+    /// keeps both its terrain and its identity, and loading again picks up
+    /// both of the new one.
+    #[test]
+    fn the_identity_is_hashed_from_the_bytes_that_were_loaded() {
+        let dir = std::env::temp_dir().join(format!("triangulum-bake-loaded-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        tiny_bake(&dir, 1.0);
+        let d = dir.to_str().unwrap();
+        let a = open(d).unwrap();
+        let id_a = a.identity().unwrap().to_string();
+        assert_eq!(id_a, content_identity(d).unwrap(), "the loader's digest is the files' digest");
+        let x = DVec3::X;
+        assert!((a.sample(x).elev_km - 1.0).abs() < 1e-6);
+        // Another bake, same sizes, replaces the files after the load.
+        tiny_bake(&dir, 2.0);
+        assert_ne!(content_identity(d).unwrap(), id_a);
+        assert_eq!(a.identity().unwrap(), id_a, "the loaded bake keeps the identity of what it loaded");
+        assert!((a.sample(x).elev_km - 1.0).abs() < 1e-6, "and its terrain");
+        let b = open(d).unwrap();
+        assert_eq!(b.identity().unwrap(), content_identity(d).unwrap());
+        assert!((b.sample(x).elev_km - 2.0).abs() < 1e-6);
+        // hydro.bin is part of it, and is read from the bytes that are parsed.
+        std::fs::write(dir.join("hydro.bin"), b"not hydrology").unwrap();
+        assert!(open(d).is_err(), "a damaged hydro.bin is refused");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The identity of Neisor's bake is the one saves made before this
+    /// change recorded (the old separate pass, cached in
+    /// content.sha256.json beside the bake): existing saves still load.
+    #[test]
+    fn the_real_bake_keeps_the_identity_saves_recorded() {
+        let d = "C:/code/triangulum/game/assets/world/seed42";
+        let t = std::time::Instant::now();
+        let bake = open(d).unwrap();
+        let load_s = t.elapsed().as_secs_f64();
+        let id = bake.identity().unwrap().to_string();
+        assert_eq!(id, content_identity(d).unwrap());
+        println!("Neisor's bake loaded and hashed in {load_s:.2} s: {id}");
+        // The old cache holds the rasters' digest; combined with hydro.bin as before.
+        if let Ok(text) = std::fs::read_to_string(format!("{d}/content.sha256.json"))
+            && let Ok(cache) = serde_json::from_str::<serde_json::Value>(&text)
+            && let Some(rasters) = cache["digest"].as_str()
+        {
+            let hydro = std::fs::read(format!("{d}/hydro.bin")).unwrap();
+            let mut h = crate::sha256::Sha256::new();
+            h.update(rasters.as_bytes());
+            h.update(b"hydro.bin");
+            h.update(&crate::sha256::sha256(&hydro));
+            assert_eq!(crate::sha256::hex(&h.finish()), id, "the digest saves recorded");
+        }
+    }
 
     #[test]
     fn elevation_gradient_matches_finite_differences() {

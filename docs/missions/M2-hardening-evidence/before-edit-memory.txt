@@ -1,0 +1,36 @@
+warning: variable does not need to be mutable
+    --> src\stream.rs:1783:13
+     |
+1783 |         let mut drain = |c: &mut Coverage, gpu: &mut FakeGpu, wants: &mut Vec<Want>| {
+     |             ----^^^^^
+     |             |
+     |             help: remove this `mut`
+     |
+     = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: field `colours_buf` is never read
+   --> src\render\mod.rs:128:5
+    |
+111 | pub struct Renderer {
+    |            -------- field in this struct
+...
+128 |     colours_buf: wgpu::Buffer,
+    |     ^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `triangulum` (bin "triangulum" test) generated 2 warnings (run `cargo fix --bin "triangulum" -p triangulum --tests` to apply 1 suggestion)
+    Finished `release` profile [optimized + debuginfo] target(s) in 0.65s
+     Running unittests src\main.rs (target\release\deps\triangulum-b50a41b5327e5812.exe)
+
+running 1 test
+test sim::tests::edit_memory_and_costs_by_edited_chunks ...    100 dry chunks:   56.7 KiB each (6 MB), made in 160 ms; state hash 33 ms (again 33 ms); first tick 0.8 ms; refocus avg 0.552 ms worst 0.587 ms with 100 frozen chunks; sim snapshot 0.1 ms, 13 KB
+   100 wet chunks:   86.9 KiB each (9 MB), made in 182 ms; state hash 48 ms (again 47 ms); first tick 0.8 ms; refocus avg 0.550 ms worst 0.555 ms with 100 frozen chunks; sim snapshot 0.0 ms, 13 KB
+  1000 dry chunks:   64.4 KiB each (66 MB), made in 1958 ms; state hash 334 ms (again 331 ms); first tick 2.3 ms; refocus avg 0.561 ms worst 0.568 ms with 1000 frozen chunks; sim snapshot 0.5 ms, 135 KB
+  1000 wet chunks:   95.7 KiB each (98 MB), made in 1938 ms; state hash 480 ms (again 497 ms); first tick 2.4 ms; refocus avg 0.561 ms worst 0.568 ms with 1000 frozen chunks; sim snapshot 0.2 ms, 135 KB
+ 10000 dry chunks:   65.3 KiB each (669 MB), made in 22200 ms; state hash 22157 ms (again 25066 ms); first tick 19.9 ms; refocus avg 0.668 ms worst 0.697 ms with 10000 frozen chunks; sim snapshot 2.7 ms, 1350 KB
+ 10000 wet chunks:   96.9 KiB each (992 MB), made in 16841 ms; state hash 22985 ms (again 29053 ms); first tick 20.7 ms; refocus avg 0.671 ms worst 0.711 ms with 10000 frozen chunks; sim snapshot 2.9 ms, 1350 KB
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 142 filtered out; finished in 155.65s
+

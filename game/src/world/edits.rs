@@ -1,8 +1,10 @@
 //! Edited chunks: the authoritative overlay the player and the simulation
 //! write.
 //!
-//! An edited LOD-0 chunk is held in full (dense ids, water levels and a
-//! revision) and is never regenerated. Generation stays a pure function;
+//! An edited LOD-0 chunk is held in full (its ids, packed at 4, 8 or 16
+//! bits per voxel against a palette of the ids it holds; its water levels,
+//! one byte per voxel, while any voxel holds water; a revision) and is
+//! never regenerated. Generation stays a pure function;
 //! `World` applies this overlay after it. The store also tracks which chunks
 //! are unsaved (dirty, by revision), which loaded chunks at any LOD must be
 //! remeshed (invalidated) and which blocks changed (for the simulation's
@@ -23,6 +25,7 @@ use super::BlockId;
 use super::chunk::{VOXELS, index};
 use crate::grid::{BlockPos, ChunkKey, FastMap, FastSet};
 use std::sync::RwLock;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
 /// Ancestors indexed per edited chunk: LODs 1..=INDEX_LODS (a chunk at LOD
@@ -32,13 +35,184 @@ const INDEX_LODS: u8 = 15;
 /// Water level of a block that is water (M2b's levels replace this).
 pub const WATER_FULL: u8 = 255;
 
+/// An edited chunk's block ids (review 2 #17: they were a dense `u16` per
+/// voxel, 64 KiB a chunk): a palette of the ids the chunk holds and one
+/// index per voxel, 4 bits while the palette has at most 16 ids, 8 bits up
+/// to 256, the ids themselves (16 bits) past that. A chunk is a few kinds
+/// of rock, soil and air, so 16 KiB. The palette grows as new ids are
+/// written and never shrinks; the dense form (`to_dense`) is canonical,
+/// the packing is not, so digests and saves use the dense form.
+#[derive(Clone, Debug)]
+pub struct PackedIds {
+    palette: Vec<BlockId>,
+    bits: u8,
+    data: Vec<u8>,
+}
+
+impl PackedIds {
+    pub fn from_dense(ids: &[BlockId]) -> Self {
+        assert_eq!(ids.len(), VOXELS);
+        // Runs of one id are long (z is the innermost index): look up only
+        // when the id changes.
+        let mut palette: Vec<BlockId> = Vec::new();
+        let mut last = None;
+        for &id in ids {
+            if last == Some(id) {
+                continue;
+            }
+            last = Some(id);
+            if !palette.contains(&id) {
+                palette.push(id);
+                if palette.len() > 256 {
+                    break;
+                }
+            }
+        }
+        let bits = match palette.len() {
+            0..=16 => 4,
+            17..=256 => 8,
+            _ => 16,
+        };
+        let mut p = Self { palette: if bits == 16 { Vec::new() } else { palette }, bits, data: vec![0u8; VOXELS * bits as usize / 8] };
+        let mut last: Option<(BlockId, u16)> = None;
+        for (v, &id) in ids.iter().enumerate() {
+            let slot = match last {
+                Some((l, s)) if l == id => s,
+                _ => {
+                    let s = p.slot_of(id).expect("the palette holds every id");
+                    last = Some((id, s));
+                    s
+                }
+            };
+            p.put(v, slot);
+        }
+        p
+    }
+
+    /// The palette slot of an id (the id itself at 16 bits), if it has one.
+    #[inline]
+    fn slot_of(&self, id: BlockId) -> Option<u16> {
+        if self.bits == 16 { Some(id) } else { self.palette.iter().position(|&p| p == id).map(|i| i as u16) }
+    }
+
+    #[inline]
+    fn put(&mut self, v: usize, slot: u16) {
+        match self.bits {
+            4 => {
+                let (b, sh) = (v >> 1, (v & 1) * 4);
+                self.data[b] = (self.data[b] & !(0xF << sh)) | ((slot as u8) << sh);
+            }
+            8 => self.data[v] = slot as u8,
+            _ => self.data[2 * v..2 * v + 2].copy_from_slice(&slot.to_le_bytes()),
+        }
+    }
+
+    #[inline]
+    pub fn get(&self, v: usize) -> BlockId {
+        match self.bits {
+            4 => self.palette[((self.data[v >> 1] >> ((v & 1) * 4)) & 0xF) as usize],
+            8 => self.palette[self.data[v] as usize],
+            _ => u16::from_le_bytes([self.data[2 * v], self.data[2 * v + 1]]),
+        }
+    }
+
+    pub fn set(&mut self, v: usize, id: BlockId) {
+        let slot = match self.slot_of(id) {
+            Some(s) => s,
+            None => {
+                let cap = 1usize << self.bits;
+                if self.palette.len() == cap {
+                    // Widen: 4 -> 8 bits, or 8 -> the ids themselves.
+                    let dense = self.to_dense();
+                    let mut wider = Self { palette: if self.bits == 4 { self.palette.clone() } else { Vec::new() }, bits: if self.bits == 4 { 8 } else { 16 }, data: Vec::new() };
+                    wider.data = vec![0u8; VOXELS * wider.bits as usize / 8];
+                    for (u, &old) in dense.iter().enumerate() {
+                        let s = wider.slot_of(old).expect("the wider palette holds every id");
+                        wider.put(u, s);
+                    }
+                    *self = wider;
+                    return self.set(v, id);
+                }
+                self.palette.push(id);
+                (self.palette.len() - 1) as u16
+            }
+        };
+        self.put(v, slot);
+    }
+
+    pub fn to_dense(&self) -> Vec<BlockId> {
+        (0..VOXELS).map(|v| self.get(v)).collect()
+    }
+
+    /// Bits per voxel (4, 8 or 16).
+    pub fn bits(&self) -> u8 {
+        self.bits
+    }
+
+    pub fn heap_bytes(&self) -> usize {
+        self.data.capacity() + self.palette.capacity() * 2
+    }
+}
+
 /// One edited chunk, in full.
 pub struct Edited {
-    pub ids: Vec<BlockId>,
+    pub ids: PackedIds,
     /// Water level per voxel; None when no voxel holds water.
     pub water: Option<Vec<u8>>,
+    /// Voxels whose level is not 0 (review 3 #12: emptying a cell used to
+    /// rescan all 32,768 levels to decide whether the layer could go).
+    wet: u32,
     /// Bumps on every change to this chunk.
     pub rev: u64,
+    /// Whether the content equals the generator's chunk, as last worked
+    /// out (`rev << 1 | equal`, `u64::MAX` unknown), and against which
+    /// world's generator (`World::id`; shot markers make another): the state
+    /// hash leaves such chunks out, and finding out regenerates the natural
+    /// chunk, so it is kept until the chunk changes (review 2 #17).
+    natural_eq: AtomicU64,
+    natural_of: AtomicU64,
+}
+
+impl Edited {
+    fn new(ids: &[BlockId], water: Option<Vec<u8>>) -> Self {
+        let wet = water.as_ref().map_or(0, |l| l.iter().filter(|&&x| x != 0).count() as u32);
+        let water = water.filter(|_| wet > 0);
+        Self { ids: PackedIds::from_dense(ids), water, wet, rev: 0, natural_eq: AtomicU64::new(u64::MAX), natural_of: AtomicU64::new(0) }
+    }
+
+    /// Voxels holding any water.
+    pub fn wet_cells(&self) -> u32 {
+        self.wet
+    }
+
+    /// Block id of voxel `v` (`chunk::index`).
+    #[inline]
+    pub fn id(&self, v: usize) -> BlockId {
+        self.ids.get(v)
+    }
+
+    /// Water level of voxel `v`.
+    #[inline]
+    pub fn level(&self, v: usize) -> u8 {
+        self.water.as_ref().map_or(0, |l| l[v])
+    }
+
+    /// Heap bytes this chunk holds.
+    pub fn heap_bytes(&self) -> usize {
+        self.ids.heap_bytes() + self.water.as_ref().map_or(0, |l| l.capacity())
+    }
+
+    /// Whether the content equals generator `of`'s chunk, if that was
+    /// worked out since the last change (`set_natural_eq`).
+    pub fn natural_eq(&self, of: u64) -> Option<bool> {
+        let c = self.natural_eq.load(Ordering::Relaxed);
+        (c != u64::MAX && c >> 1 == self.rev && self.natural_of.load(Ordering::Relaxed) == of).then_some(c & 1 == 1)
+    }
+
+    pub fn set_natural_eq(&self, of: u64, equal: bool) {
+        self.natural_of.store(of, Ordering::Relaxed);
+        self.natural_eq.store(self.rev << 1 | equal as u64, Ordering::Relaxed);
+    }
 }
 
 /// One block write for `commit`: chunk, voxel, new id, and the water level
@@ -86,20 +260,6 @@ impl Inner {
         }
     }
 
-    /// Undo `index` (a chunk that turned out not to be edited).
-    fn unindex(&mut self, key: ChunkKey) {
-        let mut anc = key;
-        for _ in 0..INDEX_LODS {
-            anc = anc.parent().expect("lod < 63");
-            if let Some(v) = self.under.get_mut(&anc) {
-                v.retain(|k| *k != key);
-                if v.is_empty() {
-                    self.under.remove(&anc);
-                }
-            }
-        }
-    }
-
     fn mark_dirty(&mut self, key: ChunkKey) {
         let now = Instant::now();
         self.dirty.insert(key);
@@ -114,19 +274,24 @@ impl Inner {
         let v = index(w.x, w.y, w.z);
         let level = w.level.unwrap_or(if liquid { WATER_FULL } else { 0 });
         let had_level = e.water.as_ref().map_or(0, |l| l[v]);
-        if e.ids[v] == w.id && had_level == level {
+        if e.ids.get(v) == w.id && had_level == level {
             return false;
         }
-        e.ids[v] = w.id;
+        e.ids.set(v, w.id);
         if level != had_level {
             if level != 0 && e.water.is_none() {
                 e.water = Some(vec![0u8; VOXELS]);
             }
             if let Some(l) = e.water.as_mut() {
                 l[v] = level;
-                if level == 0 && l.iter().all(|&x| x == 0) {
-                    e.water = None;
-                }
+            }
+            match (had_level, level) {
+                (0, _) => e.wet += 1,
+                (_, 0) => e.wet -= 1,
+                _ => {}
+            }
+            if e.wet == 0 {
+                e.water = None;
             }
         }
         e.rev += 1;
@@ -167,7 +332,7 @@ impl EditStore {
 
     /// Block of an edited chunk; None when the chunk is not edited.
     pub fn get(&self, key: ChunkKey, x: usize, y: usize, z: usize) -> Option<BlockId> {
-        self.inner.read().unwrap().chunks.get(&key).map(|e| e.ids[index(x, y, z)])
+        self.inner.read().unwrap().chunks.get(&key).map(|e| e.ids.get(index(x, y, z)))
     }
 
     /// Water level of an edited chunk's voxel; None when the chunk is not edited.
@@ -182,7 +347,7 @@ impl EditStore {
         let g = self.inner.read().unwrap();
         let e = g.chunks.get(&key)?;
         let v = index(x, y, z);
-        Some((e.ids[v], e.water.as_ref().map_or(0, |l| l[v])))
+        Some((e.ids.get(v), e.water.as_ref().map_or(0, |l| l[v])))
     }
 
     /// Does an edited chunk hold a water level other than empty or full?
@@ -196,14 +361,31 @@ impl EditStore {
         self.inner.read().unwrap().chunks.get(&key).map(|e| e.rev)
     }
 
-    /// Run `f` over an edited chunk's dense ids (under the read lock).
+    /// Run `f` over an edited chunk's dense ids (unpacked, under the read lock).
     pub fn with_chunk<R>(&self, key: ChunkKey, f: impl FnOnce(&[BlockId]) -> R) -> Option<R> {
-        self.inner.read().unwrap().chunks.get(&key).map(|e| f(&e.ids))
+        self.inner.read().unwrap().chunks.get(&key).map(|e| f(&e.ids.to_dense()))
     }
 
     /// Run `f` over an edited chunk's ids and water levels (under the read lock).
     pub fn with_edited<R>(&self, key: ChunkKey, f: impl FnOnce(&Edited) -> R) -> Option<R> {
         self.inner.read().unwrap().chunks.get(&key).map(f)
+    }
+
+    /// Visit every edited chunk in key order, without copying any of them
+    /// (review 2 #17: the state hash cloned them all, 96 KiB each). `f` runs
+    /// under the read lock, taken per chunk: it must not lock the store itself.
+    pub fn for_each_sorted(&self, mut f: impl FnMut(ChunkKey, &Edited)) {
+        for key in self.keys() {
+            if let Some(e) = self.inner.read().unwrap().chunks.get(&key) {
+                f(key, e);
+            }
+        }
+    }
+
+    /// Heap bytes the edited chunks hold (ids and water levels; not the
+    /// maps around them).
+    pub fn heap_bytes(&self) -> usize {
+        self.inner.read().unwrap().chunks.values().map(|e| e.heap_bytes()).sum()
     }
 
     /// Every edited chunk key (LOD 0), sorted.
@@ -256,8 +438,7 @@ impl EditStore {
                 if let Some(l) = &water {
                     assert_eq!(l.len(), VOXELS);
                 }
-                g.chunks.insert(w.key, Edited { ids, water, rev: 0 });
-                g.index(w.key);
+                g.chunks.insert(w.key, Edited::new(&ids, water));
                 fresh.push(w.key);
             }
             let changed = g.write(w, liquid(w.id));
@@ -268,10 +449,13 @@ impl EditStore {
         }
         // A chunk no write changed is the generator's chunk: keep none of
         // it (review 3 #6: it would be in the state hash but never saved).
+        // The others go into the ancestor index now (nothing reads it while
+        // the write lock is held), so a no-op never touches the index.
         for key in fresh {
             if g.chunks.get(&key).is_some_and(|e| e.rev == 0) {
                 g.chunks.remove(&key);
-                g.unindex(key);
+            } else {
+                g.index(key);
             }
         }
         out
@@ -292,8 +476,7 @@ impl EditStore {
             assert_eq!(l.len(), VOXELS);
         }
         let mut g = self.inner.write().unwrap();
-        let water = water.filter(|l| l.iter().any(|&x| x != 0));
-        if g.chunks.insert(key, Edited { ids, water, rev: 0 }).is_none() {
+        if g.chunks.insert(key, Edited::new(&ids, water)).is_none() {
             g.index(key);
         }
         if dirty {
@@ -354,7 +537,7 @@ impl EditStore {
     /// clearing anything: a save writes them and then `acknowledge`s.
     pub fn dirty_snapshot(&self) -> Vec<DirtyChunk> {
         let g = self.inner.read().unwrap();
-        let mut out: Vec<DirtyChunk> = g.dirty.iter().filter_map(|k| g.chunks.get(k).map(|e| DirtyChunk { key: *k, rev: e.rev, ids: e.ids.clone(), water: e.water.clone() })).collect();
+        let mut out: Vec<DirtyChunk> = g.dirty.iter().filter_map(|k| g.chunks.get(k).map(|e| DirtyChunk { key: *k, rev: e.rev, ids: e.ids.to_dense(), water: e.water.clone() })).collect();
         out.sort_by_key(|d| d.key);
         out
     }
@@ -376,7 +559,7 @@ impl EditStore {
     /// Every edited chunk's ids (for tests and hashing), sorted by key.
     pub fn snapshot(&self) -> Vec<(ChunkKey, Vec<BlockId>)> {
         let g = self.inner.read().unwrap();
-        let mut out: Vec<(ChunkKey, Vec<BlockId>)> = g.chunks.iter().map(|(k, e)| (*k, e.ids.clone())).collect();
+        let mut out: Vec<(ChunkKey, Vec<BlockId>)> = g.chunks.iter().map(|(k, e)| (*k, e.ids.to_dense())).collect();
         out.sort_by_key(|(k, _)| *k);
         out
     }
@@ -384,7 +567,7 @@ impl EditStore {
     /// Every edited chunk in full (ids, water, revision), sorted by key.
     pub fn snapshot_full(&self) -> Vec<DirtyChunk> {
         let g = self.inner.read().unwrap();
-        let mut out: Vec<DirtyChunk> = g.chunks.iter().map(|(k, e)| DirtyChunk { key: *k, rev: e.rev, ids: e.ids.clone(), water: e.water.clone() }).collect();
+        let mut out: Vec<DirtyChunk> = g.chunks.iter().map(|(k, e)| DirtyChunk { key: *k, rev: e.rev, ids: e.ids.to_dense(), water: e.water.clone() }).collect();
         out.sort_by_key(|d| d.key);
         out
     }
@@ -478,6 +661,66 @@ mod tests {
         s.insert_chunk(ChunkKey::neisor(2, 0, 1, 1, 3), vec![0u16; VOXELS], Some(vec![0u8; VOXELS]), false);
         assert!(s.with_edited(ChunkKey::neisor(2, 0, 1, 1, 3), |e| e.water.is_none()).unwrap());
         assert_eq!(s.dirty_count(), 1, "loading is not dirt");
+    }
+
+    /// Review 3 #12: emptying a cell must not rescan the chunk's 32,768
+    /// levels to decide whether its water layer can go. Draining a full
+    /// chunk one cell at a time, in index order (so what remains is always
+    /// at the end of the array), used to cost cells x remaining comparisons
+    /// under the write lock.
+    #[test]
+    fn emptying_water_cell_by_cell_does_not_rescan_the_chunk() {
+        let s = EditStore::new();
+        let key = ChunkKey::neisor(2, 0, 7, 7, 7);
+        let water: BlockId = 8;
+        let liquid = |id: BlockId| id == water;
+        let natural = |_: ChunkKey| (vec![0u16; VOXELS], None);
+        let all: Vec<Write> = (0..VOXELS).map(|v| Write { key, x: v / 1024, y: (v / 32) % 32, z: v % 32, id: water, level: Some(200) }).collect();
+        assert!(s.commit(&all, natural, liquid).iter().all(|&c| c));
+        let t = Instant::now();
+        for w in &all[..VOXELS - 1] {
+            assert_eq!(s.commit(&[Write { id: 0, level: None, ..*w }], natural, liquid), vec![true]);
+        }
+        let ms = t.elapsed().as_secs_f64() * 1e3;
+        assert!(s.with_edited(key, |e| e.water.is_some()).unwrap(), "one cell still holds water");
+        let last = all[VOXELS - 1];
+        s.commit(&[Write { id: 0, level: None, ..last }], natural, liquid);
+        assert!(s.with_edited(key, |e| e.water.is_none()).unwrap(), "the last one empties the layer");
+        println!("drained {} cells one at a time in {ms:.1} ms", VOXELS);
+        assert!(ms < 60.0, "draining a chunk cell by cell took {ms:.1} ms: the emptiness check rescans the levels");
+    }
+
+    /// Review 2 #17: packed ids read back what was written, through
+    /// palette growth and both widenings, against a dense model.
+    #[test]
+    fn packed_ids_hold_what_was_written_through_every_width() {
+        let mut model: Vec<BlockId> = (0..VOXELS).map(|v| [0u16, 1, 2][v % 3]).collect();
+        let mut p = PackedIds::from_dense(&model);
+        assert_eq!((p.bits(), p.heap_bytes() >= VOXELS / 2), (4, true));
+        assert!(p.heap_bytes() < VOXELS / 2 + 64, "16 KiB, not 64: {}", p.heap_bytes());
+        let mut x: u64 = 0x9E37_79B9_7F4A_7C15;
+        let mut next = || {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            x
+        };
+        for (round, ids) in [(0, 10u16), (1, 200), (2, 600)] {
+            for _ in 0..20_000 {
+                let v = (next() % VOXELS as u64) as usize;
+                let id = (next() % ids as u64) as u16 * 7;
+                p.set(v, id);
+                model[v] = id;
+            }
+            assert_eq!(p.to_dense(), model, "round {round}");
+            for v in (0..VOXELS).step_by(97) {
+                assert_eq!(p.get(v), model[v]);
+            }
+        }
+        assert_eq!(p.bits(), 16, "600 ids need the ids themselves");
+        let q = PackedIds::from_dense(&model);
+        assert_eq!(q.to_dense(), model);
+        assert_eq!(PackedIds::from_dense(&vec![5u16; VOXELS]).get(1234), 5);
     }
 
     #[test]
