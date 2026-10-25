@@ -129,6 +129,11 @@ impl Harness {
         self.gpu.save_png(path);
     }
 
+    /// Paint an egui overlay over the current frame (the play harness's video HUD).
+    pub fn paint_ui(&mut self, build: &dyn Fn(&egui::Context)) {
+        paint_offscreen(&self.egui_ctx, &mut self.egui_paint, &self.gpu, build);
+    }
+
     /// Save the frame with an arbitrary egui overlay (the harness draws the game HUD).
     pub fn save_with_ui(&mut self, path: &str, build: &dyn Fn(&egui::Context)) {
         paint_offscreen(&self.egui_ctx, &mut self.egui_paint, &self.gpu, build);

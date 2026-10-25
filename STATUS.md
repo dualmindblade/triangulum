@@ -98,10 +98,6 @@ cargo run --release -- --vscale 0.125 --height 4096 --sea-level 1536    # 1/8
 cargo run --release -- --block-size 0.5 --n 262144 --height 4096 --sea-level 1024 --vscale 0.05 --save saves/half   # half-metre blocks
 ```
 
-**One caution until the harness fix lands (in progress):** don't combine
-`--play` with `--save` pointing at your real save, because the harness
-clears that folder. (The hide-water caution is gone: fixed in M2a.)
-
 Hold Ctrl while walking to sneak: you won't walk off edges, so you can
 back out over a gap and place blocks under you. Known issues: ripple
 patterns on distant steep terrain, and gully stripes that can look combed
@@ -110,13 +106,26 @@ detail (still about 500 fps).
 
 ## In progress
 
-- M1-video: a ~1 minute showcase clip of everything M1 does (Opus)
 - M1-hardening: the remaining review findings: picking and collision at
   cube edges, tunnel walls after reload, water seams far out (Fable)
 - M2-hydro: lakes and rivers as real water, held by their banks (Opus)
 
 ## Waiting on you
 
+- **Watch the M1 video:** `docs/media/m1-showcase.mp4` (85 s; stills in
+  `docs/media/m1-showcase-stills/`). Things in it that are Andrew's call:
+  - **Vertical scale.** At 1/70 the highest range is a white plain with
+    contour stripes; at 1/8 it's real mountains (last shot of the video).
+  - **The atmosphere is thin.** It's scaled to the 90 km planet, so the sky
+    turns toward space above about 1.5 km, and 1/8 mountains reach into
+    it. Whatever vertical scale he picks, the atmosphere's height should
+    follow; it's one setting.
+  - **Oceans from orbit** are now an even grey-blue; the deep blue before
+    was a bug (space showing through). Bluer water is a colour choice.
+  - **Dusk and night are weak,** and golden hour is subtle.
+  - **Underground isn't dark yet,** and grass shows on every face of a
+    grass block, so tunnel ceilings are green.
+  - **Distant terrace stripes** ripple on steep slopes far away.
 - **Andrew:** with 24-minute days, do the July calendar numbers still stand
   (7-day lunar month, 84-day year)? No rush.
 - **Andrew:** pick a grid by eye if he wants something other than the
