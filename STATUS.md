@@ -72,6 +72,11 @@
   now crash-safe: written all-or-nothing, retried on failure, validated on
   load. Saves made before this are refused.
 
+- **M1-hardening** (Fable, verified by Opus, merged): breaking blocks and
+  walking along walls across cube edges, tunnel walls that went missing
+  after a reload, and the far water seams (47 m apart, now 2 m). Each
+  fix has a test that fails without it.
+
 **M1 is feature-complete.** The last step is yours: play it and tell me what
 feels wrong.
 
@@ -106,8 +111,6 @@ detail (still about 500 fps).
 
 ## In progress
 
-- M1-hardening: the remaining review findings: picking and collision at
-  cube edges, tunnel walls after reload, water seams far out (Fable)
 - M2-hydro: lakes and rivers as real water, held by their banks (Opus)
 
 ## Waiting on you
