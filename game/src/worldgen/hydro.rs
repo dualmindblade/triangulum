@@ -400,7 +400,13 @@ pub struct Seg {
     centre: DVec3,
     /// Bounding radius of the course (m).
     span: f64,
+    /// Bounding spheres (centre, chord radius) of runs of SEARCH_RUN course
+    /// pieces, for the nearest-point search.
+    runs: Vec<(DVec3, f64)>,
 }
+
+/// Course pieces per bounding sphere in the nearest-point search.
+const SEARCH_RUN: usize = 8;
 
 impl Seg {
     /// Point on the course at arc length `s` (unit vector).
@@ -448,6 +454,8 @@ pub struct RiverAt {
     pub s: f64,
     /// Downstream course direction (unit, tangent to the sphere).
     pub tangent: DVec3,
+    /// The link's water profile at the voxel size asked for.
+    pub prof: Profile,
 }
 
 /// One lake's field at a column.
@@ -511,12 +519,18 @@ pub struct Shaped {
     /// Lake bed or lake shore band (sand).
     pub lake_floor: bool,
     pub lake_shore: bool,
+    /// A river's bank, right beside its channel (keeps its soil: the steep
+    /// channel edge is not bare rock).
+    pub bank: bool,
 }
 
 /// Candidate links and lake field cells for a region (a chunk or a column).
 #[derive(Clone, Debug, Default)]
 pub struct Cands {
     pub segs: Vec<u32>,
+    /// Per link in `segs`: the runs of its course that can hold the nearest
+    /// point of any column of the region (bit i = run i).
+    pub runs: Vec<u128>,
     pub cells: Vec<u32>,
 }
 
@@ -547,6 +561,62 @@ pub struct Hydro {
     cell_grid: SphereGrid,
     /// Largest influence radius of any link (m), for bounds.
     pub max_reach: f64,
+}
+
+/// Meanders: wavelength in channel widths (D-12: meandering scales with
+/// the river), shortest wavelength (m), amplitude as a fraction of the
+/// wavelength (gentle enough that bends stay over five half-widths in radius).
+const MEANDER_WIDTHS: f64 = 12.0;
+const MEANDER_MIN_WL_M: f64 = 40.0;
+const MEANDER_AMP: f64 = 0.12;
+
+/// A link's course with meanders: the smooth base curve (nodes included)
+/// resampled every few metres and swung sideways by a sine of a whole
+/// number of wavelengths, faded in and out over half a wavelength beyond
+/// the flat stretches at each node (`flat_a`, `flat_b`, m), so junctions
+/// and lake ends keep the base course. `salt` (0..1) varies the amplitude
+/// per link.
+fn meander(base: &[DVec3], radius: f64, hw: f64, flat_a: f64, flat_b: f64, salt: f64) -> Vec<DVec3> {
+    let mut cum = vec![0.0];
+    for w in base.windows(2) {
+        cum.push(cum.last().unwrap() + (w[1] - w[0]).length() * radius);
+    }
+    let len = *cum.last().unwrap();
+    let at = |s: f64| {
+        let i = cum.partition_point(|&c| c <= s).clamp(1, base.len() - 1);
+        let u = ((s - cum[i - 1]) / (cum[i] - cum[i - 1]).max(1e-12)).clamp(0.0, 1.0);
+        (base[i - 1] * (1.0 - u) + base[i] * u).normalize()
+    };
+    let wl0 = (MEANDER_WIDTHS * 2.0 * hw).max(MEANDER_MIN_WL_M);
+    let active = len - flat_a - flat_b;
+    // A link shorter than a wavelength still takes one (big rivers have
+    // links of only a few widths), as long as the bend stays gentle.
+    if active < 0.4 * wl0 || active < 8.0 * hw + 30.0 {
+        return base.to_vec();
+    }
+    let waves = (active / wl0).round().max(1.0);
+    let wl = active / waves;
+    // Peak curvature amp (2 pi / wl)^2 keeps bends over five half-widths in radius.
+    let amp_curv = wl * wl / (std::f64::consts::TAU * std::f64::consts::TAU * 5.0 * hw);
+    let amp = (MEANDER_AMP * wl * (0.6 + 0.7 * salt)).min(amp_curv);
+    let step = (wl / 16.0).clamp(2.0, 8.0);
+    let n = (len / step).ceil() as usize;
+    let tau = std::f64::consts::TAU;
+    (0..=n)
+        .map(|t| {
+            let s = len * t as f64 / n as f64;
+            let p = at(s);
+            let x = s - flat_a;
+            if x <= 0.0 || x >= active {
+                return p;
+            }
+            let env = smoothstep(0.0, 0.5 * wl, x) * smoothstep(0.0, 0.5 * wl, active - x);
+            let off = amp * env * (tau * x / wl).sin();
+            let tan = at((s + 4.0).min(len)) - at((s - 4.0).max(0.0));
+            let side = tan.cross(p).normalize_or_zero();
+            (p + side * (off / radius)).normalize()
+        })
+        .collect()
 }
 
 /// Influence of a link beyond its course (m): valley walls and embankments.
@@ -588,12 +658,28 @@ impl Hydro {
         let mut segs = Vec::with_capacity(data.segs.len());
         let mut seg_grid = SphereGrid::new(512.0);
         let mut max_reach = 0.0f64;
+        // Widest channel at each node (LOD 0).
+        let mut hw_node = vec![0.0f64; nn];
+        for s in &data.segs {
+            let hw = channel_shape(data.nodes[s.a as usize].flow).0;
+            hw_node[s.a as usize] = hw_node[s.a as usize].max(hw);
+            hw_node[s.b as usize] = hw_node[s.b as usize].max(hw);
+        }
         for (k, s) in data.segs.iter().enumerate() {
             let (na, nb) = (&data.nodes[s.a as usize], &data.nodes[s.b as usize]);
-            let mut pts = Vec::with_capacity(s.interior.len() + 2);
-            pts.push(na.pos);
-            pts.extend_from_slice(&s.interior);
-            pts.push(nb.pos);
+            let mut base = Vec::with_capacity(s.interior.len() + 2);
+            base.push(na.pos);
+            base.extend_from_slice(&s.interior);
+            base.push(nb.pos);
+            let (hw, depth, hf) = channel_shape(na.flow);
+            // Meanders stay out of the flat water around each node, and out
+            // of lakes (a lake's own links run straight across it).
+            let flat = |hw_n: f64| 4.0 * hw_n + 12.0;
+            let pts = if na.lake >= 0 && nb.lake >= 0 {
+                base
+            } else {
+                meander(&base, radius, hw, flat(hw_node[s.a as usize]), flat(hw_node[s.b as usize]), hash01(k as i64, 3, 11, seed ^ 0x3EA))
+            };
             let mut cum = Vec::with_capacity(pts.len());
             let mut acc = 0.0;
             cum.push(0.0);
@@ -603,7 +689,16 @@ impl Hydro {
             }
             let centre = pts.iter().fold(DVec3::ZERO, |a, p| a + *p).normalize();
             let span = pts.iter().map(|p| (*p - centre).length() * radius).fold(0.0, f64::max);
-            let (hw, depth, hf) = channel_shape(na.flow);
+            let runs = pts
+                .windows(2)
+                .collect::<Vec<_>>()
+                .chunks(SEARCH_RUN)
+                .map(|run| {
+                    let c = run.iter().fold(DVec3::ZERO, |a, w| a + w[0] + w[1]).normalize();
+                    let r = run.iter().map(|w| (w[0] - c).length().max((w[1] - c).length())).fold(0.0, f64::max);
+                    (c, r)
+                })
+                .collect();
             let reach = seg_reach(hf);
             max_reach = max_reach.max(reach);
             seg_grid.insert(centre * radius, span + reach, k as u32);
@@ -623,21 +718,12 @@ impl Hydro {
                 lake_b: nb.lake,
                 s_lo: 0.0,
                 s_hi: acc,
-                hw_node_a: 0.0,
-                hw_node_b: 0.0,
+                hw_node_a: hw_node[s.a as usize],
+                hw_node_b: hw_node[s.b as usize],
                 centre,
                 span,
+                runs,
             });
-        }
-        // Widest channel at each node.
-        let mut hw_node = vec![0.0f64; nn];
-        for s in &segs {
-            hw_node[s.a as usize] = hw_node[s.a as usize].max(s.hw);
-            hw_node[s.b as usize] = hw_node[s.b as usize].max(s.hw);
-        }
-        for s in &mut segs {
-            s.hw_node_a = hw_node[s.a as usize];
-            s.hw_node_b = hw_node[s.b as usize];
         }
         let r_field = data.lake_r_chord * radius;
         let mut cell_grid = SphereGrid::new(2048.0);
@@ -775,17 +861,42 @@ impl Hydro {
     /// Candidates whose influence can reach a disc of radius `r` (m) around `dir`.
     pub fn cands(&self, dir: DVec3, r: f64) -> Cands {
         let p = dir * self.radius;
-        let mut segs = Vec::new();
-        self.seg_grid.query(p, r, &mut segs);
-        segs.retain(|&k| {
+        let mut all = Vec::new();
+        self.seg_grid.query(p, r, &mut all);
+        let rho = r / self.radius;
+        let mut segs = Vec::with_capacity(all.len());
+        let mut runs = Vec::with_capacity(all.len());
+        for k in all {
             let s = &self.segs[k as usize];
-            (s.centre - dir).length() * self.radius <= s.span + seg_reach(s.hf) + r
-        });
+            if (s.centre - dir).length() * self.radius > s.span + seg_reach(s.hf) + r {
+                continue;
+            }
+            // Every column within rho of `dir` has its nearest course point
+            // within (closest run's far side) + rho; runs that start farther
+            // than that from every such column cannot hold it.
+            let near: Vec<(f64, f64)> = s.runs.iter().map(|&(c, rr)| {
+                let d = (dir - c).length();
+                (d - rr, d + rr)
+            }).collect();
+            let m = near.iter().map(|x| x.1).fold(f64::MAX, f64::min);
+            let lb = near.iter().map(|x| x.0).fold(f64::MAX, f64::min);
+            if (lb - rho) * self.radius > seg_reach(s.hf) {
+                continue;
+            }
+            let mut mask = 0u128;
+            for (i, x) in near.iter().enumerate() {
+                if x.0 <= m + 2.0 * rho + 1e-12 {
+                    mask |= 1u128 << i;
+                }
+            }
+            segs.push(k);
+            runs.push(mask);
+        }
         let mut cells = Vec::new();
         self.cell_grid.query(p, r, &mut cells);
         let rf = self.lake_r_chord * self.radius;
         cells.retain(|&k| (self.field[k as usize].pos - dir).length() * self.radius <= rf + r);
-        Cands { segs, cells }
+        Cands { segs, runs, cells }
     }
 
     /// The water profile of link `k` for voxels of `voxel` metres.
@@ -892,22 +1003,35 @@ impl Hydro {
     }
 
     /// Nearby river links: distance from the course, arc length, tangent.
-    pub fn rivers_at(&self, dir: DVec3, cands: &[u32], out: &mut Vec<RiverAt>) {
+    pub fn rivers_at(&self, dir: DVec3, cands: &Cands, voxel: f64, out: &mut Vec<RiverAt>) {
         out.clear();
-        for &k in cands {
+        for (&k, &mask) in cands.segs.iter().zip(&cands.runs) {
             let s = &self.segs[k as usize];
             if (s.centre - dir).length() * self.radius > s.span + seg_reach(s.hf) {
                 continue;
             }
             let mut best = (f64::MAX, 0.0, DVec3::ZERO);
-            for i in 0..s.pts.len() - 1 {
-                let (p, q) = (s.pts[i], s.pts[i + 1]);
-                let e = q - p;
-                let ee = e.length_squared();
-                let t = if ee > 0.0 { ((dir - p).dot(e) / ee).clamp(0.0, 1.0) } else { 0.0 };
-                let d2 = (dir - (p + e * t)).length_squared();
-                if d2 < best.0 {
-                    best = (d2, s.cum[i] + t * (s.cum[i + 1] - s.cum[i]), e);
+            // Runs of pieces, skipping those whose bounding sphere is farther
+            // than the best piece so far.
+            let mut bits = mask;
+            while bits != 0 {
+                let ri = bits.trailing_zeros() as usize;
+                bits &= bits - 1;
+                let (c, rr) = s.runs[ri];
+                let lb = ((dir - c).length() - rr).max(0.0);
+                if lb * lb >= best.0 {
+                    continue;
+                }
+                let i0 = ri * SEARCH_RUN;
+                for i in i0..(i0 + SEARCH_RUN).min(s.pts.len() - 1) {
+                    let (p, q) = (s.pts[i], s.pts[i + 1]);
+                    let e = q - p;
+                    let ee = e.length_squared();
+                    let t = if ee > 0.0 { ((dir - p).dot(e) / ee).clamp(0.0, 1.0) } else { 0.0 };
+                    let d2 = (dir - (p + e * t)).length_squared();
+                    if d2 < best.0 {
+                        best = (d2, s.cum[i] + t * (s.cum[i + 1] - s.cum[i]), e);
+                    }
                 }
             }
             let d = best.0.sqrt() * self.radius;
@@ -915,7 +1039,7 @@ impl Hydro {
                 continue;
             }
             let t = best.2 - dir * best.2.dot(dir);
-            out.push(RiverAt { seg: k, d, s: best.1, tangent: t.normalize_or_zero() });
+            out.push(RiverAt { seg: k, d, s: best.1, tangent: t.normalize_or_zero(), prof: self.profile(k, voxel) });
         }
     }
 
@@ -985,18 +1109,35 @@ impl Hydro {
     /// its water surface. `h` is the natural ground (m above sea), `ocean`
     /// the bake's ocean mask, `rugged` the landform's ruggedness.
     #[allow(clippy::too_many_arguments)]
-    pub fn shape(&self, h: f64, lake: &LakeAt, rivers: &[RiverAt], ocean: f64, rugged: f64, voxel: f64, lod: u8) -> Shaped {
+    pub fn shape(&self, dir: DVec3, h: f64, lake: &LakeAt, rivers: &[RiverAt], ocean: f64, rugged: f64, voxel: f64, lod: u8) -> Shaped {
         let mut h = h;
         let fb = FB_BANK_BLOCKS * self.block;
         let zone = self.lake_zone;
         let in_lake = lake.iter().any(|l| l.field > zone);
+        // Under the sea or inside a lake the river's course is drowned: no
+        // valley or channel is cut into the sea floor or the lake bed.
+        let drowned = in_lake || (ocean > 0.0 && h < 0.0);
+        let bank_w = self.bank_w(voxel);
         // 1. River valleys (lowering): a floor FB_FLOOR_M above the river,
         // walls rising at 0.3-0.7, blended into the land by a soft minimum.
+        // Below a waterfall only the channel and its banks drop at once: the
+        // rest of the floor holds the upper level for a gorge's length, then
+        // ramps down, so the fall sits in a notch, not across the valley.
         let wall = 0.3 + 0.4 * rugged;
         for r in rivers {
+            if drowned {
+                break;
+            }
             let s = &self.segs[r.seg as usize];
-            let p = self.profile(r.seg, voxel);
-            let floor = self.w_bed(r.seg, &p, r.s) + FB_FLOOR_M;
+            let p = r.prof;
+            let mut floor = self.w_bed(r.seg, &p, r.s) + FB_FLOOR_M;
+            if p.falls {
+                let hw = self.half_width(s, voxel);
+                let b = smoothstep(hw + bank_w, hw + bank_w + 6.0 + 0.3 * p.delta, r.d);
+                if b > 0.0 {
+                    floor += b * self.gorge(r.seg, &p, r.s, dir);
+                }
+            }
             let x = r.d - s.hf;
             let k = 2.0;
             let rise = if x > 8.0 * k { x } else { k * (x / k).exp().ln_1p() };
@@ -1029,10 +1170,10 @@ impl Hydro {
             if h < bound {
                 h = bound;
             }
-            lake_shore |= lf.field >= LAKE_APRON - 0.04 && h < l.w + fb + 1.0 * self.block;
+            lake_shore |= lf.field >= zone - 0.07 && h < l.w + fb + 0.6 * self.block;
         }
-        let bank_w = self.bank_w(voxel);
         let delta = self.delta(voxel);
+        let mut bank = false;
         for r in rivers {
             let s = &self.segs[r.seg as usize];
             if in_lake {
@@ -1041,7 +1182,7 @@ impl Hydro {
             if !self.has_channel(s, lod, voxel) {
                 continue;
             }
-            let p = self.profile(r.seg, voxel);
+            let p = r.prof;
             let wb = self.w_water(r.seg, &p, (r.s - delta).max(0.0));
             if wb <= 0.0 {
                 continue; // at sea level the sea and the coast hold it
@@ -1050,6 +1191,7 @@ impl Hydro {
             if r.d < hw {
                 continue;
             }
+            bank |= r.d < hw + 1.5 * voxel + self.block;
             let x = r.d - hw - bank_w;
             let bound = if x <= 0.0 {
                 wb + fb
@@ -1075,11 +1217,13 @@ impl Hydro {
             if r.d >= hw {
                 continue;
             }
-            let p = self.profile(r.seg, voxel);
+            let p = r.prof;
             let (ww, wbed) = (self.w_water(r.seg, &p, r.s), self.w_bed(r.seg, &p, r.s));
             let q = r.d / hw;
-            let bed = wbed - s.depth * (1.0 - q * q * q * q) - LAKE_SHORE_DEPTH_BLOCKS * self.block - self.plunge(r.seg, &p, r.s);
-            h = h.min(bed);
+            if !drowned {
+                let bed = wbed - s.depth * (1.0 - q * q * q * q) - LAKE_SHORE_DEPTH_BLOCKS * self.block - self.plunge(r.seg, &p, r.s);
+                h = h.min(bed);
+            }
             if ww > water {
                 water = ww;
                 kind = WaterKind::River;
@@ -1097,7 +1241,27 @@ impl Hydro {
             water = 0.0;
             kind = WaterKind::Ocean;
         }
-        Shaped { h, water, kind, channel, lake_floor, lake_shore }
+        Shaped { h, water, kind, channel, lake_floor, lake_shore, bank: bank && h >= water }
+    }
+
+    /// How far a link's valley floor beyond its banks stands above the
+    /// floor at the channel just below a waterfall (m): the full drop for a
+    /// gorge length (two drops, jagged by noise), then ramping down at 45
+    /// degrees. Zero away from falls.
+    fn gorge(&self, k: u32, p: &Profile, s: f64, dir: DVec3) -> f64 {
+        if !p.falls || p.steps == 0 {
+            return 0.0;
+        }
+        let jag = 1.0 + 0.45 * gradient_noise(dir * (self.radius / 9.0), self.seed ^ 0x6029);
+        let mut out = 0.0f64;
+        for j in 1..=p.steps {
+            let x = s - self.step_at(k, p, j);
+            let g = (2.0 * p.delta).max(6.0 * p.voxel) * jag;
+            if x >= 0.0 && x < g + p.delta {
+                out = out.max(if x < g { p.delta } else { p.delta * (1.0 - (x - g) / p.delta) });
+            }
+        }
+        out
     }
 
     /// Whether the water of link `from` reaches link `to` by following

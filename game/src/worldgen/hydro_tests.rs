@@ -464,6 +464,518 @@ fn water_is_contained() {
     }
 }
 
+/// Water surface and depth of a generated column (m): the top of its
+/// highest water cell (partial levels counted at LOD 0; a frozen surface,
+/// ice over water or ice alone where the water lay, counts as water) and
+/// how far down the water and ice reach; None if dry.
+fn surface_of(region: &Region, p: &Planet, reg: &Registry, f: u8, i: u32, j: u32) -> Option<(f64, f64)> {
+    let (k0, k1) = region.k_range(p, f, i, j)?;
+    let v = (1u64 << region.lod) as f64;
+    let ice = reg.id("ice").unwrap();
+    let wet = |id: BlockId| id != BlockId::MAX && (reg.is_liquid(id) || id == ice);
+    for k in (k0..=k1).rev() {
+        let (id, l) = region.cell(p, f, i as i64, j as i64, k)?;
+        if wet(id) {
+            let frac = if region.lod == 0 && reg.is_liquid(id) { l as f64 / 255.0 } else { 1.0 };
+            let top = ((k as f64 + frac) * v - p.sea_level as f64) * p.block_size;
+            let mut kb = k;
+            while kb > k0 && region.cell(p, f, i as i64, j as i64, kb - 1).is_some_and(|(c, _)| wet(c)) {
+                kb -= 1;
+            }
+            let bottom = (kb as f64 * v - p.sea_level as f64) * p.block_size;
+            return Some((top, top - bottom));
+        }
+    }
+    None
+}
+
+/// Coarse LODs agree with LOD 0 about the water: where a coarse voxel
+/// column holds water, its surface is within half a voxel (plus a block) of
+/// the LOD-0 surfaces under it; where most of the LOD-0 columns under a
+/// coarse column hold water deeper than a voxel, so does the coarse one;
+/// and a coarse wet column always has wet LOD-0 columns within a voxel.
+/// Lake shores and river stretches, LODs 1-3.
+#[test]
+fn water_agrees_across_lods() {
+    let g = world_gen();
+    let h = hydro();
+    let p = &g.planet;
+    let reg = registry();
+    let mut fine: FastMap<Col, ()> = FastMap::default();
+    for k in (0..h.lakes.len() as i32).step_by(5) {
+        if let Some(d) = shore_point(k, 0) {
+            square(p, d, 40, &mut fine);
+        }
+    }
+    let ns = h.segs.len() as u32;
+    let links: Vec<u32> = (0..40).map(|t| (noise::hash01(t, 7, 7, 0x10D) * ns as f64) as u32 % ns).collect();
+    along(&links, &mut fine);
+    let fine: Vec<Col> = fine.into_keys().collect();
+    let r0 = Region::build(g, 0, &fine);
+    // LOD-0 surfaces of every generated column, once.
+    let mut all0: Vec<Col> = Vec::new();
+    for k in r0.chunks.keys() {
+        if k.cz == r0.chunks.keys().filter(|o| o.face == k.face && o.cx == k.cx && o.cy == k.cy).map(|o| o.cz).min().unwrap() {
+            for a in 0..CHUNK as u32 {
+                for b in 0..CHUNK as u32 {
+                    all0.push((k.face, k.cx * CHUNK as u32 + a, k.cy * CHUNK as u32 + b));
+                }
+            }
+        }
+    }
+    let surf0: FastMap<Col, Option<(f64, f64)>> = all0.par_iter().map(|&(f, i, j)| ((f, i, j), surface_of(&r0, p, reg, f, i, j))).collect();
+    let mut lines = Vec::new();
+    for lod in 1..=3u8 {
+        let v = 1u32 << lod;
+        let mut coarse: FastMap<Col, ()> = FastMap::default();
+        for &(f, i, j) in &fine {
+            coarse.insert((f, i / v, j / v), ());
+        }
+        let coarse: Vec<Col> = coarse.into_keys().collect();
+        let rc = Region::build(g, lod, &coarse);
+        let (mut wet, mut surf_bad, mut miss_bad, mut orphan, mut deep_cols, mut checked) = (0u64, Vec::new(), Vec::new(), Vec::new(), 0u64, 0u64);
+        for &(f, ci, cj) in &coarse {
+            // The LOD-0 columns under this coarse column, and a voxel around them.
+            let mut under = Vec::new();
+            let mut around = Vec::new();
+            let mut complete = true;
+            for a in -(v as i64)..(2 * v as i64) {
+                for b in -(v as i64)..(2 * v as i64) {
+                    let (ff, ii, jj) = p.wrap_cell(f, (ci * v) as i64 + a, (cj * v) as i64 + b);
+                    let Some(&s) = surf0.get(&(ff, ii, jj)) else {
+                        complete = false;
+                        continue;
+                    };
+                    if (0..v as i64).contains(&a) && (0..v as i64).contains(&b) {
+                        under.push((s, ff, ii, jj));
+                    }
+                    around.push(s);
+                }
+            }
+            if !complete || under.len() < (v * v) as usize {
+                continue;
+            }
+            checked += 1;
+            let c = surface_of(&rc, p, reg, f, ci, cj).map(|x| x.0);
+            let fine_wet: Vec<f64> = under.iter().filter_map(|u| u.0.map(|x| x.0)).collect();
+            let vm = p.voxel_m(lod);
+            let here = || {
+                let (lat, lon) = Planet::lat_lon_deg(p.dir(f, ((ci * v) as f64 + 0.5 * v as f64) * 1.0, ((cj * v) as f64 + 0.5 * v as f64) * 1.0));
+                format!("LOD {lod} face {f} ({ci}, {cj}) lat {lat:.5} lon {lon:.5}")
+            };
+            if let Some(cs) = c {
+                wet += 1;
+                if !around.iter().any(|s| s.is_some()) {
+                    orphan.push(format!("{}: coarse water at {cs:.2} m with no LOD-0 water within a voxel", here()));
+                } else if !fine_wet.is_empty() {
+                    let mean = fine_wet.iter().sum::<f64>() / fine_wet.len() as f64;
+                    if (cs - mean).abs() > 0.5 * vm + p.block_size + 1e-6 {
+                        surf_bad.push(format!("{}: coarse surface {cs:.2} m, LOD-0 mean {mean:.2} m over {} wet columns", here(), fine_wet.len()));
+                    }
+                }
+            }
+            // Every LOD-0 column under it holds water at least three quarters
+            // of a voxel deep: the coarse column must hold water too.
+            let deep = under.iter().filter(|u| u.0.is_some_and(|x| x.1 >= 0.75 * vm)).count();
+            if deep == under.len() {
+                deep_cols += 1;
+                if c.is_none() {
+                    miss_bad.push(format!("{}: all {} LOD-0 columns hold water over 3/4 of a voxel deep, coarse dry", here(), under.len()));
+                }
+            }
+        }
+        let line = format!(
+            "LOD {lod}: {checked} coarse columns checked ({} chunks), {wet} wet, {deep_cols} over deep LOD-0 water; {} surface disagreements, {} deep water missing, {} coarse water with no LOD-0 water near",
+            rc.chunks.len(),
+            surf_bad.len(),
+            miss_bad.len(),
+            orphan.len()
+        );
+        println!("{line}");
+        for e in surf_bad.iter().chain(&miss_bad).chain(&orphan).take(8) {
+            println!("  {e}");
+        }
+        assert!(wet > 1000, "LOD {lod}: almost no coarse water ({wet})");
+        lines.push((lod, surf_bad.len(), miss_bad.len(), orphan.len()));
+    }
+    for (lod, s, m, o) in lines {
+        assert_eq!((s, m, o), (0, 0, 0), "LOD {lod}: coarse water disagrees with LOD 0 (surface, missing, orphan)");
+    }
+}
+
+/// Not a check: generation cost per chunk before and after the hydrology,
+/// on the same chunk keys in the same binary ("before" = the generator with
+/// no hydro.bin, i.e. the old dry valleys along the discharge field).
+/// Single-threaded, median and mean over each set. Run in release with
+/// --ignored --nocapture; timing wants the machine to itself.
+#[test]
+#[ignore]
+fn profile_hydro_chunks() {
+    use std::hint::black_box;
+    use std::time::Instant;
+    let g = world_gen();
+    let h = hydro();
+    let p = &g.planet;
+    let mut before = super::tests::test_generator();
+    before.hydro = None;
+    before.lf.valleys = true;
+    // Surface chunk containing a direction at a LOD.
+    let key_at = |d: DVec3, lod: u8| {
+        let (f, i, j) = p.lattice_of_dir(d);
+        let e = (CHUNK as f64) * (1u64 << lod) as f64;
+        let c = g.column(d, p.voxel_m(lod));
+        let top = (c.height_m as f64).max(if c.water_m.is_finite() { c.water_m } else { f64::MIN });
+        let k = p.sea_level as f64 + top / p.block_size;
+        ChunkKey::neisor(f, lod, (i / e) as u32, (j / e) as u32, (k / e).max(0.0) as u32)
+    };
+    let ns = h.segs.len() as u32;
+    let rivers: Vec<DVec3> = (0..200).map(|t| {
+        let k = (noise::hash01(t, 9, 2, 0xC05) * ns as f64) as u32 % ns;
+        let s = &h.segs[k as usize];
+        s.point(s.len * noise::hash01(t, 9, 3, 0xC05))
+    }).collect();
+    let lakes: Vec<DVec3> = (0..h.lakes.len() as i32).step_by((h.lakes.len() / 200).max(1)).filter_map(|k| shore_point(k, 0)).collect();
+    let land: Vec<DVec3> = super::tests::dirs_pub(4000, 31).into_iter().filter(|d| g.bake.sample(*d).ocean < 0.5).take(200).collect();
+    let hills = crate::engine::gnomonic_dir(crate::engine::HILLS.0, crate::engine::HILLS.1, crate::engine::HILLS.2);
+    let time = |gn: &Generator, keys: &[ChunkKey]| -> (f64, f64) {
+        for k in keys.iter().take(5) {
+            black_box(gn.generate(*k));
+        }
+        let mut v: Vec<f64> = keys
+            .iter()
+            .map(|k| {
+                let t = Instant::now();
+                black_box(gn.generate(*k));
+                t.elapsed().as_secs_f64() * 1e3
+            })
+            .collect();
+        v.sort_by(f64::total_cmp);
+        (v[v.len() / 2], v.iter().sum::<f64>() / v.len() as f64)
+    };
+    println!("generation per chunk, ms (median / mean), single thread; before = no hydrology (dry valleys), after = lakes and rivers");
+    for (name, dirs, lods) in [("random land", &land, vec![0u8, 2, 4]), ("river courses", &rivers, vec![0, 2, 4]), ("lake shores", &lakes, vec![0, 2, 4]), ("hills anchor", &vec![hills; 20], vec![0, 1, 2, 3, 4, 5])] {
+        for &lod in &lods {
+            let keys: Vec<ChunkKey> = dirs.iter().map(|d| key_at(*d, lod)).collect();
+            let (bm, ba) = time(&before, &keys);
+            let (am, aa) = time(g, &keys);
+            println!("  {name:14} LOD {lod}: before {bm:6.2} / {ba:6.2}   after {am:6.2} / {aa:6.2}   ({} chunks)", keys.len());
+        }
+    }
+}
+
+/// Not a check: where the hydrology's per-column time goes on river chunks.
+#[test]
+#[ignore]
+fn profile_hydro_parts() {
+    use std::hint::black_box;
+    use std::time::Instant;
+    let g = world_gen();
+    let h = hydro();
+    let p = &g.planet;
+    let mut before = super::tests::test_generator();
+    before.hydro = None;
+    before.lf.valleys = true;
+    let ns = h.segs.len() as u32;
+    let mut dirs = Vec::new();
+    for t in 0..60 {
+        let k = (noise::hash01(t, 9, 2, 0xC05) * ns as f64) as u32 % ns;
+        let s = &h.segs[k as usize];
+        let c = s.point(s.len * noise::hash01(t, 9, 3, 0xC05));
+        let (f, i, j) = p.lattice_of_dir(c);
+        for a in 0..32 {
+            for b in 0..32 {
+                dirs.push(p.dir(f, (i / 32.0).floor() * 32.0 + a as f64 + 0.5, (j / 32.0).floor() * 32.0 + b as f64 + 0.5));
+            }
+        }
+    }
+    let n = dirs.len() as f64;
+    let t = Instant::now();
+    for d in &dirs {
+        black_box(before.column(*d, 1.0));
+    }
+    let col_before = t.elapsed().as_nanos() as f64 / n;
+    let t = Instant::now();
+    for d in &dirs {
+        black_box(g.column(*d, 1.0));
+    }
+    let col_after = t.elapsed().as_nanos() as f64 / n;
+    // Per-chunk candidates (as chunk_columns finds them), then the parts.
+    let cands: Vec<Cands> = (0..60).map(|c| h.cands(dirs[c * 1024 + 528], 27.0)).collect();
+    let t = Instant::now();
+    for c in 0..60 {
+        black_box(h.cands(dirs[c * 1024 + 528], 27.0));
+    }
+    let cands_us = t.elapsed().as_micros() as f64 / 60.0;
+    let mut rivers = Vec::new();
+    let t = Instant::now();
+    for (i, d) in dirs.iter().enumerate() {
+        h.rivers_at(*d, &cands[i / 1024], 1.0, &mut rivers);
+        black_box(&rivers);
+    }
+    let rivers_ns = t.elapsed().as_nanos() as f64 / n;
+    let t = Instant::now();
+    for (i, d) in dirs.iter().enumerate() {
+        black_box(h.lake_at(*d, &cands[i / 1024].cells, 1.0));
+    }
+    let lake_ns = t.elapsed().as_nanos() as f64 / n;
+    let mut total_r = 0usize;
+    let t = Instant::now();
+    for (i, d) in dirs.iter().enumerate() {
+        h.rivers_at(*d, &cands[i / 1024], 1.0, &mut rivers);
+        total_r += rivers.len();
+        let l = h.lake_at(*d, &cands[i / 1024].cells, 1.0);
+        black_box(h.shape(*d, 5.0, &l, &rivers, 0.0, 0.5, 1.0, 0));
+    }
+    let shape_all_ns = t.elapsed().as_nanos() as f64 / n;
+    let avg_segs = cands.iter().map(|c| c.segs.len()).sum::<usize>() as f64 / 60.0;
+    let avg_cells = cands.iter().map(|c| c.cells.len()).sum::<usize>() as f64 / 60.0;
+    println!("river chunks (LOD 0): column before {col_before:.0} ns, after {col_after:.0} ns; cands {cands_us:.1} us per chunk ({avg_segs:.1} links, {avg_cells:.1} field cells); rivers_at {rivers_ns:.0} ns, lake_at {lake_ns:.0} ns, rivers+lake+shape {shape_all_ns:.0} ns per column; {:.2} links in reach per column", total_r as f64 / n);
+    let keys: Vec<ChunkKey> = (0..60)
+        .map(|c| {
+            let d = dirs[c * 1024 + 528];
+            let (f, i, j) = p.lattice_of_dir(d);
+            let col = g.column(d, 1.0);
+            let k = p.sea_level as f64 + (col.height_m as f64) / p.block_size;
+            ChunkKey::neisor(f, 0, (i / 32.0) as u32, (j / 32.0) as u32, (k / 32.0) as u32)
+        })
+        .collect();
+    for (name, gn) in [("before", &before), ("after", g)] {
+        let t = Instant::now();
+        for k in &keys {
+            black_box(gn.chunk_columns(*k));
+        }
+        let cols_us = t.elapsed().as_micros() as f64 / 60.0;
+        let t = Instant::now();
+        for k in &keys {
+            black_box(gn.generate(*k));
+        }
+        let gen_us = t.elapsed().as_micros() as f64 / 60.0;
+        println!("  {name}: chunk_columns {cols_us:.0} us, generate {gen_us:.0} us");
+    }
+}
+
+/// Not a check: find evidence sites (a lake shore, a river reach, the
+/// tallest waterfall, the largest river mouth, a river crossing a cube-face
+/// edge) and write `out/hydro-shots.play`, which shoots each from the
+/// ground and from 300 m.
+#[test]
+#[ignore]
+fn hydro_places() {
+    let g = world_gen();
+    let h = hydro();
+    let p = &g.planet;
+    let r = p.radius;
+    let ns = h.segs.len() as u32;
+    let heading = |at: DVec3, v: DVec3| {
+        let (north, east, _) = crate::camera::Camera::local_frame(at);
+        v.dot(east).atan2(v.dot(north)).to_degrees()
+    };
+    // Move `d` metres from `at` along tangent `v`.
+    let step = |at: DVec3, v: DVec3, d: f64| (at * r + v * d).normalize();
+    // One script per site (so each run can start there and be lit by day).
+    let scripts: std::cell::RefCell<Vec<(String, String, f64, f64)>> = std::cell::RefCell::new(Vec::new());
+    let shot = |name: &str, eye: DVec3, alt: f64, head: f64, pitch: f64, note: &str| {
+        let (lat, lon) = Planet::lat_lon_deg(eye);
+        let site = name.trim_end_matches("_ground").trim_end_matches("_300m").to_string();
+        let text = format!("# {note}\nat {lat:.6} {lon:.6} {alt:.2}\nlook {head:.2} {pitch:.1}\nshot {name}\n");
+        let mut v = scripts.borrow_mut();
+        match v.iter_mut().find(|e| e.0 == site) {
+            Some(e) => e.1 += &text,
+            None => v.push((site, format!("# M2-hydro evidence, written by `cargo test --release hydro_places -- --ignored`.\nmode fly\n{text}"), lat, lon)),
+        }
+        println!("{name}: lat {lat:.5} lon {lon:.5} alt {alt:.1} heading {head:.1} pitch {pitch} ({note})");
+    };
+    let tangent = |k: u32, s: f64| {
+        let seg = &h.segs[k as usize];
+        let a = seg.point((s - 2.0).max(0.0));
+        let b = seg.point((s + 2.0).min(seg.len));
+        let t = b - a;
+        let at = seg.point(s);
+        (t - at * t.dot(at)).normalize()
+    };
+    let surface = |d: DVec3| g.ground_height_m(d);
+    // Pair of shots looking along `v` at `at`: ground (from `back` metres
+    // behind, `side` to the side) and 300 m (from 350 m behind).
+    let pair = |name: &str, at: DVec3, v: DVec3, back: f64, side: f64, pitch: f64, note: &str| {
+        let up = at;
+        let lateral = v.cross(up).normalize();
+        // Stand on dry ground: step further sideways until the column is dry.
+        let mut eye = step(step(at, v, -back), lateral, side);
+        for t in 0..20 {
+            if !g.column(eye, p.block_size).wet() {
+                break;
+            }
+            eye = step(step(at, v, -back), lateral, side + 4.0 * (t + 1) as f64);
+        }
+        let alt = surface(eye).max(surface(at)) + 2.5;
+        let look = (at * r - eye * r).normalize();
+        shot(&format!("{name}_ground"), eye, alt, heading(eye, look), pitch, note);
+        let eye3 = step(at, v, -350.0);
+        shot(&format!("{name}_300m"), eye3, surface(eye3).max(surface(at)) + 300.0, heading(eye3, (at * r - eye3 * r).normalize()), -38.0, note);
+    };
+    // 1. Lake shore: the largest lake's shore, looking across the water.
+    let mut by_size: Vec<(usize, i32)> = (0..h.lakes.len() as i32).map(|k| (h.field.iter().filter(|c| c.lake == k).count(), k)).collect();
+    by_size.sort_by(|a, b| b.cmp(a));
+    let lake = by_size[0].1;
+    let shore = shore_point(lake, 1).or_else(|| shore_point(lake, 0)).unwrap();
+    let inside = h.field.iter().filter(|c| c.lake == lake).min_by(|a, b| (a.pos - shore).length().total_cmp(&(b.pos - shore).length())).unwrap().pos;
+    let v = {
+        let t = inside - shore;
+        (t - shore * t.dot(shore)).normalize()
+    };
+    pair("lake_shore", shore, v, 30.0, 0.0, -6.0, &format!("lake {lake} ({} field cells), level {:.2} m", by_size[0].0, h.lakes[lake as usize].w));
+    // 2. River reach: the largest river away from lakes and the sea, mid-link.
+    let mut by_flow: Vec<u32> = (0..ns).filter(|&k| {
+        let s = &h.segs[k as usize];
+        s.lake_a < 0 && s.lake_b < 0 && h.node_kind[s.b as usize] == 0 && h.node_kind[s.a as usize] == 0 && h.profile(k, p.block_size).steps == 0
+    }).collect();
+    by_flow.sort_by(|a, b| h.segs[*b as usize].flow.total_cmp(&h.segs[*a as usize].flow));
+    let k = by_flow[0];
+    let s = &h.segs[k as usize];
+    let at = s.point(0.5 * s.len);
+    pair("river_reach", at, tangent(k, 0.5 * s.len), 45.0, s.hw + 6.0, -8.0, &format!("link {k}, {:.0} m3/s, half-width {:.1} m, W {:.2}", s.flow, s.hw, h.w_water(k, &h.profile(k, p.block_size), 0.5 * s.len)));
+    // 3. The tallest waterfall at this scale: look upstream at it from below.
+    let falls = (0..ns).filter_map(|k| {
+        let pr = h.profile(k, p.block_size);
+        (pr.falls && pr.steps > 0).then_some((pr.delta, k, pr))
+    });
+    let (delta, k, pr) = falls.max_by(|a, b| a.0.total_cmp(&b.0)).expect("no waterfalls at this scale");
+    // The first fall's water step, by bisection around its unjittered place.
+    let s_mid = pr.s0 + pr.r_a + pr.lm * 0.5 / pr.steps as f64;
+    let (mut lo, mut hi) = (s_mid - 0.2 * pr.lm / pr.steps as f64, s_mid + 0.2 * pr.lm / pr.steps as f64);
+    let w_top = h.w_water(k, &pr, lo);
+    for _ in 0..50 {
+        let m = 0.5 * (lo + hi);
+        if h.w_water(k, &pr, m) > w_top - 0.5 * delta { lo = m } else { hi = m }
+    }
+    let s_f = lo;
+    let at = h.segs[k as usize].point(s_f);
+    let v = -tangent(k, s_f);
+    let below = h.segs[k as usize].point((s_f + 30.0).min(h.segs[k as usize].len));
+    let lateral = v.cross(at).normalize();
+    let eye = step(below, lateral, h.segs[k as usize].hw * 0.3);
+    let alt = surface(eye) + 2.5;
+    shot("waterfall_ground", eye, alt, heading(eye, (at * r - eye * r).normalize()), 6.0, &format!("link {k}, fall {delta:.1} m of {} steps, flow {:.0} m3/s", pr.steps, h.segs[k as usize].flow));
+    let eye3 = step(at, v, -350.0);
+    shot("waterfall_300m", eye3, surface(at) + 300.0, heading(eye3, (at * r - eye3 * r).normalize()), -38.0, "the same fall from 300 m");
+    // From the side, above the lip, looking across at the fall and its gorge.
+    let _lip = h.segs[k as usize].point(s_f + 12.0);
+    let eye_s = step(step(at, v, -15.0), lateral, 40.0);
+    shot("waterfall_side", eye_s, surface(at).max(surface(eye_s)) + 6.0, heading(eye_s, (at * r - eye_s * r).normalize()), -12.0, "the same fall from the side, above the lip");
+    // 4. The largest river mouth: from upstream, looking out to sea.
+    let mut mouths: Vec<u32> = (0..ns).filter(|&k| h.node_kind[h.segs[k as usize].b as usize] == 1).collect();
+    mouths.sort_by(|a, b| h.segs[*b as usize].flow.total_cmp(&h.segs[*a as usize].flow));
+    let k = mouths[0];
+    let s = &h.segs[k as usize];
+    // The coast: where the column becomes sea along the link.
+    let coast = (0..200).map(|t| s.len * t as f64 / 200.0).find(|&x| g.column(s.point(x), p.block_size).ocean).unwrap_or(0.5 * s.len);
+    pair("river_mouth", s.point(coast), tangent(k, coast), 60.0, s.hw + 8.0, -6.0, &format!("link {k}, {:.0} m3/s", s.flow));
+    // 5. A river crossing a cube-face edge (the largest that does).
+    let mut crossing: Vec<u32> = (0..ns).filter(|&k| {
+        let s = &h.segs[k as usize];
+        p.lattice_of_dir(s.pts[0]).0 != p.lattice_of_dir(*s.pts.last().unwrap()).0 && s.lake_a < 0 && s.lake_b < 0
+    }).collect();
+    crossing.sort_by(|a, b| h.segs[*b as usize].flow.total_cmp(&h.segs[*a as usize].flow));
+    if let Some(&k) = crossing.first() {
+        let s = &h.segs[k as usize];
+        let f0 = p.lattice_of_dir(s.pts[0]).0;
+        let (mut lo, mut hi) = (0.0, s.len);
+        for _ in 0..40 {
+            let m = 0.5 * (lo + hi);
+            if p.lattice_of_dir(s.point(m)).0 == f0 { lo = m } else { hi = m }
+        }
+        pair("face_edge", s.point(lo), tangent(k, lo), 40.0, s.hw + 6.0, -8.0, &format!("link {k}, {:.0} m3/s, faces {} -> {}", s.flow, f0, p.lattice_of_dir(*s.pts.last().unwrap()).0));
+    }
+    let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/out/hydro-shots");
+    std::fs::create_dir_all(dir).unwrap();
+    let mut list = String::new();
+    for (site, text, lat, lon) in scripts.into_inner() {
+        std::fs::write(format!("{dir}/{site}.play"), text).unwrap();
+        list += &format!("{site} {lat:.6} {lon:.6}\n");
+    }
+    std::fs::write(format!("{dir}/sites.txt"), &list).unwrap();
+    println!("wrote {dir}/*.play and sites.txt:\n{list}");
+}
+
+/// Not a check: columns inside lake LAKE (env, default the largest) where
+/// something other than the lake sets the surface, and the ground's shape.
+#[test]
+#[ignore]
+fn hydro_lake_survey() {
+    let g = world_gen();
+    let h = hydro();
+    let p = &g.planet;
+    let lake: i32 = std::env::var("LAKE").ok().and_then(|s| s.parse().ok()).unwrap_or_else(|| {
+        (0..h.lakes.len() as i32).max_by_key(|&k| h.field.iter().filter(|c| c.lake == k).count()).unwrap()
+    });
+    let cells: Vec<DVec3> = h.field.iter().filter(|c| c.lake == lake).map(|c| c.pos).collect();
+    let wl = h.lakes[lake as usize].w;
+    let (mut n, mut river_wins, mut higher, mut bumps) = (0, 0, 0, 0);
+    let mut examples = Vec::new();
+    for (ci, c) in cells.iter().enumerate().step_by(3) {
+        let (f, i, j) = p.lattice_of_dir(*c);
+        for a in -40..40 {
+            for b in -40..40 {
+                let d = p.dir(f, i + 4.0 * a as f64, j + 4.0 * b as f64);
+                let cands = h.cands(d, 0.0);
+                let vox: f64 = std::env::var("VOXEL").ok().and_then(|s| s.parse().ok()).unwrap_or(1.0);
+                let l = h.lake_at(d, &cands.cells, vox);
+                if l.field_of(lake) <= h.lake_zone {
+                    continue;
+                }
+                n += 1;
+                let col = g.column(d, vox);
+                if col.water_kind == WaterKind::River {
+                    river_wins += 1;
+                }
+                if col.water_m > wl + 1.0 / 255.0 {
+                    higher += 1;
+                    if examples.len() < 6 {
+                        let (lat, lon) = Planet::lat_lon_deg(d);
+                        examples.push(format!("lat {lat:.5} lon {lon:.5}: W {:.3} vs lake {wl:.3}, kind {:?}, channels {:?}", col.water_m, col.water_kind, g.channels_at(d, 1.0)));
+                    }
+                }
+                if col.height_m as f64 > wl - 0.25 {
+                    bumps += 1;
+                }
+            }
+        }
+        if ci > 300 {
+            break;
+        }
+    }
+    println!("lake {lake} (level {wl:.3}): {n} zone columns sampled; river sets the surface in {river_wins}, surface above the lake in {higher}, ground within 0.25 m of the surface in {bumps}");
+    // Along the lake's own links: ground on the course vs 25 m beside it.
+    let vox: f64 = std::env::var("VOXEL").ok().and_then(|s| s.parse().ok()).unwrap_or(1.0);
+    let mut shown = 0;
+    for (k, s) in h.segs.iter().enumerate().filter(|(_, s)| s.lake_a == lake && s.lake_b == lake).take(3) {
+        let (lat, lon) = Planet::lat_lon_deg(s.point(0.5 * s.len));
+        println!("  internal link {k}: midpoint lat {lat:.5} lon {lon:.5}, len {:.0}", s.len);
+    }
+    for (k, s) in h.segs.iter().enumerate() {
+        if s.lake_a != lake && s.lake_b != lake {
+            continue;
+        }
+        for t in 1..8 {
+            let x = s.len * t as f64 / 8.0;
+            let on = s.point(x);
+            let a = s.point((x - 2.0).max(0.0));
+            let b = s.point((x + 2.0).min(s.len));
+            let side = (b - a).cross(on).normalize();
+            let off = (on * p.radius + side * 25.0).normalize();
+            let (c0, c1) = (g.column(on, vox), g.column(off, vox));
+            if shown < 12 && (c0.height_m - c1.height_m).abs() > 0.4 {
+                let (lat, lon) = Planet::lat_lon_deg(on);
+                println!("  link {k} ({} -> {}) s {x:.0}: on course h {:.2} W {:.3} {:?}; 25 m aside h {:.2} W {:.3} {:?}  (lat {lat:.5} lon {lon:.5})", s.lake_a, s.lake_b, c0.height_m, c0.water_m, c0.water_kind, c1.height_m, c1.water_m, c1.water_kind);
+                shown += 1;
+            }
+        }
+    }
+    for e in examples {
+        println!("  {e}");
+    }
+}
+
 /// Not a check: print the generated cells and the water model around
 /// HYDRO_PROBE="face i j" (LOD 0), and the links of HYDRO_LINKS="a,b,...".
 #[test]
@@ -502,7 +1014,7 @@ fn hydro_probe() {
         let ch = g.channels_at(d, p.block_size);
         let cands = h.cands(d, 0.0);
         let mut rivers = Vec::new();
-        h.rivers_at(d, &cands.segs, &mut rivers);
+        h.rivers_at(d, &cands, p.block_size, &mut rivers);
         let lake = h.lake_at(d, &cands.cells, p.block_size);
         println!("({di},{dj}) face {ff} i {ii} j {jj}: h {:.3} W {:.4} {:?} channels {ch:?} lake {lake:?}", c.height_m, c.water_m, c.water_kind);
         for r in &rivers {

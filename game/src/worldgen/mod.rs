@@ -135,6 +135,9 @@ pub struct Column {
     pub water_kind: WaterKind,
     /// Lake bed or lake shore band: sand.
     pub lake_sand: bool,
+    /// Right beside a river channel: keeps its soil however steep the
+    /// channel edge (no bare-rock rim along every river).
+    pub river_bank: bool,
     pub temp_c: f32,
     pub precip: f32,
     /// Ocean-mask fraction (near-shore indicator).
@@ -159,6 +162,7 @@ impl Default for Column {
             water_m: f64::NEG_INFINITY,
             water_kind: WaterKind::None,
             lake_sand: false,
+            river_bank: false,
             temp_c: 0.0,
             precip: 0.0,
             shore: 0.0,
@@ -283,7 +287,7 @@ impl Generator {
         let Some(h) = &self.hydro else { return Vec::new() };
         let cands = h.cands(dir, 0.0);
         let mut rivers = Vec::new();
-        h.rivers_at(dir, &cands.segs, &mut rivers);
+        h.rivers_at(dir, &cands, voxel_m, &mut rivers);
         h.channels_at(&rivers, voxel_m, self.lod_of(voxel_m))
     }
 
@@ -295,7 +299,7 @@ impl Generator {
         if let Some(h) = &self.hydro {
             let cands = h.cands(dir, 0.0);
             let mut rivers = Vec::new();
-            h.rivers_at(dir, &cands.segs, &mut rivers);
+            h.rivers_at(dir, &cands, voxel_m, &mut rivers);
             channels = h.channels_at(&rivers, voxel_m, self.lod_of(voxel_m));
             flow = h.flow_at(&rivers, voxel_m).map(|(t, q, _, _)| (t, q));
         }
@@ -344,7 +348,7 @@ impl Generator {
         let mut rivers = Vec::new();
         let lake = match hx {
             Some((h, c)) if !c.is_empty() => {
-                h.rivers_at(dir, &c.segs, &mut rivers);
+                h.rivers_at(dir, c, voxel_m, &mut rivers);
                 h.lake_at(dir, &c.cells, voxel_m)
             }
             _ => LakeAt::default(),
@@ -363,14 +367,14 @@ impl Generator {
             let hold = 1.0 - smoothstep(0.0, SEA_MASK, s.ocean);
             h += hold * (soft_floor(h, LAND_FLOOR_M, 1.0) - h);
         }
-        let (water_m, water_kind, channel, lake_sand) = match hx {
+        let (water_m, water_kind, channel, lake_sand, river_bank) = match hx {
             Some((hy, _)) if !lake.is_empty() || !rivers.is_empty() => {
-                let sh = hy.shape(h, &lake, &rivers, s.ocean, lf.local.rugged, voxel_m, self.lod_of(voxel_m));
+                let sh = hy.shape(dir, h, &lake, &rivers, s.ocean, lf.local.rugged, voxel_m, self.lod_of(voxel_m));
                 h = sh.h;
-                (sh.water, sh.kind, sh.channel, sh.lake_floor || sh.lake_shore)
+                (sh.water, sh.kind, sh.channel, sh.lake_floor || sh.lake_shore, sh.bank)
             }
-            _ if s.ocean > 0.0 => (0.0, WaterKind::Ocean, 0.0, false),
-            _ => (f64::NEG_INFINITY, WaterKind::None, 0.0, false),
+            _ if s.ocean > 0.0 => (0.0, WaterKind::Ocean, 0.0, false, false),
+            _ => (f64::NEG_INFINITY, WaterKind::None, 0.0, false, false),
         };
         let ocean = water_kind == WaterKind::Ocean && h < water_m;
         let river = if self.hydro.is_some() { channel } else { lf.river };
@@ -384,6 +388,7 @@ impl Generator {
             water_m,
             water_kind,
             lake_sand,
+            river_bank,
             temp_c: (s.temp_c - lapse) as f32,
             precip: s.precip_mm as f32,
             shore: s.ocean as f32,
@@ -638,7 +643,7 @@ impl Generator {
         if c.lake_sand {
             return Surface { top: b.sand, soil: b.sand, soil_m: soil_m.max(2.0 * s) };
         }
-        if slope > 0.95 + 0.25 * d {
+        if slope > 0.95 + 0.25 * d && !c.river_bank {
             return Surface { top: b.stone, soil: b.stone, soil_m: 0.0 };
         }
         if t < -3.0 {

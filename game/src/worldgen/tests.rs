@@ -32,6 +32,11 @@ fn key_at(g: &Generator, dir: DVec3, lod: u8, height_m: f64) -> ChunkKey {
     ChunkKey::neisor(f, lod, (i / e) as u32, (j / e) as u32, (k / e).max(0.0) as u32)
 }
 
+/// `dirs` for sibling test modules.
+pub fn dirs_pub(n: usize, salt: u64) -> Vec<DVec3> {
+    dirs(n, salt)
+}
+
 /// Deterministic pseudo-random unit directions.
 fn dirs(n: usize, salt: u64) -> Vec<DVec3> {
     (0..n as i64)
