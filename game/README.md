@@ -2,7 +2,7 @@
 
 The new engine: a planet-sized cube-sphere voxel world you can walk on, dig
 into, build on and come back to. This is the M1b state: walk, fly, dig,
-build, save. The sky, the sun and the ½ m block switch come with M1c.
+build, save, with the July sky and lighting ported in M1c.
 
 ## Running
 
@@ -51,6 +51,7 @@ mode when higher; `--walk` and `--fly` force it.
 | F | hide / show water |
 | H | stats panel on / off |
 | V | vsync on / off |
+| [ / ] | slow / speed up time (0, 0.1, 1, 10, 60, 600, 3600×) |
 | Q | save and quit |
 
 The HUD shows the targeted block (with an outline around it), the hotbar,
@@ -73,12 +74,63 @@ gravity, a 1.28 m jump and simple buoyancy in water. There is no fall damage.
 --lod-factor F        LOD aggressiveness (5)
 --size WxH --no-vsync --backend vulkan|dx12
 --screenshot PATH --exit-after SECS     save a frame with the HUD and quit
+--time HH:MM          start at local solar time at the starting longitude (default 12:00)
+--time-scale F        clock speed, 0 pauses (default 1; maximum 3600)
+--day-length SECS     seconds per game day (1440 = 24 real minutes)
+--lunar-month-days N --months-per-season N --year-days N
+                      July calendar parameters (7, 3, 84)
 ```
 
 Block size, height, sea level and N are validated at startup; an
 unsupported combination (for example a sea level that is not a multiple of
 H / 8, or an N the coarsest chunks do not tile) is refused with a message
 saying what to change.
+
+## Sky and time
+
+The sun, moonlight, stars and season phase all read one absolute clock.
+`--time` also accepts decimal hours (`--time 17.5`). It seeks the ephemeris
+to that solar hour at the initial location; flying to another longitude
+does not move the sun. `[` and `]` change speed without jumping the time;
+the window title shows the chosen speed. At 1× a game day is 1,440 seconds.
+The app advances the clock on the same fixed steps as player physics.
+
+The July calendar is provisional until Andrew confirms it. Its settings
+live in the `sky` object in `assets/world.json`, with the CLI overrides
+above. A year must equal four seasons × months per season × lunar days;
+for example, use `--lunar-month-days 8 --year-days 96` together. The
+season phase is the orbital mean anomaly, including July's 0.45 epoch.
+Time starts fresh on launch; it is not yet part of the chunk save format.
+
+The gradient, sunset colors, sun disc/halo, star colors, sun/sky lighting,
+moonlight levels and underwater tint retain July's equations. Atmosphere
+height, limb thickness and fog distance scale with planet radius. The
+`sky` JSON fields `atmosphere_height_radii`, `limb_height_radii` and
+`fog_per_radius` expose those optical lengths for later look tuning.
+The moon's orbit supplies light only; a visible moon, eclipses, clouds
+and weather remain M5 work. Cube face normals and per-vertex AO stay in
+the existing packed quad format; continuous natural-surface normals and
+cave skylight propagation need additional terrain data.
+
+For repeatable stills, use `--time 17:30 --time-scale 0`. Existing
+`--bench`, `--shots` and `--play` renders hold the initial sky time while
+streaming/reading back frames; the play harness does not yet advance the
+sky on its simulation steps. A dedicated settled evidence reel seeks the
+same clock explicitly for noon, golden hour (+5° sun), dusk (−3°) and night:
+
+```
+cargo run --release -- --sky-reel --bake C:/code/triangulum/game/assets/world/seed42 --out out/sky
+```
+
+It writes sixteen 1080p sky PNGs, two underwater diagnostics, a JSON
+manifest with camera/time/sun values, and `july-comparison.play` for the
+frozen viewer. Engine ground eyes are 1.7 m high; July comparison eyes
+are 50 m above ground to clear its foliage. High views match altitude /
+planet radius. Each pose must settle successfully. The underwater pair
+also checks liquid occupancy and byte-identical paused captures.
+`--time` sets the starting time for ordinary bench poses;
+the reel selects its own four times. Reversed-Z, the infinite far plane
+and camera-relative vertex positions are preserved.
 
 ## Saves
 
@@ -175,8 +227,7 @@ face edge and round a corner, swimming, picking). Several need the bake at
 
 ## Known gaps (M1b)
 
-- No sky, sun or day length yet (M1c); no water simulation or falling
-  blocks (M2).
+- No water simulation or falling blocks (M2).
 - Chunks entirely below every surface are uniform stone until worldgen's
   `classify`/`generate` rework lands; digging into one shows no strata.
 - The edit overlay on coarse chunks ignores edits across a face edge in

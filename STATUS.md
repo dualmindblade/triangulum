@@ -44,6 +44,10 @@
   bridge, save, reload, check the blocks, view the bridge from 1 km) passes
   83 of 83 checks. Six findings from Astra's review are fixed.
 
+- **M1c-sky** (Astra, verified by Opus, merged): the July viewer's sky,
+  sun, stars, fog and lighting, matched side by side against the old viewer
+  at noon, golden hour, dusk and night. 24-minute days.
+
 ## Play it yourself
 
 ```
@@ -56,6 +60,8 @@ WASD walk, Space jump (swim up in water), Shift sprint, G walk/fly, left
 mouse breaks (hold to repeat), right mouse places, 1-9 pick the block, R
 drops you to the ground, F hides water, H hides the HUD, V vsync, P scenic
 places, Q saves and quits. Edits save automatically to `game/saves/Neisor/`.
+Days are 24 minutes: `[` and `]` slow down and speed up time (up to
+3,600×), and `--time 17:30` starts at golden hour.
 
 Try other worlds (each keeps its own save):
 
@@ -65,9 +71,9 @@ cargo run --release -- --vscale 0.125 --height 4096 --sea-level 1536    # 1/8
 cargo run --release -- --block-size 0.5 --n 262144 --height 4096 --sea-level 1024 --vscale 0.05 --save saves/half   # half-metre blocks
 ```
 
-Known look issues that aren't decisions: flat placeholder lighting (the
-real sky comes in M1c), missing mid-size landforms (being fixed now),
-ripple patterns on distant steep terrain, and oceans that turn grey rock
+Known look issues that aren't decisions: missing mid-size landforms (the
+new landforms are done and being merged), ripple patterns on distant steep
+terrain, and oceans that turn grey rock
 from very high up (being fixed now). To bridge a gap you place blocks on a
 face you can see; walking backwards off an edge while placing needs a sneak
 key, coming in M1c.
@@ -76,7 +82,6 @@ key, coming in M1c.
 
 - M1-terrain: ridges, valleys and escarpments, plus four generator bugs
   from the review, including the far oceans (Opus)
-- M1c-sky: the old viewer's sky, sun and lighting, 24-minute days (Astra)
 - M1c-stream: streaming robustness and finer distant detail (Fable)
 
 ## Waiting on you

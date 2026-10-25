@@ -9,5 +9,14 @@
   "bake": "assets/world/seed42",
   "vertical_scale": null,
   "roughness": 1.0,
-  "landform": 1.0
+  "landform": 1.0,
+  "sky": {
+    "day_length_s": 1440.0,
+    "lunar_month_days": 7.0,
+    "months_per_season": 3,
+    "year_days": 84.0,
+    "atmosphere_height_radii": 0.007063255375922147,
+    "limb_height_radii": 0.0031392246115209545,
+    "fog_per_radius": 22.2985
+  }
 }
