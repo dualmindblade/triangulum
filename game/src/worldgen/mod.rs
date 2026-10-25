@@ -285,7 +285,7 @@ impl Generator {
 
     /// Conservative (min, max) of the bake elevation (km) over the columns a
     /// chunk of this footprint samples, its one-voxel border included. The
-    /// padded footprint is sampled on a 17 x 17 lattice grid through
+    /// padded footprint is sampled on a 9 x 9 lattice grid through
     /// `Planet::dir` (so border columns that snap onto a neighbouring face
     /// land there), each face's gnomonic box is grown by the largest step
     /// between neighbouring samples, and the bake bounds each box from its
@@ -296,7 +296,7 @@ impl Generator {
         let size = fp.extent_blocks() as f64;
         let (i0, j0) = (fp.cx as f64 * size - vb, fp.cy as f64 * size - vb);
         let span = size + 2.0 * vb;
-        const G: usize = 17;
+        const G: usize = 9;
         // Per face: (a0, b0, a1, b1, max step).
         let mut boxes = [(f64::MAX, f64::MAX, f64::MIN, f64::MIN, 0.0f64); 6];
         let mut prev_row: Vec<Option<(u8, f64, f64)>> = vec![None; G];
@@ -345,10 +345,10 @@ impl Generator {
     /// Conservative (min, max) surface height in metres over every column a
     /// chunk of this footprint samples (its one-voxel border included), water
     /// surface and markers included. The bake part comes from the bake's
-    /// pyramid; the landform part from a 9 x 9 sample of the real landform at
+    /// pyramid; the landform part from a 5 x 5 sample of the real landform at
     /// this LOD, widened by the largest difference between neighbouring
     /// samples and by a bound on every octave finer than the sample grid can
-    /// see. Costs about 81 column evaluations; cache it per footprint.
+    /// see. Costs about 25 landform evaluations (~80 us); cache it per footprint.
     pub fn footprint_height_range_m(&self, fp: FootprintKey) -> (f64, f64) {
         let planet = &self.planet;
         let vb = (1u64 << fp.lod) as f64;
@@ -356,7 +356,7 @@ impl Generator {
         let size = fp.extent_blocks() as f64;
         let (i0, j0) = (fp.cx as f64 * size, fp.cy as f64 * size);
         let (emin, emax, _) = self.bake_range_km(fp);
-        const N: usize = 9;
+        const N: usize = 5;
         let step = (CHUNK as f64 + 1.0) / (N - 1) as f64; // voxels between samples
         let mut dh = [[0.0f64; N]; N];
         let mut sub = 0.0f64;

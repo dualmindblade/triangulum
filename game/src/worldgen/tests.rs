@@ -109,6 +109,11 @@ fn profile_column_parts() {
     }
     let gen_us = t3.elapsed().as_micros() as f64 / 20.0;
     let _ = t;
+    let t4 = Instant::now();
+    for k in 0..200u32 {
+        black_box(g.footprint_height_range_m(crate::grid::FootprintKey { face: key.face, lod: (k % 6) as u8, cx: (key.cx >> (k % 6)) + k / 6, cy: key.cy >> (k % 6) }));
+    }
+    println!("footprint_height_range_m {:.0} us", t4.elapsed().as_micros() as f64 / 200.0);
     println!("bake.sample {bake_ns:.0} ns, landform {lf_ns:.0} ns, strata offset {strata_ns:.0} ns, column {col_ns:.0} ns; chunk columns {cols_us:.0} us, generate {gen_us:.0} us");
 }
 
@@ -401,6 +406,10 @@ fn footprint_bounds_contain_every_sampled_column() {
                 keys.push(key_at(&g, d, lod, g.ground_height_m(d) * if n % 2 == 0 { 1.0 } else { 0.0 }));
             }
         }
+        // 300 random footprints anywhere (land and sea), at random LODs.
+        for (k, d) in dirs(300, 0xB0D5 + vs.is_some() as u64).into_iter().enumerate() {
+            keys.push(key_at(&g, d, (k % 10) as u8, 0.0));
+        }
         // Face edges and corners.
         for face in 0..6u8 {
             for lod in [0u8, 3, 7, 9] {
@@ -418,7 +427,11 @@ fn footprint_bounds_contain_every_sampled_column() {
                 let h = c.height_m as f64;
                 let top = if c.ocean { h.max(0.0) } else { h };
                 assert!(h >= hmin && top <= hmax, "vscale {vs:?} {key:?}: column {h:.2} (top {top:.2}) outside [{hmin:.2}, {hmax:.2}]");
-                worst_excess = worst_excess.max((hmin - h) / (hmax - hmin).max(1.0)).max((top - hmax) / (hmax - hmin).max(1.0));
+                // The sea surface (0) and the land floor are exact bounds; measure the
+                // landform's margin on the other columns.
+                if !c.ocean && h > 2.0 {
+                    worst_excess = worst_excess.max((hmin - h) / (hmax - hmin).max(1.0)).max((h - hmax) / (hmax - hmin).max(1.0));
+                }
             }
             // Classification against the contents, at a few heights through the band.
             let e = key.extent_blocks() as f64 * p.block_size;

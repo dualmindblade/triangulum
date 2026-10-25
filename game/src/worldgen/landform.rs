@@ -11,9 +11,12 @@
 //!    it is gentle. Zero mean.
 //! 2. **Gullies** (drainage): slope-aligned stripe noise (see
 //!    `noise::gully2d`) whose crests and troughs run downhill along the
-//!    gradient of everything coarser; each finer octave runs down the walls
-//!    of the coarser ones, which is what makes the pattern dendritic. Depth
-//!    is proportional to cell size times local slope, so flats get none.
+//!    slope of the bake and the massif; where neighbouring cells' stripes
+//!    disagree they merge and split, which reads as branching. Depth grows
+//!    with the relief and the slope and fades where the slope vanishes.
+//!    Letting each finer octave also follow the coarser gullies' walls
+//!    (`GULLY_BRANCH`) gives a more dendritic pattern but spins the finer
+//!    stripes' phase within metres; it is off (see the constant).
 //! 3. **Mesas and escarpments**: where rock is hard and tectonically quiet,
 //!    the surface is terraced at levels that follow the strata, giving flat
 //!    treads and steep risers (mean-preserving).
@@ -80,10 +83,14 @@ const FINE_SLOPE_AMP_M: f64 = 1.0;
 /// Ridge crest rounding (in noise units) and the folded noise's mean.
 const RIDGE_EPS: f64 = 0.06;
 /// Crest rounding of the fold that steers the gullies, and the share of each
-/// gully octave's slope that steers the finer ones (1 = all of it: more
-/// branching, but their walls then spin the finer stripes chaotically).
+/// gully octave's slope that steers the finer ones. At 1 the finer gullies
+/// run down the coarser ones' walls (truly dendritic), but those walls curve
+/// so fast that the finer stripes' phase spins within metres: needle-like
+/// spikes, and a surface the chunk grid cannot interpolate (worst 4.8 m at
+/// 4 m voxels at 1/8 with 0.5). Off until the stripes are steered at their
+/// cell points instead of at the sample (see the mission notes).
 const STEER_EPS: f64 = 0.25;
-const GULLY_BRANCH: f64 = 0.5;
+const GULLY_BRANCH: f64 = 0.0;
 
 /// Which octaves a chart evaluation covers (see `Landform::grid_cut`).
 #[derive(Clone, Copy, Debug)]
@@ -431,7 +438,7 @@ impl Landform {
                     // phase is measured up to 1.25 cells from a cell point,
                     // so a spinning direction at a hilltop or saddle would
                     // otherwise sweep it through whole cycles in metres.
-                    let s0 = l.relief / l.lam_d + 1e-6;
+                    let s0 = 0.5 * l.relief / l.lam_d + 1e-6;
                     let sn = (s * s + s0 * s0).sqrt();
                     let (tx, ty) = (-gy / sn, gx / sn);
                     let (cr, sr, ox, oy) = octave_frame(k, 2);
@@ -590,8 +597,8 @@ fn gully_depth(l: &Local, c: f64, s: f64) -> f64 {
     // (hilltops, pits, saddles) their direction spins, so they fade out
     // there instead of forming pinwheels. The reference slope is a fraction
     // of the terrain's own relief per wavelength.
-    let s_ref = l.relief / l.lam_d;
-    let sf = (s / (s + s_ref + 1e-9)).powi(2);
+    let s_ref = 0.25 * l.relief / l.lam_d;
+    let sf = s / (s + s_ref + 1e-9);
     (beta * l.relief * (c / l.lam_d).powf(0.6) * sf + GULLY_ALPHA * c * s.min(GULLY_SLOPE_CAP)) * (l.relief / (l.relief + 2.0))
 }
 
