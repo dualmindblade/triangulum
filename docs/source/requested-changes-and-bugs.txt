@@ -1,0 +1,5 @@
+When you are far enough from the planet for rendering to be mesh only, the camera locks to the terrain height, and it moves up and down as you navigate. Let's change it to lock to elevation.
+
+When you're very far from the planet, the velocity should probably be roughly proportional to the radius so you can see the planet rotate. Maybe we can have a limit that's pretty far away where velocity stops increasing.
+
+Let's have a flag for the camera panning while descending/ascending and make the default no pan, so user has full control over the camera

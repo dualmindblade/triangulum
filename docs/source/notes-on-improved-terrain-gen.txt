@@ -1,0 +1,4 @@
+Bugs/Irregularities (see screenshots in this folder made after noon today)
+
+-rivers can extend a few blocks over the terrain
+-the terrain mesh has unnatural blue tiles on land near the coast that appear as beaches/deserts when on the ground
