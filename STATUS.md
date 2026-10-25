@@ -95,7 +95,9 @@ detail (still about 500 fps).
 
 ## In progress
 
-- Nothing at this moment; M2 starts next (see `PLAN.md`).
+- M1-video: a ~1 minute showcase clip of everything M1 does (Opus)
+- M1-review2: a second independent code review (Astra)
+- M2a: the simulation tick, block updates, falling sand and gravel (Fable)
 
 ## Waiting on you
 
