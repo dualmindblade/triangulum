@@ -170,6 +170,10 @@ detail (still about 500 fps).
   falling asleep, sand landing outside it, a damaged save loading as an
   empty world, saves surviving a power cut on Windows, and memory as
   edits pile up.
+- **M3b, blocks and textures** (Opus): Andrew adds a new block from the
+  look panel, puts any block on the hotbar, and paints its textures in a
+  pixel editor (or imports a PNG). Existing saves keep loading. Nothing
+  changes in the default look until he adds textures.
 
 ## Waiting on you
 
