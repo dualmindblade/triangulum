@@ -76,6 +76,8 @@ key, coming in M1c.
 
 - M1-terrain: ridges, valleys and escarpments, plus four generator bugs
   from the review, including the far oceans (Opus)
+- M1c-sky: the old viewer's sky, sun and lighting, 24-minute days (Astra)
+- M1c-stream: streaming robustness and finer distant detail (Fable)
 
 ## Waiting on you
 
