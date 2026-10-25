@@ -32,8 +32,12 @@ with their OK; record the change here with the date.
 
 - planetgen keeps Earth physics at Earth's radius; the shrink happens in the
   bake.
-- Vertical scale preserves Earth's slopes: heights × R / 6,371 km ≈ 1/70.
-  Neisor's peaks become ~120 m and its deepest ocean ~150 m.
+- Vertical scale: under review. Andrew (2026-10-24): large features
+  (mountain ranges, ocean trenches) should sit somewhere between Earth-sized
+  at a local scale (vertical scale 1) and at a planetary scale (1/70, which
+  keeps Earth's slopes), and a world height around 2,048 seems about right.
+  The middle is ≈ 1/8 (peaks ~1 km, deepest trench ~1.26 km, range flanks
+  ~8× steeper than Earth's). He'll decide from renders at 1/70, 1/20 and 1/8.
 - Relief finer than planetgen's resolution comes from the engine's
   generator. Its roughness is a dial for Andrew.
 - Sampling is smooth everywhere: no visible raster texels or noise seams.
