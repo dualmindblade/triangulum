@@ -1,0 +1,21 @@
+# Water at coarse LOD boundaries at the default --lod-factor (5): from 30 km
+# over the deepest ocean the cut is L8 out to about 48 km from the camera
+# and L9 beyond, so the L8/L9 boundary rings the nadir some 35 km out, 40
+# degrees below the horizontal (review 2 #9). Run at local noon:
+#
+#   cargo run --release -- --at 39.88 -36.59 30000 --time 12:00 --play scripts/water-lod-seam-high.play
+#
+# The companion water-lod-seam.play does the same at --lod-factor 0.2, where
+# the same boundaries are a few kilometres away and the seams are pixels tall.
+mode fly
+at 39.88 -36.59 30000
+look 0 -45
+shot 01_high_north
+look 0 -65
+shot 02_high_steep
+look 90 -45
+shot 03_high_east
+# The cost of the coarse-LOD vertex path from here (every drawn chunk is
+# LOD 7 or coarser): wall and GPU time per frame.
+look 0 -45
+bench 120

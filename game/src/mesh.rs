@@ -22,6 +22,18 @@ use std::time::Instant;
 /// Curvature grid: 4x4 cells (5x5 corners) per chunk footprint.
 pub const GRID_CELLS: usize = 4;
 pub const GRID_CORNERS: usize = GRID_CELLS + 1;
+/// Longest tangent edge of a sea-surface quad, in metres. Every vertex
+/// sits on its exact radius, but the edges between them are chords of the
+/// sphere, sagging `L^2 / 8R` below it mid-edge: 23 m for an eight-voxel
+/// quad at LOD 9, where the finer neighbour's vertices along the shared
+/// edge sat on the sphere (review 2 #9, the seam). The sea is the one
+/// surface that lies at exactly the same radius at every LOD, so every
+/// quad on the sea-level plane (water, ice, the coarsest LOD's opaque
+/// deep ocean, a beach at sea level) and every water quad is capped at
+/// 256 m: the sag stays under 0.1 m, and at every LOD coarser than 5 the
+/// edge vertices of neighbouring LODs coincide (the cap is a voxel
+/// multiple at both), so there is no T-junction to sag against at all.
+pub const SEA_EDGE_MAX_M: f64 = 256.0;
 /// f32s per grid record: 25 offsets (vec4) + 25 directions (vec4).
 pub const GRID_F32S: usize = GRID_CORNERS * GRID_CORNERS * 4 * 2;
 pub const GRID_BYTES: usize = GRID_F32S * 4;
@@ -115,13 +127,23 @@ pub fn mesh_chunk(generated: &Generated, registry: &Registry, planet: &Planet, o
     let mut water = Vec::new();
     let any_solid = masks.solid.iter().any(|&m| m & INNER != 0);
     let any_liquid = masks.liquid.iter().any(|&m| m & INNER != 0);
+    let sea_edge = sea_edge_voxels(planet, key.lod);
+    // The slice whose top face lies on the sea-level plane, if it is in this chunk.
+    let sea_slice = {
+        let k0 = key.origin_blocks().2;
+        let vb = key.voxel_blocks();
+        let sea = planet.sea_level as u64;
+        (sea > k0 && (sea - k0) % vb == 0 && (sea - k0) / vb <= CHUNK as u64).then(|| ((sea - k0) / vb - 1) as usize)
+    };
     if any_solid {
         let blocking: Vec<u64> = masks.solid.clone();
-        mesh_set(&masks.solid, &blocking, ids, &masks, opt, true, &mut opaque);
+        let cap = |axis: u32, sign: u32, slice: usize| if axis == 2 && sign == 1 && Some(slice) == sea_slice { sea_edge } else { CHUNK };
+        mesh_set(&masks.solid, &blocking, ids, &masks, opt, true, &cap, &mut opaque);
     }
     if any_liquid {
         let blocking: Vec<u64> = masks.solid.iter().zip(&masks.liquid).map(|(s, l)| s | l).collect();
-        mesh_set(&masks.liquid, &blocking, ids, &masks, MeshOptions { split: opt.split, ao: false }, false, &mut water);
+        let cap = |_: u32, _: u32, _: usize| sea_edge;
+        mesh_set(&masks.liquid, &blocking, ids, &masks, MeshOptions { split: opt.split, ao: false }, false, &cap, &mut water);
     }
 
     // Curvature grid record relative to the chunk's lattice corner.
@@ -150,8 +172,19 @@ pub fn mesh_chunk(generated: &Generated, registry: &Registry, planet: &Planet, o
     MeshData { key, opaque, water, grid, origin, center: bounds.centre, radius: bounds.radius as f32, mesh_us: t0.elapsed().as_micros() as u32 }
 }
 
-/// Emit greedy quads for every face of `occ` voxels that borders a non-`blocking` voxel.
-fn mesh_set(occ: &[u64], blocking: &[u64], ids: &[BlockId], masks: &Masks, opt: MeshOptions, with_ao: bool, out: &mut Vec<Quad>) {
+/// The longest tangent edge of a sea-surface quad at `lod`, in voxels: a
+/// power of two from 1 to the chunk edge (a divisor of the grid cell below
+/// it, so quads still never cross a cell when they are split at cells).
+pub fn sea_edge_voxels(planet: &Planet, lod: u8) -> usize {
+    let v = (SEA_EDGE_MAX_M / planet.voxel_m(lod)).floor().clamp(1.0, CHUNK as f64) as usize;
+    1 << v.ilog2()
+}
+
+/// Emit greedy quads for every face of `occ` voxels that borders a
+/// non-`blocking` voxel. `cap(axis, sign, slice)` is the longest tangent
+/// edge, in voxels, of the quads in that face plane.
+#[allow(clippy::too_many_arguments)]
+fn mesh_set(occ: &[u64], blocking: &[u64], ids: &[BlockId], masks: &Masks, opt: MeshOptions, with_ao: bool, cap: &dyn Fn(u32, u32, usize) -> usize, out: &mut Vec<Quad>) {
     // Transposed masks: xcol[y][z] bits over x+1; ycol[x][z] bits over y+1.
     let mut xocc = vec![0u64; PAD * PAD];
     let mut yocc = vec![0u64; PAD * PAD];
@@ -235,7 +268,8 @@ fn mesh_set(occ: &[u64], blocking: &[u64], ids: &[BlockId], masks: &Masks, opt: 
     for dirset in 0..6u32 {
         let axis = dirset / 2;
         let sign = dirset & 1;
-        // Tangent directions are split at grid cells; the radial one is linear.
+        // Tangent directions are split at grid cells and capped; the radial
+        // one is linear.
         let split_u = opt.split;
         let split_v = opt.split && axis == 2;
         // Merge key: block id and the four corner AO values.
@@ -249,15 +283,16 @@ fn mesh_set(occ: &[u64], blocking: &[u64], ids: &[BlockId], masks: &Masks, opt: 
         };
         let plane = &mut planes[dirset as usize];
         for slice in 0..CHUNK {
+            let edge = cap(axis, sign, slice);
             for v in 0..CHUNK {
-                let vlim = if split_v { (v / cell + 1) * cell } else { CHUNK };
+                let vlim = if axis != 2 { CHUNK } else { (if split_v { (v / cell + 1) * cell } else { CHUNK }).min((v / edge + 1) * edge) };
                 loop {
                     let row = plane[slice * CHUNK + v];
                     if row == 0 {
                         break;
                     }
                     let u0 = row.trailing_zeros() as usize;
-                    let ulim = if split_u { (u0 / cell + 1) * cell } else { CHUNK };
+                    let ulim = (if split_u { (u0 / cell + 1) * cell } else { CHUNK }).min((u0 / edge + 1) * edge);
                     let k = face_key(u0, v, slice);
                     let mut w = 1usize;
                     while u0 + w < ulim && (row >> (u0 + w)) & 1 == 1 && face_key(u0 + w, v, slice) == k {
@@ -372,22 +407,40 @@ mod tests {
     }
 
     /// The shader's vertex transform, in f64 on the f32 grid record the
-    /// GPU gets: bilinear offset and direction over the 4x4 cells.
-    /// `exact` adds the radial correction `r0 (1 - |m|)` along the
-    /// normalised direction (review #11), which `grid[GRID_R0_INDEX]` is for.
+    /// GPU gets: bilinear offset and direction over the 4x4 cells, or,
+    /// with `exact` at voxels of 64 m and up, the quartic through the five
+    /// corners per axis (review 2 #9). `exact` also adds the radial
+    /// correction `r0 (1 - |m|)` along the normalised direction (review
+    /// #11), which `grid[GRID_R0_INDEX]` is for.
     fn vertex_pos(grid: &[f32], origin: DVec3, lp: DVec3, voxel: f64, exact: bool) -> DVec3 {
         let g = lp.truncate() * 0.125;
-        let gi = (g.x.floor().min(3.0) as usize, g.y.floor().min(3.0) as usize);
-        let gf = (g.x - gi.0 as f64, g.y - gi.1 as f64);
-        let b = gi.1 * 5 + gi.0;
         let off = |c: usize| DVec3::new(grid[c * 4] as f64, grid[c * 4 + 1] as f64, grid[c * 4 + 2] as f64);
         let dir = |c: usize| {
             let base = (GRID_CORNERS * GRID_CORNERS + c) * 4;
             DVec3::new(grid[base] as f64, grid[base + 1] as f64, grid[base + 2] as f64)
         };
-        let mix = |a: DVec3, b: DVec3, t: f64| a + (b - a) * t;
-        let o = mix(mix(off(b), off(b + 1), gf.0), mix(off(b + 5), off(b + 6), gf.0), gf.1);
-        let m = mix(mix(dir(b), dir(b + 1), gf.0), mix(dir(b + 5), dir(b + 6), gf.0), gf.1);
+        let (o, m) = if exact && voxel >= 64.0 {
+            let lagrange5 = |t: f64| -> [f64; 5] {
+                let (t0, t1, t2, t3, t4) = (t, t - 1.0, t - 2.0, t - 3.0, t - 4.0);
+                [t1 * t2 * t3 * t4 / 24.0, t0 * t2 * t3 * t4 / -6.0, t0 * t1 * t3 * t4 / 4.0, t0 * t1 * t2 * t4 / -6.0, t0 * t1 * t2 * t3 / 24.0]
+            };
+            let (wx, wy) = (lagrange5(g.x), lagrange5(g.y));
+            let (mut o, mut m) = (DVec3::ZERO, DVec3::ZERO);
+            for j in 0..5 {
+                for i in 0..5 {
+                    let w = wx[i] * wy[j];
+                    o += off(j * 5 + i) * w;
+                    m += dir(j * 5 + i) * w;
+                }
+            }
+            (o, m)
+        } else {
+            let gi = (g.x.floor().min(3.0) as usize, g.y.floor().min(3.0) as usize);
+            let gf = (g.x - gi.0 as f64, g.y - gi.1 as f64);
+            let b = gi.1 * 5 + gi.0;
+            let mix = |a: DVec3, b: DVec3, t: f64| a + (b - a) * t;
+            (mix(mix(off(b), off(b + 1), gf.0), mix(off(b + 5), off(b + 6), gf.0), gf.1), mix(mix(dir(b), dir(b + 1), gf.0), mix(dir(b + 5), dir(b + 6), gf.0), gf.1))
+        };
         if !exact {
             return origin + o + m * (lp.z * voxel);
         }
@@ -445,5 +498,99 @@ mod tests {
         let lp = DVec3::new(4.0, 4.0, 1.0);
         let d = (vertex_pos(&m0.grid, m0.origin, lp, 1.0, true) - vertex_pos(&m0.grid, m0.origin, lp, 1.0, false)).length();
         assert!(d < 0.002, "LOD 0 sag {d} m");
+    }
+
+    /// Unpack a quad: (axis, sign, slice, u0, v0, w, h).
+    fn unpack(q: &Quad) -> (u32, u32, u32, u32, u32, u32, u32) {
+        let lo = q[0];
+        (lo & 3, (lo >> 2) & 1, (lo >> 3) & 31, (lo >> 8) & 31, (lo >> 13) & 31, ((lo >> 18) & 31) + 1, ((lo >> 23) & 31) + 1)
+    }
+
+    /// Review 2 #9: the seam is between the triangle edges that are really
+    /// emitted. Along the boundary between an LOD-9 chunk and the LOD-8
+    /// child of its eastern neighbour, every vertex of the fine chunk's sea
+    /// quads on that line is measured against the coarse chunk's emitted
+    /// sea edge there (the straight line between its two corner vertices,
+    /// placed as the shader places them). The old eight-voxel quads left
+    /// 23 m radially, and the bilinear curvature grid another 30 m along
+    /// the edge mid-cell; with sea-surface edges capped at 256 m and the
+    /// quartic grid at coarse LODs the fine vertices sit within 2 m of the
+    /// emitted edge (up to 0.6 m radially mid-edge, the chord of one LOD-9
+    /// voxel, and up to 2 m along it, the warp's own wiggle over 16 km
+    /// that five corners cannot follow; 0.05 px at the 41 km the default
+    /// LOD factor draws LOD 9 from). (At LOD 9 the sea is the opaque
+    /// deep-ocean voxel, so the cap has to hold for opaque quads on the
+    /// sea-level plane as much as for water.)
+    #[test]
+    fn emitted_sea_edges_meet_across_an_lod_boundary() {
+        let (g, registry) = generator();
+        let planet = g.planet;
+        let sea_k = planet.sea_level as f64;
+        let per_edge = planet.chunks_per_edge(9);
+        // Edge quads: the coarse chunk's +x side (x = 32) and the fine chunk's -x side (x = 0), sea-level top faces of any block.
+        let top_at = |m: &MeshData, x_side: u32| -> Vec<(f64, f64)> {
+            m.opaque
+                .iter()
+                .chain(&m.water)
+                .map(unpack)
+                .filter(|&(axis, sign, slice, u0, _, w, _)| axis == 2 && sign == 1 && (slice + 1) as f64 * (1u64 << m.key.lod) as f64 == sea_k && (if x_side == 0 { u0 == 0 } else { u0 + w == 32 }))
+                .map(|(_, _, _, _, v0, _, h)| (v0 as f64, (v0 + h) as f64))
+                .collect()
+        };
+        let mut compared = 0usize;
+        let mut worst = 0.0f64;
+        let mut worst_radial = 0.0f64;
+        let mut pairs = 0usize;
+        'faces: for face in 0..6u8 {
+            for cy in 0..per_edge {
+                for cx in 0..per_edge - 1 {
+                    let coarse = ChunkKey::neisor(face, 9, cx, cy, 0);
+                    let fine = ChunkKey::neisor(face, 8, 2 * (cx + 1), 2 * cy, 0);
+                    let mc = mesh_chunk(&g.generate(coarse), &registry, &planet, MeshOptions::default());
+                    let ce = top_at(&mc, 32);
+                    if ce.is_empty() {
+                        continue;
+                    }
+                    let mf = mesh_chunk(&g.generate(fine), &registry, &planet, MeshOptions::default());
+                    let fe = top_at(&mf, 0);
+                    if fe.is_empty() {
+                        continue;
+                    }
+                    pairs += 1;
+                    let (vc, vf) = (planet.voxel_m(9), planet.voxel_m(8));
+                    // Fine vertices on the shared line, in coarse voxels along it (the fine chunk covers the first half).
+                    let mut fine_vs: Vec<f64> = fe.iter().flat_map(|&(a, b)| [a, b]).map(|v| v * 0.5).collect();
+                    fine_vs.sort_by(|a, b| a.total_cmp(b));
+                    fine_vs.dedup();
+                    println!("{coarse:?}: {} edge quads; {fine:?}: {} edge vertices", ce.len(), fine_vs.len());
+                    for &(a, b) in &ce {
+                        let pa = vertex_pos(&mc.grid, mc.origin, DVec3::new(32.0, a, sea_k / 512.0), vc, true);
+                        let pb = vertex_pos(&mc.grid, mc.origin, DVec3::new(32.0, b, sea_k / 512.0), vc, true);
+                        for &v in fine_vs.iter().filter(|&&v| v >= a && v <= b) {
+                            let pf = vertex_pos(&mf.grid, mf.origin, DVec3::new(0.0, v * 2.0, sea_k / 256.0), vf, true);
+                            // The coarse edge at this point: the chord between its two emitted vertices.
+                            let t = if b > a { (v - a) / (b - a) } else { 0.0 };
+                            let chord = pa + (pb - pa) * t;
+                            let sep = (pf - chord).length();
+                            if sep > 3.0 {
+                                println!("  coarse edge {a}..{b} at v {v}: radial {:.3} m, total {sep:.3} m", pf.length() - chord.length());
+                            }
+                            worst = worst.max(sep);
+                            worst_radial = worst_radial.max((pf.length() - chord.length()).abs());
+                            compared += 1;
+                        }
+                    }
+                    if pairs >= 3 {
+                        break 'faces;
+                    }
+                }
+            }
+        }
+        println!("{pairs} L9/L8 boundaries, {compared} fine vertices against emitted coarse edges: worst separation {worst:.3} m (radial {worst_radial:.3} m)");
+        assert!(pairs >= 1 && compared >= 8, "found sea on both sides of a boundary ({pairs} pairs, {compared} comparisons)");
+        assert!(worst < 3.0, "fine vertices sit on the coarse emitted edge: {worst:.3} m");
+        assert!(worst_radial < 0.7, "no chord sags more than one LOD-9 voxel's: {worst_radial:.3} m");
+        // The cap in voxels per LOD: 1 at LOD 9 and 8, doubling down to the grid cell at LOD 5, the whole chunk at LOD 2 and below.
+        assert_eq!([9u8, 8, 7, 6, 5, 4, 3, 2, 0].map(|l| sea_edge_voxels(&planet, l)), [1, 1, 2, 4, 8, 16, 32, 32, 32]);
     }
 }

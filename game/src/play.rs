@@ -83,6 +83,10 @@
 //!                           or block[F,I,J,K]  the block at lattice coords
 //!                           or block_rel[DI,DJ,DK]  relative to the feet block
 //!                           or falling_rel[DI,DJ]  blocks in flight in that column
+//!                           or cover[F,I,J,K] / cover_rel[DI,DJ,DK]  what the
+//!                              streamer's cut shows at that block, after a
+//!                              shot: drawn:L (a drawn chunk at LOD L with a
+//!                              mesh), empty:L, gap:L, hidden:L, or none
 //!
 //! ---- video (play/video.rs) ------------------------------------------
 //!   record FILE [FPS]       start writing FILE (H.264 .mp4 under the out
@@ -440,6 +444,24 @@ impl Run {
                 return None;
             }
             return Some(serde_json::Value::String(self.session.block_name_rel(v[0], v[1], v[2])));
+        }
+        if let Some(inner) = field.strip_prefix("cover[").and_then(|r| r.strip_suffix(']')) {
+            let v: Vec<i64> = inner.split(',').map(|x| x.trim().parse().ok()).collect::<Option<_>>()?;
+            if v.len() != 4 {
+                return None;
+            }
+            let bp = self.session.engine.world.resolve_block(v[0] as u8, v[1], v[2], v[3]);
+            return Some(serde_json::Value::String(bp.map_or("none".to_string(), |bp| self.harness.streamer.cover_at(bp))));
+        }
+        if let Some(inner) = field.strip_prefix("cover_rel[").and_then(|r| r.strip_suffix(']')) {
+            let v: Vec<i64> = inner.split(',').map(|x| x.trim().parse().ok()).collect::<Option<_>>()?;
+            if v.len() != 3 {
+                return None;
+            }
+            let f = crate::player::Frame::at(&self.session.engine.planet, self.session.player.pos);
+            let (ci, cj, ck) = f.feet_cell();
+            let bp = self.session.engine.world.resolve_block(f.face, ci + v[0], cj + v[1], ck + v[2]);
+            return Some(serde_json::Value::String(bp.map_or("none".to_string(), |bp| self.harness.streamer.cover_at(bp))));
         }
         self.state().get(field).cloned()
     }
