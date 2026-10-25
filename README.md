@@ -26,34 +26,31 @@ You need **Python 3.11+** and **Rust** (stable). One-time setup:
 1. **Python** — install from <https://www.python.org/downloads/> (check
    "Add python.exe to PATH" on Windows), then:
    ```
-   pip install numpy scipy matplotlib
+   pip install numpy scipy matplotlib numba
    ```
 2. **Rust** — install rustup from <https://rustup.rs>. On Windows pick the
    default MSVC toolchain (it will offer to install the Visual Studio C++
    build tools if you don't have them). `cargo --version` should work in a
    fresh terminal afterwards.
 
-Then generate a planet and fly it (from the repo root):
+Then generate the planet and fly it in the new engine (from the repo root):
 
 ```
-# 1. grow the planet (~17 min at res 7; --res 8 is showcase quality, ~1.5 h)
-python -m planetgen --seed 42 --res 7
+# 1. grow the planet once (~1.5 h on the CPU; skip if output/seed42_r8 exists)
+python -m planetgen --seed 42 --res 8
 
-# 2. bake the planet onto cube-face rasters + export rivers + weather
-python scripts/bake_faces.py output/seed42_r7 1024
-python scripts/bake_rivers.py output/seed42_r7
-python scripts/bake_weather.py output/seed42_r7
+# 2. bake it for the engine (~20 s; writes game/assets/world/seed42)
+python scripts/bake_world.py
 
-# 3. fly (first build takes a few minutes)
-cd viewer
+# 3. fly (the first build takes a few minutes)
+cd game
 cargo run --release
 ```
 
-Quick sanity check that everything works: the window opens in orbit — scroll
-to descend. For the scenery tour, teleport (press `T`) to the destinations
-table in `viewer/README.md`; the temperate river valley at
-`4.99 -29.4 0.3` is a good first stop. Walking (`G`) is best at launch
-option `--exagg 1`.
+`STATUS.md` lists the current controls and the options for trying other
+vertical scales and block sizes. The July viewer still runs from `viewer/`;
+its own bootstrap (`bake_faces.py`, `bake_rivers.py`, `bake_weather.py`) is
+in `viewer/README.md`.
 
 ## Planetgen quick start
 
