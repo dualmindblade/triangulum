@@ -133,7 +133,14 @@ detail (still about 500 fps).
 
 ## In progress
 
-
+- **M2c, replays** (Fable): F10 records a bug as a replay file; the replay
+  plays the session back exactly and points to the first moment it
+  differs. Also a harness command that finds a shore, river or flat spot
+  near you.
+- **M3a, Andrew's look panel** (Opus): F1 opens a panel with sliders for
+  the sky, light, fog, water and block colours, and for terrain dials.
+  Changes show at once and save to files in git. Grass gets dirt-coloured
+  sides, so tunnel ceilings stop being green.
 
 ## Waiting on you
 
