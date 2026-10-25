@@ -349,7 +349,8 @@ fn landform_averages_out_over_kilometres() {
 /// Coordinator finding 1: at coarse LODs a voxel's centre can sit below the
 /// sea floor; the ocean must still be there. Every ocean column of an
 /// L5..L9 chunk at sea level has water (or ice) in the voxel holding sea
-/// level.
+/// level; opaque deep ocean where that voxel is the world's bottom voxel
+/// (L9 here, review 2 #12).
 #[test]
 fn coarse_lods_keep_the_ocean() {
     let g = test_generator();
@@ -368,11 +369,13 @@ fn coarse_lods_keep_the_ocean() {
             // The voxel holding layer sea_level - 1.
             let z = ((p.sea_level as i64 - 1 - k0).div_euclid(vb)) as i32;
             assert!((0..CHUNK as i32).contains(&z));
+            let sea = if k0 + z as i64 * vb == 0 { g.blocks.deep_ocean } else { g.blocks.water };
+            assert_eq!(sea == g.blocks.deep_ocean, lod == p.max_lod, "only the L9 sea voxel is the bottom voxel");
             for x in 0..CHUNK as i32 {
                 for y in 0..CHUNK as i32 {
                     if cols[((x + 1) as usize) * PAD + (y + 1) as usize].ocean {
                         let id = out.ids[pidx(x, y, z)];
-                        assert!(id == g.blocks.water || id == g.blocks.ice, "LOD {lod}: ocean column ({x},{y}) has block {id} at sea level");
+                        assert!(id == sea || id == g.blocks.ice, "LOD {lod}: ocean column ({x},{y}) has block {id} at sea level");
                         checked += 1;
                     }
                 }
@@ -519,4 +522,157 @@ fn footprint_bounds_contain_every_sampled_column() {
         }
         println!("vscale {vs:?}: worst approach to a bound {worst_excess:.3} of the band (negative = inside)");
     }
+}
+
+/// Upward-facing opaque area of a meshed chunk, in voxel faces.
+fn opaque_up_area(m: &crate::mesh::MeshData) -> u32 {
+    m.opaque
+        .iter()
+        .filter(|q| q[0] & 3 == 2 && (q[0] >> 2) & 1 == 1)
+        .map(|q| (((q[0] >> 18) & 31) + 1) * (((q[0] >> 23) & 31) + 1))
+        .sum()
+}
+
+/// Review 2 #12: the planet is opaque at every LOD. Under the voxel holding
+/// sea level in every ocean column there is a solid voxel inside the world
+/// (at the coarsest LOD the sea voxel is the world's bottom voxel and is
+/// itself opaque deep ocean), and the coarsest chunk, which holds the whole
+/// world height, meshes to exactly one upward opaque face per column, so no
+/// sky can show through the sea from orbit, plus a side wall wherever deep
+/// ocean meets the chunk's border (closing the view under it from a finer
+/// LOD's translucent water next door). At 1/70 (H 2048, sea 512: the
+/// coarsest LOD is L9) and 1/8 (H 2048, sea 1024: L10), open sea and the
+/// deepest trench (below the world floor at 1/8).
+#[test]
+fn every_ocean_column_is_opaque_underneath() {
+    let reg = registry();
+    for (vs, h, sea) in [(None, 2048, 512), (Some(0.125), 2048, 1024)] {
+        let g = generator_with(vs, h, sea);
+        let p = g.planet;
+        let mut seas: Vec<DVec3> = dirs(400, 11).into_iter().filter(|d| g.bake.sample(*d).ocean > 0.99).take(4).collect();
+        seas.push(crate::engine::find_places(g.bake.as_ref()).trench.0);
+        let mut checked = 0usize;
+        let mut walls_total = 0u32;
+        for d in &seas {
+            for lod in 0..=p.max_lod {
+                let vb = 1i64 << lod;
+                let top = key_at(&g, *d, lod, -0.5);
+                let cols = g.chunk_columns(top);
+                // The column's chunks from the sea-level one down, generated as needed.
+                let mut stack: Vec<Generated> = vec![g.generate(top)];
+                let sea_voxel = (p.sea_level as i64 - 1).div_euclid(vb) * vb;
+                for x in 0..CHUNK as i32 {
+                    for y in 0..CHUNK as i32 {
+                        if !cols[((x + 1) as usize) * PAD + (y + 1) as usize].ocean {
+                            continue;
+                        }
+                        let mut k = sea_voxel;
+                        let solid_at = loop {
+                            if k < 0 {
+                                break None;
+                            }
+                            let n = (top.cz as i64 - k / (CHUNK as i64 * vb)) as usize;
+                            while stack.len() <= n {
+                                stack.push(g.generate(ChunkKey { cz: top.cz - stack.len() as u32, ..top }));
+                            }
+                            let c = &stack[n];
+                            let z = ((k - c.key.origin_blocks().2 as i64) / vb) as i32;
+                            if reg.is_solid(c.ids[pidx(x, y, z)]) {
+                                break Some(k);
+                            }
+                            k -= vb;
+                        };
+                        assert!(solid_at.is_some(), "vscale {vs:?} LOD {lod}: ocean column ({x},{y}) of {top:?} has nothing opaque under the sea inside the world");
+                        checked += 1;
+                    }
+                }
+                if lod == p.max_lod {
+                    assert_eq!(top.cz, 0, "the coarsest chunk holds the whole column");
+                    let m = crate::mesh::mesh_chunk(&stack[0], &reg, &p, crate::mesh::MeshOptions::default());
+                    assert_eq!(opaque_up_area(&m), (CHUNK * CHUNK) as u32, "vscale {vs:?} LOD {lod}: every column of {top:?} needs one upward opaque face");
+                    // The deep ocean's skirt: one side wall per edge voxel facing
+                    // a sea column of the border (which holds plain water).
+                    let ids = &stack[0].ids;
+                    let mut edges = 0u32;
+                    for x in 0..CHUNK as i32 {
+                        for y in 0..CHUNK as i32 {
+                            if ids[pidx(x, y, 0)] != g.blocks.deep_ocean {
+                                continue;
+                            }
+                            for (nx, ny) in [(x - 1, y), (x + 1, y), (x, y - 1), (x, y + 1)] {
+                                let outside = nx < 0 || ny < 0 || nx >= CHUNK as i32 || ny >= CHUNK as i32;
+                                if outside {
+                                    assert_ne!(ids[pidx(nx, ny, 0)], g.blocks.deep_ocean, "border columns hold no deep ocean");
+                                    edges += (ids[pidx(nx, ny, 0)] == g.blocks.water) as u32;
+                                }
+                            }
+                        }
+                    }
+                    let walls: u32 = m
+                        .opaque
+                        .iter()
+                        .filter(|q| q[0] & 3 != 2 && q[1] & 0xFFFF == g.blocks.deep_ocean as u32)
+                        .map(|q| (((q[0] >> 18) & 31) + 1) * (((q[0] >> 23) & 31) + 1))
+                        .sum();
+                    assert_eq!(walls, edges, "vscale {vs:?}: deep-ocean side walls along the edges of {top:?}");
+                    walls_total += walls;
+                }
+            }
+        }
+        assert!(checked > 20_000, "only {checked} ocean columns checked");
+        assert!(walls_total > 100, "vscale {vs:?}: only {walls_total} deep-ocean edge walls");
+    }
+}
+
+/// Review 2 #13: the world ceiling is an air boundary. H 512, sea 256 (the
+/// ceiling is 256 m above sea level), 1/8 so the highest range stands far
+/// above it: the L0 chunk at cz 15 (layers 480..512, padded 479..513) under
+/// that range has its top exposed, because layer 512 is air. It must not be
+/// classified Enclosed (the streamer would never draw it and the range
+/// would vanish as it refines), and the footprint bounds keep the clipped
+/// surface. Then, for the top chunk at every LOD over high ground:
+/// classification agrees with the generated contents.
+#[test]
+fn world_ceiling_exposes_clipped_terrain() {
+    let reg = registry();
+    let g = generator_with(Some(0.125), 512, 256);
+    let p = g.planet;
+    let ceiling = (p.height - p.sea_level) as f64 * p.block_size;
+    let peak = inspect::find_land_places(g.bake.as_ref()).peak;
+    assert!(g.column(peak, p.block_size).height_m as f64 > 600.0, "the range should stand above 600 m at 1/8");
+    let key = key_at(&g, peak, 0, ceiling - 1.0);
+    assert_eq!(key.cz, 15);
+    // The review's numbers: a footprint minimum of 600 m above sea level.
+    assert_ne!(g.classify_in(key, (600.0, 700.0)), ChunkClass::Enclosed, "a chunk reaching the ceiling is never enclosed");
+    // The real bounds and contents.
+    let (hmin, hmax) = g.footprint_height_range_m(key.footprint());
+    assert!(hmin <= ceiling && hmin <= hmax, "bounds [{hmin:.1}, {hmax:.1}] must keep the surface clipped at {ceiling} m");
+    assert_eq!(g.classify(key), ChunkClass::Mixed);
+    let out = g.generate(key);
+    for x in 0..CHUNK as i32 {
+        for y in 0..CHUNK as i32 {
+            assert!(reg.is_solid(out.ids[pidx(x, y, 31)]), "layer 511 at ({x},{y}) is solid under the range");
+            assert_eq!(out.ids[pidx(x, y, 32)], g.blocks.air, "layer 512 is above the world");
+        }
+    }
+    let m = crate::mesh::mesh_chunk(&out, &reg, &p, crate::mesh::MeshOptions::default());
+    assert_eq!(opaque_up_area(&m), (CHUNK * CHUNK) as u32, "the clipped top shows on every column");
+    // The chunk under it is still enclosed: only the top one is exposed.
+    let below = ChunkKey { cz: 14, ..key };
+    assert_eq!(g.classify(below), ChunkClass::Enclosed);
+    assert!(crate::mesh::mesh_chunk(&g.generate(below), &reg, &p, crate::mesh::MeshOptions::default()).opaque.is_empty());
+    // Every LOD, the top chunk over high ground: Enclosed only if every
+    // padded voxel is solid, Air only if every one is air.
+    let mut exposed = 0;
+    for d in stress_dirs(&g).into_iter().take(8) {
+        for lod in 0..=p.max_lod {
+            let top = ChunkKey { cz: p.chunks_per_column(lod) - 1, ..key_at(&g, d, lod, 0.0) };
+            let class = g.classify(top);
+            let ids = g.generate(top).ids;
+            assert!(class != ChunkClass::Enclosed || ids.iter().all(|&b| reg.is_solid(b)), "{top:?} classified Enclosed holds non-solid voxels");
+            assert!(class != ChunkClass::Air || ids.iter().all(|&b| b == g.blocks.air), "{top:?} classified Air holds blocks");
+            exposed += (g.column(d, p.voxel_m(lod)).height_m as f64 > ceiling) as usize;
+        }
+    }
+    assert!(exposed > 5, "too few top chunks under ground above the ceiling ({exposed})");
 }

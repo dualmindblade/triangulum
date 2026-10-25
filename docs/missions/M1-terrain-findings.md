@@ -66,3 +66,8 @@ Before/after contact sheets in `M1-terrain-evidence/`. Rows are 1/70,
 - the highest range from the ground and from 1 km;
 - a coast, a river valley, plains and a mesa;
 - plan-view hillshade maps.
+
+## Follow-up fixes
+
+- **Review 2 #12 (Opus, 2026-10-25):** where the sea-level voxel is also the world's bottom voxel (L9 by default) it is now an opaque `deep_ocean` block (water at alpha 0.62 over mean strata rock), and chunk borders hold plain water so its edges grow side walls under finer LODs; at night from 150 km and 75 km, 29,635 and 476 ocean pixels showed stars or the sun through the sea before, 0 after, and across an L8/L9 boundary the ocean now matches to within 3 levels (it was off by up to 29). Look change for Andrew: from orbit the sea is the grey-blue that every finer LOD already showed, and L9 loses the water's sun glint and grazing-angle brightening (`M1-terrain-evidence/review2_12_ocean_before_after.jpg`, `game/scripts/ocean-orbit.play`, `review2_12_ocean.py`).
+- **Review 2 #13 (Opus, 2026-10-25):** a chunk whose padded extent reaches the world ceiling is never `Enclosed`, and footprint bounds keep terrain clipped at the ceiling (hmin never above it); test `world_ceiling_exposes_clipped_terrain` (H 512, sea 256, L0 cz 15 under the 1/8 highest range) failed before and passes.

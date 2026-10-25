@@ -17,10 +17,13 @@
 //!
 //! Voxel rules, in order (`block_at`): above the world is air, below it
 //! bedrock; in an ocean column the voxel holding sea level is water at every
-//! LOD (a coarse voxel must not lose the sea to the rock below it); layer 0
-//! is bedrock (at coarse LODs the bottom voxel is solid, bedrock where only
-//! the floor makes it so); otherwise solid below the surface, water below
-//! sea level in ocean columns, air above.
+//! LOD (a coarse voxel must not lose the sea to the rock below it), or opaque
+//! deep ocean where that voxel is also the world's bottom voxel (nothing
+//! would back the translucent water); layer 0 is bedrock (at coarse LODs the
+//! bottom voxel is solid, bedrock where only the floor makes it so);
+//! otherwise solid below the surface, water below sea level in ocean
+//! columns, air above. Every column therefore has an opaque voxel inside the
+//! world at or below sea level, at every LOD.
 
 pub mod bake;
 pub mod inspect;
@@ -69,6 +72,8 @@ pub struct Blocks {
     pub snow: BlockId,
     pub ice: BlockId,
     pub water: BlockId,
+    /// Opaque sea for a coarse voxel with nothing under it (see `block_at`).
+    pub deep_ocean: BlockId,
     pub bedrock: BlockId,
     pub sandstone: BlockId,
     pub marker_red: BlockId,
@@ -88,6 +93,7 @@ impl Blocks {
             snow: r.id("snow")?,
             ice: r.id("ice")?,
             water: r.id("water")?,
+            deep_ocean: r.id("deep_ocean")?,
             bedrock: r.id("bedrock")?,
             sandstone: r.id("sandstone")?,
             marker_red: r.id("marker_red")?,
@@ -327,7 +333,8 @@ impl Generator {
 
     /// Conservative (min, max) surface height in metres over every column a
     /// chunk of this footprint samples (its one-voxel border included), water
-    /// surface and markers included. The bake part comes from the bake's
+    /// surface, markers and terrain clipped at the world ceiling (which
+    /// counts at the ceiling) included. The bake part comes from the bake's
     /// pyramid; the landform part from a 5 x 5 sample of the real landform at
     /// this LOD, widened by the largest difference between neighbouring
     /// samples and by a bound on every octave finer than the sample grid can
@@ -395,6 +402,11 @@ impl Generator {
                 }
             }
         }
+        // Terrain above the world is clipped at the ceiling, where its top
+        // shows: the bounds keep that clipped surface (review 2 #13). (At the
+        // floor nothing is needed: hmax >= 0 whenever hmin is below it.)
+        let ceiling_m = (planet.height as f64 - planet.sea_level as f64) * planet.block_size;
+        hmin = hmin.min(ceiling_m);
         (hmin, hmax)
     }
 
@@ -421,8 +433,12 @@ impl Generator {
         if k_lo > 0.0 && z_lo >= hmax {
             return ChunkClass::Air;
         }
+        // Layers at or above H are air, so a chunk whose padded extent
+        // reaches the world ceiling has an exposed top, however high the
+        // terrain over it (review 2 #13).
+        let below_ceiling = k_hi <= planet.height as f64;
         let skirt_m = self.skirt as f64 * planet.voxel_m(key.lod);
-        if k_hi <= 0.0 || z_hi <= hmin - skirt_m {
+        if k_hi <= 0.0 || (below_ceiling && z_hi <= hmin - skirt_m) {
             return ChunkClass::Enclosed;
         }
         ChunkClass::Mixed
@@ -489,7 +505,16 @@ impl Generator {
         // an ocean column is water, however much of it lies below the floor.
         if water && z_lo < 0.0 && z_hi >= 0.0 && !(lod == 0 && k_lo == 0.0) {
             // The top water voxel freezes in the cold.
-            return if c.temp_c + 1.5 * c.dither < -4.0 { b.ice } else { b.water };
+            if c.temp_c + 1.5 * c.dither < -4.0 {
+                return b.ice;
+            }
+            // When it is also the world's bottom voxel (it spans everything
+            // below sea level: L9 at sea level 512), nothing opaque lies
+            // under it and translucent water would show the sky through the
+            // planet (review 2 #12). It is opaque deep ocean instead, coloured
+            // like the next finer LOD's water over its rock floor. Below this
+            // LOD a floor voxel or the bedrock voxel always backs the water.
+            return if k_lo == 0.0 { b.deep_ocean } else { b.water };
         }
         // World floor: layer 0 is bedrock; a coarse bottom voxel is solid.
         if k_lo == 0.0 && (lod == 0 || h <= centre) {
@@ -615,17 +640,26 @@ impl Generator {
                     let p = ((x + 1) as usize) * PAD + (y + 1) as usize;
                     let c = &cols[p];
                     let sf = &surf[p];
+                    let border = x < 0 || y < 0 || x >= CHUNK as i32 || y >= CHUNK as i32;
                     let mut rock = RockCache::default();
                     for z in -1..=CHUNK as i32 {
                         let k_lo = k0 + z as f64 * vox_blocks;
                         if k_lo >= world_top {
                             continue; // above the world: air
                         }
-                        let id = if k_lo < 0.0 {
+                        let mut id = if k_lo < 0.0 {
                             self.blocks.bedrock // below the world
                         } else {
                             self.block_at(c, sf, k_lo * planet.block_size - sea, voxel_m, k_lo, lod, &mut rock)
                         };
+                        // The deep ocean's skirt: border columns hold plain
+                        // water, so the chunk's edge voxels grow side walls.
+                        // Next to a finer LOD, whose water is translucent
+                        // down to a floor a voxel below, they close the view
+                        // under this chunk's opaque sea surface.
+                        if border && id == self.blocks.deep_ocean {
+                            id = self.blocks.water;
+                        }
                         ids[pidx(x, y, z)] = id;
                         if id == self.blocks.water && (0..CHUNK as i32).contains(&x) && (0..CHUNK as i32).contains(&y) && (0..CHUNK as i32).contains(&z) {
                             water.get_or_insert_with(|| vec![0u8; VOXELS])[crate::world::chunk::index(x as usize, y as usize, z as usize)] = 255;

@@ -1,0 +1,28 @@
+# Review 2 #12: the coarsest ocean must be opaque from orbit (no stars or
+# sun showing through the sea at night). Straight down over the open ocean
+# at (-11, -170). Run it twice:
+#
+#   cargo run --release -- --bake DIR --at -11 -170 150000 --time 00:00 --play scripts/ocean-orbit.play --out OUT/after-0000
+#   cargo run --release -- --bake DIR --at -11 -170 150000 --time 12:00 --play scripts/ocean-orbit.play --out OUT/after-1200
+#
+# (--at puts the sky clock at local midnight or noon there; at midnight the
+# sun is near the antipode, so the whole visible disc is night.) Then
+# docs/missions/M1-terrain-evidence/review2_12_ocean.py OUT measures what
+# shows through the sea and builds the before/after sheet.
+mode fly
+# 150 km and 500 km: everything drawn is the coarsest LOD (L9).
+at -11 -170 150000
+look 0 -89.9
+shot orbit150
+at -11 -170 500000
+look 0 -89.9
+shot orbit500
+# 75 km: L8 around the nadir (within ~82 km of the camera), L9 outside it,
+# both near normal incidence.
+at -11 -170 75000
+look 0 -89.9
+shot ocean75
+# 40 km, oblique: L7/L8 near, L9 in a band at the horizon.
+at -11 -170 40000
+look 0 -45
+shot ocean40
