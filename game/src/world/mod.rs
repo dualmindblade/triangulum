@@ -185,6 +185,23 @@ impl World {
         self.natural(key).get(x, y, z)
     }
 
+    /// Water level (0..255) at a position (edits first; the generator's
+    /// water is full). M2b's rule reads and writes this.
+    pub fn water_level_at(&self, bp: BlockPos) -> u8 {
+        let (key, x, y, z) = Self::chunk_of(bp);
+        if let Some(l) = self.edits.water_level(key, x, y, z) {
+            return l;
+        }
+        self.natural(key).water_level(x, y, z)
+    }
+
+    /// The generator's chunk as dense ids and water levels: what an edited
+    /// chunk starts from.
+    fn natural_dense(&self, key: ChunkKey) -> (Vec<BlockId>, Option<Vec<u8>>) {
+        let c = self.natural(key);
+        (c.to_dense(), c.water_dense())
+    }
+
     /// Edited block at a position, None when its chunk is not edited.
     pub fn edit_at(&self, bp: BlockPos) -> Option<BlockId> {
         let (key, x, y, z) = Self::chunk_of(bp);
@@ -216,39 +233,91 @@ impl World {
         }
     }
 
-    /// Set one block. Returns whether it changed; queues the remeshes.
+    /// Set one block: `commit` of one write. Returns whether it changed.
     pub fn set_block(&self, bp: BlockPos, id: BlockId) -> bool {
-        if bp.k >= self.planet.height || bp.i >= self.planet.n || bp.j >= self.planet.n || bp.face > 5 {
-            return false;
+        self.commit(&[(bp, id)]) == 1
+    }
+
+    /// Set a liquid block with a water level (M2b). Returns whether it changed.
+    pub fn set_water(&self, bp: BlockPos, id: BlockId, level: u8) -> bool {
+        self.commit_levels(&[(bp, id, Some(level))]) == 1
+    }
+
+    /// The one write path for the player and the simulation alike: apply a
+    /// batch of block writes under one lock, then queue the remeshes of
+    /// every chunk (at every LOD) they touch and log the changed blocks for
+    /// the simulation's neighbour notifications. Writes outside the world
+    /// are ignored. Returns how many writes changed something.
+    pub fn commit(&self, writes: &[(BlockPos, BlockId)]) -> usize {
+        let with_levels: Vec<(BlockPos, BlockId, Option<u8>)> = writes.iter().map(|&(bp, id)| (bp, id, None)).collect();
+        self.commit_levels(&with_levels)
+    }
+
+    pub fn commit_levels(&self, writes: &[(BlockPos, BlockId, Option<u8>)]) -> usize {
+        let planet = &self.planet;
+        let valid: Vec<(BlockPos, BlockId, Option<u8>)> = writes.iter().copied().filter(|(bp, _, _)| bp.k < planet.height && bp.i < planet.n && bp.j < planet.n && bp.face < 6).collect();
+        if valid.is_empty() {
+            return 0;
         }
-        let (key, x, y, z) = Self::chunk_of(bp);
-        let changed = self.edits.set(key, x, y, z, id, || self.natural(key).to_dense());
-        if changed {
-            self.edits.push_invalidated(self.affected_chunks(bp));
+        let ws: Vec<edits::Write> = valid
+            .iter()
+            .map(|&(bp, id, level)| {
+                let (key, x, y, z) = Self::chunk_of(bp);
+                edits::Write { key, x, y, z, id, level }
+            })
+            .collect();
+        let changed = self.edits.commit(&ws, |key| self.natural_dense(key), |id| self.registry.is_liquid(id));
+        let mut invalidated = Vec::new();
+        let mut log = Vec::new();
+        for ((bp, _, _), c) in valid.iter().zip(&changed) {
+            if *c {
+                invalidated.extend(self.affected_chunks(*bp));
+                log.push(*bp);
+            }
         }
-        changed
+        if !log.is_empty() {
+            invalidated.sort();
+            invalidated.dedup();
+            self.edits.push_invalidated(invalidated);
+            self.edits.push_changed(log.iter().copied());
+        }
+        log.len()
+    }
+
+    /// The six face neighbours of a block that exist: across chunk borders
+    /// and, through `Planet::wrap_cell`, across cube-face edges. A step of
+    /// one column past a face's side is past exactly one side, so the
+    /// corner policy (`Planet::wrap`) never has to decide here; above the
+    /// world top and below layer 0 there is no neighbour.
+    pub fn neighbours(&self, bp: BlockPos) -> Vec<BlockPos> {
+        let (i, j, k) = (bp.i as i64, bp.j as i64, bp.k as i64);
+        [(-1, 0, 0), (1, 0, 0), (0, -1, 0), (0, 1, 0), (0, 0, -1), (0, 0, 1)].into_iter().filter_map(|(di, dj, dk)| self.resolve_block(bp.face, i + di, j + dj, k + dk)).collect()
     }
 
     /// Every chunk, at every LOD, whose padded voxel grid contains `bp`:
     /// the chunk column up the LOD tree, plus neighbours when the block
-    /// sits on a chunk border (across face edges too).
+    /// sits in a border voxel (across face edges too). The step to a
+    /// neighbour is one voxel of that LOD, not one block (review #11: at LOD
+    /// 1, block 65 is in voxel 0 of chunk 1 and in the padding of chunk 0;
+    /// stepping one block to 64 stayed in chunk 1).
     pub fn affected_chunks(&self, bp: BlockPos) -> Vec<ChunkKey> {
         let mut out = Vec::new();
         let (i, j, k) = (bp.i as i64, bp.j as i64, bp.k as i64);
         for lod in 0..=self.planet.max_lod {
             let e = (CHUNK as i64) << lod;
+            let v = 1i64 << lod;
             let per_edge = self.planet.chunks_per_edge(lod);
             let per_col = self.planet.chunks_per_column(lod);
             let offsets = |c: i64| -> Vec<i64> {
                 let local = (c % e) >> lod; // voxel index within the chunk
-                let mut v = vec![0];
+                let mut o = vec![0];
                 if local == 0 {
-                    v.push(-1);
+                    o.push(-v);
                 }
                 if local == (CHUNK as i64) - 1 {
-                    v.push(1);
+                    o.push(v);
                 }
-                v
+                o
             };
             for &dz in &offsets(k) {
                 let ck = k + dz;
@@ -257,7 +326,7 @@ impl World {
                 }
                 for &dx in &offsets(i) {
                     for &dy in &offsets(j) {
-                        // A block one past the face edge resolves onto the neighbouring face.
+                        // A block one voxel past the face edge resolves onto the neighbouring face.
                         let (f, ri, rj) = self.resolve(bp.face, i + dx, j + dy);
                         let key = ChunkKey::neisor(f, lod, ri / e as u32, rj / e as u32, (ck / e) as u32);
                         if key.cx < per_edge && key.cy < per_edge && key.cz < per_col {
@@ -273,6 +342,8 @@ impl World {
     }
 
     /// Generate one chunk at its LOD: the pure generator, then the edits.
+    /// An edited LOD-0 chunk's compressed form carries its stored water
+    /// levels; a coarse chunk's water is full wherever its voxel is water.
     pub fn generate(&self, key: ChunkKey) -> Generated {
         let mut g = self.generator.generate(key);
         if self.edits.is_empty() {
@@ -288,7 +359,11 @@ impl World {
                     }
                 }
             }
-            g.chunk = save::chunk_of_dense(&dense, self.water_id());
+            let levels = if key.lod == 0 { self.edits.with_edited(key, |e| e.water.clone()) } else { None };
+            g.chunk = match levels {
+                Some(water) => Chunk::from_dense(&dense, water.as_deref()),
+                None => save::chunk_of_dense(&dense, self.water_id()),
+            };
         }
         g
     }
@@ -454,7 +529,7 @@ impl Voxels for World {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::worldgen::bake;
 
@@ -511,10 +586,26 @@ mod tests {
         assert!(affected.contains(&key) && affected.contains(&left), "{affected:?}");
         assert!(affected.contains(&key.parent().unwrap()));
         assert!(affected.iter().any(|k| k.lod == w.planet.max_lod));
-        // An interior block only touches its own chunk column.
+        // An interior block touches one LOD-0 chunk and, at every LOD, its own
+        // ancestor; a coarse neighbour only when the block lies in that
+        // neighbour's padding voxel (review #11), which is then adjacent.
         let inner = BlockPos { face: g.face, i: i0 as u32 + 10, j: j0 as u32 + 10, k: k0 as u32 + 10 };
         let affected = w.affected_chunks(inner);
-        assert_eq!(affected.len(), w.planet.max_lod as usize + 1, "{affected:?}");
+        assert_eq!(affected.iter().filter(|k| k.lod == 0).count(), 1, "{affected:?}");
+        let mut anc = key;
+        for lod in 0..=w.planet.max_lod {
+            assert_eq!(anc.lod, lod);
+            assert!(affected.contains(&anc), "LOD {lod}: own ancestor {anc:?} in {affected:?}");
+            for k in affected.iter().filter(|k| k.lod == lod && **k != anc) {
+                let d = (k.cx as i64 - anc.cx as i64).abs() + (k.cy as i64 - anc.cy as i64).abs() + (k.cz as i64 - anc.cz as i64).abs();
+                assert_eq!(d, 1, "LOD {lod}: {k:?} is a padding neighbour of {anc:?}");
+                let e = (CHUNK as i64) << lod;
+                let (i, j, kk) = (inner.i as i64, inner.j as i64, inner.k as i64);
+                let edge = |c: i64| ((c % e) >> lod) == 0 || ((c % e) >> lod) == CHUNK as i64 - 1;
+                assert!(edge(i) || edge(j) || edge(kk), "LOD {lod}: the block is in a border voxel");
+            }
+            anc = anc.parent().unwrap();
+        }
     }
 
     #[test]
@@ -599,6 +690,64 @@ mod tests {
             }
         }
         assert_eq!(w.generate(key1).chunk.get(vx, vy, vz), air, "a fully dug voxel reads air at LOD 1");
+    }
+
+    /// Review #11: a block in the first or last voxel of a coarse chunk lies
+    /// in the neighbour's padding voxel, so the neighbour must be
+    /// invalidated: at LOD 1 chunk 0's padding spans blocks 64..66, and
+    /// block 65 used to miss it (stepping one block landed in chunk 1).
+    #[test]
+    fn coarse_halo_invalidation_steps_a_whole_voxel() {
+        let w = test_world();
+        let bp = |i: u32| BlockPos { face: 2, i, j: 1000, k: 600 };
+        let l1 = |cx: u32| ChunkKey::neisor(2, 1, cx, 1000 / 64, 600 / 64);
+        let l2 = |cx: u32| ChunkKey::neisor(2, 2, cx, 1000 / 128, 600 / 128);
+        for i in [64, 65] {
+            let a = w.affected_chunks(bp(i));
+            assert!(a.contains(&l1(1)) && a.contains(&l1(0)), "block {i}: {a:?}");
+        }
+        for i in [62, 63] {
+            let a = w.affected_chunks(bp(i));
+            assert!(a.contains(&l1(0)) && a.contains(&l1(1)), "block {i} (last voxel of chunk 0): {a:?}");
+        }
+        let a = w.affected_chunks(bp(66));
+        assert!(a.contains(&l1(1)) && !a.contains(&l1(0)), "voxel 1 is nobody's padding: {a:?}");
+        // LOD 2: voxels of 4 blocks, chunks of 128; blocks 128..132 are chunk 0's padding.
+        for i in [128, 131] {
+            let a = w.affected_chunks(bp(i));
+            assert!(a.contains(&l2(0)) && a.contains(&l2(1)), "block {i} at LOD 2: {a:?}");
+        }
+        assert!(!w.affected_chunks(bp(132)).contains(&l2(0)));
+        // Along k as well: layer 65 is in LOD-1 chunk cz = 1's first voxel.
+        let a = w.affected_chunks(BlockPos { face: 2, i: 1000, j: 1000, k: 65 });
+        assert!(a.contains(&ChunkKey::neisor(2, 1, 1000 / 64, 1000 / 64, 0)), "{a:?}");
+    }
+
+    /// Review #5: hiding water is a view flag; the world an edit is made in
+    /// is the same world, so an edit beside water keeps the water.
+    #[test]
+    fn hiding_water_does_not_change_what_an_edit_makes_authoritative() {
+        let w = test_world();
+        let p = w.planet;
+        // An ocean column: sea level block is water.
+        let mut found = None;
+        for i in (1000..p.n).step_by(2048) {
+            let dir = p.dir(1, i as f64 + 0.5, 50000.5);
+            if w.generator.column(dir, p.block_size).ocean {
+                found = Some(i);
+                break;
+            }
+        }
+        let i = found.expect("an ocean column on face 1");
+        let sea = BlockPos { face: 1, i, j: 50000, k: p.sea_level - 1 };
+        assert_eq!(w.block_at(sea), w.water_id());
+        // Edit a block far below the surface in this chunk (as if water were hidden on screen).
+        let deep = BlockPos { k: sea.k - 20, ..sea };
+        assert!(w.set_block(deep, w.registry.id("marker_red").unwrap()));
+        let (key, x, y, z) = World::chunk_of(sea);
+        assert_eq!(w.edits.get(key, x, y, z), Some(w.water_id()), "the authoritative chunk still holds the sea");
+        assert_eq!(w.edits.water_level(key, x, y, z), Some(255));
+        assert_eq!(w.generate(key).chunk.water_level(x, y, z), 255, "and the compressed chunk carries the level");
     }
 
     /// An edit in the last column of one face shows in the padding of the

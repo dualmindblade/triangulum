@@ -15,6 +15,7 @@
 //!   --seed N --block-size S --height H --sea-level K --n N --bake DIR --vscale F --roughness F --landform F
 //! (a relative "bake" in world.json is resolved against the game/ directory)
 //! Saves: --save DIR (default saves/<world name>)  --no-save  --keep-save (harness: keep its save)
+//! Simulation: --sim-radius M (112; LOD-0 chunks within it tick, the rest is frozen)  --no-sim
 //! Player: --walk | --fly (default: walk when starting within 50 m of the ground)
 //!   --hotbar stone,dirt,...  (blocks on keys 1-9; default: the first nine solid blocks)
 //! Other options: --lod-factor F (5) --threads N --no-ao --no-split --skirt N
@@ -40,6 +41,7 @@ pub mod player;
 pub mod render;
 pub mod session;
 pub mod sha256;
+pub mod sim;
 pub mod sky;
 pub mod stream;
 pub mod ui;
@@ -91,6 +93,8 @@ struct Args {
     save: Option<String>,
     no_save: bool,
     keep_save: bool,
+    sim_radius: f64,
+    no_sim: bool,
     walk: Option<bool>,
     hotbar: Option<String>,
     frames: usize,
@@ -149,6 +153,8 @@ fn parse_args() -> Args {
         save: None,
         no_save: false,
         keep_save: false,
+        sim_radius: sim::SimConfig::default().radius_m,
+        no_sim: false,
         walk: None,
         hotbar: None,
         frames: 120,
@@ -216,6 +222,8 @@ fn parse_args() -> Args {
             "--save" => a.save = Some(val()),
             "--no-save" => a.no_save = true,
             "--keep-save" => a.keep_save = true,
+            "--sim-radius" => a.sim_radius = val().parse().unwrap(),
+            "--no-sim" => a.no_sim = true,
             "--walk" => a.walk = Some(true),
             "--fly" => a.walk = Some(false),
             "--hotbar" => a.hotbar = Some(val()),
@@ -458,7 +466,12 @@ fn main() {
     };
     let ground = engine.ground(dir);
     let walk = args.walk.unwrap_or_else(|| alt_asl.is_none_or(|a| a - ground <= 50.0));
-    let mut session = Session::new(engine.clone(), Player::new(dir * (p.radius + alt_asl.unwrap_or(ground + 2.0)), heading, pitch, if walk { Mode::Walk } else { Mode::Fly }, p.block_size), save_dir, bake_sha);
+    if !(args.sim_radius.is_finite() && args.sim_radius >= 0.0) {
+        fail("--sim-radius must be a non-negative number of metres");
+    }
+    let sim = Session::load_sim(save_dir.as_ref(), sim::SimConfig { radius_m: args.sim_radius, enabled: !args.no_sim }).unwrap_or_else(|e| fail(&e));
+    println!("simulation: {} Hz tick, {} m active radius{}; resumed at tick {} with {} queued, {} frozen, {} falling", sim::TICK_HZ, args.sim_radius, if args.no_sim { " (off)" } else { "" }, sim.tick(), sim.queued(), sim.frozen_count(), sim.falling().len());
+    let mut session = Session::new(engine.clone(), Player::new(dir * (p.radius + alt_asl.unwrap_or(ground + 2.0)), heading, pitch, if walk { Mode::Walk } else { Mode::Fly }, p.block_size), save_dir, bake_sha, sim);
     if walk {
         session.teleport(dir, None);
     }

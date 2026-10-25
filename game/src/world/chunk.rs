@@ -99,6 +99,11 @@ impl Chunk {
         self.water.is_some()
     }
 
+    /// The water layer, dense, when the chunk has one.
+    pub fn water_dense(&self) -> Option<Vec<u8>> {
+        self.water.as_ref().map(|w| w.to_vec())
+    }
+
     pub fn palette(&self) -> &[BlockId] {
         &self.palette
     }

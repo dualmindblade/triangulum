@@ -5,6 +5,8 @@
 use crate::camera::Camera;
 use crate::engine::{Engine, HILLS, MOUNTAINS, gnomonic_dir};
 use crate::render::{DrawRecord, Renderer};
+use crate::sim::Falling;
+use crate::sim::draw::FallingDraws;
 use crate::stream::Streamer;
 use crate::ui::{EguiPaint, draw_caption, paint_offscreen};
 use crate::worldgen::Marker;
@@ -21,6 +23,10 @@ pub struct Harness {
     water: Vec<DrawRecord>,
     egui_ctx: egui::Context,
     egui_paint: EguiPaint,
+    /// Blocks in flight to draw this frame (the play harness sets it from
+    /// its session; the bench has none).
+    pub falling: Vec<Falling>,
+    falling_draw: FallingDraws,
 }
 
 #[derive(Clone, Copy, Default, Debug)]
@@ -63,14 +69,18 @@ impl Harness {
         let egui_paint = EguiPaint::new(&gpu.device, gpu.format);
         let streamer = engine.streamer();
         let _ = std::fs::create_dir_all(out_dir);
-        Self { engine, streamer, gpu, out_dir: out_dir.to_string(), opaque: Vec::new(), water: Vec::new(), egui_ctx: egui::Context::default(), egui_paint }
+        Self { engine, streamer, gpu, out_dir: out_dir.to_string(), opaque: Vec::new(), water: Vec::new(), egui_ctx: egui::Context::default(), egui_paint, falling: Vec::new(), falling_draw: FallingDraws::default() }
     }
 
-    /// Swap in a new engine (different flags/markers): drops every chunk.
+    /// Swap in a new engine. A different world (markers, a reload) drops
+    /// every chunk; a view-only change (water hidden) keeps them.
     pub fn set_engine(&mut self, engine: Arc<Engine>) {
-        self.streamer.clear(&mut self.gpu);
+        if !Arc::ptr_eq(&self.engine.world, &engine.world) {
+            self.falling_draw.clear(&mut self.gpu);
+            self.streamer.clear(&mut self.gpu);
+            self.streamer = engine.streamer();
+        }
         self.engine = engine;
-        self.streamer = self.engine.streamer();
     }
 
     /// One frame: streaming update + render; waits for the GPU for its timing.
@@ -79,8 +89,11 @@ impl Harness {
         let aspect = self.gpu.width as f64 / self.gpu.height as f64;
         let vp = cam.view_proj(aspect);
         self.streamer.update(cam.pos, vp, &mut self.gpu, &mut self.opaque, &mut self.water);
+        self.falling_draw.emit(&mut self.gpu, &self.engine.planet, &self.falling, cam.pos, &mut self.opaque);
         let uni = cam.uniform(aspect, self.engine.sun_at(cam.pos), &self.engine.planet, self.engine.water_alpha);
-        let fs = self.gpu.render(&uni, &self.opaque, &self.water, None);
+        // Water is hidden at draw time, never in generation (review #5).
+        let water: &[DrawRecord] = if self.engine.hide_water { &[] } else { &self.water };
+        let fs = self.gpu.render(&uni, &self.opaque, water, None);
         let cpu_ms = t0.elapsed().as_secs_f64() * 1e3;
         let gpu_ms = self.gpu.wait_gpu_ms();
         FrameSample { cpu_ms, gpu_ms, wall_ms: t0.elapsed().as_secs_f64() * 1e3, tris: fs.triangles, water_tris: fs.water_triangles, draws: fs.draws + fs.water_draws }

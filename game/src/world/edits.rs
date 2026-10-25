@@ -1,10 +1,18 @@
-//! Edited chunks: the overlay the player writes.
+//! Edited chunks: the authoritative overlay the player and the simulation
+//! write.
 //!
-//! An edited LOD-0 chunk is authoritative: it is held in full (dense ids)
-//! and is never regenerated. Generation stays a pure function; `World`
-//! applies this overlay after it. The store also tracks which chunks are
-//! unsaved (dirty) and which loaded chunks at any LOD must be remeshed
-//! (invalidated), so saving and streaming stay out of the edit path.
+//! An edited LOD-0 chunk is held in full (dense ids, water levels and a
+//! revision) and is never regenerated. Generation stays a pure function;
+//! `World` applies this overlay after it. The store also tracks which chunks
+//! are unsaved (dirty, by revision), which loaded chunks at any LOD must be
+//! remeshed (invalidated) and which blocks changed (for the simulation's
+//! neighbour notifications), so saving, streaming and the simulation stay
+//! out of each other's way. All three are fed by one batch commit.
+//!
+//! Saving is acknowledged, not assumed (review #2): `dirty_snapshot` hands
+//! out the dirty chunks without clearing anything, and `acknowledge` clears
+//! only the revisions that were actually persisted, so a failed write is
+//! retried on the next save and a chunk edited during a save stays dirty.
 //!
 //! A spatial index keyed by ancestor chunk (every LOD up to `INDEX_LODS`)
 //! answers "which edited chunks lie under this coarse chunk?" without a
@@ -13,7 +21,7 @@
 
 use super::BlockId;
 use super::chunk::{VOXELS, index};
-use crate::grid::{ChunkKey, FastMap, FastSet};
+use crate::grid::{BlockPos, ChunkKey, FastMap, FastSet};
 use std::sync::RwLock;
 use std::time::Instant;
 
@@ -21,13 +29,48 @@ use std::time::Instant;
 /// 15 is 2^20 blocks wide, more than any supported face).
 const INDEX_LODS: u8 = 15;
 
+/// Water level of a block that is water (M2b's levels replace this).
+pub const WATER_FULL: u8 = 255;
+
+/// One edited chunk, in full.
+pub struct Edited {
+    pub ids: Vec<BlockId>,
+    /// Water level per voxel; None when no voxel holds water.
+    pub water: Option<Vec<u8>>,
+    /// Bumps on every change to this chunk.
+    pub rev: u64,
+}
+
+/// One block write for `commit`: chunk, voxel, new id, and the water level
+/// (None: full for a liquid block, empty otherwise).
+#[derive(Clone, Copy, Debug)]
+pub struct Write {
+    pub key: ChunkKey,
+    pub x: usize,
+    pub y: usize,
+    pub z: usize,
+    pub id: BlockId,
+    pub level: Option<u8>,
+}
+
+/// A dirty chunk as a save sees it.
+pub struct DirtyChunk {
+    pub key: ChunkKey,
+    pub rev: u64,
+    pub ids: Vec<BlockId>,
+    pub water: Option<Vec<u8>>,
+}
+
 #[derive(Default)]
 struct Inner {
-    chunks: FastMap<ChunkKey, Vec<BlockId>>,
+    chunks: FastMap<ChunkKey, Edited>,
     /// Edited LOD-0 chunks under each ancestor (LODs 1..=INDEX_LODS).
     under: FastMap<ChunkKey, Vec<ChunkKey>>,
     dirty: FastSet<ChunkKey>,
     invalidated: Vec<ChunkKey>,
+    /// Every block that changed, in write order, whoever changed it: the
+    /// simulation drains this each tick to notify the neighbours.
+    changed: Vec<BlockPos>,
     last_edit: Option<Instant>,
     first_dirty: Option<Instant>,
     /// Bumps on every change (cheap "anything new?" check).
@@ -41,6 +84,39 @@ impl Inner {
             anc = anc.parent().expect("lod < 63");
             self.under.entry(anc).or_default().push(key);
         }
+    }
+
+    fn mark_dirty(&mut self, key: ChunkKey) {
+        let now = Instant::now();
+        self.dirty.insert(key);
+        self.last_edit = Some(now);
+        self.first_dirty.get_or_insert(now);
+        self.generation += 1;
+    }
+
+    /// Apply one write to a chunk already in the map; whether it changed anything.
+    fn write(&mut self, w: &Write, liquid: bool) -> bool {
+        let e = self.chunks.get_mut(&w.key).expect("chunk present");
+        let v = index(w.x, w.y, w.z);
+        let level = w.level.unwrap_or(if liquid { WATER_FULL } else { 0 });
+        let had_level = e.water.as_ref().map_or(0, |l| l[v]);
+        if e.ids[v] == w.id && had_level == level {
+            return false;
+        }
+        e.ids[v] = w.id;
+        if level != had_level {
+            if level != 0 && e.water.is_none() {
+                e.water = Some(vec![0u8; VOXELS]);
+            }
+            if let Some(l) = e.water.as_mut() {
+                l[v] = level;
+                if level == 0 && l.iter().all(|&x| x == 0) {
+                    e.water = None;
+                }
+            }
+        }
+        e.rev += 1;
+        true
     }
 }
 
@@ -77,17 +153,34 @@ impl EditStore {
 
     /// Block of an edited chunk; None when the chunk is not edited.
     pub fn get(&self, key: ChunkKey, x: usize, y: usize, z: usize) -> Option<BlockId> {
-        self.inner.read().unwrap().chunks.get(&key).map(|d| d[index(x, y, z)])
+        self.inner.read().unwrap().chunks.get(&key).map(|e| e.ids[index(x, y, z)])
+    }
+
+    /// Water level of an edited chunk's voxel; None when the chunk is not edited.
+    pub fn water_level(&self, key: ChunkKey, x: usize, y: usize, z: usize) -> Option<u8> {
+        self.inner.read().unwrap().chunks.get(&key).map(|e| e.water.as_ref().map_or(0, |l| l[index(x, y, z)]))
+    }
+
+    /// Revision of an edited chunk; None when the chunk is not edited.
+    pub fn revision(&self, key: ChunkKey) -> Option<u64> {
+        self.inner.read().unwrap().chunks.get(&key).map(|e| e.rev)
     }
 
     /// Run `f` over an edited chunk's dense ids (under the read lock).
     pub fn with_chunk<R>(&self, key: ChunkKey, f: impl FnOnce(&[BlockId]) -> R) -> Option<R> {
-        self.inner.read().unwrap().chunks.get(&key).map(|d| f(d))
+        self.inner.read().unwrap().chunks.get(&key).map(|e| f(&e.ids))
     }
 
-    /// Every edited chunk key (LOD 0).
+    /// Run `f` over an edited chunk's ids and water levels (under the read lock).
+    pub fn with_edited<R>(&self, key: ChunkKey, f: impl FnOnce(&Edited) -> R) -> Option<R> {
+        self.inner.read().unwrap().chunks.get(&key).map(f)
+    }
+
+    /// Every edited chunk key (LOD 0), sorted.
     pub fn keys(&self) -> Vec<ChunkKey> {
-        self.inner.read().unwrap().chunks.keys().copied().collect()
+        let mut v: Vec<ChunkKey> = self.inner.read().unwrap().chunks.keys().copied().collect();
+        v.sort();
+        v
     }
 
     /// Is any chunk inside `anc` edited (itself, at LOD 0)?
@@ -114,46 +207,59 @@ impl EditStore {
         g.under.get(&anc).cloned().unwrap_or_default()
     }
 
-    /// Set one block. `natural` produces the generator's dense chunk when
-    /// this chunk is edited for the first time. Returns whether anything
-    /// changed. Marks the chunk dirty; the caller computes invalidations.
-    pub fn set(&self, key: ChunkKey, x: usize, y: usize, z: usize, id: BlockId, natural: impl FnOnce() -> Vec<BlockId>) -> bool {
-        debug_assert_eq!(key.lod, 0);
+    /// Apply a batch of writes under one lock. `natural` produces the
+    /// generator's dense ids and water levels for a chunk edited for the
+    /// first time; `liquid` says whether an id is water (its level defaults
+    /// to full). Returns, per write, whether it changed anything; changed
+    /// chunks are marked dirty. The caller computes invalidations and the
+    /// change log from the result (`World::commit` does).
+    pub fn commit(&self, writes: &[Write], mut natural: impl FnMut(ChunkKey) -> (Vec<BlockId>, Option<Vec<u8>>), liquid: impl Fn(BlockId) -> bool) -> Vec<bool> {
         let mut g = self.inner.write().unwrap();
-        if !g.chunks.contains_key(&key) {
-            let d = natural();
-            assert_eq!(d.len(), VOXELS);
-            g.chunks.insert(key, d);
-            g.index(key);
+        let mut out = Vec::with_capacity(writes.len());
+        for w in writes {
+            debug_assert_eq!(w.key.lod, 0);
+            if !g.chunks.contains_key(&w.key) {
+                let (ids, water) = natural(w.key);
+                assert_eq!(ids.len(), VOXELS);
+                if let Some(l) = &water {
+                    assert_eq!(l.len(), VOXELS);
+                }
+                g.chunks.insert(w.key, Edited { ids, water, rev: 0 });
+                g.index(w.key);
+            }
+            let changed = g.write(w, liquid(w.id));
+            if changed {
+                g.mark_dirty(w.key);
+            }
+            out.push(changed);
         }
-        let dense = g.chunks.get_mut(&key).expect("just inserted");
-        let slot = &mut dense[index(x, y, z)];
-        if *slot == id {
-            return false;
-        }
-        *slot = id;
-        let now = Instant::now();
-        g.dirty.insert(key);
-        g.last_edit = Some(now);
-        g.first_dirty.get_or_insert(now);
-        g.generation += 1;
-        true
+        out
+    }
+
+    /// Set one block (tests and tools). `natural` produces the generator's
+    /// dense ids when this chunk is edited for the first time; a liquid id
+    /// gets a full water level. Returns whether anything changed.
+    pub fn set(&self, key: ChunkKey, x: usize, y: usize, z: usize, id: BlockId, natural: impl FnOnce() -> Vec<BlockId>) -> bool {
+        let mut natural = Some(natural);
+        self.commit(&[Write { key, x, y, z, id, level: None }], |_| (natural.take().expect("one chunk")(), None), |_| false)[0]
     }
 
     /// Insert a whole chunk (loading a save). Not dirty unless asked.
-    pub fn insert_chunk(&self, key: ChunkKey, dense: Vec<BlockId>, dirty: bool) {
-        assert_eq!(dense.len(), VOXELS);
+    pub fn insert_chunk(&self, key: ChunkKey, ids: Vec<BlockId>, water: Option<Vec<u8>>, dirty: bool) {
+        assert_eq!(ids.len(), VOXELS);
+        if let Some(l) = &water {
+            assert_eq!(l.len(), VOXELS);
+        }
         let mut g = self.inner.write().unwrap();
-        if g.chunks.insert(key, dense).is_none() {
+        let water = water.filter(|l| l.iter().any(|&x| x != 0));
+        if g.chunks.insert(key, Edited { ids, water, rev: 0 }).is_none() {
             g.index(key);
         }
         if dirty {
-            let now = Instant::now();
-            g.dirty.insert(key);
-            g.last_edit = Some(now);
-            g.first_dirty.get_or_insert(now);
+            g.mark_dirty(key);
+        } else {
+            g.generation += 1;
         }
-        g.generation += 1;
     }
 
     pub fn push_invalidated(&self, keys: impl IntoIterator<Item = ChunkKey>) {
@@ -173,6 +279,20 @@ impl EditStore {
         self.inner.read().unwrap().invalidated.len()
     }
 
+    /// Record a changed block for the simulation (`World::commit` does this).
+    pub fn push_changed(&self, bps: impl IntoIterator<Item = BlockPos>) {
+        self.inner.write().unwrap().changed.extend(bps);
+    }
+
+    /// Blocks changed since the last call, in write order.
+    pub fn take_changed(&self) -> Vec<BlockPos> {
+        std::mem::take(&mut self.inner.write().unwrap().changed)
+    }
+
+    pub fn pending_changes(&self) -> usize {
+        self.inner.read().unwrap().changed.len()
+    }
+
     pub fn dirty_count(&self) -> usize {
         self.inner.read().unwrap().dirty.len()
     }
@@ -189,21 +309,42 @@ impl EditStore {
         quiet || long
     }
 
-    /// The dirty chunks' dense ids, clearing the dirty set.
-    pub fn take_dirty(&self) -> Vec<(ChunkKey, Vec<BlockId>)> {
+    /// The dirty chunks with their revisions, sorted by key, without
+    /// clearing anything: a save writes them and then `acknowledge`s.
+    pub fn dirty_snapshot(&self) -> Vec<DirtyChunk> {
+        let g = self.inner.read().unwrap();
+        let mut out: Vec<DirtyChunk> = g.dirty.iter().filter_map(|k| g.chunks.get(k).map(|e| DirtyChunk { key: *k, rev: e.rev, ids: e.ids.clone(), water: e.water.clone() })).collect();
+        out.sort_by_key(|d| d.key);
+        out
+    }
+
+    /// A save persisted these revisions: the chunks stop being dirty unless
+    /// they changed again in the meantime.
+    pub fn acknowledge(&self, saved: &[(ChunkKey, u64)]) {
         let mut g = self.inner.write().unwrap();
-        let keys: Vec<ChunkKey> = g.dirty.drain().collect();
-        g.first_dirty = None;
-        let mut out: Vec<(ChunkKey, Vec<BlockId>)> = keys.into_iter().filter_map(|k| g.chunks.get(&k).map(|d| (k, d.clone()))).collect();
+        for (k, rev) in saved {
+            if g.chunks.get(k).is_some_and(|e| e.rev == *rev) {
+                g.dirty.remove(k);
+            }
+        }
+        if g.dirty.is_empty() {
+            g.first_dirty = None;
+        }
+    }
+
+    /// Every edited chunk's ids (for tests and hashing), sorted by key.
+    pub fn snapshot(&self) -> Vec<(ChunkKey, Vec<BlockId>)> {
+        let g = self.inner.read().unwrap();
+        let mut out: Vec<(ChunkKey, Vec<BlockId>)> = g.chunks.iter().map(|(k, e)| (*k, e.ids.clone())).collect();
         out.sort_by_key(|(k, _)| *k);
         out
     }
 
-    /// Every edited chunk (for tests and whole-store saves).
-    pub fn snapshot(&self) -> Vec<(ChunkKey, Vec<BlockId>)> {
+    /// Every edited chunk in full (ids, water, revision), sorted by key.
+    pub fn snapshot_full(&self) -> Vec<DirtyChunk> {
         let g = self.inner.read().unwrap();
-        let mut out: Vec<(ChunkKey, Vec<BlockId>)> = g.chunks.iter().map(|(k, d)| (*k, d.clone())).collect();
-        out.sort_by_key(|(k, _)| *k);
+        let mut out: Vec<DirtyChunk> = g.chunks.iter().map(|(k, e)| DirtyChunk { key: *k, rev: e.rev, ids: e.ids.clone(), water: e.water.clone() }).collect();
+        out.sort_by_key(|d| d.key);
         out
     }
 }
@@ -220,19 +361,78 @@ mod tests {
         assert!(!s.set(key, 0, 0, 0, 1, natural), "same block is not a change");
         assert_eq!(s.len(), 1, "the chunk becomes authoritative on first touch");
         assert_eq!(s.dirty_count(), 0);
+        assert_eq!(s.revision(key), Some(0));
         assert!(s.set(key, 0, 0, 0, 0, natural));
         assert_eq!(s.get(key, 0, 0, 0), Some(0));
         assert_eq!(s.get(key, 0, 0, 1), Some(1));
+        assert_eq!(s.revision(key), Some(1));
         assert_eq!(s.dirty_count(), 1);
         assert!(!s.due_for_save(Instant::now()), "not yet quiet");
         assert!(s.due_for_save(Instant::now() + std::time::Duration::from_secs(3)));
-        let d = s.take_dirty();
+        let d = s.dirty_snapshot();
         assert_eq!(d.len(), 1);
-        assert_eq!(d[0].1[0], 0);
+        assert_eq!(d[0].ids[0], 0);
+        assert_eq!(d[0].rev, 1);
+        assert_eq!(s.dirty_count(), 1, "a snapshot clears nothing");
+        s.acknowledge(&[(key, 1)]);
         assert_eq!(s.dirty_count(), 0);
         s.push_invalidated([key, key, ChunkKey { lod: 1, ..key }]);
         assert_eq!(s.take_invalidated().len(), 2);
         assert!(s.take_invalidated().is_empty());
+    }
+
+    /// Review #2: a chunk edited while a save is in flight stays dirty, and
+    /// a save that fails leaves everything dirty for the next attempt.
+    #[test]
+    fn acknowledging_a_stale_revision_keeps_the_chunk_dirty() {
+        let s = EditStore::new();
+        let key = ChunkKey::neisor(1, 0, 3, 4, 5);
+        let natural = || vec![1u16; VOXELS];
+        s.set(key, 0, 0, 0, 2, natural);
+        let d = s.dirty_snapshot();
+        assert_eq!((d[0].key, d[0].rev), (key, 1));
+        // "Written" while another edit lands: the acknowledgement is stale.
+        s.set(key, 0, 0, 1, 3, natural);
+        s.acknowledge(&[(key, 1)]);
+        assert_eq!(s.dirty_count(), 1, "rev 2 is unsaved");
+        s.acknowledge(&[(key, 2)]);
+        assert_eq!(s.dirty_count(), 0);
+        // A failed save acknowledges nothing: the dirty set is intact.
+        s.set(key, 0, 0, 2, 4, natural);
+        let _ = s.dirty_snapshot();
+        assert_eq!(s.dirty_count(), 1);
+        assert!(s.due_for_save(Instant::now() + std::time::Duration::from_secs(20)), "still due");
+    }
+
+    /// Review #15: water levels are stored, not reconstructed.
+    #[test]
+    fn the_store_holds_water_levels_and_a_batch_commits_under_one_lock() {
+        let s = EditStore::new();
+        let key = ChunkKey::neisor(2, 0, 1, 1, 1);
+        let water: BlockId = 8;
+        let liquid = |id: BlockId| id == water;
+        let natural = |_: ChunkKey| (vec![1u16; VOXELS], None);
+        let w = |x: usize, id: BlockId, level: Option<u8>| Write { key, x, y: 0, z: 0, id, level };
+        let changed = s.commit(&[w(0, water, None), w(1, water, Some(17)), w(2, 1, None), w(3, 0, None)], natural, liquid);
+        assert_eq!(changed, vec![true, true, false, true]);
+        assert_eq!(s.water_level(key, 0, 0, 0), Some(WATER_FULL), "a liquid block defaults to full");
+        assert_eq!(s.water_level(key, 1, 0, 0), Some(17), "an explicit level is kept");
+        assert_eq!(s.water_level(key, 2, 0, 0), Some(0));
+        assert_eq!(s.revision(key), Some(3));
+        assert_eq!(s.dirty_count(), 1);
+        // Changing only the level is a change; draining every level drops the layer.
+        assert_eq!(s.commit(&[w(1, water, Some(16))], natural, liquid), vec![true]);
+        assert_eq!(s.commit(&[w(0, 0, None), w(1, 0, None)], natural, liquid), vec![true, true]);
+        assert!(s.with_edited(key, |e| e.water.is_none()).unwrap());
+        // Loading keeps the levels it is given, dropping an all-zero layer.
+        let key2 = ChunkKey::neisor(2, 0, 1, 1, 2);
+        let mut levels = vec![0u8; VOXELS];
+        levels[5] = 9;
+        s.insert_chunk(key2, vec![0u16; VOXELS], Some(levels), false);
+        assert_eq!(s.water_level(key2, 0, 0, 5), Some(9));
+        s.insert_chunk(ChunkKey::neisor(2, 0, 1, 1, 3), vec![0u16; VOXELS], Some(vec![0u8; VOXELS]), false);
+        assert!(s.with_edited(ChunkKey::neisor(2, 0, 1, 1, 3), |e| e.water.is_none()).unwrap());
+        assert_eq!(s.dirty_count(), 1, "loading is not dirt");
     }
 
     #[test]
@@ -246,7 +446,7 @@ mod tests {
         for k in [a, b, c, d] {
             s.set(k, 0, 0, 0, 0, natural);
         }
-        s.insert_chunk(a, natural(), false); // re-inserting does not double-index
+        s.insert_chunk(a, natural(), None, false); // re-inserting does not double-index
         let under = |anc: ChunkKey| {
             let mut v = s.edited_under(anc);
             v.sort();

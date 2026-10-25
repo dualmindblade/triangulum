@@ -6,6 +6,7 @@ use crate::engine::{Engine, Preset};
 use crate::player::{Input, Mode, STEP};
 use crate::render::{DrawRecord, Renderer};
 use crate::session::Session;
+use crate::sim::draw::FallingDraws;
 use crate::stream::Streamer;
 use crate::ui::{EguiPaint, Hud, draw_hud, outline_segments};
 use std::collections::{HashSet, VecDeque};
@@ -36,8 +37,11 @@ struct Gfx {
     egui_paint: EguiPaint,
 }
 
-/// Holding a mouse button repeats its action this often.
-const REPEAT_S: f64 = 0.25;
+/// Holding a mouse button repeats its action every this many fixed steps
+/// (0.25 s), counted in simulation steps rather than wall time so a held
+/// click breaks the same blocks at the same steps whatever the frame rate
+/// (review #16; the first click still lands on its event).
+const REPEAT_STEPS: u64 = 15;
 
 struct App {
     session: Session,
@@ -64,8 +68,10 @@ struct App {
     screenshot: Option<String>,
     exit_after: Option<f64>,
     want_exit: bool,
-    mouse_held: Option<(MouseButton, Instant)>,
+    /// The held button and the session step it last acted on.
+    mouse_held: Option<(MouseButton, u64)>,
     save_note: String,
+    falling_draw: FallingDraws,
 }
 
 impl App {
@@ -118,14 +124,6 @@ impl App {
         println!("preset {}: {}", self.preset, p.name);
     }
 
-    /// Swap the streamer for the session's current engine (water toggle, reload).
-    fn reset_streamer(&mut self) {
-        if let (Some(s), Some(g)) = (&mut self.streamer, &mut self.gfx) {
-            s.clear(&mut g.gpu);
-        }
-        self.streamer = Some(self.engine().streamer());
-    }
-
     fn input(&self) -> Input {
         let k = &self.keys;
         Input {
@@ -169,6 +167,12 @@ impl App {
         let mut steps = 0;
         while self.acc >= STEP && steps < 8 {
             self.session.step(&input, STEP);
+            if let Some((button, since)) = self.mouse_held {
+                if self.session.steps() - since >= REPEAT_STEPS {
+                    self.mouse_action(button);
+                    self.mouse_held = Some((button, self.session.steps()));
+                }
+            }
             if let Some(gfx) = &mut self.gfx {
                 gfx.gpu.sky.clock.advance(STEP);
             }
@@ -176,13 +180,9 @@ impl App {
             steps += 1;
         }
         if steps == 8 {
+            // Overloaded: drop the backlog rather than spiral. A replay (M2c)
+            // counts steps, not wall time, so this costs it nothing.
             self.acc = 0.0;
-        }
-        if let Some((button, since)) = self.mouse_held {
-            if since.elapsed().as_secs_f64() >= REPEAT_S {
-                self.mouse_action(button);
-                self.mouse_held = Some((button, Instant::now()));
-            }
         }
         // Autosave (debounced).
         match self.session.save_if_due(now) {
@@ -208,12 +208,15 @@ impl App {
         let aspect = gfx.gpu.width as f64 / gfx.gpu.height as f64;
         let vp = cam.view_proj(aspect);
         streamer.update(cam.pos, vp, &mut gfx.gpu, &mut self.opaque, &mut self.water);
+        self.falling_draw.emit(&mut gfx.gpu, &self.session.engine.planet, &self.session.sim.view(), cam.pos, &mut self.opaque);
         let engine = self.session.engine.clone();
         let uni = cam.uniform(aspect, engine.sun_at(cam.pos), &engine.planet, engine.water_alpha);
         let (face, i, j, k) = engine.planet.lattice_of_pos(cam.pos);
         let eye_block = engine.world.block_lattice(face, i.floor() as i64, j.floor() as i64, k.floor() as i64);
-        gfx.gpu.sky.set_observer(cam.pos, engine.registry.is_liquid(eye_block));
-        let fs = gfx.gpu.render(&uni, &self.opaque, &self.water, Some(&view));
+        // Water is hidden here, at draw time, never in generation.
+        gfx.gpu.sky.set_observer(cam.pos, !engine.hide_water && engine.registry.is_liquid(eye_block));
+        let water: &[DrawRecord] = if engine.hide_water { &[] } else { &self.water };
+        let fs = gfx.gpu.render(&uni, &self.opaque, water, Some(&view));
         self.cpu_ms = t0.elapsed().as_secs_f64() * 1e3;
         self.last_tris = (fs.triangles, fs.water_triangles, (fs.draws + fs.water_draws) as usize);
         let gpu_ms = gfx.gpu.poll_gpu_ms();
@@ -298,6 +301,7 @@ impl App {
             edits: engine.edits.len(),
             dirty: engine.edits.dirty_count(),
             save_note: self.save_note.clone(),
+            sim_line: self.session.sim.describe(),
         }
     }
 }
@@ -382,9 +386,9 @@ impl ApplicationHandler for App {
                                     }
                                 }
                                 KeyCode::KeyF => {
+                                    // A view flag: the streamer keeps its chunks.
                                     let hide = !self.engine().hide_water;
                                     self.session.set_hide_water(hide);
-                                    self.reset_streamer();
                                 }
                                 KeyCode::KeyG => self.session.toggle_mode(),
                                 KeyCode::KeyR => {
@@ -414,7 +418,7 @@ impl ApplicationHandler for App {
                     self.set_capture(true);
                 } else {
                     self.mouse_action(button);
-                    self.mouse_held = Some((button, Instant::now()));
+                    self.mouse_held = Some((button, self.session.steps()));
                 }
             }
             WindowEvent::MouseInput { state: ElementState::Released, .. } => self.mouse_held = None,
@@ -486,6 +490,7 @@ pub fn run(session: Session, opts: AppOptions) {
         want_exit: false,
         mouse_held: None,
         save_note: String::new(),
+        falling_draw: FallingDraws::default(),
     };
     el.run_app(&mut app).unwrap();
 }

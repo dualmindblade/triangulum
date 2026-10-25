@@ -6,6 +6,7 @@
 use crate::engine::Engine;
 use crate::grid::BlockPos;
 use crate::player::{self, Frame, Hit, Input, Mode, Player, REACH_M};
+use crate::sim::{STEPS_PER_TICK, Sim, Snapshot};
 use crate::world::save::{self, SaveDir};
 use crate::world::{BlockId, EditStore};
 use glam::DVec3;
@@ -20,20 +21,55 @@ pub struct Session {
     pub bake_sha256: String,
     pub last_save: Option<Instant>,
     pub saved_chunks: usize,
+    /// The simulation (M2a): ticks every `STEPS_PER_TICK` player steps.
+    pub sim: Sim,
+    steps: u64,
 }
 
 impl Session {
-    pub fn new(engine: Arc<Engine>, player: Player, save: Option<SaveDir>, bake_sha256: String) -> Self {
-        Self { engine, player, save, bake_sha256, last_save: None, saved_chunks: 0 }
+    pub fn new(engine: Arc<Engine>, player: Player, save: Option<SaveDir>, bake_sha256: String, sim: Sim) -> Self {
+        Self { engine, player, save, bake_sha256, last_save: None, saved_chunks: 0, sim, steps: 0 }
     }
 
     pub fn planet(&self) -> &crate::grid::Planet {
         &self.engine.planet
     }
 
+    /// One fixed 60 Hz step of the player, and every third step one
+    /// simulation tick (20 Hz), on this thread. The sky clock is advanced
+    /// by the caller on the same steps with its own speed; it never reaches
+    /// the simulation.
     pub fn step(&mut self, input: &Input, dt: f64) {
         let world = self.engine.world.clone();
         self.player.step(world.as_ref(), &self.engine.planet, input, dt);
+        self.steps += 1;
+        if self.sim.config.enabled && self.steps % STEPS_PER_TICK as u64 == 0 {
+            self.sim.step(world.as_ref(), self.player.pos);
+        }
+    }
+
+    /// Fixed steps taken so far (the app's input repeat counts these).
+    pub fn steps(&self) -> u64 {
+        self.steps
+    }
+
+    /// The world-state hash (`Sim::state_hash`), after absorbing pending changes.
+    pub fn sim_hash(&mut self) -> String {
+        let world = self.engine.world.clone();
+        let _ = self.sim.snapshot(world.as_ref());
+        self.sim.state_hash(&self.engine.edits)
+    }
+
+    /// Restore the simulation from a save directory's `sim.bin`, or start
+    /// it fresh when there is none.
+    pub fn load_sim(dir: Option<&SaveDir>, config: crate::sim::SimConfig) -> Result<Sim, String> {
+        match dir.map(|d| d.read_sim()).transpose()?.flatten() {
+            Some(bytes) => {
+                let snap = Snapshot::from_bytes(&bytes).map_err(|e| format!("refusing to load the simulation state of {}: {e}", dir.unwrap().path.display()))?;
+                Ok(Sim::from_snapshot(config, snap))
+            }
+            None => Ok(Sim::new(config)),
+        }
     }
 
     /// The block under the crosshair within reach.
@@ -139,9 +175,16 @@ impl Session {
         Ok(0)
     }
 
+    /// Write the dirty chunks and the simulation state. The state goes
+    /// along whenever chunks are written, whenever it changed, and whenever
+    /// the save already exists (so its tick stays current); an untouched
+    /// world creates nothing.
     pub fn save_now(&mut self) -> Result<usize, String> {
         let Some(dir) = &self.save else { return Ok(0) };
-        let n = dir.flush(&self.engine.edits, &self.engine.config, &self.engine.registry, &self.bake_sha256, self.engine.world.water_id())?;
+        let world = self.engine.world.clone();
+        let write_sim = self.engine.edits.dirty_count() > 0 || self.sim.is_dirty() || self.sim.has_state() || dir.exists();
+        let snap = write_sim.then(|| self.sim.snapshot(world.as_ref()).to_bytes());
+        let n = dir.flush(&self.engine.edits, &self.engine.config, &self.engine.registry, &self.bake_sha256, snap.as_deref())?;
         if n > 0 {
             self.last_save = Some(Instant::now());
             self.saved_chunks += n;
@@ -149,18 +192,19 @@ impl Session {
         Ok(n)
     }
 
-    /// Flush, then rebuild the world from the save on disk (what quitting
-    /// and starting again does). Returns the new engine; the caller resets
-    /// its streamer.
+    /// Flush, then rebuild the world and the simulation from the save on
+    /// disk (what quitting and starting again does). Returns the new
+    /// engine; the caller resets its streamer.
     pub fn reload(&mut self) -> Result<(Arc<Engine>, save::LoadReport), String> {
         self.save_now()?;
         let edits = Arc::new(EditStore::new());
         let report = match &self.save {
             Some(dir) => dir.load_into(&self.engine.config, &self.engine.registry, &self.bake_sha256, &edits)?,
-            None => save::LoadReport { chunks: 0, warnings: Vec::new() },
+            None => save::LoadReport { chunks: 0, warnings: Vec::new(), generation: 0 },
         };
         let engine = Arc::new(self.engine.with_edits(edits));
         self.engine = engine.clone();
+        self.sim = Self::load_sim(self.save.as_ref(), self.sim.config)?;
         Ok((engine, report))
     }
 
@@ -204,6 +248,23 @@ impl Session {
             "hide_water": self.engine.hide_water,
             "crosshair": serde_json::Value::Null,
         });
+        // The simulation (M2a); a second object, the json! macro has a depth limit.
+        let sim = serde_json::json!({
+            "sim_enabled": self.sim.config.enabled,
+            "sim_tick": self.sim.tick(),
+            "falling": self.sim.falling().len(),
+            "queued": self.sim.queued(),
+            "frozen": self.sim.frozen_count(),
+            "sim_active_chunks": self.sim.active_chunks(),
+            "falls": self.sim.stats.falls, "landings": self.sim.stats.landings, "vanished": self.sim.stats.vanished,
+            "tick_ms_last": self.sim.stats.last_us as f64 / 1e3,
+            "tick_ms_avg": self.sim.stats.avg_us() / 1e3,
+            "tick_ms_max": self.sim.stats.max_us as f64 / 1e3,
+            "refocus_ms": self.sim.stats.refocus_us as f64 / 1e3,
+        });
+        if let (serde_json::Value::Object(m), serde_json::Value::Object(s)) = (&mut v, sim) {
+            m.extend(s);
+        }
         if let Some(h) = pick {
             v["crosshair"] = serde_json::Value::String(name(h.id));
             v["crosshair_face"] = h.block.face.into();
@@ -225,5 +286,13 @@ impl Session {
         let f = Frame::at(&self.engine.planet, self.player.pos);
         let (ci, cj, ck) = f.feet_cell();
         self.block_name(f.face, ci + di, cj + dj, ck + dk)
+    }
+
+    /// Blocks in flight in the column DI, DJ from the feet (for `falling_rel[DI,DJ]` asserts).
+    pub fn falling_in_column_rel(&self, di: i64, dj: i64) -> usize {
+        let f = Frame::at(&self.engine.planet, self.player.pos);
+        let (ci, cj, _) = f.feet_cell();
+        let Some(bp) = self.engine.world.resolve_block(f.face, ci + di, cj + dj, 0) else { return 0 };
+        self.sim.falling().iter().filter(|b| b.face == bp.face && b.i == bp.i && b.j == bp.j).count()
     }
 }
