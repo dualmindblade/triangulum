@@ -99,6 +99,18 @@ impl Registry {
     pub fn colour_table(&self) -> Vec<[f32; 4]> {
         self.defs.iter().map(|d| [d.color[0], d.color[1], d.color[2], 1.0]).collect()
     }
+    /// The first nine solid blocks by id: what keys 1-9 place unless `--hotbar` says otherwise.
+    pub fn default_hotbar(&self) -> Vec<BlockId> {
+        self.defs.iter().filter(|d| d.solid && !d.name.starts_with("unused_")).map(|d| d.id).take(9).collect()
+    }
+    /// Resolve a comma-separated list of block names (for `--hotbar`).
+    pub fn hotbar_from(&self, names: &str) -> Result<Vec<BlockId>, String> {
+        let ids: Vec<BlockId> = names.split(',').map(|n| self.id(n.trim())).collect::<Result<_, _>>()?;
+        if ids.is_empty() || ids.len() > 9 {
+            return Err(format!("the hotbar takes 1 to 9 blocks, got {}", ids.len()));
+        }
+        Ok(ids)
+    }
 }
 
 #[cfg(test)]

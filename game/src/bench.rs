@@ -116,6 +116,12 @@ impl Harness {
         self.gpu.save_png(path);
     }
 
+    /// Save the frame with an arbitrary egui overlay (the harness draws the game HUD).
+    pub fn save_with_ui(&mut self, path: &str, build: &dyn Fn(&egui::Context)) {
+        paint_offscreen(&self.egui_ctx, &mut self.egui_paint, &self.gpu, build);
+        self.gpu.save_png(path);
+    }
+
     pub fn run_static(&mut self, poses: &[Pose], frames: usize) -> String {
         let mut report = String::new();
         report.push_str("| pose | GPU avg ms | GPU p95 | CPU avg ms | CPU p95 | tris | water tris | draws | drawn chunks/LOD | loaded | mesh VRAM MB | settle s | png |\n");

@@ -1,12 +1,12 @@
-//! The engine context shared by the app, the bench and the render tools:
-//! planet, registry, bake, generator, LOD policy, lighting, and the
-//! notable places on the planet.
+//! The engine context shared by the app, the bench, the harness and the
+//! render tools: planet, registry, bake, generator, edits, LOD policy,
+//! lighting, and the notable places on the planet.
 
 use crate::camera::Camera;
 use crate::grid::{Planet, WorldConfig};
 use crate::mesh::MeshOptions;
 use crate::stream::{LodParams, Streamer};
-use crate::world::Registry;
+use crate::world::{BlockId, EditStore, Registry, World};
 use crate::worldgen::bake::Bake;
 use crate::worldgen::{Generator, Marker};
 use glam::DVec3;
@@ -57,6 +57,10 @@ pub struct Engine {
     pub registry: Arc<Registry>,
     pub bake: Arc<dyn Bake>,
     pub generator: Arc<Generator>,
+    /// The edit overlay, shared by every World built from this engine.
+    pub edits: Arc<EditStore>,
+    /// Generator + edits: what streaming, physics and picking read.
+    pub world: Arc<World>,
     pub lod: LodParams,
     pub mesh_opts: MeshOptions,
     pub sun: DVec3,
@@ -69,6 +73,8 @@ pub struct Engine {
     pub hide_water: bool,
     pub markers_on: bool,
     pub markers: Vec<Marker>,
+    /// Blocks on keys 1-9.
+    pub hotbar: Vec<BlockId>,
 }
 
 /// The prototype's two benchmark anchors (face, gnomonic a, b).
@@ -86,6 +92,7 @@ impl Engine {
         config: WorldConfig,
         registry: Arc<Registry>,
         bake: Arc<dyn Bake>,
+        edits: Arc<EditStore>,
         lod: LodParams,
         mesh_opts: MeshOptions,
         skirt: u32,
@@ -93,7 +100,7 @@ impl Engine {
         markers: Vec<Marker>,
         markers_on: bool,
     ) -> Result<Self, String> {
-        let planet = Planet::new(config.block_size_m, config.world_height, config.sea_level, config.columns_per_face);
+        let planet = Planet::try_new(config.block_size_m, config.world_height, config.sea_level, config.columns_per_face)?;
         let vscale = config.vertical_scale.unwrap_or(planet.radius / 6_371_000.0);
         let mut generator = Generator::new(planet, bake.clone(), config.seed, vscale, config.roughness, &registry)?;
         generator.skirt = skirt;
@@ -101,18 +108,22 @@ impl Engine {
         if markers_on {
             generator.markers = markers.clone();
         }
+        let generator = Arc::new(generator);
         let places = find_places(bake.as_ref());
         // Mid-morning sun from the south-east, relative to the hills anchor (fixed in world space).
         let hills = gnomonic_dir(HILLS.0, HILLS.1, HILLS.2);
         let (north, east, up) = Camera::local_frame(hills);
         let sun = (up * 0.75 + north * -0.35 + east * 0.55).normalize();
+        let hotbar = registry.default_hotbar();
         Ok(Self {
             colours: registry.colour_table(),
+            world: Arc::new(World::new(generator.clone(), registry.clone(), edits.clone())),
             config,
             planet,
             registry,
             bake,
-            generator: Arc::new(generator),
+            generator,
+            edits,
             lod,
             mesh_opts,
             sun,
@@ -124,6 +135,7 @@ impl Engine {
             hide_water,
             markers_on,
             markers,
+            hotbar,
         })
     }
 
@@ -139,24 +151,37 @@ impl Engine {
         (up * 0.75 + north * -0.35 + east * 0.55).normalize()
     }
 
-    /// A copy with different debug flags (the generator is rebuilt; the bake is shared).
+    /// A copy with different debug flags (the generator is rebuilt; the bake
+    /// and the edits are shared).
     pub fn with_flags(&self, hide_water: bool, markers_on: bool) -> Engine {
         self.with_markers(self.markers.clone(), hide_water, markers_on)
     }
 
     pub fn with_markers(&self, markers: Vec<Marker>, hide_water: bool, markers_on: bool) -> Engine {
+        self.rebuild(markers, hide_water, markers_on, self.edits.clone())
+    }
+
+    /// The same engine over another edit store (reloading a save).
+    pub fn with_edits(&self, edits: Arc<EditStore>) -> Engine {
+        self.rebuild(self.markers.clone(), self.hide_water, self.markers_on, edits)
+    }
+
+    fn rebuild(&self, markers: Vec<Marker>, hide_water: bool, markers_on: bool, edits: Arc<EditStore>) -> Engine {
         let mut generator = Generator::new(self.planet, self.bake.clone(), self.config.seed, self.generator.vscale, self.config.roughness, &self.registry).expect("generator");
         generator.skirt = self.skirt;
         generator.hide_water = hide_water;
         if markers_on {
             generator.markers = markers.clone();
         }
+        let generator = Arc::new(generator);
         Engine {
             config: self.config.clone(),
             planet: self.planet,
             registry: self.registry.clone(),
             bake: self.bake.clone(),
-            generator: Arc::new(generator),
+            world: Arc::new(World::new(generator.clone(), self.registry.clone(), edits.clone())),
+            generator,
+            edits,
             lod: self.lod,
             mesh_opts: self.mesh_opts,
             sun: self.sun,
@@ -169,11 +194,12 @@ impl Engine {
             hide_water,
             markers_on,
             markers,
+            hotbar: self.hotbar.clone(),
         }
     }
 
     pub fn streamer(&self) -> Streamer {
-        Streamer::new(self.generator.clone(), self.registry.clone(), self.lod, self.mesh_opts)
+        Streamer::new(self.world.clone(), self.registry.clone(), self.lod, self.mesh_opts)
     }
 
     /// Ground height under a direction (m above sea level, water = 0).

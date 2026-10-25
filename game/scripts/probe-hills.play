@@ -1,0 +1,18 @@
+# Terrain probe around the hills preset: which columns are flat along +i?
+atblock 2 107156 57519 549
+lookaxis +i 0
+state probe
+column -1 0
+column 0 0
+column 1 0
+column 2 0
+column 3 0
+column 4 0
+column 5 0
+column 6 0
+column 7 0
+column 8 0
+column 0 1
+column 0 -1
+column 3 1
+column 3 -1
