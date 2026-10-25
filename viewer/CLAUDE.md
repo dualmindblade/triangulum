@@ -1,3 +1,6 @@
+> **Legacy (frozen 2026-10-24).** New work happens in `game/`; see the root
+> `PLAN.md`. Docs referenced below now live in `docs/archive/`.
+
 # viewer/ — the game (Rust + wgpu)
 
 Renders Neisor and its moon on a gnomonic cube-sphere: an LOD quadtree mesh

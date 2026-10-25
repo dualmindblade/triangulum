@@ -65,3 +65,10 @@ tunnel-run.err
 # per-machine Claude Code settings (permissions differ per operator)
 .claude/settings.local.json
 .claude/worktrees/
+
+# New engine (Oct 2026): build output, baked worlds, saves, bench captures
+game/target/
+game/assets/world/
+game/saves/
+game/out/
+crates/*/target/

@@ -5,19 +5,19 @@ entire earthlike world — plate tectonics, climate, rivers, biomes, a creation
 chronicle — and then you fly down from orbit and walk on it, one-meter blocks
 under your feet, on the same planet the maps describe.
 
-Two stages live in this repo:
+What lives in this repo:
 
 * **`planetgen/`** — the planetary map generator (Python): tectonics,
   climate, hydrology, Köppen biomes, named geography. Outputs the
-  game-facing dataset and an atlas of map sheets.
-* **`viewer/`** — the game viewer (Rust + wgpu): renders the planet on a
-  gnomonic cube-sphere from orbit down to walking height, with one LOD/
-  procgen hierarchy, real voxels near the ground, rivers from the drainage
-  graph, walking physics, block editing, and a sky.
+  game-facing dataset and an atlas of map sheets. See `planetgen/DESIGN.md`.
+* **`game/`** — the new engine (Rust + wgpu), under construction since
+  October 2026: a 60x-smaller Neisor with real 3D blocks, voxel LODs from
+  your feet to orbit, and (soon) water and sand physics.
+* **`crates/cubesphere/`** — the equal-area cube-sphere grid both use.
+* **`viewer/`** — the July 2026 viewer, frozen. It still runs; see
+  `viewer/README.md`.
 
-See `DESIGN.md` for how each planetgen stage works, `viewer/README.md` for
-the viewer's controls and architecture, and `planet-generation.txt` for the
-original outline.
+Start with `PLAN.md` and `STATUS.md`. Design decisions are in `DESIGN.md`.
 
 ## Getting started from scratch
 
