@@ -29,6 +29,9 @@ pub struct LandPlaces {
     pub river: DVec3,
     /// Flat, temperate, green land away from rivers and coasts.
     pub plain: DVec3,
+    /// Mesa country: the strongest hard, quiet, dry, raised, gently sloping
+    /// rock (the landform's mesa weight at vertical scale 1/20).
+    pub mesa: DVec3,
 }
 
 /// Unit direction of equal-angle chart point (u, v) on `face`.
@@ -56,6 +59,8 @@ pub fn find_land_places(bake: &dyn Bake) -> LandPlaces {
     let step = std::f64::consts::FRAC_PI_2 / (res - 1) as f64;
     let mut river = (DVec3::Z, f64::MIN);
     let mut plain = (DVec3::Z, f64::MIN);
+    let mut mesa = (DVec3::Z, f64::MIN);
+    let probe = super::landform::Landform { seed: 0, radius: 90_569.2, vscale: 0.05, landform: 1.0, roughness: 1.0 };
     for f in 0..6u8 {
         for row in (8..res - 8).step_by(2) {
             for col in (8..res - 8).step_by(2) {
@@ -64,11 +69,18 @@ pub fn find_land_places(bake: &dyn Bake) -> LandPlaces {
                 if s.ocean > 0.01 || s.lake > 0.01 {
                     continue;
                 }
+                let m = probe.local(&s).mesa;
+                if m > mesa.1 + 1e-9 {
+                    mesa = (chart_dir(f, u, v), m);
+                }
                 if s.elev_km > 0.4 && s.rough_km > 0.15 && s.temp_c > 0.0 && s.temp_c < 20.0 && s.flow_log10 > river.1 {
-                    // Concave across 4 texels: the mean of the four neighbours sits above the centre.
-                    let k = 4.0 * step;
-                    let lap = [(k, 0.0), (-k, 0.0), (0.0, k), (0.0, -k)].iter().map(|(du, dv)| bake.sample(chart_dir(f, u + du, v + dv)).elev_km).sum::<f64>() - 4.0 * s.elev_km;
-                    if lap > 0.05 {
+                    // On the river's course: a ridge of the discharge field
+                    // (the smoothed flow falls off across it).
+                    let r = 90_569.2;
+                    let (fxx, fyy, fxy) = (s.flow_uu / (r * r), s.flow_vv / (r * r), s.flow_uv / (r * r));
+                    let m1 = 0.5 * (fxx + fyy) - (0.25 * (fxx - fyy) * (fxx - fyy) + fxy * fxy).sqrt();
+                    let grad = (s.flow_du * s.flow_du + s.flow_dv * s.flow_dv).sqrt() / r;
+                    if m1 < -4e-6 && grad / -m1 < 30.0 {
                         river = (chart_dir(f, u, v), s.flow_log10);
                     }
                 }
@@ -87,7 +99,7 @@ pub fn find_land_places(bake: &dyn Bake) -> LandPlaces {
             }
         }
     }
-    LandPlaces { peak: peak.0, coast: coast.0, river: river.0, plain: plain.0 }
+    LandPlaces { peak: peak.0, coast: coast.0, river: river.0, plain: plain.0, mesa: mesa.0 }
 }
 
 /// Bake-only ground height (m above sea, water = 0) at the generator's

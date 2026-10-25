@@ -47,6 +47,25 @@ pub struct BakeSample {
     /// radius to get km per metre along the chart axes.
     pub elev_du_km: f64,
     pub elev_dv_km: f64,
+    /// The elevation smoothed by a uniform cubic B-spline (C2, so its
+    /// curvature is continuous) and its first and second derivatives in the
+    /// same chart (km per radian, km per radian^2): finds valley axes.
+    pub smooth_du_km: f64,
+    pub smooth_dv_km: f64,
+    pub smooth_uu_km: f64,
+    pub smooth_vv_km: f64,
+    pub smooth_uv_km: f64,
+    /// `flow_log10` smoothed by the same B-spline, and its derivatives
+    /// (per radian, per radian^2): river courses are ridges of this field.
+    pub flow_smooth: f64,
+    pub flow_du: f64,
+    pub flow_dv: f64,
+    pub flow_uu: f64,
+    pub flow_vv: f64,
+    pub flow_uv: f64,
+    /// Distance from the sample to the nearest edge of its face raster, in
+    /// texels (derivatives are clamped within ~2 texels of an edge).
+    pub edge_texels: f64,
 }
 
 pub trait Bake: Send + Sync {
@@ -291,31 +310,65 @@ impl Bake for RasterBake {
         let dwy = catmull_dweights(fy);
         // Catmull-Rom bicubic for the smooth fields; taps edge-clamped per face.
         // The elevation's gradient comes from the same taps.
+        let (bx, by) = (bspline_weights(fx), bspline_weights(fy));
+        let (bdx, bdy) = (bspline_dweights(fx), bspline_dweights(fy));
+        let (bddx, bddy) = (bspline_ddweights(fx), bspline_ddweights(fy));
         let (mut elev, mut temp, mut precip) = (0.0, 0.0, 0.0);
         let (mut ex, mut ey) = (0.0, 0.0);
+        // B-spline derivatives: x, y, xx, yy, xy.
+        let (mut sx, mut sy, mut sxx, mut syy, mut sxy) = (0.0, 0.0, 0.0, 0.0, 0.0);
+        // The same for the flow field (when the bake has one).
+        let has_flow = !face.flow_log10.is_empty();
+        let (mut f0, mut fx_, mut fy_, mut fxx, mut fyy, mut fxy) = (0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
         for dy in -1..=2 {
             let yy = (iy + dy).clamp(0, res - 1) as usize * self.res;
             let (mut re, mut rex, mut rt, mut rp) = (0.0, 0.0, 0.0, 0.0);
+            let (mut b0, mut b1, mut b2) = (0.0, 0.0, 0.0);
+            let (mut c0, mut c1, mut c2) = (0.0, 0.0, 0.0);
             for dx in -1..=2 {
                 let xx = (ix + dx).clamp(0, res - 1) as usize;
-                let w = wx[(dx + 1) as usize];
+                let t = (dx + 1) as usize;
+                let w = wx[t];
                 let e = face.elev_km[yy + xx] as f64;
                 re += w * e;
-                rex += dwx[(dx + 1) as usize] * e;
+                rex += dwx[t] * e;
                 rt += w * face.temp_c[yy + xx] as f64;
                 rp += w * face.precip[yy + xx] as f64;
+                b0 += bx[t] * e;
+                b1 += bdx[t] * e;
+                b2 += bddx[t] * e;
+                if has_flow {
+                    let q = face.flow_log10[yy + xx] as f64;
+                    c0 += bx[t] * q;
+                    c1 += bdx[t] * q;
+                    c2 += bddx[t] * q;
+                }
             }
-            let w = wy[(dy + 1) as usize];
+            let t = (dy + 1) as usize;
+            let w = wy[t];
             elev += w * re;
             ex += w * rex;
-            ey += dwy[(dy + 1) as usize] * re;
+            ey += dwy[t] * re;
             temp += w * rt;
             precip += w * rp;
+            sx += by[t] * b1;
+            sy += bdy[t] * b0;
+            sxx += by[t] * b2;
+            syy += bddy[t] * b0;
+            sxy += bdy[t] * b1;
+            f0 += by[t] * c0;
+            fx_ += by[t] * c1;
+            fy_ += bdy[t] * c0;
+            fxx += by[t] * c2;
+            fyy += bddy[t] * c0;
+            fxy += bdy[t] * c1;
         }
         // Texel units -> per radian of the equal-angle chart: x = (p/2 + 1/2)(res - 1)
         // with p = u / (pi/4) (new bake) or p = a = tan u (old bake).
         let half = 0.5 * (self.res - 1) as f64;
         let (du, dv) = if self.equiangular { (half / FRAC_PI_4, half / FRAC_PI_4) } else { (half * (1.0 + a * a), half * (1.0 + b * b)) };
+        let m = (self.res - 1) as f64;
+        let edge_texels = x.min(m - x).min(y).min(m - y);
         // Bilinear for the mask-like fields.
         let (x1, y1) = (((ix + 1).min(res - 1)) as usize, ((iy + 1).min(res - 1)) as usize);
         let (ix, iy) = (ix as usize, iy as usize);
@@ -344,14 +397,27 @@ impl Bake for RasterBake {
             face: f as u8,
             elev_du_km: ex * du,
             elev_dv_km: ey * dv,
+            smooth_du_km: sx * du,
+            smooth_dv_km: sy * dv,
+            smooth_uu_km: sxx * du * du,
+            smooth_vv_km: syy * dv * dv,
+            smooth_uv_km: sxy * du * dv,
+            flow_smooth: f0,
+            flow_du: fx_ * du,
+            flow_dv: fy_ * dv,
+            flow_uu: fxx * du * du,
+            flow_vv: fyy * dv * dv,
+            flow_uv: fxy * du * dv,
+            edge_texels,
         }
     }
 
     fn elev_range_km(&self, face: u8, a0: f64, b0: f64, a1: f64, b1: f64) -> (f32, f32) {
         let f = &self.faces[face as usize];
         let (mn, mx) = self.range(&f.pyr_min, &f.pyr_max, a0, b0, a1, b1);
-        // Catmull-Rom can overshoot by up to ~1/8 of the local range.
-        let pad = (mx - mn) * 0.125;
+        // Bicubic Catmull-Rom overshoots the taps' range by up to 0.28125 of
+        // it: at t = (1/2, 1/2) the positive weights sum to 1.125^2 + 0.125^2.
+        let pad = (mx - mn) * 0.28125;
         (mn - pad, mx + pad)
     }
 
@@ -444,6 +510,25 @@ fn catmull_dweights(t: f64) -> [f64; 4] {
     [0.5 * (-3.0 * t2 + 4.0 * t - 1.0), 0.5 * (9.0 * t2 - 10.0 * t), 0.5 * (-9.0 * t2 + 8.0 * t + 1.0), 0.5 * (3.0 * t2 - 2.0 * t)]
 }
 
+/// Uniform cubic B-spline weights (C2; smooths rather than interpolates)
+/// and their first and second derivatives.
+#[inline]
+fn bspline_weights(t: f64) -> [f64; 4] {
+    let s = 1.0 - t;
+    [s * s * s / 6.0, (3.0 * t * t * t - 6.0 * t * t + 4.0) / 6.0, (-3.0 * t * t * t + 3.0 * t * t + 3.0 * t + 1.0) / 6.0, t * t * t / 6.0]
+}
+
+#[inline]
+fn bspline_dweights(t: f64) -> [f64; 4] {
+    let s = 1.0 - t;
+    [-0.5 * s * s, 1.5 * t * t - 2.0 * t, -1.5 * t * t + t + 0.5, 0.5 * t * t]
+}
+
+#[inline]
+fn bspline_ddweights(t: f64) -> [f64; 4] {
+    [1.0 - t, 3.0 * t - 2.0, -3.0 * t + 1.0, t]
+}
+
 /// Equal-angle chart coordinates (u, v) in radians of a direction on `face`
 /// (a = tan u, b = tan v along the face's right and up axes). Defined for
 /// any direction with a positive component along the face axis, so a chart
@@ -473,6 +558,14 @@ mod tests {
             let scale = gu.abs().max(gv.abs()).max(1e-3);
             assert!((s.elev_du_km - gu).abs() < 1e-3 * scale + 1e-6, "case {k}: du {} vs {gu}", s.elev_du_km);
             assert!((s.elev_dv_km - gv).abs() < 1e-3 * scale + 1e-6, "case {k}: dv {} vs {gv}", s.elev_dv_km);
+            // B-spline curvature: finite differences of the B-spline gradient.
+            let suu = (new.sample(dir_of(u + h, v)).smooth_du_km - new.sample(dir_of(u - h, v)).smooth_du_km) / (2.0 * h);
+            let svv = (new.sample(dir_of(u, v + h)).smooth_dv_km - new.sample(dir_of(u, v - h)).smooth_dv_km) / (2.0 * h);
+            let suv = (new.sample(dir_of(u, v + h)).smooth_du_km - new.sample(dir_of(u, v - h)).smooth_du_km) / (2.0 * h);
+            let cs = suu.abs().max(svv.abs()).max(1e-2);
+            assert!((s.smooth_uu_km - suu).abs() < 2e-3 * cs, "case {k}: uu {} vs {suu}", s.smooth_uu_km);
+            assert!((s.smooth_vv_km - svv).abs() < 2e-3 * cs, "case {k}: vv {} vs {svv}", s.smooth_vv_km);
+            assert!((s.smooth_uv_km - suv).abs() < 2e-3 * cs, "case {k}: uv {} vs {suv}", s.smooth_uv_km);
             let (cu, cv) = chart_uv(f, dir_of(u, v));
             assert!((cu - u).abs() < 1e-12 && (cv - v).abs() < 1e-12);
         }

@@ -23,7 +23,7 @@ pub struct LandformShotOptions {
 }
 
 pub fn places_with_names(p: &LandPlaces) -> Vec<(&'static str, DVec3)> {
-    vec![("peak", p.peak), ("coast", p.coast), ("river", p.river), ("plain", p.plain)]
+    vec![("peak", p.peak), ("coast", p.coast), ("river", p.river), ("plain", p.plain), ("mesa", p.mesa)]
 }
 
 pub fn run_landform_shots(engine: Arc<Engine>, opts: LandformShotOptions) {
@@ -60,14 +60,6 @@ pub fn run_landform_shots(engine: Arc<Engine>, opts: LandformShotOptions) {
         }
         best.0
     };
-    // Downhill heading of the bake surface at a direction.
-    let downhill_heading = |d: DVec3| -> f64 {
-        let e0 = g.bake.sample(d).elev_km;
-        let en = g.bake.sample(engine.offset_dir(d, 0.0, 300.0)).elev_km - e0;
-        let ee = g.bake.sample(engine.offset_dir(d, 90.0, 300.0)).elev_km - e0;
-        (-ee).atan2(-en).to_degrees()
-    };
-
     struct Shot {
         name: &'static str,
         cam: Camera,
@@ -115,17 +107,30 @@ pub fn run_landform_shots(engine: Arc<Engine>, opts: LandformShotOptions) {
             caption: format!("(c) the steepest coast from 2 km offshore at 250 m | {scale_label} | {world_label} | {dials}{gen_label} | red marker 100 m on the shore"),
         });
     }
-    // (d) the river valley, looking down-valley from 2 km upstream, 300 m above the floor.
+    // (d) the river valley, looking down the river from 1.5 km upstream,
+    // 300 m above the floor. The river's course is the ridge of planetgen's
+    // discharge: of 32 headings 600 m out, the two with the most discharge
+    // (at least 90 degrees apart) are up- and downstream; the lower one is down.
     {
-        let down = downhill_heading(places.river);
-        let cam_dir = engine.offset_dir(places.river, down + 180.0, 2000.0);
+        let mut best: Vec<(f64, f64)> = (0..32)
+            .map(|k| {
+                let hd = k as f64 * 11.25;
+                (hd, g.bake.sample(engine.offset_dir(places.river, hd, 600.0)).flow_smooth)
+            })
+            .collect();
+        best.sort_by(|a, b| b.1.total_cmp(&a.1));
+        let first = best[0].0;
+        let second = best.iter().find(|(hd, _)| ((hd - first + 540.0) % 360.0 - 180.0).abs() >= 90.0).map(|b| b.0).unwrap_or(first + 180.0);
+        let elev = |hd: f64| g.bake.sample(engine.offset_dir(places.river, hd, 600.0)).elev_km;
+        let down = if elev(first) < elev(second) { first } else { second };
+        let cam_dir = engine.offset_dir(places.river, down + 180.0, 1500.0);
         let (heading, _) = engine.heading_to(cam_dir, places.river);
         let alt = bake_ground_m(&g, places.river) + 300.0;
         shots.push(Shot {
             name: "d_river_valley",
             cam: engine.camera_asl(cam_dir, alt, heading, -12.0),
             markers: marker_pair(places.river),
-            caption: format!("(d) river valley (most discharge on temperate relief), down-valley from 2 km upstream, 300 m above the floor | {scale_label} | {world_label} | {dials}{gen_label} | red marker 100 m in the valley"),
+            caption: format!("(d) river valley (most discharge on temperate relief), down the river from 1.5 km upstream, 300 m above the floor | {scale_label} | {world_label} | {dials}{gen_label} | red marker 100 m in the valley"),
         });
     }
     // (e) plains from 40 m.
@@ -136,6 +141,20 @@ pub fn run_landform_shots(engine: Arc<Engine>, opts: LandformShotOptions) {
             cam: engine.camera_asl(places.plain, alt, 60.0, -7.0),
             markers: Vec::new(),
             caption: format!("(e) temperate plains from 40 m | {scale_label} | {world_label} | {dials}{gen_label}"),
+        });
+    }
+
+    // (f) mesa country (hard, quiet, dry rock) from 150 m, 1.5 km out.
+    {
+        let hd = lowest_heading(places.mesa, 1500.0);
+        let cam_dir = engine.offset_dir(places.mesa, hd, 1500.0);
+        let (heading, _) = engine.heading_to(cam_dir, places.mesa);
+        let alt = bake_ground_m(&g, cam_dir) + 150.0;
+        shots.push(Shot {
+            name: "f_mesa",
+            cam: engine.camera_asl(cam_dir, alt, heading, -8.0),
+            markers: marker_pair(places.mesa),
+            caption: format!("(f) mesa country (hardest quiet dry rock) from 150 m, 1.5 km out | {scale_label} | {world_label} | {dials}{gen_label} | red marker 100 m"),
         });
     }
 
