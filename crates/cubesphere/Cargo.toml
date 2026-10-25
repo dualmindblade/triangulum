@@ -1,0 +1,16 @@
+[package]
+name = "cubesphere"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+description = "Deterministic cube-sphere planet grids, including a smooth equal-area map"
+
+[dependencies]
+glam = "0.33"
+
+# Standalone even when checked out under another Cargo workspace.
+[workspace]
+
+[profile.test]
+opt-level = 3
+
