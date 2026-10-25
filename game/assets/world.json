@@ -1,0 +1,12 @@
+{
+  "_comment": "Planet parameters. Every field can be overridden on the command line (see --help). world_height must be a power of two and columns_per_face % world_height == 0. vertical_scale null = R / 6,371,000 m (Earth slopes). sea_level is in blocks above the bottom of the world.",
+  "name": "Neisor",
+  "seed": 42,
+  "block_size_m": 1.0,
+  "world_height": 2048,
+  "sea_level": 512,
+  "columns_per_face": 131072,
+  "bake": "C:/code/triangulum/game/assets/world/seed42",
+  "vertical_scale": null,
+  "roughness": 1.0
+}
