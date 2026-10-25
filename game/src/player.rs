@@ -145,9 +145,11 @@ impl Hit {
 }
 
 /// March a ray through the lattice (Amanatides-Woo) for `reach_m` metres,
-/// returning the first solid cell. Linear in lattice space: over a few
-/// metres the lattice is straight to well under a millimetre.
-pub fn pick(vox: &dyn Voxels, planet: &Planet, eye: DVec3, dir: DVec3, reach_m: f64) -> Option<Hit> {
+/// returning the first solid cell, or with `liquids` the first solid or
+/// liquid cell past the eye's own (holding water: the bucket, M2b). Linear
+/// in lattice space: over a few metres the lattice is straight to well under
+/// a millimetre.
+pub fn pick(vox: &dyn Voxels, planet: &Planet, eye: DVec3, dir: DVec3, reach_m: f64, liquids: bool) -> Option<Hit> {
     let frame = Frame::at(planet, eye);
     let o = DVec3::new(frame.i, frame.j, frame.k);
     let d = frame.to_lattice(dir.normalize()); // lattice units per metre
@@ -168,9 +170,9 @@ pub fn pick(vox: &dyn Voxels, planet: &Planet, eye: DVec3, dir: DVec3, reach_m: 
     }
     let mut t = 0.0;
     let mut normal = IVec3::ZERO;
-    for _ in 0..512 {
+    for step_n in 0..512 {
         let id = vox.block(frame.face, cell[0], cell[1], cell[2]);
-        if vox.is_solid(id) {
+        if vox.is_solid(id) || (liquids && step_n > 0 && vox.is_liquid(id)) {
             // The cell may lie past this face's edge (`vox.block` resolved it
             // onto the neighbour), so the block it names is that same cell
             // on its own face, never this face's clamped boundary column
@@ -307,10 +309,15 @@ impl Player {
     fn step_walk(&mut self, vox: &dyn Voxels, planet: &Planet, input: &Input, dt: f64) {
         let f = Frame::at(planet, self.pos);
         // Where the body is: water at the feet or the hips means swimming.
+        // Level-aware (M2b): a point above a partial cell's surface is dry.
         let cell_at = |dk_m: f64| (f.i.floor() as i64, f.j.floor() as i64, (f.k + dk_m / f.mk).floor() as i64);
-        let liquid = |c: (i64, i64, i64)| vox.is_liquid(vox.block(f.face, c.0, c.1, c.2));
-        self.in_water = liquid(cell_at(0.1)) || liquid(cell_at(0.9));
-        self.head_in_water = liquid(cell_at(EYE_M));
+        let liquid = |dk_m: f64| {
+            let c = cell_at(dk_m);
+            let kk = f.k + dk_m / f.mk;
+            vox.submerged(f.face, c.0, c.1, c.2, kk - kk.floor())
+        };
+        self.in_water = liquid(0.1) || liquid(0.9);
+        self.head_in_water = liquid(EYE_M);
         // Push out of a solid cell (a block placed into us, a teleport into
         // rock): climb to the top of the solid column.
         {
@@ -907,6 +914,49 @@ mod tests {
         assert!(f.k > 604.5, "swam up: k = {}", f.k);
     }
 
+    /// A pool one layer deep whose water sits at a level (M2b).
+    struct Film {
+        level: u8,
+    }
+
+    impl Voxels for Film {
+        fn block(&self, _face: u8, _i: i64, _j: i64, k: i64) -> BlockId {
+            if k < 600 {
+                STONE
+            } else if k == 600 {
+                WATER
+            } else {
+                0
+            }
+        }
+        fn is_solid(&self, id: BlockId) -> bool {
+            id != 0 && id != WATER
+        }
+        fn is_liquid(&self, id: BlockId) -> bool {
+            id == WATER
+        }
+        fn water_level(&self, _face: u8, _i: i64, _j: i64, _k: i64) -> u8 {
+            self.level
+        }
+    }
+
+    /// M2b: a film of water two levels deep is walked on, a full cell is swum in.
+    #[test]
+    fn standing_in_a_thin_film_is_not_swimming() {
+        let p = planet(1.0);
+        let mut pl = standing(&p, 2, 1000.5, 2000.5, 600);
+        run(&mut pl, &Film { level: 2 }, &p, Input::default(), 30);
+        assert!(!pl.in_water, "a 2/255 film is under the feet, not around them");
+        assert!(pl.on_ground);
+        let f = Frame::at(&p, pl.pos);
+        assert!((f.k - 600.0).abs() < 0.01, "stands on the floor at k = {}", f.k);
+        let mut pl = standing(&p, 2, 1000.5, 2000.5, 600);
+        run(&mut pl, &Film { level: 255 }, &p, Input::default(), 30);
+        assert!(pl.in_water, "a full cell is swum in");
+        // The eye at 1.62 m is above a one-layer pool either way.
+        assert!(!pl.head_in_water);
+    }
+
     /// A four-column stone platform over nothing.
     struct Platform;
     impl Voxels for Platform {
@@ -978,7 +1028,7 @@ mod tests {
         cells.insert((1004, 2000, 601), STONE);
         let w = Flat { floor_k: 600, cells };
         let pl = standing(&p, 2, 1000.5, 2000.5, 600);
-        let hit = pick(&w, &p, pl.eye(), pl.look_dir(), REACH_M).expect("hit");
+        let hit = pick(&w, &p, pl.eye(), pl.look_dir(), REACH_M, false).expect("hit");
         assert_eq!(hit.cell, (1004, 2000, 601));
         assert_eq!(hit.normal, IVec3::new(-1, 0, 0));
         assert_eq!(hit.place_cell(), (1003, 2000, 601));
@@ -987,12 +1037,12 @@ mod tests {
         // Looking down finds the floor under the feet.
         let mut down = pl.clone();
         down.pitch = -1.5;
-        let hit = pick(&w, &p, down.eye(), down.look_dir(), REACH_M).expect("floor");
+        let hit = pick(&w, &p, down.eye(), down.look_dir(), REACH_M, false).expect("floor");
         assert_eq!(hit.cell.2, 599);
         assert_eq!(hit.normal, IVec3::new(0, 0, 1));
         // Out of reach: nothing.
         let w2 = Flat { floor_k: 600, cells: HashMap::new() };
-        assert!(pick(&w2, &p, pl.eye(), pl.look_dir(), REACH_M).is_none());
+        assert!(pick(&w2, &p, pl.eye(), pl.look_dir(), REACH_M, false).is_none());
         // A placed block inside the player's box is detected.
         assert!(pl.overlaps_cell(&p, 2, (1000, 2000, 600)));
         assert!(!pl.overlaps_cell(&p, 2, (1002, 2000, 600)));
@@ -1048,7 +1098,7 @@ mod tests {
         assert_eq!(target.face, 2, "face 0's +i side meets face 2");
         w.cells.insert(target, STONE);
         let pl = standing(&p, 0, n as f64 - 1.5, 40000.5, 600);
-        let hit = pick(&w, &p, pl.eye(), pl.look_dir(), REACH_M).expect("hit across the edge");
+        let hit = pick(&w, &p, pl.eye(), pl.look_dir(), REACH_M, false).expect("hit across the edge");
         assert_eq!(hit.id, STONE);
         assert_eq!(hit.cell, (n + 1, 40000, 601), "the frame cell lies past the edge");
         assert_eq!(hit.block, target, "the block is the face-2 block the ray hit, not {:?}", BlockPos { face: 0, i: p.n - 1, j: 40000, k: 601 });
@@ -1060,13 +1110,13 @@ mod tests {
         let w0 = Canon { planet: p, floor_k: 0, cells: HashMap::new() };
         let mut down = standing(&p, 2, 1000.5, 2000.5, 0);
         down.pitch = -1.5;
-        assert!(pick(&w0, &p, down.eye(), down.look_dir(), REACH_M).is_none(), "no hit on the floor below layer 0");
+        assert!(pick(&w0, &p, down.eye(), down.look_dir(), REACH_M, false).is_none(), "no hit on the floor below layer 0");
         // ...while a real block at layer 0 is picked as layer 0.
         let mut w1 = Canon { planet: p, floor_k: 0, cells: HashMap::new() };
         w1.cells.insert(BlockPos { face: 2, i: 1000, j: 2000, k: 0 }, STONE);
         let mut up = standing(&p, 2, 1000.5, 2000.5, 1);
         up.pitch = -1.5;
-        let hit = pick(&w1, &p, up.eye(), up.look_dir(), REACH_M).expect("layer 0");
+        let hit = pick(&w1, &p, up.eye(), up.look_dir(), REACH_M, false).expect("layer 0");
         assert_eq!(hit.block, BlockPos { face: 2, i: 1000, j: 2000, k: 0 });
     }
 

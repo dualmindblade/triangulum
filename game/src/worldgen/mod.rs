@@ -250,6 +250,12 @@ pub struct Generated {
     pub key: ChunkKey,
     /// Padded block ids, 34^3, index by `pidx`.
     pub ids: Vec<BlockId>,
+    /// Padded water levels, 34^3, index by `pidx`: Some at LOD 0 when any
+    /// water cell in the padded grid holds a partial level (a lake or
+    /// river), so the mesher (M2b) can average corners against the real
+    /// neighbours across chunk borders; None when every water cell is full
+    /// (the sea, every coarse LOD), which the mesher reads as 255.
+    pub levels: Option<Vec<u8>>,
     /// The compressed interior chunk.
     pub chunk: Chunk,
     pub gen_us: u32,
@@ -815,6 +821,9 @@ impl Generator {
         let all_air = k_pad_lo > 0.0 && k_pad_lo * planet.block_size - sea >= top_max as f64;
         let mut ids = vec![self.blocks.air; PAD_VOXELS];
         let mut water: Option<Vec<u8>> = None;
+        // The padded levels, kept for the mesher when any is partial (M2b).
+        let mut levels: Option<Vec<u8>> = None;
+        let mut partial = false;
         if !all_air {
             // Surface material per column from the local slope (rise over run),
             // classified on the true heights before the skirt lowers the border.
@@ -867,13 +876,23 @@ impl Generator {
                             id = self.blocks.water;
                         }
                         ids[pidx(x, y, z)] = id;
-                        if id == self.blocks.water && (0..CHUNK as i32).contains(&x) && (0..CHUNK as i32).contains(&y) && (0..CHUNK as i32).contains(&z) {
+                        if id == self.blocks.water {
                             // Border water (the deep ocean's skirt) is full.
-                            water.get_or_insert_with(|| vec![0u8; VOXELS])[crate::world::chunk::index(x as usize, y as usize, z as usize)] = level.max(1);
+                            let level = level.max(1);
+                            if lod == 0 {
+                                levels.get_or_insert_with(|| vec![0u8; PAD_VOXELS])[pidx(x, y, z)] = level;
+                                partial |= level != 255;
+                            }
+                            if (0..CHUNK as i32).contains(&x) && (0..CHUNK as i32).contains(&y) && (0..CHUNK as i32).contains(&z) {
+                                water.get_or_insert_with(|| vec![0u8; VOXELS])[crate::world::chunk::index(x as usize, y as usize, z as usize)] = level;
+                            }
                         }
                     }
                 }
             }
+        }
+        if !partial {
+            levels = None;
         }
         self.stamp_markers(key, &mut ids);
         // Compress the interior.
@@ -886,7 +905,7 @@ impl Generator {
             }
         }
         let chunk = Chunk::from_dense(&dense, water.as_deref());
-        Generated { key, ids, chunk, gen_us: t0.elapsed().as_micros() as u32 }
+        Generated { key, ids, levels, chunk, gen_us: t0.elapsed().as_micros() as u32 }
     }
 
     fn stamp_markers(&self, key: ChunkKey, ids: &mut [BlockId]) {

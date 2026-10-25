@@ -1,0 +1,25 @@
+# Probe the shore site the water tests found (face 1, the sea at i 1799,
+# the land from i 1800, row j 59003, surface layer k 511): the columns the
+# m2b scripts dig. Not a gate; nothing is asserted.
+atblock 1 1803 59003 511
+mode fly
+column -4 0
+column -3 0
+column -3 -1
+column -3 1
+column -2 0
+column -2 -1
+column -2 1
+column -1 0
+column -1 -1
+column -1 1
+column 0 0
+column 1 0
+column 2 0
+column 3 0
+column -4 -1
+column -4 1
+column -4 -2
+column -4 2
+column -5 0
+state shore

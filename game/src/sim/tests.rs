@@ -86,7 +86,7 @@ fn neighbours_cross_chunk_borders_and_face_edges_but_not_the_world_top_or_floor(
 }
 
 /// The hills site: the ground block and a focus position standing on it.
-fn site(w: &World) -> (BlockPos, DVec3) {
+pub(super) fn site(w: &World) -> (BlockPos, DVec3) {
     let g = hills_ground(w);
     let focus = w.planet.pos(g.face, g.i as f64 + 0.5, g.j as f64 + 0.5, g.k as f64 + 1.0);
     // The column above is air for a good way up (no trees yet).
@@ -96,7 +96,7 @@ fn site(w: &World) -> (BlockPos, DVec3) {
     (g, focus)
 }
 
-fn ids(w: &World) -> (BlockId, BlockId, BlockId, BlockId) {
+pub(super) fn ids(w: &World) -> (BlockId, BlockId, BlockId, BlockId) {
     let b = &w.generator.blocks;
     (b.air, b.stone, b.sand, b.gravel)
 }
@@ -209,7 +209,7 @@ fn updates_outside_the_active_region_wait_and_persist_and_run_when_it_arrives() 
     };
     let far = BlockPos { k: far_k, ..far };
     w.set_block(far, sand);
-    let mut sim = Sim::new(SimConfig { radius_m: 50.0, enabled: true });
+    let mut sim = Sim::new(SimConfig { radius_m: 50.0, enabled: true, water_period: 1 });
     sim.step(&w, focus);
     assert_eq!(sim.falling().len(), 0);
     assert_eq!(sim.queued(), 0);
@@ -235,7 +235,7 @@ fn updates_outside_the_active_region_wait_and_persist_and_run_when_it_arrives() 
     assert_eq!(w.block_at(BlockPos { k: far_k - 4, ..far }), sand, "landed on the ground four layers down");
     assert!(w.registry.is_solid(w.block_at(BlockPos { k: far_k - 5, ..far })) && !w.registry.has_gravity(w.block_at(BlockPos { k: far_k - 5, ..far })));
     // Meanwhile a block falling in a chunk that goes inactive hangs where it is.
-    let mut sim3 = Sim::new(SimConfig { radius_m: 50.0, enabled: true });
+    let mut sim3 = Sim::new(SimConfig { radius_m: 50.0, enabled: true, water_period: 1 });
     w.set_block(far, sand);
     sim3.step(&w, far_focus);
     sim3.step(&w, far_focus);
@@ -250,7 +250,9 @@ fn updates_outside_the_active_region_wait_and_persist_and_run_when_it_arrives() 
 
 /// The scripted session the determinism tests run: a tower on a floating
 /// base that straddles a chunk boundary, a 3 x 3 slab dropped at once, a
-/// far block that stays frozen, a dig and a block built into a fall.
+/// far block that stays frozen, a dig and a block built into a fall; and
+/// (M2b) water poured from the air onto the natural ground, a sand block
+/// dropped into it and a stone built into it mid-spread.
 struct Script {
     g: BlockPos,
     focus: DVec3,
@@ -265,6 +267,7 @@ impl Script {
     /// Edits due before tick `t` runs.
     fn before_tick(&self, w: &World, t: u64) {
         let (air, stone, sand, gravel) = ids(w);
+        let water = w.water_id();
         let g = self.g;
         let col = |i: u32, j: u32, k: u32| BlockPos { face: g.face, i, j, k };
         // The tower's base sits so that the tower crosses a chunk (cz) boundary.
@@ -283,8 +286,20 @@ impl Script {
                 }
                 w.set_block(col(g.i + 400, g.j, g.k + 30), sand);
             }
+            2 => {
+                // Three cells of water in the air to the -i side: they fall
+                // onto the ground and spread over it.
+                for dk in 0..3 {
+                    w.set_water(col(g.i - 6, g.j, g.k + 6 + dk), water, 255);
+                }
+            }
             4 => {
                 w.set_block(col(g.i, g.j, base), air);
+            }
+            9 => {
+                // Sand dropped into the spreading water, and a stone built into it.
+                w.set_block(col(g.i - 6, g.j, g.k + 12), sand);
+                w.set_block(col(g.i - 7, g.j, g.k + 1), stone);
             }
             12 => {
                 // Wall off the first falling block's cell, whatever it is.
@@ -315,7 +330,7 @@ const MID: u64 = 20;
 fn straight_run(radius: f64) -> (String, String, u64, u64) {
     let w = test_world();
     let script = Script::new(&w);
-    let mut sim = Sim::new(SimConfig { radius_m: radius, enabled: true });
+    let mut sim = Sim::new(SimConfig { radius_m: radius, enabled: true, water_period: 1 });
     run_ticks(&w, &mut sim, &script, 0, MID);
     let mid = sim.state_hash(&w.edits);
     run_ticks(&w, &mut sim, &script, MID, TICKS);
@@ -352,6 +367,7 @@ fn the_hash_is_the_same_across_a_save_and_a_reload_in_the_middle() {
     let mut sim = Sim::new(SimConfig::default());
     run_ticks(&w, &mut sim, &script, 0, MID);
     assert!(!sim.falling().is_empty(), "the save happens mid-fall");
+    assert!(sim.queued() > 0 && sim.stats.water_moved > 0, "and mid-flow: {} queued, {} units moved", sim.queued(), sim.stats.water_moved);
     // Save: chunks and the simulation, through the real save directory.
     let dir = SaveDir::new(std::env::temp_dir().join(format!("triangulum-sim-reload-{}", std::process::id())));
     let _ = std::fs::remove_dir_all(&dir.path);

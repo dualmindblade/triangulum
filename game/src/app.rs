@@ -211,10 +211,9 @@ impl App {
         self.falling_draw.emit(&mut gfx.gpu, &self.session.engine.planet, &self.session.sim.view(), cam.pos, &mut self.opaque);
         let engine = self.session.engine.clone();
         let uni = cam.uniform(aspect, engine.sun_at(cam.pos), &engine.planet, engine.water_alpha);
-        let (face, i, j, k) = engine.planet.lattice_of_pos(cam.pos);
-        let eye_block = engine.world.block_lattice(face, i.floor() as i64, j.floor() as i64, k.floor() as i64);
-        // Water is hidden here, at draw time, never in generation.
-        gfx.gpu.sky.set_observer(cam.pos, !engine.hide_water && engine.registry.is_liquid(eye_block));
+        // Water is hidden here, at draw time, never in generation. The eye
+        // is under water when it is below the level of the cell it is in (M2b).
+        gfx.gpu.sky.set_observer(cam.pos, !engine.hide_water && engine.world.is_submerged(cam.pos));
         let water: &[DrawRecord] = if engine.hide_water { &[] } else { &self.water };
         let fs = gfx.gpu.render(&uni, &self.opaque, water, Some(&view));
         self.cpu_ms = t0.elapsed().as_secs_f64() * 1e3;

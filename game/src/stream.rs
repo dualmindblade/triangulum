@@ -47,7 +47,7 @@
 //! microseconds. Ranges live in a bounded, oldest-first cache.
 
 use crate::grid::{BlockPos, Bounds, CHUNK, ChunkKey, FastMap, FootprintKey, Planet};
-use crate::mesh::{MeshData, MeshOptions, mesh_chunk};
+use crate::mesh::{MeshData, MeshOptions, mesh_chunk_levels};
 use crate::render::{DrawRecord, GpuMesh, Renderer};
 use crate::world::{Registry, World};
 use glam::{DVec3, Mat4, Vec3, Vec4};
@@ -1213,7 +1213,8 @@ impl Streamer {
         let tx = self.tx.clone();
         rayon::spawn(move || {
             let g = world.generate(w.key);
-            let mesh = mesh_chunk(&g, &registry, &world.planet, opts);
+            let levels = world.padded_levels(w.key, &g);
+            let mesh = mesh_chunk_levels(&g, levels.as_deref(), &registry, &world.planet, opts);
             let _ = tx.send(JobResult { mesh, gen_us: g.gen_us, slot: w.slot, epoch: w.epoch, rev: w.rev });
         });
     }

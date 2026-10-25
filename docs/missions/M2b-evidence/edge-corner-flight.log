@@ -1,0 +1,62 @@
+play scripts/edge-corner-flight.play -> out/play/edge-corner-flight
+> mode fly
+> speed 1000
+> at 0 30 3000
+> look 90 0
+> assert face == 0
+  assert ok: face == 0 (actual 0)
+> assert mode == fly
+  assert ok: mode == fly (actual fly)
+> travel 30
+  travel 1800 frames in 3.1 s: faces 0,2; cover violations 0 (overlaps max 0, gaps max 0, uncovered max 0); nodes max 3220; cpu avg 0.41 ms p99 1.07 max 7.61; worst phases: tree 4.16 (policy 0.23, structure 4.12 of which splits 0.19, counts 0.10; inline ranges 0.00 / 0), results 0.54, draw lists 6.75; range jobs in flight max 132, worst 1.20 ms
+> assert face == 2
+  assert ok: face == 2 (actual 2)
+> assert travel_violations == 0
+  assert ok: travel_violations == 0 (actual 0)
+> assert travel_overlaps_max == 0
+  assert ok: travel_overlaps_max == 0 (actual 0)
+> assert travel_gaps_max == 0
+  assert ok: travel_gaps_max == 0 (actual 0)
+> assert travel_uncovered_max == 0
+  assert ok: travel_uncovered_max == 0 (actual 0)
+> assert travel_frames == 1800
+  assert ok: travel_frames == 1800 (actual 1800)
+> shot 01_after_edge
+  shot 01_after_edge: out/play/edge-corner-flight/01_after_edge.png (settled in 0.0 s / 14 frames; 322 draws)
+  state 01_after_edge: fly lat 0.00000 lon 48.36981 alt 3002.67 m (agl 3002.67) face 2 i 4418 j 65536 k 3514 ground false water false crosshair null edits 0 dirty 0
+> at 20 44.5 3000
+> look 0 0
+> assert face == 0
+  assert ok: face == 0 (actual 0)
+> travel 50
+  travel 3000 frames in 5.0 s: faces 0,4; cover violations 0 (overlaps max 0, gaps max 0, uncovered max 0); nodes max 4916; cpu avg 0.44 ms p99 0.94 max 9.67; worst phases: tree 9.27 (policy 0.14, structure 0.69 of which splits 0.62, counts 6.76; inline ranges 0.00 / 0), results 0.37, draw lists 5.63; range jobs in flight max 424, worst 1.61 ms
+> assert face == 4
+  assert ok: face == 4 (actual 4)
+> assert lat > 48
+  assert ok: lat > 48 (actual 50.616060003804265)
+> assert travel_violations == 0
+  assert ok: travel_violations == 0 (actual 0)
+> assert travel_overlaps_max == 0
+  assert ok: travel_overlaps_max == 0 (actual 0)
+> assert travel_gaps_max == 0
+  assert ok: travel_gaps_max == 0 (actual 0)
+> assert travel_uncovered_max == 0
+  assert ok: travel_uncovered_max == 0 (actual 0)
+> shot 02_after_corner
+  shot 02_after_corner: out/play/edge-corner-flight/02_after_corner.png (settled in 0.0 s / 14 frames; 324 draws)
+  state 02_after_corner: fly lat 50.61606 lon 44.50000 alt 3004.45 m (agl 3004.45) face 4 i 110870 j 19537 k 3516 ground false water false crosshair null edits 0 dirty 0
+> at 0 46 250
+> look 270 0
+> speed 400
+> travel 20
+  travel 1200 frames in 5.1 s: faces 0,2; cover violations 0 (overlaps max 0, gaps max 0, uncovered max 0); nodes max 9084; cpu avg 0.70 ms p99 2.40 max 12.45; worst phases: tree 6.93 (policy 4.13, structure 6.79 of which splits 0.45, counts 0.13; inline ranges 0.00 / 0), results 0.49, draw lists 9.73; range jobs in flight max 80, worst 4.30 ms
+> assert face == 0
+  assert ok: face == 0 (actual 0)
+> assert travel_violations == 0
+  assert ok: travel_violations == 0 (actual 0)
+> shot 03_low_back_across_edge
+  shot 03_low_back_across_edge: out/play/edge-corner-flight/03_low_back_across_edge.png (settled in 2.0 s / 688 frames; 683 draws)
+  state 03_low_back_across_edge: fly lat -0.00000 lon 40.95299 alt 250.29 m (agl 250.29) face 0 i 125747 j 65536 k 762 ground false water false crosshair null edits 0 dirty 0
+> bench 60
+  bench 60 frames: wall avg 1.81 ms (p95 1.95, worst 2.13) = 552 fps; gpu avg 0.92 ms; 683 draws
+done in 15.6 s: 17 asserts, 0 failed, 0 errors

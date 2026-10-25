@@ -161,6 +161,22 @@ impl EditStore {
         self.inner.read().unwrap().chunks.get(&key).map(|e| e.water.as_ref().map_or(0, |l| l[index(x, y, z)]))
     }
 
+    /// Block and water level of an edited chunk's voxel under one lock
+    /// (the water rule reads seven cells per update); None when the chunk
+    /// is not edited.
+    pub fn get_with_level(&self, key: ChunkKey, x: usize, y: usize, z: usize) -> Option<(BlockId, u8)> {
+        let g = self.inner.read().unwrap();
+        let e = g.chunks.get(&key)?;
+        let v = index(x, y, z);
+        Some((e.ids[v], e.water.as_ref().map_or(0, |l| l[v])))
+    }
+
+    /// Does an edited chunk hold a water level other than empty or full?
+    /// None when the chunk is not edited.
+    pub fn has_partial_water(&self, key: ChunkKey) -> Option<bool> {
+        self.inner.read().unwrap().chunks.get(&key).map(|e| e.water.as_ref().is_some_and(|w| w.iter().any(|&l| l != 0 && l != WATER_FULL)))
+    }
+
     /// Revision of an edited chunk; None when the chunk is not edited.
     pub fn revision(&self, key: ChunkKey) -> Option<u64> {
         self.inner.read().unwrap().chunks.get(&key).map(|e| e.rev)

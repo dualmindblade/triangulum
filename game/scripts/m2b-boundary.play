@@ -1,0 +1,153 @@
+# M2b: the boundary of the active region. Water flowing in a trench freezes
+# when the player walks far enough away for its chunk to leave the region,
+# holds exactly its levels while away, and finishes when the player comes
+# back; then a pit at the shore with a region so small that the sea beyond
+# it is the generator's reservoir: water flows in through the boundary, is
+# counted, and the frozen sea beyond is never written.
+#
+# Sites as in m2b-water.play. `sim radius 1` makes the region the chunks
+# whose bounding sphere (about 28 m) comes within a metre of the player;
+# site A's trench chunk is centred 1.5 m east of the player, so flying 300 m
+# west at 1,000 m/s (0.3 s, six ticks; 33 m by the second step) drops it from
+# the region at the first tick of the flight, while the water is exactly two
+# ticks into its flow.
+
+# ---- 1. Site A: hole, trench, one cell of water, two ticks of flow --------
+atblock 2 107157 57531 2000
+assert mode == walk
+sim radius 1
+assert sim_radius == 1
+lookaxis +i 0
+aim 1 0 -0.5
+tap break
+aim 1 0 -1.5
+tap break
+atblock 2 107153 57531 2000
+lookaxis +i 0
+aim 1 0 -0.5
+tap break
+aim 2 0 -0.5
+tap break
+aim 3 0 -0.5
+tap break
+aim 4 0 -0.5
+tap break
+assert block_rel[5,0,-2] == air
+assert block_rel[5,0,-3] != air
+tick 2
+assert queued == 0
+select 9
+aim 1 0 -1.5
+tap place
+assert level_rel[1,0,-1] == 255
+tick 2
+assert level_rel[1,0,-1] == 127
+assert level_rel[2,0,-1] == 64
+assert level_rel[3,0,-1] == 64
+assert queued > 0
+assert frozen == 0
+
+# ---- 2. walk away: the trench's chunk leaves the region and freezes --------
+mode fly
+speed 1000
+lookaxis -i 0
+hold w 0.3
+tick 1
+assert frozen > 0
+assert queued == 0
+tick 40
+assert frozen > 0
+assert queued == 0
+# nothing moved while away: the levels are exactly as left
+sim off
+mode walk
+atblock 2 107153 57531 2000
+assert level_rel[1,0,-1] == 127
+assert level_rel[2,0,-1] == 64
+assert level_rel[3,0,-1] == 64
+assert level_rel[4,0,-1] == 0
+assert level_rel[5,0,-2] == 0
+assert water_rel[1,-1,-3,5,1,0] == 255
+
+# ---- 3. back: the frozen updates wake and the water finishes ---------------
+sim on
+tick 1
+assert frozen == 0
+assert queued > 0
+tick 120
+assert queued == 0
+assert frozen == 0
+assert water_rel[1,-1,-3,5,1,0] == 255
+assert level_rel[5,0,-2] >= 225
+assert level_rel[1,0,-1] <= 6
+assert water_in == 0
+assert water_out == 0
+state trench
+
+# ---- 4. Site B with a one-chunk region: the sea beyond the edge feeds the pit
+atblock 1 1803 59003 511
+mode fly
+select 1
+lookaxis -i 0
+aim -3 0 -1.5
+tap break
+aim -3 -1 -1.5
+tap break
+aim -3 1 -1.5
+tap break
+aim -2 0 -1.5
+tap break
+aim -2 -1 -1.5
+tap break
+aim -2 1 -1.5
+tap break
+aim -1 0 -1.5
+tap break
+aim -1 -1 -1.5
+tap break
+aim -1 1 -1.5
+tap break
+# the lower layer from inside the pit (a steep ray from the shore would clip
+# the player's own ground block): hover in the pit's middle upper cell
+atblock 1 1801 59003 510
+aim 0 0 -0.5
+assert crosshair == sand
+tap break
+aim -1 0 -0.5
+tap break
+aim 1 0 -0.5
+tap break
+aim 0 -1 -0.5
+tap break
+aim 0 1 -0.5
+tap break
+aim -1 -1 -0.5
+tap break
+aim -1 1 -0.5
+tap break
+aim 1 -1 -0.5
+tap break
+aim 1 1 -0.5
+tap break
+atblock 1 1803 59003 512
+lookaxis -i 0
+assert block[1,1800,59003,510] == air
+tick 1
+assert sim_active_chunks < 10
+tick 250
+assert queued == 0
+assert level[1,1800,59003,510] == 255
+assert level[1,1802,59004,510] == 255
+assert level[1,1801,59003,511] >= 200
+# the chunk's -i side is i 1792: beyond it the sea is the generator's, frozen
+# and full, and the cell just inside leans on it
+assert level[1,1791,59003,511] == 255
+assert level[1,1790,59003,511] == 255
+assert level[1,1792,59003,511] >= 250
+assert water_in > 0
+assert water_out == 0
+assert water_lost == 0
+aim -2 0 -2.0
+shot 07_pit_fed_through_the_boundary
+assert tick_ms_avg < 2
+state final

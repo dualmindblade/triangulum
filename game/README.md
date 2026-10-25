@@ -1,10 +1,10 @@
 # Triangulum engine (`game/`)
 
 The new engine: a planet-sized cube-sphere voxel world you can walk on, dig
-into, build on and come back to. This is the M2a state: walk, fly, dig,
-build, save, the July sky and lighting (M1c), and the first simulation:
-sand and gravel fall. Since M2-hydro the world has planetgen's lakes and
-rivers as water at rest.
+into, build on and come back to. This is the M2b state: walk, fly, dig,
+build, save, the July sky and lighting (M1c), planetgen's lakes and rivers
+as water at rest (M2-hydro), and the simulation: sand and gravel fall
+(M2a), water flows by Andrew's 256-level rule (M2b).
 
 ## Running
 
@@ -47,9 +47,9 @@ mode when higher; `--walk` and `--fly` force it.
 | Ctrl | sneak: slow, and never off an edge (build a bridge by backing up); swim down; fly down |
 | Shift | sprint (fly: 4× speed) |
 | G | toggle walk / fly |
-| left mouse | break the targeted block (hold to repeat) |
-| right mouse | place the selected block on the targeted face |
-| 1–9 | select a hotbar block |
+| left mouse | break the targeted block (hold to repeat); holding water, remove the targeted water cell |
+| right mouse | place the selected block on the targeted face; holding water, place a full cell of water |
+| 1–9 | select a hotbar block (9 is water: the bucket) |
 | scroll | fly speed |
 | R | drop to the ground here, in walk mode |
 | P | next preset place (hills, mountains, highest peak, steep coast, orbit) |
@@ -75,7 +75,8 @@ gravity, a 1.28 m jump and simple buoyancy in water. There is no fall damage.
 --no-save             neither load nor write a save
 --sim-radius M        active region of the simulation around the player (112)
 --no-sim              start with the simulation off
---hotbar a,b,c        blocks on keys 1-9 by name (default: the first nine solid blocks)
+--water-period N      ticks per water step (1: a cell per 20 Hz tick)
+--hotbar a,b,c        blocks on keys 1-9 by name (default: the first eight solid blocks and water)
 --walk | --fly        starting mode
 --hide-water          start with water hidden
 --lod-factor F        LOD aggressiveness (5)
@@ -193,14 +194,92 @@ the exact level (1-255 of a block) at LOD 0 and whole voxels further out:
   `water_agrees_across_lods`; `-- --ignored water_is_contained_wide` sweeps
   a tenth of the whole network (about 1,000 km, a few minutes).
 
-Partial levels are not drawn yet: a water cell is drawn as a full block, so
-a surface shows at the top of the cell that holds it (flush with the banks,
-which stand a block above), and a gently sloping river shows a one-block
-step wherever its level crosses a block boundary. M2b draws the levels.
+Partial levels are drawn since M2b (sloped surfaces, below), and the
+levels are what the water rule reads and writes.
 
 Evidence shots of a lake shore, a river reach, a waterfall, a river mouth
 and a river crossing a cube edge, from the ground and from 300 m:
 `python scripts/hydro_shots.py` (frames in `out/play/<site>/`).
+
+## Water (M2b)
+
+Andrew's rule (`DESIGN.md`, "Water"; the code and the settling argument are
+in `src/sim/water.rs`). Every cell holds one byte of water level, 0 to 255
+(a cell is water exactly when its level is at least 1); the generator's
+seas are full cells and its lakes and rivers carry their own levels. Each
+tick, every scheduled air or water cell:
+
+1. **falls**: water moves straight down into the cell below while that cell
+   is air or water with room, as much as fits (a free-standing column drops
+   one cell per tick as a unit);
+2. **spreads**: what is left levels with its lateral neighbours that are at
+   least 2 levels lower (water-filling: the lowest neighbours are included
+   while they sit at or below the running mean, every included cell gets the
+   floor of the mean and the remainder goes one unit each to the lowest).
+
+So water only moves downhill, a cell with room below it never spreads, and
+water that nothing moves differs from every lateral neighbour by at most 1:
+resting water may lean 1/256 per cell, and does: a pit dug beside the sea
+fills and leaves a dish one level per metre deep around it (18 levels, 7 cm,
+at the pit, flat again 19 m out). A lake drained through a channel keeps
+everything below the channel's sill and leaves a film on its surface layer
+that leans one level per cell up from the sill. The rule provably settles:
+the potential `sum over cells of (1024 k + L) L` strictly falls on every tick
+in which anything moves (the tests check it), so there is no cycle and no
+squirming. Thin films creep: a cell moves one unit a tick when it is 2 above
+its neighbour, so the last levels of a drained lake take hundreds of ticks.
+
+Updates run in a deterministic order (the M2a queue) through a tick-local
+overlay and are committed in one batch per tick; a cell a neighbour spread
+into waits for the next tick (water moves one cell sideways per tick), the
+spread pass alternates direction every tick, and every written cell is
+scheduled again for the next tick. Only cells whose level changed, plus
+their neighbours, are scheduled, so settled water costs nothing: an
+untouched sea processes no updates at all, and the simulation runs only
+where something changed (the state hash and the tests check it).
+`--water-period N` makes water step every N ticks (Andrew's flow-speed dial;
+1 is 20 cells per second).
+
+**Generated rivers are held until disturbed.** A generated river is at rest
+except at its designated drops (steps, falls), where under the rule every
+step would drain the pool above it. Nothing schedules a generated cell
+until a change reaches it, so an untouched river keeps its shape, falls
+included, at no cost. A disturbance (a channel dug from the bank) wakes
+cells by notification; the waking cascades upstream along the reach as
+pools drain through their steps, inside the active region only, where the
+generated river upstream supplies and the generated river downstream
+absorbs (the boundary, below). The reach the player disturbed settles into
+a trickle fed from the upstream edge; edits are authoritative, so the
+generated profile does not come back.
+
+**The boundary of the active region.** Cells in inactive chunks are frozen:
+never written. Where the generator has water, a frozen cell is a reservoir
+at the level it holds now (a lake stays full and refills the region; a lake
+the player drained near the edge does not refill itself when the region
+shifts), and generated water that is still exactly as generated and below
+full (a river cell) also absorbs, down to its level. Everything else at the boundary is a wall, so a channel dug past
+the edge does not drain a lake into frozen nothing. Units crossing the
+boundary are counted in the stats panel (`water in`, `water out`), as are
+units the player placed and removed and units displaced or lost; the water
+inside the region changes by exactly that balance.
+
+**Placing and removing.** Key 9 holds water: the pick ray then also stops at
+water, so a left click removes a water cell (its units are counted) and a
+right click places a full cell (topping up a partial one). Holding anything
+else the ray passes through water to the floor as before. A solid block
+placed or landing in water pushes the water up its column into the first
+cells above with room (a full cell passes it on); water with no room above,
+under a solid ceiling, is lost and counted. Swimming is level-aware: a film
+is walked on, a full cell swum in, and the underwater tint needs the eye
+below the surface of its cell.
+
+**Sloped surfaces.** Water quads are 16 bytes (`mesh.rs`): a top face sits
+at level / 255 inside its block with each corner averaged over the water
+cells sharing that lattice corner (Minecraft's rule: weight 10 at 0.8 and
+above, air counts as 0, solid is left out, a cell with water above it is
+full), so neighbouring surfaces meet exactly, and a side face against air
+takes the same two top corners, so falls and partial columns are watertight.
+Full water is the geometry it always was.
 
 ## Saves
 
@@ -214,8 +293,9 @@ header.json      format version (3), generator version, body id, the
                  SHA-256, the bake's content SHA-256, the block-id table
 commit.json      the current generation: which file holds each chunk, the
                  simulation state file, and a SHA-256 for every one of them
-chunks/*.gN.chunk  one LOD-0 chunk each, in full (ids and water levels),
-                 written in generation N
+chunks/*.gN.chunk  one LOD-0 chunk each, in full (ids and water levels,
+                 the levels the water rule reads and writes), written in
+                 generation N
 sim.gN.bin       the simulation: tick, update queue, frozen updates, blocks
                  in flight
 ```
@@ -298,6 +378,20 @@ sand and gravel tower on it, knock the support out and watch the chain
 collapse land in order; then the same with the simulation paused, resumed,
 saved and reloaded mid-fall. It must pass too.
 
+`scripts/m2b-water.play` is the M2b scenario: pour water beside a pit and
+watch it spread, slope and drop in (levels asserted tick by tick, the total
+conserved, settled within a budget); dig a pit at the sea shore and open a
+channel inland, and check the pit fills, the channel floods and the sea
+stays full. `scripts/m2b-boundary.play` pours water into a trench with a
+small active region, walks away so the trench freezes at the region's edge,
+comes back and watches it finish, then digs at the shore with a region so
+small the sea beyond it is the generator's reservoir. `scripts/m2b-river.play`
+stands by a generated river (nothing is scheduled until it is touched),
+digs a trench from the bank with the region one chunk wide, and checks the
+trench fills, the river inside the chunk keeps its water, and water flows
+in from the generated river upstream and out into it downstream, counted.
+All three must pass.
+
 The command list lives in the header of `src/play.rs`; the ones you will
 use most:
 
@@ -308,11 +402,15 @@ lookaxis +i -30          face exactly along a lattice axis, pitch in degrees
 aim DI DJ DK             look at a lattice point relative to the feet cell
 hold w,shift 2           hold keys for seconds; tap break|place|jump|g|1..9
 tick N | sim on|off      N simulation ticks (20 Hz); pause or resume it
+sim radius M | period N  active region radius; ticks per water step
 shot NAME                settled frame + state; bench N; state NAME
 save | reload            write edits; quit-and-restart from disk
 assert FIELD OP VALUE    position, altitude, on_ground, in_water, crosshair,
                          block[F,I,J,K], block_rel[DI,DJ,DK], falling,
                          falling_rel[DI,DJ], queued, sim_hash,
+                         level[F,I,J,K] / level_rel[DI,DJ,DK] (water 0..255),
+                         water_rel[DI,DJ,DK,DI2,DJ2,DK2] (units in a box),
+                         water_moved/in/out/placed/removed/displaced/lost,
                          cover[F,I,J,K] / cover_rel[DI,DJ,DK] (what the
                          streamer draws at a block, after a shot), ...
 ```
@@ -372,13 +470,23 @@ again when its replacement is lost), the mesher's water edges meeting
 across an LOD boundary, player collision edge cases (resting exactly on a
 floor, walls, jumping onto a step, half-metre blocks, walking across a face
 edge and round a corner, walking along a wall through a face edge, swimming,
-picking across a face edge), and the simulation: neighbour
-notification across chunk and face edges, the chain collapse and the drain
-order, settling above a block built into a fall, frozen updates waiting and
-persisting, and the determinism hash across two runs, rayon pools of 1 and
-8 threads, and a save and reload mid-fall. Several need the bake at
-`C:/code/triangulum/game/assets/world/seed42`. The 5,041-block stress test
-is `cargo test --release -- --ignored stress`.
+picking across a face edge, a film walked on and a full cell swum in), and
+the simulation: neighbour notification across chunk and face edges, the
+chain collapse and the drain order, settling above a block built into a
+fall, frozen updates waiting and persisting, and the determinism hash across
+two runs, rayon pools of 1 and 8 threads, and a save and reload mid-fall and
+mid-flow. Water (`src/sim/water_tests.rs`): one cell spreading to exactly 51
+on five cells and a basin levelling to rest, a column falling as a unit then
+spreading with the potential strictly falling every moving tick, a full
+basin resting until touched and a lake draining through a channel to its
+sill, displacement by a landing block and loss under a sealed lid, a pit at
+the shore filling from the sea with the water accounted exactly, boundary
+cells as reservoirs, drains and walls that are never written, the water
+period, and the mesher's shared corners. Several need the bake at
+`C:/code/triangulum/game/assets/world/seed42`. The stress tests are
+`cargo test --release -- --ignored stress` (5,041 sand blocks) and
+`cargo test --release -- --ignored water_stress --nocapture` (a 2,000-cell
+pour and a 10,000-cell dam break, with the per-tick cost).
 
 The water tests (`src/worldgen/hydro_tests.rs`, they need `hydro.bin`)
 check every generated water cell around 1,537 lake shores and along 300
@@ -388,10 +496,16 @@ generation cost before and after (`profile_hydro_chunks`), find the evidence
 sites (`hydro_places`) and print the water model at a column
 (`hydro_probe`, with `HYDRO_PROBE="face i j"`).
 
-## Known gaps (M2a)
+## Known gaps (M2b)
 
-- No water simulation yet (M2b): generated water sits still, and water
-  levels are not drawn (every water cell is a full block).
+- Resting water leans up to one level per cell, as the rule allows, and the
+  dynamics leave the steepest lean they can: a dish around a pit, a film on
+  a drained lake that slopes up from the sill. Whether that look is wanted
+  is Andrew's call (`DECISIONS.md`).
+- A single placed cell spreads into a film of up to 255 cells at level 1 on
+  flat ground. There is no evaporation and no minimum visible level.
+- Water does not push the player or falling blocks; falling blocks pass
+  through water and displace it only where they land.
 - Falling blocks pass through each other and through the player; a block
   that lands in your cell pushes you up.
 - Chunks entirely below every surface (`Enclosed`) are never streamed

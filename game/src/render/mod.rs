@@ -363,13 +363,16 @@ impl Renderer {
         self.depth_view = dv;
     }
 
-    /// Upload one chunk mesh; None when out of room.
-    pub fn add_mesh(&mut self, opaque: &[[u32; 2]], water: &[[u32; 2]], grid: &[f32]) -> Option<GpuMesh> {
+    /// Upload one chunk mesh; None when out of room. Water quads are 16
+    /// bytes (mesh.rs), so each takes two slots of the quad buffer; the
+    /// draw record still counts quads, and the water vertex shader reads
+    /// slot `quad_base + 2 (q - quad_base)` for its quad q.
+    pub fn add_mesh(&mut self, opaque: &[[u32; 2]], water: &[[u32; 4]], grid: &[f32]) -> Option<GpuMesh> {
         let no = opaque.len().min(MAX_QUADS_PER_CHUNK as usize) as u32;
         let nw = water.len().min(MAX_QUADS_PER_CHUNK as usize) as u32;
         let ob = if no > 0 { self.alloc.alloc(no)? } else { 0 };
         let wb = if nw > 0 {
-            match self.alloc.alloc(nw) {
+            match self.alloc.alloc(2 * nw) {
                 Some(b) => b,
                 None => {
                     self.alloc.free(ob, no);
@@ -381,7 +384,7 @@ impl Renderer {
         };
         let Some(slot) = self.slot_free.pop() else {
             self.alloc.free(ob, no);
-            self.alloc.free(wb, nw);
+            self.alloc.free(wb, 2 * nw);
             return None;
         };
         self.slots_used += 1;
@@ -397,7 +400,7 @@ impl Renderer {
 
     pub fn free_mesh(&mut self, m: GpuMesh) {
         self.alloc.free(m.opaque_base, m.opaque_count);
-        self.alloc.free(m.water_base, m.water_count);
+        self.alloc.free(m.water_base, 2 * m.water_count);
         self.slot_free.push(m.slot);
         self.slots_used -= 1;
     }

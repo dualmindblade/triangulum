@@ -1,0 +1,214 @@
+play scripts/m2b-boundary.play -> out/play/m2b-boundary
+> atblock 2 107157 57531 2000
+> assert mode == walk
+  assert ok: mode == walk (actual walk)
+> sim radius 1
+  radius 1 m: sim on  tick 0  falling 0  queued 0  frozen 0  active 0 chunks  water 0 updates, 0 moved, in 0 out 0  tick cost 0.000 ms (avg 0.000, max 0.000)
+> assert sim_radius == 1
+  assert ok: sim_radius == 1 (actual 1.0)
+> lookaxis +i 0
+> aim 1 0 -0.5
+> tap break
+  break: face 2 i 107158 j 57531 k 554
+> aim 1 0 -1.5
+> tap break
+  break: face 2 i 107158 j 57531 k 553
+> atblock 2 107153 57531 2000
+> lookaxis +i 0
+> aim 1 0 -0.5
+> tap break
+  break: face 2 i 107154 j 57531 k 554
+> aim 2 0 -0.5
+> tap break
+  break: face 2 i 107155 j 57531 k 554
+> aim 3 0 -0.5
+> tap break
+  break: face 2 i 107156 j 57531 k 554
+> aim 4 0 -0.5
+> tap break
+  break: face 2 i 107157 j 57531 k 554
+> assert block_rel[5,0,-2] == air
+  assert ok: block_rel[5,0,-2] == air (actual air)
+> assert block_rel[5,0,-3] != air
+  assert ok: block_rel[5,0,-3] != air (actual limestone)
+> tick 2
+  ticked 0 -> 2: sim on  tick 2  falling 0  queued 0  frozen 0  active 3 chunks  water 0 updates, 0 moved, in 0 out 0  tick cost 0.001 ms (avg 0.043, max 0.085)
+> assert queued == 0
+  assert ok: queued == 0 (actual 0)
+> select 9
+> aim 1 0 -1.5
+> tap place
+  place: face 2 i 107154 j 57531 k 554
+> assert level_rel[1,0,-1] == 255
+  assert ok: level_rel[1,0,-1] == 255 (actual 255)
+> tick 2
+  ticked 2 -> 4: sim on  tick 4  falling 0  queued 12  frozen 0  active 3 chunks  water 5 updates, 192 moved, in 0 out 0  tick cost 0.008 ms (avg 0.026, max 0.085)
+> assert level_rel[1,0,-1] == 127
+  assert ok: level_rel[1,0,-1] == 127 (actual 127)
+> assert level_rel[2,0,-1] == 64
+  assert ok: level_rel[2,0,-1] == 64 (actual 64)
+> assert level_rel[3,0,-1] == 64
+  assert ok: level_rel[3,0,-1] == 64 (actual 64)
+> assert queued > 0
+  assert ok: queued > 0 (actual 12)
+> assert frozen == 0
+  assert ok: frozen == 0 (actual 0)
+> mode fly
+> speed 1000
+> lookaxis -i 0
+> hold w 0.3
+> tick 1
+  ticked 10 -> 11: sim on  tick 11  falling 0  queued 0  frozen 12  active 4 chunks  water 0 updates, 192 moved, in 0 out 0  tick cost 0.001 ms (avg 0.045, max 0.085)
+> assert frozen > 0
+  assert ok: frozen > 0 (actual 12)
+> assert queued == 0
+  assert ok: queued == 0 (actual 0)
+> tick 40
+  ticked 11 -> 51: sim on  tick 51  falling 0  queued 0  frozen 12  active 4 chunks  water 0 updates, 192 moved, in 0 out 0  tick cost 0.001 ms (avg 0.010, max 0.085)
+> assert frozen > 0
+  assert ok: frozen > 0 (actual 12)
+> assert queued == 0
+  assert ok: queued == 0 (actual 0)
+> sim off
+  sim off  tick 51  falling 0  queued 0  frozen 12  active 4 chunks  water 0 updates, 192 moved, in 0 out 0  tick cost 0.001 ms (avg 0.010, max 0.085)
+> mode walk
+> atblock 2 107153 57531 2000
+> assert level_rel[1,0,-1] == 127
+  assert ok: level_rel[1,0,-1] == 127 (actual 127)
+> assert level_rel[2,0,-1] == 64
+  assert ok: level_rel[2,0,-1] == 64 (actual 64)
+> assert level_rel[3,0,-1] == 64
+  assert ok: level_rel[3,0,-1] == 64 (actual 64)
+> assert level_rel[4,0,-1] == 0
+  assert ok: level_rel[4,0,-1] == 0 (actual 0)
+> assert level_rel[5,0,-2] == 0
+  assert ok: level_rel[5,0,-2] == 0 (actual 0)
+> assert water_rel[1,-1,-3,5,1,0] == 255
+  assert ok: water_rel[1,-1,-3,5,1,0] == 255 (actual 255)
+> sim on
+  sim on  tick 51  falling 0  queued 0  frozen 12  active 4 chunks  water 0 updates, 192 moved, in 0 out 0  tick cost 0.001 ms (avg 0.010, max 0.085)
+> tick 1
+  ticked 51 -> 52: sim on  tick 52  falling 0  queued 22  frozen 0  active 3 chunks  water 6 updates, 256 moved, in 0 out 0  tick cost 0.073 ms (avg 0.012, max 0.085)
+> assert frozen == 0
+  assert ok: frozen == 0 (actual 0)
+> assert queued > 0
+  assert ok: queued > 0 (actual 22)
+> tick 120
+  ticked 52 -> 172: sim on  tick 172  falling 0  queued 0  frozen 0  active 3 chunks  water 0 updates, 1235 moved, in 0 out 0  tick cost 0.001 ms (avg 0.004, max 0.085)
+> assert queued == 0
+  assert ok: queued == 0 (actual 0)
+> assert frozen == 0
+  assert ok: frozen == 0 (actual 0)
+> assert water_rel[1,-1,-3,5,1,0] == 255
+  assert ok: water_rel[1,-1,-3,5,1,0] == 255 (actual 255)
+> assert level_rel[5,0,-2] >= 225
+  assert ok: level_rel[5,0,-2] >= 225 (actual 245)
+> assert level_rel[1,0,-1] <= 6
+  assert ok: level_rel[1,0,-1] <= 6 (actual 4)
+> assert water_in == 0
+  assert ok: water_in == 0 (actual 0)
+> assert water_out == 0
+  assert ok: water_out == 0 (actual 0)
+> state trench
+  state trench: walk lat -4.55810 lon 117.47294 alt 43.00 m (agl 0.33) face 2 i 107153 j 57531 k 555 ground true water false crosshair null edits 1 dirty 1
+> atblock 1 1803 59003 511
+> mode fly
+> select 1
+> lookaxis -i 0
+> aim -3 0 -1.5
+> tap break
+  break: face 1 i 1800 j 59003 k 511
+> aim -3 -1 -1.5
+> tap break
+  break: face 1 i 1800 j 59002 k 511
+> aim -3 1 -1.5
+> tap break
+  break: face 1 i 1800 j 59004 k 511
+> aim -2 0 -1.5
+> tap break
+  break: face 1 i 1801 j 59003 k 511
+> aim -2 -1 -1.5
+> tap break
+  break: face 1 i 1801 j 59002 k 511
+> aim -2 1 -1.5
+> tap break
+  break: face 1 i 1801 j 59004 k 511
+> aim -1 0 -1.5
+> tap break
+  break: face 1 i 1802 j 59003 k 511
+> aim -1 -1 -1.5
+> tap break
+  break: face 1 i 1802 j 59002 k 511
+> aim -1 1 -1.5
+> tap break
+  break: face 1 i 1802 j 59004 k 511
+> atblock 1 1801 59003 510
+> aim 0 0 -0.5
+> assert crosshair == sand
+  assert ok: crosshair == sand (actual sand)
+> tap break
+  break: face 1 i 1801 j 59003 k 510
+> aim -1 0 -0.5
+> tap break
+  break: face 1 i 1800 j 59003 k 510
+> aim 1 0 -0.5
+> tap break
+  break: face 1 i 1802 j 59003 k 510
+> aim 0 -1 -0.5
+> tap break
+  break: face 1 i 1801 j 59002 k 510
+> aim 0 1 -0.5
+> tap break
+  break: face 1 i 1801 j 59004 k 510
+> aim -1 -1 -0.5
+> tap break
+  break: face 1 i 1800 j 59002 k 510
+> aim -1 1 -0.5
+> tap break
+  break: face 1 i 1800 j 59004 k 510
+> aim 1 -1 -0.5
+> tap break
+  break: face 1 i 1802 j 59002 k 510
+> aim 1 1 -0.5
+> tap break
+  break: face 1 i 1802 j 59004 k 510
+> atblock 1 1803 59003 512
+> lookaxis -i 0
+> assert block[1,1800,59003,510] == air
+  assert ok: block[1,1800,59003,510] == air (actual air)
+> tick 1
+  ticked 172 -> 173: sim on  tick 173  falling 0  queued 28  frozen 0  active 4 chunks  water 30 updates, 1619 moved, in 0 out 0  tick cost 0.103 ms (avg 0.005, max 0.103)
+> assert sim_active_chunks < 10
+  assert ok: sim_active_chunks < 10 (actual 4)
+> tick 250
+  ticked 173 -> 423: sim on  tick 423  falling 0  queued 0  frozen 31  active 4 chunks  water 0 updates, 66332 moved, in 3037 out 0  tick cost 0.001 ms (avg 0.007, max 6.989)
+> assert queued == 0
+  assert ok: queued == 0 (actual 0)
+> assert level[1,1800,59003,510] == 255
+  assert ok: level[1,1800,59003,510] == 255 (actual 255)
+> assert level[1,1802,59004,510] == 255
+  assert ok: level[1,1802,59004,510] == 255 (actual 255)
+> assert level[1,1801,59003,511] >= 200
+  assert ok: level[1,1801,59003,511] >= 200 (actual 245)
+> assert level[1,1791,59003,511] == 255
+  assert ok: level[1,1791,59003,511] == 255 (actual 255)
+> assert level[1,1790,59003,511] == 255
+  assert ok: level[1,1790,59003,511] == 255 (actual 255)
+> assert level[1,1792,59003,511] >= 250
+  assert ok: level[1,1792,59003,511] >= 250 (actual 254)
+> assert water_in > 0
+  assert ok: water_in > 0 (actual 3037)
+> assert water_out == 0
+  assert ok: water_out == 0 (actual 0)
+> assert water_lost == 0
+  assert ok: water_lost == 0 (actual 0)
+> aim -2 0 -2.0
+> shot 07_pit_fed_through_the_boundary
+  shot 07_pit_fed_through_the_boundary: out/play/m2b-boundary/07_pit_fed_through_the_boundary.png (settled in 4.5 s / 1690 frames; 46 draws)
+  state 07_pit_fed_through_the_boundary: fly lat -3.41531 lon 136.39687 alt 1.00 m (agl 0.45) face 1 i 1803 j 59003 k 513 ground false water false crosshair "sand" edits 3 dirty 3
+> assert tick_ms_avg < 2
+  assert ok: tick_ms_avg < 2 (actual 0.0069900000000000006)
+> state final
+  state final: fly lat -3.41531 lon 136.39687 alt 1.00 m (agl 0.45) face 1 i 1803 j 59003 k 513 ground false water false crosshair "sand" edits 3 dirty 3
+saved 3 chunk(s) at exit
+done in 4.8 s: 44 asserts, 0 failed, 0 errors
