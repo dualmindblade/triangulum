@@ -15,6 +15,8 @@
 //!   --seed N --block-size S --height H --sea-level K --n N --bake DIR --vscale F --roughness F --landform F
 //! (a relative "bake" in world.json is resolved against the game/ directory)
 //! Saves: --save DIR (default saves/<world name>)  --no-save  --keep-save (harness: keep its save)
+//!   --play resets only its own scratch save (saves/_play/<script>); it never deletes
+//!   a directory given with --save unless --reset-save is also given
 //! Simulation: --sim-radius M (112; LOD-0 chunks within it tick, the rest is frozen)  --no-sim
 //! Player: --walk | --fly (default: walk when starting within 50 m of the ground)
 //!   --hotbar stone,dirt,...  (blocks on keys 1-9; default: the first nine solid blocks)
@@ -93,6 +95,7 @@ struct Args {
     save: Option<String>,
     no_save: bool,
     keep_save: bool,
+    reset_save: bool,
     sim_radius: f64,
     no_sim: bool,
     walk: Option<bool>,
@@ -153,6 +156,7 @@ fn parse_args() -> Args {
         save: None,
         no_save: false,
         keep_save: false,
+        reset_save: false,
         sim_radius: sim::SimConfig::default().radius_m,
         no_sim: false,
         walk: None,
@@ -222,6 +226,7 @@ fn parse_args() -> Args {
             "--save" => a.save = Some(val()),
             "--no-save" => a.no_save = true,
             "--keep-save" => a.keep_save = true,
+            "--reset-save" => a.reset_save = true,
             "--sim-radius" => a.sim_radius = val().parse().unwrap(),
             "--no-sim" => a.no_sim = true,
             "--walk" => a.walk = Some(true),
@@ -309,9 +314,18 @@ fn main() {
         None
     } else if let Some(script) = &args.play {
         let stem = Path::new(script).file_stem().and_then(|s| s.to_str()).unwrap_or("play").to_string();
-        let dir = args.save.clone().unwrap_or_else(|| format!("{root}/saves/_play/{stem}"));
-        if !args.keep_save {
-            let _ = std::fs::remove_dir_all(&dir);
+        // Only the harness's own scratch save is reset by default; a save
+        // named with --save is never deleted without --reset-save.
+        let (dir, scratch) = match &args.save {
+            Some(d) => (d.clone(), false),
+            None => (format!("{root}/saves/_play/{stem}"), true),
+        };
+        if (scratch && !args.keep_save) || args.reset_save {
+            match std::fs::remove_dir_all(&dir) {
+                Ok(()) => println!("save {dir}: reset"),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => fail(&format!("cannot reset the play save {dir}: {e}")),
+            }
         }
         Some(SaveDir::new(dir))
     } else {

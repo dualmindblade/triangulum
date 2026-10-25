@@ -235,7 +235,10 @@ cargo run --release -- --play scripts/m1-done.play
 Output goes to `out/play/<script>/`: `NAME.png` settled frames with the HUD,
 `NAME.json` state sidecars, and `run.log`, the transcript. The exit code is
 1 when any `assert` failed. The run has its own save directory,
-`saves/_play/<script>/`, wiped at the start unless `--keep-save`.
+`saves/_play/<script>/`, wiped at the start unless `--keep-save`. A directory
+you name with `--save` is never wiped unless you also pass `--reset-save`:
+`--play x.play --save saves/Neisor` plays on your real save without deleting
+it first (the script's own edits are still saved into it).
 
 `scripts/m1-done.play` is the M1 "done when" scenario: walk, dig a trench
 and a tunnel, build a stone bridge over the trench, walk across it, save,
