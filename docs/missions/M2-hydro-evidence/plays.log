@@ -1,2 +1,3 @@
-out/play/m1-done/run.log:done in 8.4 s: 94 asserts, 0 failed, 0 errors
-out/play/m2a-sand/run.log:done in 6.9 s: 95 asserts, 0 failed, 0 errors
+done in 8.3 s: 94 asserts, 0 failed, 0 errors
+done in 7.0 s: 95 asserts, 0 failed, 0 errors
+done in 6.1 s: 18 asserts, 0 failed, 0 errors

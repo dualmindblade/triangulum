@@ -145,8 +145,11 @@ What does not look right yet:
    cut down to it from there; at steep coasts (1/8) that makes a coastal
    fall and a canyon.
 7. **From afar** channels are widened to at least 0.8 of a voxel to stay
-   continuous, so distant rivers look fatter; lighter triangles where water
-   chunks of two LODs overlap are the renderer's known seam (hardening #9).
+   continuous, so distant rivers look fatter. In the 300 m river shot a
+   darker triangle sits on the river where two LODs meet (it looks like two
+   water surfaces overlapping); it is still there after merging
+   M1-hardening's water-seam fix. **Not diagnosed**: it may be the coarse
+   LOD's surface (snapped to its voxel grid) standing above the finer one.
 8. **Where two unconnected rivers run side by side**, the lower one's
    channel yields to the higher one's bank and can be cut short.
 
@@ -172,8 +175,11 @@ without.** (An earlier no-hydro run was disturbed, 32 ms worst frame, and is
 not used.) Startup builds the model from `hydro.bin` in 0.94 s (not broken
 down further).
 
-Other checks: `cargo test --release` 96 passed (8 ignored);
-`scripts/m1-done.play` 94/94, `scripts/m2a-sand.play` 95/95 (`plays.log`).
+Other checks, after merging main at 090a86f (M1-hardening, M1-video):
+`cargo test --release` 102 passed (9 ignored); `scripts/m1-done.play`
+94/94, `scripts/m2a-sand.play` 95/95, `scripts/tunnel-wall-reload.play`
+18/18 (`plays.log`); `water-lod-seam.play` and `water-lod-seam-high.play`
+run clean (they have no asserts).
 
 ## Not verified
 
