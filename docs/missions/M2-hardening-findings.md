@@ -7,6 +7,13 @@ asked. Evidence in `docs/missions/M2-hardening-evidence/`. Every "before"
 below is main's code: either the new test run against this worktree before
 the fix, or the same test run in a copy of main exported to my scratchpad.
 
+**Merged with main after the work** (4bd0f0b, M3a's look panel; no
+conflicts): `cargo test --release` 150 passed, 0 failed, 14 ignored, and
+all twelve play scripts pass, the nine below plus m3a-look, m3a-tunnel
+(20/20) and m3a-look-vscale8 (`merged-tests-release.txt`,
+`merged-scripts-summary.txt`). The numbers below were taken before that
+merge.
+
 **Timings are provisional.** Another agent's builds and two game
 instances were running for the second half of the session (the baseline
 numbers at its start were taken with nothing else running). Where a
