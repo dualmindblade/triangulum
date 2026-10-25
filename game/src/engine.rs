@@ -76,7 +76,7 @@ pub const HILLS: (u8, f64, f64) = (2, 0.52, -0.09);
 pub const MOUNTAINS: (u8, f64, f64) = (2, 0.4467, -0.2290);
 
 pub fn gnomonic_dir(face: u8, a: f64, b: f64) -> DVec3 {
-    let (axis, right, up) = crate::cubesphere_stub::FACES[face as usize];
+    let (axis, right, up) = cubesphere::FACES[face as usize];
     (axis + a * right + b * up).normalize()
 }
 

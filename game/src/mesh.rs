@@ -333,7 +333,7 @@ mod tests {
     #[test]
     fn quads_are_well_formed_and_ao_costs_are_reported() {
         let (g, registry) = generator();
-        let dir = crate::cubesphere_stub::face_to_dir(g.planet.proj, 2, 0.5, -0.1);
+        let dir = cubesphere::face_to_dir(g.planet.proj, 2, 0.5, -0.1);
         let (f, i, j) = g.planet.lattice_of_dir(dir);
         let k = g.planet.sea_level as f64 + g.ground_height_m(dir);
         let keys = [

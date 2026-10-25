@@ -17,7 +17,6 @@
 pub mod app;
 pub mod bench;
 pub mod camera;
-pub mod cubesphere_stub;
 pub mod engine;
 pub mod grid;
 pub mod mesh;

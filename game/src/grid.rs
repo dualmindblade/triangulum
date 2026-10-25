@@ -3,13 +3,13 @@
 //! A block is (face, i, j, k): columns i, j in [0, N) on a cube face, radial
 //! layer k in [0, H). Layer k = sea_level sits at radius R; the bottom of the
 //! world (k = 0) is R - sea_level * s. Every direction <-> lattice conversion
-//! goes through `cubesphere_stub` so the projection can be swapped.
+//! goes through the `cubesphere` crate (EqualAreaCobe, see DESIGN.md).
 //!
 //! Chunks are 32^3 voxels at every LOD. A voxel at LOD L is 2^L blocks, so a
 //! chunk at LOD L spans 32 * 2^L blocks on every axis and tiles the face
 //! exactly because N and H are powers of two multiples of 32.
 
-use crate::cubesphere_stub::{self as cs, Projection};
+use cubesphere::{self as cs, Projection};
 use glam::DVec3;
 use serde::{Deserialize, Serialize};
 
@@ -108,7 +108,7 @@ impl Planet {
         // would show the sea either a voxel too high or not at all; they are
         // left out. With the defaults (H 2048, sea 512) this is LOD 9 (512 m).
         let max_lod = (height.trailing_zeros().min(sea_level.trailing_zeros())) as u8;
-        Self { block_size, height, sea_level, n, radius, max_lod, proj: Projection::Equiangular }
+        Self { block_size, height, sea_level, n, radius, max_lod, proj: Projection::EqualAreaCobe }
     }
 
     /// Radius of the bottom of the world (layer 0).

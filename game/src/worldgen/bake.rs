@@ -11,7 +11,7 @@
 //! Both use the viewer's `FACES` frames. Smooth fields are sampled with
 //! Catmull-Rom (C1); mask-like fields bilinearly.
 
-use crate::cubesphere_stub::FACES;
+use cubesphere::FACES;
 use glam::DVec3;
 use std::f64::consts::FRAC_PI_4;
 use std::io::{self, Read, Seek, SeekFrom};

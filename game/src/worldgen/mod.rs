@@ -237,8 +237,8 @@ impl Generator {
         let size = fp.extent_blocks() as f64;
         let (i0, j0) = (fp.cx as f64 * size, fp.cy as f64 * size);
         let (i1, j1) = ((i0 + size).min(planet.n as f64), (j0 + size).min(planet.n as f64));
-        let (a0, b0) = crate::cubesphere_stub::warp(planet.proj, planet.p_of(i0), planet.p_of(j0));
-        let (a1, b1) = crate::cubesphere_stub::warp(planet.proj, planet.p_of(i1), planet.p_of(j1));
+        let (a0, b0) = cubesphere::warp(planet.proj, planet.p_of(i0), planet.p_of(j0));
+        let (a1, b1) = cubesphere::warp(planet.proj, planet.p_of(i1), planet.p_of(j1));
         let (emin, emax) = self.bake.elev_range_km(fp.face, a0, b0, a1, b1);
         let margin = self.local_margin_m(self.bake.rough_max_range_km(fp.face, a0, b0, a1, b1) as f64);
         let mut hmin = emin as f64 * 1000.0 * self.vscale - margin;
@@ -537,7 +537,7 @@ mod tests {
     #[test]
     fn surface_chunk_has_air_above_and_rock_below() {
         let g = test_generator();
-        let dir = crate::cubesphere_stub::face_to_dir(g.planet.proj, 2, 0.5, -0.1);
+        let dir = cubesphere::face_to_dir(g.planet.proj, 2, 0.5, -0.1);
         let (f, i, j) = g.planet.lattice_of_dir(dir);
         let h = g.ground_height_m(dir);
         let k = g.planet.sea_level as f64 + h;

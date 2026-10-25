@@ -372,6 +372,13 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "460fbee9c2c2f33933d720630a6a0bac33ba7053db5344fac858d4b8952d77d5"
 
 [[package]]
+name = "cubesphere"
+version = "0.1.0"
+dependencies = [
+ "glam",
+]
+
+[[package]]
 name = "cursor-icon"
 version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2337,6 +2344,7 @@ name = "triangulum"
 version = "0.1.0"
 dependencies = [
  "bytemuck",
+ "cubesphere",
  "egui",
  "egui-winit",
  "glam",
