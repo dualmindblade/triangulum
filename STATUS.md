@@ -111,8 +111,9 @@ detail (still about 500 fps).
 ## In progress
 
 - M1-video: a ~1 minute showcase clip of everything M1 does (Opus)
-- M1-review2: a second independent code review (Astra)
-
+- M1-hardening: the remaining review findings: picking and collision at
+  cube edges, tunnel walls after reload, water seams far out (Fable)
+- M2-hydro: lakes and rivers as real water, held by their banks (Opus)
 
 ## Waiting on you
 
