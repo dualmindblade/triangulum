@@ -1,0 +1,84 @@
+# M3a: per-face block colours. Grass is green on top only: its sides and its
+# underside are dirt, so a tunnel dug just under the grass has a dirt
+# ceiling and a shaft through it has dirt walls (Andrew's note on the M1
+# video: tunnel ceilings were green). Run it with the engine before M3a and
+# after to compare the frames; the asserts pin the blocks, so the shots show
+# grass where the script says grass.
+#
+# Site: face 2, row J = 57519 of the hills preset, columns I = 107136..107140
+# all have grass on top of dirt on top of limestone at the same layer.
+#   shaft   column 107140, three blocks down (grass, dirt, limestone)
+#   tunnel  from the shaft bottom along -i, three cells, two high: its
+#           ceiling is the underside of the grass layer
+
+atblock 2 107140 57519 2000
+lookaxis +i 0
+assert block_rel[0,0,-1] == grass
+assert block_rel[0,0,-2] == dirt
+assert block_rel[-1,0,-1] == grass
+assert block_rel[-2,0,-1] == grass
+assert block_rel[-3,0,-1] == grass
+assert block_rel[-4,0,-1] == grass
+
+# ---- the shaft --------------------------------------------------------------
+aim 0 0 -0.5
+tap break
+wait 0.6
+aim 0 0 -0.5
+tap break
+wait 0.6
+aim 0 0 -0.5
+tap break
+wait 0.6
+assert on_ground == true
+assert block_rel[0,0,0] == air
+assert block_rel[0,0,1] == air
+assert block_rel[0,0,2] == air
+# the shaft's walls: limestone at the feet, dirt at the head, grass above
+assert block_rel[-1,0,0] == limestone
+assert block_rel[-1,0,1] == dirt
+assert block_rel[-1,0,2] == grass
+
+# ---- the tunnel, three cells along -i -----------------------------------------
+aim -1 0 1.5
+tap break
+aim -1 0 0.5
+tap break
+lookaxis -i 0
+hold w 0.5
+aim -1 0 1.5
+tap break
+aim -1 0 0.5
+tap break
+lookaxis -i 0
+hold w 0.5
+aim -1 0 1.5
+tap break
+aim -1 0 0.5
+tap break
+lookaxis -i 0
+hold w 0.5
+assert on_ground == true
+assert block_rel[0,0,0] == air
+assert block_rel[0,0,1] == air
+# the ceiling over every tunnel cell is grass (seen from below)
+assert block_rel[0,0,2] == grass
+assert block_rel[1,0,2] == grass
+assert block_rel[2,0,2] == grass
+assert block_rel[-1,0,1] == dirt
+
+# ---- the shots ---------------------------------------------------------------
+# in the tunnel, looking back toward the shaft and up at the ceiling
+lookaxis +i 25
+shot tunnel_ceiling
+# straight up the ceiling
+lookaxis +i 70
+shot tunnel_ceiling_up
+# at the shaft's bottom, looking up its walls
+atblock 2 107140 57519 2000
+lookaxis +j 60
+shot shaft_walls
+# from outside, looking down into the shaft
+atblock 2 107143 57519 2000
+lookaxis -i -45
+shot shaft_from_above

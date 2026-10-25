@@ -1,0 +1,18 @@
+# M3a: the atmosphere over 1/8 mountains, where the M1 sky (640 m of air)
+# is nearly space-dark at the peaks. Run at 1/8 with and without a raised
+# atmosphere (sky.atmosphere_height_m in a look file):
+#
+#   cargo run --release -- --vscale 0.125 --height 4096 --sea-level 1536 --play scripts/m3a-look-vscale8.play
+#   ... --look-file my-look.json --out out/play/peak-after
+#
+# The place is the "highest peak" preset: 3.5 km from Neisor's highest
+# land, standing on the ground about 740 m above the sea, looking at it.
+
+at 67.0208 120.2182
+look 18.2 6
+skytime 11:00
+shot peak_view
+mode fly
+at 67.0208 120.2182 1600
+look 18.2 -2
+shot peak_from_1600m

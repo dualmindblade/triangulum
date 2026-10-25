@@ -10,6 +10,7 @@ use crate::session::Session;
 use crate::sim::draw::FallingDraws;
 use crate::stream::Streamer;
 use crate::ui::{EguiPaint, Hud, draw_hud, outline_segments};
+use crate::workshop::Workshop;
 use std::collections::VecDeque;
 use std::sync::Arc;
 use std::time::Instant;
@@ -68,6 +69,8 @@ struct App {
     want_exit: bool,
     save_note: String,
     falling_draw: FallingDraws,
+    /// Andrew's look panel (F1) and the look files it saves and watches (M3a).
+    workshop: Workshop,
     /// `--replay FILE --watch` (M2c): the replay drives the steps instead
     /// of the keyboard and mouse.
     replay: Option<WatchedReplay>,
@@ -107,6 +110,20 @@ impl App {
             let _ = gfx.window.set_cursor_grab(CursorGrabMode::None);
             gfx.window.set_cursor_visible(true);
             self.captured = false;
+        }
+    }
+
+    /// F1: open the look panel (freeing the mouse) or close it (giving the
+    /// mouse back to the game if it had it).
+    fn toggle_panel(&mut self) {
+        self.workshop.open = !self.workshop.open;
+        if self.workshop.open {
+            self.workshop.recapture = self.captured;
+            // A held mouse button lets go: the panel has the mouse now.
+            self.controls.button(winit::event::MouseButton::Left, false);
+            self.set_capture(false);
+        } else if self.workshop.recapture {
+            self.set_capture(true);
         }
     }
 
@@ -221,6 +238,9 @@ impl App {
             }
         };
         let view = frame.texture.create_view(&Default::default());
+        // The look panel's changes and the look files (M3a): render dials,
+        // block colours, distance detail, terrain previews.
+        self.workshop.update(&mut self.session, streamer, &mut self.falling_draw, &mut gfx.gpu);
         let t0 = Instant::now();
         let aspect = gfx.gpu.width as f64 / gfx.gpu.height as f64;
         let vp = cam.view_proj(aspect);
@@ -243,19 +263,29 @@ impl App {
             let (w, h) = (gfx.config.width, gfx.config.height);
             let hud = self.hud_info(gpu_ms, &cam, aspect, w, h);
             let stats = self.show_stats;
-            let full = self.egui_ctx.run_ui(raw, |ui| draw_hud(ui.ctx(), &hud, stats));
+            let workshop = &mut self.workshop;
+            let full = self.egui_ctx.run_ui(raw, |ui| {
+                draw_hud(ui.ctx(), &hud, stats);
+                workshop.ui(ui.ctx());
+            });
             let gfx = self.gfx.as_mut().unwrap();
             gfx.egui_state.handle_platform_output(&gfx.window, full.platform_output);
             let prims = self.egui_ctx.tessellate(full.shapes, full.pixels_per_point);
             gfx.egui_paint.paint(&gfx.gpu.device, &gfx.gpu.queue, &view, (gfx.config.width, gfx.config.height), full.pixels_per_point, &prims, &full.textures_delta);
         }
         let gfx = self.gfx.as_mut().unwrap();
-        if self.exit_after.is_some_and(|s| self.started.elapsed().as_secs_f64() >= s) {
-            if let Some(path) = &self.screenshot {
-                let rgba = gfx.gpu.read_texture(&frame.texture, gfx.config.width, gfx.config.height);
-                crate::render::write_png(path, gfx.config.width, gfx.config.height, &rgba);
-                println!("screenshot saved to {path}");
+        // The look panel's screenshot button and --screenshot both write the
+        // frame and a JSON sidecar with the look (M3a).
+        let quit_shot = self.exit_after.is_some_and(|s| self.started.elapsed().as_secs_f64() >= s);
+        let shot = if quit_shot { self.screenshot.clone().map(std::path::PathBuf::from) } else { None };
+        if let Some(path) = shot.or_else(|| self.workshop.shot_pending().then(Workshop::shot_path)) {
+            let rgba = gfx.gpu.read_texture(&frame.texture, gfx.config.width, gfx.config.height);
+            match self.workshop.save_frame(&path, &rgba, gfx.config.width, gfx.config.height, &self.session, &gfx.gpu) {
+                Ok(()) => println!("screenshot saved to {}", path.display()),
+                Err(e) => eprintln!("screenshot failed: {e}"),
             }
+        }
+        if quit_shot {
             self.want_exit = true;
         }
         gfx.window.pre_present_notify();
@@ -311,7 +341,7 @@ impl App {
             mode: if p.mode == Mode::Walk { "walk".into() } else { "fly".into() },
             on_ground: p.on_ground,
             in_water: p.in_water,
-            hotbar: engine.hotbar.iter().map(|&id| (engine.registry.def(id).name.clone(), engine.registry.def(id).color)).collect(),
+            hotbar: engine.hotbar.iter().map(|&id| (engine.registry.def(id).name.clone(), engine.registry.colour(id))).collect(),
             selected: p.selected,
             outline,
             edits: engine.edits.len(),
@@ -384,6 +414,14 @@ impl ApplicationHandler for App {
                     // Game keys queue their input for the next step (controls.rs);
                     // the app's own keys act here.
                     let pressed = event.state == ElementState::Pressed;
+                    // The look panel (M3a): F1 opens and closes it; keys
+                    // typed into one of its fields are not game input.
+                    if pressed && code == KeyCode::F1 && !event.repeat {
+                        self.toggle_panel();
+                    }
+                    if pressed && self.workshop.typing(&self.egui_ctx) {
+                        return;
+                    }
                     // Watching a replay, only the app's own keys work.
                     let first = if self.replay.is_some() { pressed && !event.repeat } else { self.controls.key(code, pressed, self.presets.len()) };
                     if first {
@@ -405,6 +443,9 @@ impl ApplicationHandler for App {
                 }
             }
             WindowEvent::MouseInput { .. } | WindowEvent::MouseWheel { .. } if self.replay.is_some() => {}
+            // While the look panel is open the mouse is its (M3a).
+            WindowEvent::MouseInput { state: ElementState::Pressed, .. } if self.workshop.open => {}
+            WindowEvent::MouseWheel { .. } if self.workshop.open && self.egui_ctx.is_pointer_over_egui() => {}
             WindowEvent::MouseInput { state, button, .. } => {
                 if state == ElementState::Pressed && !self.captured {
                     // The capturing click is not game input.
@@ -468,6 +509,7 @@ fn run_with(session: Session, opts: AppOptions, replay: Option<WatchedReplay>) -
     let egui_ctx = egui::Context::default();
     egui_ctx.all_styles_mut(|s| s.animation_time = 0.0);
     let title_speed = session.sky.speed;
+    let workshop = Workshop::new(&session.engine);
     let mut app = App {
         session,
         opts: Some(opts),
@@ -492,6 +534,7 @@ fn run_with(session: Session, opts: AppOptions, replay: Option<WatchedReplay>) -
         want_exit: false,
         save_note: String::new(),
         falling_draw: FallingDraws::default(),
+        workshop,
         replay,
     };
     el.run_app(&mut app).unwrap();

@@ -1,0 +1,99 @@
+play scripts/m3a-tunnel.play -> out/m3a/gate2-m3a-tunnel
+> atblock 2 107140 57519 2000
+> lookaxis +i 0
+> assert block_rel[0,0,-1] == grass
+  assert ok: block_rel[0,0,-1] == grass (actual grass)
+> assert block_rel[0,0,-2] == dirt
+  assert ok: block_rel[0,0,-2] == dirt (actual dirt)
+> assert block_rel[-1,0,-1] == grass
+  assert ok: block_rel[-1,0,-1] == grass (actual grass)
+> assert block_rel[-2,0,-1] == grass
+  assert ok: block_rel[-2,0,-1] == grass (actual grass)
+> assert block_rel[-3,0,-1] == grass
+  assert ok: block_rel[-3,0,-1] == grass (actual grass)
+> assert block_rel[-4,0,-1] == grass
+  assert ok: block_rel[-4,0,-1] == grass (actual grass)
+> aim 0 0 -0.5
+> tap break
+  break: face 2 i 107140 j 57519 k 553
+> wait 0.6
+> aim 0 0 -0.5
+> tap break
+  break: face 2 i 107140 j 57519 k 552
+> wait 0.6
+> aim 0 0 -0.5
+> tap break
+  break: face 2 i 107140 j 57519 k 551
+> wait 0.6
+> assert on_ground == true
+  assert ok: on_ground == true (actual true)
+> assert block_rel[0,0,0] == air
+  assert ok: block_rel[0,0,0] == air (actual air)
+> assert block_rel[0,0,1] == air
+  assert ok: block_rel[0,0,1] == air (actual air)
+> assert block_rel[0,0,2] == air
+  assert ok: block_rel[0,0,2] == air (actual air)
+> assert block_rel[-1,0,0] == limestone
+  assert ok: block_rel[-1,0,0] == limestone (actual limestone)
+> assert block_rel[-1,0,1] == dirt
+  assert ok: block_rel[-1,0,1] == dirt (actual dirt)
+> assert block_rel[-1,0,2] == grass
+  assert ok: block_rel[-1,0,2] == grass (actual grass)
+> aim -1 0 1.5
+> tap break
+  break: face 2 i 107139 j 57519 k 552
+> aim -1 0 0.5
+> tap break
+  break: face 2 i 107139 j 57519 k 551
+> lookaxis -i 0
+> hold w 0.5
+> aim -1 0 1.5
+> tap break
+  break: face 2 i 107138 j 57519 k 552
+> aim -1 0 0.5
+> tap break
+  break: face 2 i 107138 j 57519 k 551
+> lookaxis -i 0
+> hold w 0.5
+> aim -1 0 1.5
+> tap break
+  break: face 2 i 107137 j 57519 k 552
+> aim -1 0 0.5
+> tap break
+  break: face 2 i 107137 j 57519 k 551
+> lookaxis -i 0
+> hold w 0.5
+> assert on_ground == true
+  assert ok: on_ground == true (actual true)
+> assert block_rel[0,0,0] == air
+  assert ok: block_rel[0,0,0] == air (actual air)
+> assert block_rel[0,0,1] == air
+  assert ok: block_rel[0,0,1] == air (actual air)
+> assert block_rel[0,0,2] == grass
+  assert ok: block_rel[0,0,2] == grass (actual grass)
+> assert block_rel[1,0,2] == grass
+  assert ok: block_rel[1,0,2] == grass (actual grass)
+> assert block_rel[2,0,2] == grass
+  assert ok: block_rel[2,0,2] == grass (actual grass)
+> assert block_rel[-1,0,1] == dirt
+  assert ok: block_rel[-1,0,1] == dirt (actual dirt)
+> lookaxis +i 25
+> shot tunnel_ceiling
+  shot tunnel_ceiling: out/m3a/gate2-m3a-tunnel/tunnel_ceiling.png (settled in 2.5 s / 1834 frames; 721 draws)
+  state tunnel_ceiling: walk lat -4.56516 lon 117.46131 alt 39.00 m (agl -2.64) face 2 i 107137 j 57519 k 551 ground true water false crosshair "grass" edits 1 dirty 1
+> lookaxis +i 70
+> shot tunnel_ceiling_up
+  shot tunnel_ceiling_up: out/m3a/gate2-m3a-tunnel/tunnel_ceiling_up.png (settled in 0.0 s / 10 frames; 10 draws)
+  state tunnel_ceiling_up: walk lat -4.56516 lon 117.46131 alt 39.00 m (agl -2.64) face 2 i 107137 j 57519 k 551 ground true water false crosshair "grass" edits 1 dirty 1
+> atblock 2 107140 57519 2000
+> lookaxis +j 60
+> shot shaft_walls
+  shot shaft_walls: out/m3a/gate2-m3a-tunnel/shaft_walls.png (settled in 0.0 s / 24 frames; 12 draws)
+  state shaft_walls: walk lat -4.56511 lon 117.46359 alt 39.00 m (agl -2.87) face 2 i 107140 j 57519 k 551 ground true water false crosshair "grass" edits 1 dirty 1
+> atblock 2 107143 57519 2000
+> lookaxis -i -45
+> shot shaft_from_above
+  shot shaft_from_above: out/m3a/gate2-m3a-tunnel/shaft_from_above.png (settled in 0.0 s / 18 frames; 120 draws)
+  state shaft_from_above: walk lat -4.56508 lon 117.46570 alt 42.00 m (agl 0.02) face 2 i 107143 j 57519 k 554 ground true water false crosshair "grass" edits 1 dirty 1
+saved 1 chunk(s) at exit
+done in 2.9 s: 20 asserts, 0 failed, 0 errors

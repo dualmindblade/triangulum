@@ -1,0 +1,39 @@
+# M3a: the look panel's dials, frame by frame. Run it with the shipped look
+# and again with another look file to see what a dial does:
+#
+#   cargo run --release -- --play scripts/m3a-look.play --out out/play/look-before
+#   cargo run --release -- --play scripts/m3a-look.play --look-file my-look.json --blocks my-blocks.json --out out/play/look-after
+#
+# Nothing is asserted about colours (that is what Andrew judges); the
+# script only fixes the places, the views and the times of day.
+
+# ---- the sky from 1.5 km over the hills (the M1 atmosphere is space-dark here)
+mode fly
+at -4.5654 117.4744 1500
+look -60 -8
+skytime 12:00
+shot sky_1500m
+
+# ---- the hills at night
+mode walk
+at -4.5654 117.4744
+look -60 0
+skytime 23:00
+shot night_hills
+sun -3
+shot dusk_hills
+sun 5
+shot golden_hills
+skytime 12:00
+
+# ---- water: the sea from its shore (face 1, the sea at i < 1800) and from 300 m
+atblock 1 1806 59003 511
+mode fly
+hold space 0.3
+lookaxis -i -20
+skytime 10:30
+shot water_shore
+at -3.4154 136.3992 300
+lookaxis -i -35
+shot water_high
+skytime 12:00
