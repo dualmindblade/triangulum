@@ -336,7 +336,7 @@ pub fn run_bench(engine: Arc<Engine>, opts: BenchOptions) {
     println!("\n== per-chunk generation / meshing cost (worker threads) ==\n{timing}");
     let p = &engine.planet;
     let summary = format!(
-        "# bench: {}\n\nPROVISIONAL: other agents were using the CPU during this run.\n\nplanet: s = {} m, H = {} blocks, sea level {} blocks, N = {}, R = {:.1} km, vertical scale {:.5} (1/{:.1}), roughness {}, max LOD {} ({} m voxels), lod factor {}, rayon threads {}, AO {}, skirt {}\n\n## static poses\n\n{table}\n{ao}\n## fixed flight (60 s: 50 m AGL at 50 m/s, climb to 5 km, dive back)\n\n{flight}\n## worker costs\n\n{timing}",
+        "# bench: {}\n\nTiming is only valid on an idle machine: a build or a render elsewhere during this run makes these numbers provisional.\n\nplanet: s = {} m, H = {} blocks, sea level {} blocks, N = {}, R = {:.1} km, vertical scale {:.5} (1/{:.1}), roughness {}, max LOD {} ({} m voxels), lod factor {}, rayon threads {}, AO {}, skirt {}\n\n## static poses\n\n{table}\n{ao}\n## fixed flight (60 s: 50 m AGL at 50 m/s, climb to 5 km, dive back)\n\n{flight}\n## worker costs\n\n{timing}",
         opts.label,
         p.block_size,
         p.height,
