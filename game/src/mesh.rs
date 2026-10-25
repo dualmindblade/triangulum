@@ -5,6 +5,13 @@
 //! Opaque quads are emitted where a solid voxel meets a non-solid one; water
 //! quads where a liquid voxel meets air. Quads never cross a curvature-grid
 //! cell in the tangent directions, so the bilinear warp stays crack-free.
+//!
+//! Grid record: 25 offsets (vec4, xyz = corner position at the chunk's
+//! lattice floor relative to the chunk origin) then 25 unit directions
+//! (vec4). `off[0].w` carries `r0`, the radius of the lattice floor, so a
+//! vertex shader can place vertices at their exact radius `r0 + z` instead
+//! of on the bilinear chord (review #11: at LOD 9 the chord sags 23 m below
+//! the sphere mid-cell, so coarse and fine water surfaces did not meet).
 
 use crate::worldgen::{Generated, PAD, pidx};
 use crate::grid::{CHUNK, ChunkKey, Planet};
@@ -18,6 +25,8 @@ pub const GRID_CORNERS: usize = GRID_CELLS + 1;
 /// f32s per grid record: 25 offsets (vec4) + 25 directions (vec4).
 pub const GRID_F32S: usize = GRID_CORNERS * GRID_CORNERS * 4 * 2;
 pub const GRID_BYTES: usize = GRID_F32S * 4;
+/// Index of `r0` (the lattice floor's radius) in the grid record.
+pub const GRID_R0_INDEX: usize = 3;
 
 pub type Quad = [u32; 2];
 
@@ -136,11 +145,9 @@ pub fn mesh_chunk(generated: &Generated, registry: &Registry, planet: &Planet, o
         let base = (GRID_CORNERS * GRID_CORNERS + g) * 4;
         grid[base..base + 3].copy_from_slice(&[dirs[g].x as f32, dirs[g].y as f32, dirs[g].z as f32]);
     }
-    let voxel_m = planet.voxel_m(key.lod);
-    let mid = dirs[GRID_CORNERS * GRID_CORNERS / 2];
-    let center = mid * (r0 + 16.0 * voxel_m);
-    let radius = (CHUNK as f64 * voxel_m * 0.5 * 3f64.sqrt() * 1.05 + 1.0) as f32;
-    MeshData { key, opaque, water, grid, origin, center, radius, mesh_us: t0.elapsed().as_micros() as u32 }
+    grid[GRID_R0_INDEX] = r0 as f32;
+    let bounds = planet.chunk_bounds(key);
+    MeshData { key, opaque, water, grid, origin, center: bounds.centre, radius: bounds.radius as f32, mesh_us: t0.elapsed().as_micros() as u32 }
 }
 
 /// Emit greedy quads for every face of `occ` voxels that borders a non-`blocking` voxel.
@@ -337,9 +344,9 @@ mod tests {
         let (f, i, j) = g.planet.lattice_of_dir(dir);
         let k = g.planet.sea_level as f64 + g.ground_height_m(dir);
         let keys = [
-            ChunkKey { face: f, lod: 0, cx: i as u32 / 32, cy: j as u32 / 32, cz: (k as u32) / 32 },
-            ChunkKey { face: f, lod: 4, cx: i as u32 / 512, cy: j as u32 / 512, cz: (k as u32) / 512 },
-            ChunkKey { face: 0, lod: 9, cx: 0, cy: 0, cz: 0 },
+            ChunkKey::neisor(f, 0, i as u32 / 32, j as u32 / 32, (k as u32) / 32),
+            ChunkKey::neisor(f, 4, i as u32 / 512, j as u32 / 512, (k as u32) / 512),
+            ChunkKey::neisor(0, 9, 0, 0, 0),
         ];
         let (mut with, mut without) = (0usize, 0usize);
         for key in keys {
