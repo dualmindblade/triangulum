@@ -56,6 +56,22 @@ struct VOut {
     @location(5) normal: vec3<f32>,
 };
 
+// Lagrange weights of the five grid corners (at 0, 1, 2, 3, 4) for t in [0, 4].
+fn lagrange5(t: f32) -> array<f32, 5> {
+    let t0 = t;
+    let t1 = t - 1.0;
+    let t2 = t - 2.0;
+    let t3 = t - 3.0;
+    let t4 = t - 4.0;
+    var w: array<f32, 5>;
+    w[0] = t1 * t2 * t3 * t4 / 24.0;
+    w[1] = t0 * t2 * t3 * t4 / -6.0;
+    w[2] = t0 * t1 * t3 * t4 / 4.0;
+    w[3] = t0 * t1 * t2 * t4 / -6.0;
+    w[4] = t0 * t1 * t2 * t3 / 24.0;
+    return w;
+}
+
 // Shared vertex transform: returns the camera-relative world position and
 // fills the shading inputs.
 fn vertex(vi: u32, ii: u32) -> VOut {
@@ -93,7 +109,13 @@ fn vertex(vi: u32, ii: u32) -> VOut {
         default: { lp = vec3<f32>(pu, pv, ps); }
     }
 
-    // Bilinear curvature grid over the footprint (4x4 cells of 8 voxels).
+    // Curvature grid over the footprint (4x4 cells of 8 voxels): bilinear
+    // within a cell, or, at coarse LODs, the quartic through the chunk's
+    // five corners along each axis (review 2 #9: a cell is 4 km at LOD 9
+    // and the lattice lines curve, so a bilinear mid-cell vertex sat up to
+    // 30 m beside the finer neighbour's corner on the same lattice point;
+    // the quartic puts it within centimetres, and two chunks of one LOD
+    // still evaluate a shared edge from the same five corners).
     let g = lp.xy * 0.125;
     let gi = min(vec2<u32>(g), vec2<u32>(3u, 3u));
     let gf = g - vec2<f32>(gi);
@@ -106,8 +128,21 @@ fn vertex(vi: u32, ii: u32) -> VOut {
     let n10 = grids[d.slot].dir[b + 1u].xyz;
     let n01 = grids[d.slot].dir[b + 5u].xyz;
     let n11 = grids[d.slot].dir[b + 6u].xyz;
-    let off = mix(mix(o00, o10, gf.x), mix(o01, o11, gf.x), gf.y);
-    let up = mix(mix(n00, n10, gf.x), mix(n01, n11, gf.x), gf.y);
+    var off = mix(mix(o00, o10, gf.x), mix(o01, o11, gf.x), gf.y);
+    var up = mix(mix(n00, n10, gf.x), mix(n01, n11, gf.x), gf.y);
+    if (d.voxel >= 64.0) {
+        let wx = lagrange5(g.x);
+        let wy = lagrange5(g.y);
+        off = vec3<f32>(0.0);
+        up = vec3<f32>(0.0);
+        for (var j = 0u; j < 5u; j++) {
+            for (var i = 0u; i < 5u; i++) {
+                let w = wx[i] * wy[j];
+                off += grids[d.slot].off[j * 5u + i].xyz * w;
+                up += grids[d.slot].dir[j * 5u + i].xyz * w;
+            }
+        }
+    }
     // Exact radius (review #11): the bilinear chord sags r0 (1 - |up|)
     // below the sphere mid-cell (23 m at LOD 9), so coarse and fine water
     // surfaces did not meet. The mesher puts r0, the lattice floor's

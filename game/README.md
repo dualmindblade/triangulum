@@ -121,8 +121,9 @@ cave skylight propagation need additional terrain data.
 
 For repeatable stills, use `--time 17:30 --time-scale 0`. Existing
 `--bench`, `--shots` and `--play` renders hold the initial sky time while
-streaming/reading back frames; the play harness does not yet advance the
-sky on its simulation steps. A dedicated settled evidence reel seeks the
+streaming/reading back frames; the play harness advances the sky on its
+simulation steps only when a script asks (`skyspeed`, see Video below), and
+`skytime` / `sun` seek it. A dedicated settled evidence reel seeks the
 same clock explicitly for noon, golden hour (+5° sun), dusk (−3°) and night:
 
 ```
@@ -275,12 +276,22 @@ cargo run --release -- --play scripts/m1-done.play
 Output goes to `out/play/<script>/`: `NAME.png` settled frames with the HUD,
 `NAME.json` state sidecars, and `run.log`, the transcript. The exit code is
 1 when any `assert` failed. The run has its own save directory,
-`saves/_play/<script>/`, wiped at the start unless `--keep-save`.
+`saves/_play/<script>/`, wiped at the start unless `--keep-save`. A directory
+you name with `--save` is never wiped unless you also pass `--reset-save`:
+`--play x.play --save saves/Neisor` plays on your real save without deleting
+it first (the script's own edits are still saved into it).
 
 `scripts/m1-done.play` is the M1 "done when" scenario: walk, dig a trench
 and a tunnel, build a stone bridge over the trench, walk across it, save,
 reload, check every edited block, and shoot the bridge from 300 m, 550 m
 and 1 km (LOD 0, 1 and 2). It must pass.
+
+`scripts/tunnel-wall-reload.play` digs a shaft to a chunk boundary over a
+buried (Enclosed) chunk, saves, reloads and asserts with `cover_rel` that
+the chunk whose top the shaft exposed is drawn at LOD 0 (review 2 #7).
+`scripts/water-lod-seam.play` (at `--lod-factor 0.2`) and
+`scripts/water-lod-seam-high.play` (default factor, from 30 km) frame the
+sea at LOD boundaries (review 2 #9).
 
 `scripts/m2a-sand.play` is the M2a scenario: tunnel under a column, build a
 sand and gravel tower on it, knock the support out and watch the chain
@@ -301,12 +312,46 @@ shot NAME                settled frame + state; bench N; state NAME
 save | reload            write edits; quit-and-restart from disk
 assert FIELD OP VALUE    position, altitude, on_ground, in_water, crosshair,
                          block[F,I,J,K], block_rel[DI,DJ,DK], falling,
-                         falling_rel[DI,DJ], queued, sim_hash, ...
+                         falling_rel[DI,DJ], queued, sim_hash,
+                         cover[F,I,J,K] / cover_rel[DI,DJ,DK] (what the
+                         streamer draws at a block, after a shot), ...
 ```
 
 Writing a script: teleport with `atblock` rather than walking to places,
 probe the terrain with `column DI DJ` first, and target blocks with `aim`
 (or `lookaxis` with a computed pitch) so a run is deterministic.
+
+## Video
+
+The harness also records video (commands in the "video" section of the
+`src/play.rs` header; the code is `src/play/video.rs`). Between `record
+FILE` and `stop`, every 60 Hz step of a script is a video tick, and frames
+are piped as raw RGBA into ffmpeg, which writes H.264. Nothing else is written
+to disk. `fly` moves the camera smoothly through `key`s, `pan` turns the
+view, `sun` and `skyspeed` set and run the sky clock, `zoom` changes the
+field of view, and `caption` places caption cues. `recmode settle` settles
+every frame before writing it (clean: what the world converges to, with
+pop-in between frames hidden); `recmode live` streams and renders once per
+step at real time, as a player sees it. ffmpeg must be on PATH, or set
+`TRIANGULUM_FFMPEG`.
+
+The M1 showcase (`docs/media/m1-showcase.mp4`) re-renders with one command
+from the repo root (about 4 minutes on the 2060 machine, needs ffmpeg and ffprobe):
+
+```
+python game/scripts/showcase.py
+```
+
+It runs `scripts/m1-showcase.play` and `scripts/m1-showcase-vscale8.play` at
+1080p into `game/out/showcase/clips/`, then adds title and end cards,
+crossfades and captions. It writes the full-quality master
+`game/out/showcase/m1-showcase-1080p.mp4`, the 720p repo copy (kept under
+15 MB) and review stills in `docs/media/m1-showcase-stills/`. If the world
+or the engine changes under the scripts, their asserts (the build sequence
+is checked block by block, as in `m1-done.play`) or the `fly` ground check
+fail the run, and `showcase.py` stops before assembling anything. Fix the
+script, using `column` and `state` to probe, and run it again.
+`--skip-render` re-assembles existing clips (to retime captions or cards).
 
 ## Tests
 
@@ -320,9 +365,14 @@ compression and its byte format, the edit store (revisions, acknowledged
 saves, water levels), saves (round trip, mismatched header refused with
 reasons, an interrupted save leaving the previous generation whole, damaged
 and out-of-bounds files refused), edits propagating to coarse LODs and to
-neighbour chunks, player collision edge cases (resting exactly on a floor,
-walls, jumping onto a step, half-metre blocks, walking across a face edge
-and round a corner, swimming, picking), and the simulation: neighbour
+neighbour chunks, the streamer (the coverage tree's invariants under random
+camera paths, atomic switches, an edited Enclosed chunk becoming a node, a
+chunk whose padding holds an edit existing, a stale resident mesh asked for
+again when its replacement is lost), the mesher's water edges meeting
+across an LOD boundary, player collision edge cases (resting exactly on a
+floor, walls, jumping onto a step, half-metre blocks, walking across a face
+edge and round a corner, walking along a wall through a face edge, swimming,
+picking across a face edge), and the simulation: neighbour
 notification across chunk and face edges, the chain collapse and the drain
 order, settling above a block built into a fall, frozen updates waiting and
 persisting, and the determinism hash across two runs, rayon pools of 1 and
@@ -344,15 +394,23 @@ sites (`hydro_places`) and print the water model at a column
   levels are not drawn (every water cell is a full block).
 - Falling blocks pass through each other and through the player; a block
   that lands in your cell pushes you up.
-- Chunks entirely below every surface (`Enclosed`) are never streamed; one
-  that gets edited appears under its coarser parent and refines down to
-  LOD 0 over the next frames, so a deep shaft shows its walls coarsely for
-  a moment.
-- Water surfaces at coarse LOD boundaries sag up to 23 m below their finer
-  neighbours (a chord against the sphere) until the exact-radius vertex
-  correction lands in the shader (`docs/missions/M1c-stream-evidence/shader-exact-radius.patch`).
+- Chunks entirely below every surface (`Enclosed`) are never streamed
+  unless an edit touches their padded voxel grid (their own blocks or the
+  one-voxel halo around them, across face edges too); one that gets edited
+  appears under its coarser parent and refines down to LOD 0 over the next
+  frames, so a deep shaft shows its walls coarsely for a moment.
+- Quads on the sea-level plane (and all water quads) have tangent edges of
+  at most 256 m (`mesh::SEA_EDGE_MAX_M`), so the sea's chords sag under
+  0.1 m against the sphere and the vertices of neighbouring LODs coincide
+  from LOD 5 up; a seam at the LOD 5/4 boundary and finer is below a
+  centimetre. Other coarse surfaces still sag (23 m mid-quad at LOD 9),
+  inside their own LOD's height quantisation.
 - In coarse chunks' padding, an edit at the one diagonal column of a cube
   corner (three faces meet there) is left natural.
 - The corner policy for lattice coordinates past two sides of a face maps
   the missing diagonal onto the neighbouring face; collision there is
-  approximate within a block of a cube corner.
+  approximate within a block of a cube corner. A box that straddles a face
+  edge without its centre crossing is swept in its own face's lattice; the
+  part past the edge can lean a few centimetres into a wall on the other
+  face (the two lattices meet with a kink) until the centre crosses, when
+  the whole box is checked in the new lattice and nudged clear.
