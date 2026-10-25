@@ -28,23 +28,29 @@
 //! water cell. That holds by construction:
 //! - inside one water body W is flat (lakes, the sea) or leans at most
 //!   `G_REST` (0.6 levels per block) along a river, never across it;
-//! - every zone is ringed by ground at least `fb_bank` (0.6 blocks) above
-//!   the highest W within two voxels: lake aprons, river banks (`bank_w`
-//!   wide) whose height looks two voxels upstream (`delta`), so a step in a
-//!   river can never spill sideways;
-//! - zones meet only where their levels agree (river links are flat for
-//!   `node_flat` around every graph node, so tributaries, the river they
-//!   join and lake inflows meet at one level) or inside a channel.
+//! - every zone is ringed by ground at least 0.6 blocks above the highest
+//!   W any water cell next to it can have: a lake's apron (flat across the
+//!   field band 0.14..zone, then sloping away), a river's banks (`bank_w`:
+//!   two voxels and more) which take the level of the most upstream course
+//!   point within the channel's reach (`RiverAt::s_near`; the level never
+//!   rises downstream, so no step or tight bend can spill sideways);
+//! - waters meet only where their levels agree: river links are flat for
+//!   four channel widths plus 32 m around every graph node (junctions,
+//!   lake ends), a link holds its lake's level until its whole channel is
+//!   clear of the lake (`Hydro::lake_ends`), a link with no room to fall
+//!   hands its drop to its neighbour, and where two waters that are not
+//!   connected there come close, the lower channel yields to the higher
+//!   water's bank (`shape`, step 4), so they are always parted by ground.
 //!
 //! The exceptions, where the water drops on purpose and is *not* at rest,
 //! are exactly these: a river cell A next to a cell B (lower by two levels
-//! or more, air included) where both columns lie inside river channels and
-//! B is downstream of A: on the same link further along (s_B > s_A), or on
-//! a link the water from A's link reaches by following receivers. They are
-//! the river's steps and waterfalls (and the drop where a river enters a
-//! lake's band, or leaves it, below the lake level). The containment test
-//! (`tests.rs`, `water_is_contained`) checks the voxels against exactly
-//! this rule; `Hydro::downstream` is the reachability it uses.
+//! or more, air included, B holding water at or below that layer) where
+//! both columns lie inside river channels and B is downstream of A: on the
+//! same link further along (s_B > s_A), or on a link the water from A's link
+//! reaches by following receivers. They are the river's steps, cascades and
+//! waterfalls. The containment test (`hydro_tests.rs`, `water_is_contained`
+//! and the wider `water_is_contained_wide`) checks the generated voxels
+//! against exactly this rule; `Hydro::downstream` is the reachability.
 //!
 //! # Steep rivers: pools, steps and falls
 //!
@@ -55,10 +61,21 @@
 //! cascades of at most one block each; more becomes waterfalls of up to 24
 //! blocks, with a plunge pool and a one-voxel "curtain" (the water steps a
 //! voxel after the bed, so the falling face is a column of water against
-//! the cliff, standing on the pool, never on air). Steps are at least four
-//! voxels apart at every LOD (merged into fewer, taller ones at coarse LODs).
+//! the cliff, standing on the pool, never on air). Below a fall only the
+//! channel and its banks drop at once; the rest of the valley floor holds
+//! the upper level for a gorge's length, so the fall sits in a notch. Steps
+//! are at least four voxels apart at every LOD (merged into fewer, taller
+//! ones at coarse LODs) and sit in the same places at LODs 0-3.
 //! The flow direction at a river cell is the course tangent toward the
 //! receiver (`RiverAt::tangent`); discharge is planetgen's.
+//!
+//! # Courses
+//!
+//! Links follow the bake's centripetal Catmull-Rom curves (tributaries arrive
+//! straight; the main stem runs on smoothly), plus meanders laid on at load
+//! time: a sine of a whole number of wavelengths (12 channel widths, at
+//! least 40 m) per link, faded out near the nodes, with bends kept over five
+//! half-widths in radius.
 
 use super::noise::{gradient_noise, hash01};
 use crate::grid::FastMap;

@@ -882,7 +882,7 @@ fn hydro_places() {
     let s = &h.segs[k as usize];
     // The coast: where the column becomes sea along the link.
     let coast = (0..200).map(|t| s.len * t as f64 / 200.0).find(|&x| g.column(s.point(x), p.block_size).ocean).unwrap_or(0.5 * s.len);
-    pair("river_mouth", s.point(coast), tangent(k, coast), 60.0, s.hw + 8.0, -6.0, &format!("link {k}, {:.0} m3/s", s.flow));
+    pair("river_mouth", s.point((coast - 100.0).max(0.0)), tangent(k, (coast - 100.0).max(0.0)), 150.0, s.hw + 6.0, -3.0, &format!("link {k}, {:.0} m3/s, looking down the estuary to the coast", s.flow));
     // 5. A river crossing a cube-face edge (the largest that does).
     let mut crossing: Vec<u32> = (0..ns).filter(|&k| {
         let s = &h.segs[k as usize];
@@ -1023,6 +1023,46 @@ fn water_is_contained_wide() {
     assert_eq!(total.missing, 0);
     assert!(total.walls.is_empty(), "{} water walls, e.g. {}", total.walls.len(), total.walls[0]);
     assert!(total.perched.is_empty(), "{} perched, e.g. {}", total.perched.len(), total.perched[0]);
+}
+
+/// Not a check: how much of the river network is at rest, stepped, or has
+/// falls at this scale (HYDRO_VSCALE to change it).
+#[test]
+#[ignore]
+fn hydro_stats() {
+    let g = world_gen();
+    let h = hydro();
+    let p = &g.planet;
+    let (mut smooth, mut stepped, mut falls, mut n_falls, mut fall_m, mut tallest) = (0.0, 0.0, 0.0, 0u32, 0.0, 0.0f64);
+    for k in 0..h.segs.len() as u32 {
+        let s = &h.segs[k as usize];
+        let pr = h.profile(k, p.block_size);
+        let km = s.len / 1000.0;
+        if pr.steps == 0 {
+            smooth += km;
+        } else if pr.falls {
+            falls += km;
+            n_falls += pr.steps;
+            fall_m += pr.delta * pr.steps as f64;
+            tallest = tallest.max(pr.delta);
+        } else {
+            stepped += km;
+        }
+    }
+    let total = smooth + stepped + falls;
+    let t = std::time::Instant::now();
+    let rebuilt = Hydro::new(g.bake.hydro().unwrap(), p.radius, p.block_size, g.vscale, g.seed);
+    println!("building the model from hydro.bin: {:.2} s ({} links)", t.elapsed().as_secs_f64(), rebuilt.segs.len());
+    println!(
+        "vertical scale 1/{:.1}: {} links, {total:.0} km of river: {:.1}% smooth and at rest, {:.1}% pools with cascades (<= 1 block), {:.1}% with waterfalls; {n_falls} falls, mean {:.1} m, tallest {tallest:.1} m; {} lakes",
+        1.0 / g.vscale,
+        h.segs.len(),
+        100.0 * smooth / total,
+        100.0 * stepped / total,
+        100.0 * falls / total,
+        fall_m / n_falls.max(1) as f64,
+        h.lakes.len()
+    );
 }
 
 /// Not a check: print the generated cells and the water model around
