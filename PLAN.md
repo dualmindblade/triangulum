@@ -27,8 +27,8 @@ flight holds 60 fps at 1080p.
 | M1a | Engine skeleton from the prototype: planet parameters, palette chunks, block definitions, generator v1 (bake sampling, 1/70 vertical scale, strata, biome surfaces, ocean), LOD up to H, renderer, free-fly camera, fps overlay, headless bench | Fable | done |
 | M1b | Player physics, block picking, break/place with a hotbar, saves of changed chunks, edits visible at distance, scripted play harness | Fable | started |
 | M1-terrain | Landforms between the bake's scale and the metre scale (ridges, valleys, escarpments), so the vertical scale can be judged on real-looking terrain | Opus | started |
-| M1-review | Independent review of the merged engine by a different model family | Astra | started |
-| M1c | Sky and sun from the old viewer, 24-minute days, the fixed test flight, main-thread fixes, the ½ m switch | — | after |
+| M1-review | Independent review of the merged engine by a different model family: 15 findings, routed to M1b, M1-terrain and M1c (`docs/reviews/2026-10-25-M1a-astra.md`) | Astra | done |
+| M1c | Sky and sun from the old viewer, 24-minute days, main-thread fixes (incremental traversal on a non-overlapping coverage tree), review findings #8 #9 #11 #12 #15, the ½ m switch | — | after |
 
 ## M2 — Things fall and flow
 
