@@ -131,6 +131,14 @@ impl Engine {
         self.generator.vscale
     }
 
+    /// Sun direction for a camera position: mid-morning from the south-east
+    /// in the camera's own tangent frame, so lighting reads the same at
+    /// every latitude. The real sun and sky arrive with M1c.
+    pub fn sun_at(&self, pos: DVec3) -> DVec3 {
+        let (north, east, up) = Camera::local_frame(pos);
+        (up * 0.75 + north * -0.35 + east * 0.55).normalize()
+    }
+
     /// A copy with different debug flags (the generator is rebuilt; the bake is shared).
     pub fn with_flags(&self, hide_water: bool, markers_on: bool) -> Engine {
         self.with_markers(self.markers.clone(), hide_water, markers_on)

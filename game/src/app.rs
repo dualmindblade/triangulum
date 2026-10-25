@@ -173,7 +173,7 @@ impl App {
         let aspect = gfx.gpu.width as f64 / gfx.gpu.height as f64;
         let vp = self.cam.view_proj(aspect);
         streamer.update(self.cam.pos, vp, &mut gfx.gpu, &mut self.opaque, &mut self.water);
-        let uni = self.cam.uniform(aspect, self.engine.sun, &self.engine.planet, self.engine.water_alpha);
+        let uni = self.cam.uniform(aspect, self.engine.sun_at(self.cam.pos), &self.engine.planet, self.engine.water_alpha);
         let fs = gfx.gpu.render(&uni, &self.opaque, &self.water, Some(&view));
         self.cpu_ms = t0.elapsed().as_secs_f64() * 1e3;
         self.last_tris = (fs.triangles, fs.water_triangles, (fs.draws + fs.water_draws) as usize);
@@ -376,13 +376,15 @@ pub fn run(engine: Arc<Engine>, opts: AppOptions) {
     let el = EventLoop::new().unwrap();
     let presets = engine.presets();
     let (screenshot, exit_after) = (opts.screenshot.clone(), opts.exit_after);
+    let egui_ctx = egui::Context::default();
+    egui_ctx.all_styles_mut(|s| s.animation_time = 0.0);
     let mut app = App {
         cam: opts.start,
         engine,
         opts: Some(opts),
         gfx: None,
         streamer: None,
-        egui_ctx: egui::Context::default(),
+        egui_ctx,
         keys: HashSet::new(),
         last: Instant::now(),
         opaque: Vec::new(),

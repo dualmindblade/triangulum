@@ -79,7 +79,7 @@ impl Harness {
         let aspect = self.gpu.width as f64 / self.gpu.height as f64;
         let vp = cam.view_proj(aspect);
         self.streamer.update(cam.pos, vp, &mut self.gpu, &mut self.opaque, &mut self.water);
-        let uni = cam.uniform(aspect, self.engine.sun, &self.engine.planet, self.engine.water_alpha);
+        let uni = cam.uniform(aspect, self.engine.sun_at(cam.pos), &self.engine.planet, self.engine.water_alpha);
         let fs = self.gpu.render(&uni, &self.opaque, &self.water, None);
         let cpu_ms = t0.elapsed().as_secs_f64() * 1e3;
         let gpu_ms = self.gpu.wait_gpu_ms();
@@ -458,14 +458,16 @@ pub fn run_shots(engine: Arc<Engine>, opts: ShotOptions) {
             caption: format!("(c) range silhouette from near sea level | {scale_label} | {world_label} | peak {peak_h:.0} m above sea | camera {:.1} km from peak, eye 1.7 m AGL, ground {ground:.0} m | markers at peak: red 100 m, white 2 m", dist / 1000.0),
         });
     }
-    // (d) the deepest trench, water hidden, low angle.
+    // (d) the deepest trench, water hidden, low angle: the camera sits on the
+    // trench wall, 3 km from the deepest point, 40 m above the floor there.
     {
         let floor = trench_h.max(bottom_m);
         let depth = -floor;
         let hd = best_heading(trench_dir, 3000.0, false);
         let cam_dir = engine.offset_dir(trench_dir, hd, 3000.0);
         let (heading, dist) = engine.heading_to(cam_dir, trench_dir);
-        let alt = floor + depth * 0.35;
+        let ground = engine.generator.column(cam_dir, p.block_size).height_m.max(bottom_m as f32) as f64;
+        let alt = (ground + 40.0).max(floor + depth * 0.35);
         let pitch = ((floor - alt) / dist).atan().to_degrees() * 0.8;
         let clipped = if trench_h < bottom_m { format!(", floor clipped at bedrock {bottom_m:.0} m (true {trench_h:.0} m)") } else { String::new() };
         shots.push(Shot {
@@ -473,7 +475,7 @@ pub fn run_shots(engine: Arc<Engine>, opts: ShotOptions) {
             cam: engine.camera_asl(cam_dir, alt, heading, pitch),
             hide_water: true,
             markers: marker_pair(trench_dir, &engine),
-            caption: format!("(d) deepest trench, water hidden | {scale_label} | {world_label} | floor {floor:.0} m below sea{clipped} | camera {:.1} km from the deepest point at {alt:.0} m ASL | markers at floor: red 100 m, white 2 m", dist / 1000.0),
+            caption: format!("(d) deepest trench, water hidden | {scale_label} | {world_label} | floor {floor:.0} m below sea{clipped} | camera {:.1} km from the deepest point at {alt:.0} m ASL, ground there {ground:.0} m | markers at floor: red 100 m, white 2 m", dist / 1000.0),
         });
     }
     // (e) a coast with its shelf and slope, water hidden.
@@ -500,6 +502,6 @@ pub fn run_shots(engine: Arc<Engine>, opts: ShotOptions) {
         let path = format!("{}/{}.png", opts.out, s.name);
         h.save(&path, Some(&s.caption));
         let (lat, lon, alt) = s.cam.lat_lon_alt(&p);
-        println!("{} -> {path} (settled {secs:.1} s{}; cam lat {lat:.4} lon {lon:.4} alt {alt:.0} m; {} tris)", s.name, if ok { "" } else { " TIMEOUT" }, h.streamer.stats.drawn);
+        println!("{} -> {path} (settled {secs:.1} s{}; cam lat {lat:.4} lon {lon:.4} alt {alt:.0} m; {} draws)", s.name, if ok { "" } else { " TIMEOUT" }, h.streamer.stats.drawn);
     }
 }

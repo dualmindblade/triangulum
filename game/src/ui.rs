@@ -93,20 +93,25 @@ pub fn draw_caption(ctx: &egui::Context, text: &str) {
 
 /// Run one egui pass without a window and paint it over the renderer's
 /// offscreen colour target.
-pub fn paint_offscreen(ctx: &egui::Context, paint: &mut EguiPaint, gpu: &crate::render::Renderer, build: impl FnOnce(&egui::Context)) {
+pub fn paint_offscreen(ctx: &egui::Context, paint: &mut EguiPaint, gpu: &crate::render::Renderer, build: impl Fn(&egui::Context)) {
     let (w, h) = (gpu.width, gpu.height);
     let raw = egui::RawInput {
         screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(w as f32, h as f32))),
         ..Default::default()
     };
-    let mut build = Some(build);
-    let full = ctx.run_ui(raw, |ui| {
-        if let Some(b) = build.take() {
-            b(ui.ctx());
-        }
-    });
+    // egui sizes a window on its first pass and lays it out properly on the
+    // next, so run two passes and paint the second (fonts are uploaded by
+    // whichever pass produces them, so both texture deltas are applied).
+    // Animations are off: a window fade-in needs wall-clock frames that an
+    // offscreen capture never gives it, and left captions half transparent.
+    ctx.all_styles_mut(|s| s.animation_time = 0.0);
+    let build: &dyn Fn(&egui::Context) = &build;
+    let warm = ctx.run_ui(raw.clone(), |ui| build(ui.ctx()));
+    let mut deltas = warm.textures_delta;
+    let full = ctx.run_ui(raw, |ui| build(ui.ctx()));
+    deltas.append(full.textures_delta);
     let prims = ctx.tessellate(full.shapes, full.pixels_per_point);
-    paint.paint(&gpu.device, &gpu.queue, &gpu.color_view, (w, h), full.pixels_per_point, &prims, &full.textures_delta);
+    paint.paint(&gpu.device, &gpu.queue, &gpu.color_view, (w, h), full.pixels_per_point, &prims, &deltas);
 }
 
 // ----------------------------------------------------- egui paint (wgpu 30)
