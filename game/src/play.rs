@@ -34,6 +34,10 @@
 //!                           one action: left click, right click, a jump
 //!                           step, walk/fly toggle, water toggle, hotbar
 //!   wait SECONDS            time passes with no input (gravity acts)
+//!   tick N                  N simulation ticks (20 Hz: 3 player steps each,
+//!                           no input); "tick 20" is one second
+//!   sim on|off              run or pause the simulation (ticks stop; edits
+//!                           still log, and all notify when it resumes)
 //!   select N                hotbar slot 1-9
 //!   speed M_PER_S           fly speed (scroll wheel), 1..5000
 //!   travel SECONDS [KEYS]   like hold (default "w"), but every step also
@@ -72,13 +76,19 @@
 //!                             saved_chunks hide_water crosshair
 //!                             crosshair_face/i/j/k crosshair_dist
 //!                             loaded inflight drawn (after a shot/bench)
+//!                             sim_enabled sim_tick falling queued frozen
+//!                             sim_active_chunks falls landings vanished
+//!                             tick_ms_last tick_ms_avg tick_ms_max
+//!                             sim_hash (the world-state hash; computed on demand)
 //!                           or block[F,I,J,K]  the block at lattice coords
 //!                           or block_rel[DI,DJ,DK]  relative to the feet block
+//!                           or falling_rel[DI,DJ]  blocks in flight in that column
 
 use crate::bench::Harness;
 use crate::grid::BlockPos;
 use crate::player::{Input, Mode, STEP};
 use crate::session::Session;
+use crate::sim::STEPS_PER_TICK;
 use crate::ui::{Hud, draw_hud, outline_segments};
 use std::fmt::Write as _;
 use std::time::{Duration, Instant};
@@ -115,6 +125,20 @@ impl Run {
         for _ in 0..n {
             self.session.step(&input, STEP);
         }
+    }
+
+    /// `tick N`: exactly N simulation ticks with no input.
+    fn ticks(&mut self, n: usize) {
+        let before = self.session.sim.tick();
+        for _ in 0..n * STEPS_PER_TICK as usize {
+            self.session.step(&Input::default(), STEP);
+        }
+        self.say(format!("  ticked {} -> {}: {}", before, self.session.sim.tick(), self.session.sim.describe()));
+    }
+
+    /// Hand the harness the blocks in flight so the next frames draw them.
+    fn sync_falling(&mut self) {
+        self.harness.falling = self.session.sim.view();
     }
 
     fn state(&self) -> serde_json::Value {
@@ -169,6 +193,7 @@ impl Run {
 
     fn shot(&mut self, name: &str) {
         let cam = self.session.player.camera();
+        self.sync_falling();
         let (secs, frames, ok) = self.harness.settle(&cam, Duration::from_secs(180));
         self.harness.frame(&cam);
         self.record_stream();
@@ -198,6 +223,7 @@ impl Run {
             outline: pick.map_or(Vec::new(), |hit| outline_segments(&engine.planet, &cam, aspect, w, h, hit.face, hit.cell)),
             edits: engine.edits.len(),
             dirty: engine.edits.dirty_count(),
+            sim_line: self.session.sim.describe(),
             ..Default::default()
         };
         let path = format!("{}/{name}.png", self.out);
@@ -222,6 +248,7 @@ impl Run {
         let t0 = Instant::now();
         for _ in 0..n {
             self.session.step(&input, STEP);
+            self.sync_falling();
             let cam = self.session.player.camera();
             let s = self.harness.frame(&cam);
             cpu.push(s.cpu_ms);
@@ -280,6 +307,7 @@ impl Run {
 
     fn bench(&mut self, n: usize) {
         let cam = self.session.player.camera();
+        self.sync_falling();
         self.harness.settle(&cam, Duration::from_secs(180));
         let mut wall = Vec::with_capacity(n);
         let mut gpu = Vec::with_capacity(n);
@@ -331,7 +359,17 @@ impl Run {
         }
     }
 
-    fn field(&self, field: &str) -> Option<serde_json::Value> {
+    fn field(&mut self, field: &str) -> Option<serde_json::Value> {
+        if field == "sim_hash" {
+            return Some(serde_json::Value::String(self.session.sim_hash()));
+        }
+        if let Some(inner) = field.strip_prefix("falling_rel[").and_then(|r| r.strip_suffix(']')) {
+            let v: Vec<i64> = inner.split(',').map(|x| x.trim().parse().ok()).collect::<Option<_>>()?;
+            if v.len() != 2 {
+                return None;
+            }
+            return Some(serde_json::Value::from(self.session.falling_in_column_rel(v[0], v[1])));
+        }
         if let Some(inner) = field.strip_prefix("block[").and_then(|r| r.strip_suffix(']')) {
             let v: Vec<i64> = inner.split(',').map(|x| x.trim().parse().ok()).collect::<Option<_>>()?;
             if v.len() != 4 {
@@ -532,6 +570,18 @@ pub fn run_play(session: Session, opts: PlayOptions) -> i32 {
             "wait" => match num(0) {
                 Some(secs) => run.steps(Input::default(), secs),
                 None => bad(&mut run, "wait SECONDS"),
+            },
+            "tick" => match num(0) {
+                Some(n) if n >= 0.0 => run.ticks(n as usize),
+                _ => bad(&mut run, "tick N"),
+            },
+            "sim" => match args.first().map(|s| s.to_lowercase()).as_deref() {
+                Some(v @ ("on" | "off")) => {
+                    run.session.sim.config.enabled = v == "on";
+                    let d = run.session.sim.describe();
+                    run.say(format!("  {d}"));
+                }
+                _ => bad(&mut run, "sim on|off"),
             },
             "speed" => match num(0) {
                 Some(v) if (1.0..=5000.0).contains(&v) => run.session.player.fly_speed = v,

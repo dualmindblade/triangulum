@@ -50,6 +50,8 @@ pub struct Hud {
     pub edits: usize,
     pub dirty: usize,
     pub save_note: String,
+    /// The simulation's one-line status (`Sim::describe`), stats panel only.
+    pub sim_line: String,
 }
 
 fn srgb(c: [f32; 3]) -> egui::Color32 {
@@ -125,6 +127,9 @@ pub fn draw_hud(ctx: &egui::Context, h: &Hud, stats: bool) {
                     if h.save_note.is_empty() { String::new() } else { format!("  {}", h.save_note) },
                     if h.captured { "mouse captured: Esc releases" } else { "click to capture mouse" }
                 ));
+                if !h.sim_line.is_empty() {
+                    line(h.sim_line.clone());
+                }
                 line("WASD move  Space jump/up  Ctrl sneak/down  Shift sprint  G walk/fly  LMB break  RMB place  1-9 block  scroll fly speed".into());
                 line("P preset  R to ground  V vsync  F water  H hud  Q quit".into());
             });

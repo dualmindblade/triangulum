@@ -104,7 +104,9 @@ impl Engine {
         let vscale = config.vertical_scale.unwrap_or(planet.radius / 6_371_000.0);
         let mut generator = Generator::new(planet, bake.clone(), config.seed, vscale, config.roughness, config.landform, &registry)?;
         generator.skirt = skirt;
-        generator.hide_water = hide_water;
+        // `hide_water` is a view flag, applied when drawing: generation never
+        // reads it (review #5: an edit made with water hidden would otherwise
+        // make a dry ocean chunk authoritative and save it that way).
         if markers_on {
             generator.markers = markers.clone();
         }
@@ -151,10 +153,40 @@ impl Engine {
         (up * 0.75 + north * -0.35 + east * 0.55).normalize()
     }
 
-    /// A copy with different debug flags (the generator is rebuilt; the bake
-    /// and the edits are shared).
+    /// A copy with different view flags. Hiding water changes nothing about
+    /// generation, so the generator, the world and its physics cache are
+    /// shared; only a change of markers (shot tooling) rebuilds the generator.
     pub fn with_flags(&self, hide_water: bool, markers_on: bool) -> Engine {
+        if markers_on == self.markers_on {
+            return Engine { hide_water, ..self.shallow() };
+        }
         self.with_markers(self.markers.clone(), hide_water, markers_on)
+    }
+
+    /// The same engine, sharing everything behind an Arc.
+    fn shallow(&self) -> Engine {
+        Engine {
+            config: self.config.clone(),
+            planet: self.planet,
+            registry: self.registry.clone(),
+            bake: self.bake.clone(),
+            generator: self.generator.clone(),
+            edits: self.edits.clone(),
+            world: self.world.clone(),
+            lod: self.lod,
+            mesh_opts: self.mesh_opts,
+            sun: self.sun,
+            colours: self.colours.clone(),
+            quad_mb: self.quad_mb,
+            slot_capacity: self.slot_capacity,
+            water_alpha: self.water_alpha,
+            places: self.places,
+            skirt: self.skirt,
+            hide_water: self.hide_water,
+            markers_on: self.markers_on,
+            markers: self.markers.clone(),
+            hotbar: self.hotbar.clone(),
+        }
     }
 
     pub fn with_markers(&self, markers: Vec<Marker>, hide_water: bool, markers_on: bool) -> Engine {
@@ -169,7 +201,6 @@ impl Engine {
     fn rebuild(&self, markers: Vec<Marker>, hide_water: bool, markers_on: bool, edits: Arc<EditStore>) -> Engine {
         let mut generator = Generator::new(self.planet, self.bake.clone(), self.config.seed, self.generator.vscale, self.config.roughness, self.config.landform, &self.registry).expect("generator");
         generator.skirt = self.skirt;
-        generator.hide_water = hide_water;
         if markers_on {
             generator.markers = markers.clone();
         }
