@@ -7,14 +7,17 @@
 - **M1, a planet you can dig: feature-complete.** It's waiting for you two
   to play it (commands below) and watch the video
   (`docs/media/m1-showcase.mp4`).
-- **M2, things fall and flow: done except replays (M2c).** Sand and gravel
+- **M2, things fall and flow: built; hardening next.** Sand and gravel
   fall, water flows under Andrew's 256-level rule, Neisor has its lakes
-  and rivers, and diverting a river keeps the area wet.
+  and rivers, and diverting a river keeps the area wet. **F10 records a
+  bug as a replay file** that plays back exactly. Astra's third review
+  found edge cases (the worst: water can stall at the old edge of the
+  simulated area after you walk on); those are being fixed now.
 - **The one number** (RTX 2060, 1080p, 60 s test flight, idle machine):
   **1,185 fps average, 578 fps for the worst 1% of frames, worst frame
   7.0 ms.** The target is 60 fps (16.7 ms).
-- **Next:** M2c (replays), and M3, Andrew's workshop: a live look panel
-  and block files, so he can tune the look himself.
+- **Next:** M3, Andrew's workshop: a live look panel and block files, so
+  he can tune the look himself (in progress).
 - Analysis and plan: https://claude.ai/artifact/7q7Lk9YM4DZxCX5WfcvxPo ·
   grid comparison: https://claude.ai/artifact/7qz75zidRkhjMbVcKU3apY. The
   July docs are in `docs/archive/`; the old viewer still runs from
@@ -99,6 +102,19 @@
   pours. On a real river, a dug trench fills and the river keeps flowing
   through: about 47,000 units in and 45,000 out.
 
+- **M2c** (Fable, verified by Opus, merged): replays. F10 starts and stops
+  a recording in `game/replays/`; the file holds the world as it was and
+  every key, click and mouse move after it, so the file is the bug report.
+  `--replay FILE` plays it back in a scratch save (never yours) and
+  reports the first moment it differs and what differs. I altered two
+  recordings by hand (walk backwards instead of forwards; place instead
+  of break) and each was caught within a second and named; the unaltered
+  one reproduced exactly, and a real save stayed byte-identical. All
+  input now reaches the game in fixed 1/60 s steps, so a session played at
+  30 fps and one at 144 fps give the same world. Also three of Astra's
+  review 3 findings, and a harness command that finds a shore, river,
+  lake, waterfall or flat spot near you.
+
 **M1 is feature-complete.** The last step is yours: play it and tell me what
 feels wrong.
 
@@ -113,7 +129,8 @@ You start walking on the hills. Click to capture the mouse (Esc releases).
 WASD walk, Space jump (swim up in water), Shift sprint, G walk/fly, left
 mouse breaks (hold to repeat), right mouse places, 1-9 pick the block, R
 drops you to the ground, F hides water, H hides the HUD, V vsync, P scenic
-places, Q saves and quits. Edits save automatically to `game/saves/Neisor/`.
+places, Q saves and quits, F10 records a replay (see below). Edits save
+automatically to `game/saves/Neisor/`.
 Days are 24 minutes: `[` and `]` slow down and speed up time (up to
 3,600×), and `--time 17:30` starts at golden hour.
 
@@ -133,10 +150,11 @@ detail (still about 500 fps).
 
 ## In progress
 
-- **M2c, replays** (Fable): F10 records a bug as a replay file; the replay
-  plays the session back exactly and points to the first moment it
-  differs. Also a harness command that finds a shore, river or flat spot
-  near you.
+- **M2-hardening** (Fable): fixes for Astra's third review. Water stalling
+  at the old edge of the simulated area, a river crossing that edge
+  falling asleep, sand landing outside it, a damaged save loading as an
+  empty world, saves surviving a power cut on Windows, and memory as
+  edits pile up.
 - **M3a, Andrew's look panel** (Opus): F1 opens a panel with sliders for
   the sky, light, fog, water and block colours, and for terrain dials.
   Changes show at once and save to files in git. Grass gets dirt-coloured
@@ -144,6 +162,12 @@ detail (still about 500 fps).
 
 ## Waiting on you
 
+- **Try F10 once each.** Press F10, play a minute (dig, pour water, G, F,
+  `[` `]`, P, R, alt-tab), press F10 again, and send the file from
+  `game/replays/` (how: "Reporting a bug" in `game/README.md`). No agent
+  can press real keys, so the key mapping is untested. One recorded on
+  Andrew's machine and played back on Austin's tells us whether replays
+  survive a different PC.
 - **Watch the M1 video:** `docs/media/m1-showcase.mp4` (85 s; stills in
   `docs/media/m1-showcase-stills/`). Things in it that are Andrew's call:
   - **Vertical scale.** At 1/70 the highest range is a white plain with
