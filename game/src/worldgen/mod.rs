@@ -9,6 +9,7 @@
 //! faces against the neighbours without loading them.
 
 pub mod bake;
+pub mod inspect;
 pub mod noise;
 pub mod strata;
 
@@ -18,8 +19,24 @@ use crate::world::{BlockId, Chunk, Registry};
 use bake::Bake;
 use glam::DVec3;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use noise::{fbm, gradient_noise};
 use strata::{GeoHint, Strata};
+
+/// The landform dial every new `Generator` starts with (1.0 unless `main`
+/// sets it from world.json / --landform). `Engine::build` passes only the
+/// roughness dial to `Generator::new`, and engine.rs belongs to another
+/// mission right now; passing the dial explicitly there is a one-line
+/// follow-up that makes this global unnecessary.
+static DEFAULT_LANDFORM_BITS: AtomicU64 = AtomicU64::new(0x3FF0_0000_0000_0000);
+
+pub fn set_default_landform(dial: f64) {
+    DEFAULT_LANDFORM_BITS.store(dial.to_bits(), Ordering::Relaxed);
+}
+
+pub fn default_landform() -> f64 {
+    f64::from_bits(DEFAULT_LANDFORM_BITS.load(Ordering::Relaxed))
+}
 
 /// Padded voxel grid edge (one voxel border on every side).
 pub const PAD: usize = CHUNK + 2;
@@ -121,6 +138,8 @@ pub struct Generator {
     pub vscale: f64,
     /// Andrew's relief dial (1.0 = default).
     pub roughness: f64,
+    /// Andrew's landform dial (1.0 = default).
+    pub landform: f64,
     pub blocks: Blocks,
     pub strata: Strata,
     /// Border columns are lowered by this many voxels so chunk edges grow
@@ -158,6 +177,7 @@ impl Generator {
             seed,
             vscale,
             roughness,
+            landform: default_landform(),
             blocks,
             strata,
             skirt: 2,
@@ -165,6 +185,11 @@ impl Generator {
             hide_water: false,
             max_relief_m,
         })
+    }
+
+    /// One line naming the relief model and its dials (captions, logs).
+    pub fn describe_relief(&self) -> String {
+        format!("relief v1 (gradient fBm), roughness {}", self.roughness)
     }
 
     /// Conservative padding (m) above and below the bake's height range,

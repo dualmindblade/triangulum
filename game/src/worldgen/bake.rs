@@ -34,6 +34,19 @@ pub struct BakeSample {
     pub volcanic: f64,
     /// Rock erodibility (1 = neutral; 0 in the old bake).
     pub erodibility: f64,
+    /// Active tectonic uplift 0..1.2 (orogens, arcs; 0 in the old bake).
+    pub uplift: f64,
+    /// River discharge signal, log10(1 + m^3/s), regional (0 in the old bake).
+    pub flow_log10: f64,
+    /// Lake fraction 0..1 (0 in the old bake).
+    pub lake: f64,
+    /// Face whose raster was sampled (the face the direction points into).
+    pub face: u8,
+    /// Gradient of `elev_km` in that face's equal-angle chart: km per
+    /// radian of u = atan(a) and v = atan(b) (a, b gnomonic). Divide by the
+    /// radius to get km per metre along the chart axes.
+    pub elev_du_km: f64,
+    pub elev_dv_km: f64,
 }
 
 pub trait Bake: Send + Sync {
@@ -64,6 +77,9 @@ struct Face {
     continental: Vec<f32>,
     volcanic: Vec<f32>,
     erodibility: Vec<f32>,
+    uplift: Vec<f32>,
+    flow_log10: Vec<f32>,
+    lake: Vec<f32>,
     /// Min/max mip pyramids; level 0 is res x res.
     pyr_min: Vec<Vec<f32>>,
     pyr_max: Vec<Vec<f32>>,
@@ -134,6 +150,9 @@ impl RasterBake {
                 continental: rd("continental_frac")?,
                 volcanic: rd("volcanic_frac")?,
                 erodibility: rd("erodibility")?,
+                uplift: rd("uplift")?,
+                flow_log10: rd("flow_log10")?,
+                lake: rd("lake_frac")?,
                 ..Default::default()
             };
             let (pyr_min, pyr_max) = build_pyramid(&face.elev_km, res);
@@ -176,6 +195,9 @@ impl RasterBake {
                 continental: Vec::new(),
                 volcanic: Vec::new(),
                 erodibility: Vec::new(),
+                uplift: Vec::new(),
+                flow_log10: Vec::new(),
+                lake: Vec::new(),
                 pyr_min,
                 pyr_max,
                 pyr_rough,
@@ -265,23 +287,35 @@ impl Bake for RasterBake {
         let res = self.res as i64;
         let wx = catmull_weights(fx);
         let wy = catmull_weights(fy);
+        let dwx = catmull_dweights(fx);
+        let dwy = catmull_dweights(fy);
         // Catmull-Rom bicubic for the smooth fields; taps edge-clamped per face.
+        // The elevation's gradient comes from the same taps.
         let (mut elev, mut temp, mut precip) = (0.0, 0.0, 0.0);
+        let (mut ex, mut ey) = (0.0, 0.0);
         for dy in -1..=2 {
             let yy = (iy + dy).clamp(0, res - 1) as usize * self.res;
-            let (mut re, mut rt, mut rp) = (0.0, 0.0, 0.0);
+            let (mut re, mut rex, mut rt, mut rp) = (0.0, 0.0, 0.0, 0.0);
             for dx in -1..=2 {
                 let xx = (ix + dx).clamp(0, res - 1) as usize;
                 let w = wx[(dx + 1) as usize];
-                re += w * face.elev_km[yy + xx] as f64;
+                let e = face.elev_km[yy + xx] as f64;
+                re += w * e;
+                rex += dwx[(dx + 1) as usize] * e;
                 rt += w * face.temp_c[yy + xx] as f64;
                 rp += w * face.precip[yy + xx] as f64;
             }
             let w = wy[(dy + 1) as usize];
             elev += w * re;
+            ex += w * rex;
+            ey += dwy[(dy + 1) as usize] * re;
             temp += w * rt;
             precip += w * rp;
         }
+        // Texel units -> per radian of the equal-angle chart: x = (p/2 + 1/2)(res - 1)
+        // with p = u / (pi/4) (new bake) or p = a = tan u (old bake).
+        let half = 0.5 * (self.res - 1) as f64;
+        let (du, dv) = if self.equiangular { (half / FRAC_PI_4, half / FRAC_PI_4) } else { (half * (1.0 + a * a), half * (1.0 + b * b)) };
         // Bilinear for the mask-like fields.
         let (x1, y1) = (((ix + 1).min(res - 1)) as usize, ((iy + 1).min(res - 1)) as usize);
         let (ix, iy) = (ix as usize, iy as usize);
@@ -304,6 +338,12 @@ impl Bake for RasterBake {
             continental: bil(&face.continental),
             volcanic: bil(&face.volcanic),
             erodibility: bil(&face.erodibility),
+            uplift: bil(&face.uplift),
+            flow_log10: bil(&face.flow_log10),
+            lake: bil(&face.lake),
+            face: f as u8,
+            elev_du_km: ex * du,
+            elev_dv_km: ey * dv,
         }
     }
 
@@ -397,9 +437,46 @@ fn catmull_weights(t: f64) -> [f64; 4] {
     ]
 }
 
+/// Derivatives of `catmull_weights` with respect to t.
+#[inline]
+fn catmull_dweights(t: f64) -> [f64; 4] {
+    let t2 = t * t;
+    [0.5 * (-3.0 * t2 + 4.0 * t - 1.0), 0.5 * (9.0 * t2 - 10.0 * t), 0.5 * (-9.0 * t2 + 8.0 * t + 1.0), 0.5 * (3.0 * t2 - 2.0 * t)]
+}
+
+/// Equal-angle chart coordinates (u, v) in radians of a direction on `face`
+/// (a = tan u, b = tan v along the face's right and up axes). Defined for
+/// any direction with a positive component along the face axis, so a chart
+/// extends smoothly past its face's edges.
+#[inline]
+pub fn chart_uv(face: u8, dir: DVec3) -> (f64, f64) {
+    let (axis, right, up) = FACES[face as usize];
+    let z = dir.dot(axis);
+    (dir.dot(right).atan2(z), dir.dot(up).atan2(z))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn elevation_gradient_matches_finite_differences() {
+        let new = open("C:/code/triangulum/game/assets/world/seed42").expect("new bake");
+        for (k, &(f, u, v)) in [(2u8, 0.31, -0.12), (4, -0.5, 0.2), (0, 0.05, 0.7)].iter().enumerate() {
+            let (axis, right, up) = FACES[f as usize];
+            let dir_of = |u: f64, v: f64| (axis + u.tan() * right + v.tan() * up).normalize();
+            let s = new.sample(dir_of(u, v));
+            assert_eq!(s.face, f);
+            let h = 2e-5;
+            let gu = (new.sample(dir_of(u + h, v)).elev_km - new.sample(dir_of(u - h, v)).elev_km) / (2.0 * h);
+            let gv = (new.sample(dir_of(u, v + h)).elev_km - new.sample(dir_of(u, v - h)).elev_km) / (2.0 * h);
+            let scale = gu.abs().max(gv.abs()).max(1e-3);
+            assert!((s.elev_du_km - gu).abs() < 1e-3 * scale + 1e-6, "case {k}: du {} vs {gu}", s.elev_du_km);
+            assert!((s.elev_dv_km - gv).abs() < 1e-3 * scale + 1e-6, "case {k}: dv {} vs {gv}", s.elev_dv_km);
+            let (cu, cv) = chart_uv(f, dir_of(u, v));
+            assert!((cu - u).abs() < 1e-12 && (cv - v).abs() < 1e-12);
+        }
+    }
 
     #[test]
     fn new_bake_samples_smoothly_and_agrees_with_the_old_one_roughly() {
