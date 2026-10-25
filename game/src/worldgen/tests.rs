@@ -178,10 +178,12 @@ fn chunk_grid_matches_direct_columns() {
     }
 }
 
-/// No seam at cube edges (the landform's charts cross-fade there): walking
-/// across a face edge at 1 m steps, the step between the two columns that
-/// straddle the edge is no larger than the steps beside it on the same walk.
-/// 48 walks over all 12 edges at 1/8, where relief is largest.
+/// No seam at cube edges (the landform's charts cross-fade there, and the
+/// bake's per-face rasters meet): walking across a face edge at 1 m steps,
+/// the step between the two columns that straddle the edge is no larger
+/// than the steps beside it on the same walk. Every side of every face (so
+/// each of the 12 edges from both faces), 4 walks per side, at 1/8 where
+/// relief is largest; each walk is checked to really change face.
 #[test]
 fn no_seam_across_cube_edges() {
     let g = generator_with(Some(0.125), 4096, 1536);
@@ -189,21 +191,38 @@ fn no_seam_across_cube_edges() {
     let n = p.n as f64;
     let mut worst_ratio: f64 = 0.0;
     for face in 0..6u8 {
-        for &jf in &[0.13, 0.37, 0.61, 0.83] {
-            let j = (n * jf).floor() + 0.5;
-            for &from_low in &[false, true] {
-                // Columns i = N - 60.5 .. N + 59.5 (or across the i = 0 edge).
-                let i_at = |k: i32| if from_low { -59.5 + k as f64 } else { n - 60.5 + k as f64 };
-                let h: Vec<f64> = (0..120).map(|k| g.column(p.dir(face, i_at(k), j), 1.0).height_m as f64).collect();
+        for side in 0..4u8 {
+            for &tf in &[0.13, 0.37, 0.61, 0.83] {
+                let t = (n * tf).floor() + 0.5;
+                // Column k of the walk: 60 columns inside the face, then 60 past the side.
+                let at = |k: i32| -> (f64, f64) {
+                    let d = k as f64 - 59.5; // < 0 inside, > 0 past the edge
+                    match side {
+                        0 => (-d, t),
+                        1 => (n + d, t),
+                        2 => (t, -d),
+                        _ => (t, n + d),
+                    }
+                };
+                let (i_in, j_in) = at(59);
+                let (i_out, j_out) = at(60);
+                assert_eq!(p.wrap(face, i_in, j_in).0, face);
+                assert_ne!(p.wrap(face, i_out, j_out).0, face, "the walk must cross onto the neighbour");
+                let h: Vec<f64> = (0..120)
+                    .map(|k| {
+                        let (i, j) = at(k);
+                        g.column(p.dir(face, i, j), 1.0).height_m as f64
+                    })
+                    .collect();
                 let steps: Vec<f64> = h.windows(2).map(|w| (w[1] - w[0]).abs()).collect();
                 let at_edge = steps[59];
                 let beside = steps.iter().enumerate().filter(|(k, _)| (*k as i32 - 59).abs() > 2).map(|(_, v)| *v).fold(0.0, f64::max);
                 worst_ratio = worst_ratio.max(at_edge / (beside + 0.25));
-                assert!(at_edge <= 1.5 * beside + 0.25, "seam on face {face} at j {j}: {at_edge:.2} m step at the edge, at most {beside:.2} m beside it");
+                assert!(at_edge <= 1.5 * beside + 0.25, "seam on face {face} side {side} at {t}: {at_edge:.2} m step at the edge, at most {beside:.2} m beside it");
             }
         }
     }
-    println!("cube edges: worst (step at the edge) / (largest step beside it + 0.25 m) = {worst_ratio:.2}");
+    println!("cube edges (96 walks): worst (step at the edge) / (largest step beside it + 0.25 m) = {worst_ratio:.2}");
 }
 
 #[test]

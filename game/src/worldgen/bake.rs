@@ -295,6 +295,52 @@ impl RasterBake {
     }
 }
 
+/// Within this many texels of a face edge the elevation gradient comes
+/// from central differences across the edge (see `sample`).
+const EDGE_FD_TEXELS: f64 = 3.0;
+
+#[inline]
+fn smooth01(t: f64) -> f64 {
+    let t = t.clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
+}
+
+impl RasterBake {
+    /// Catmull-Rom elevation (km) at a direction, on whichever face it
+    /// points into.
+    fn elev_at(&self, dir: DVec3) -> f64 {
+        let (f, a, b) = Self::face_ab(dir);
+        let face = &self.faces[f];
+        let (x, y) = self.texel_coords(a, b);
+        let (x0, y0) = (x.floor(), y.floor());
+        let (ix, iy) = (x0 as i64, y0 as i64);
+        let res = self.res as i64;
+        let wx = catmull_weights(x - x0);
+        let wy = catmull_weights(y - y0);
+        let mut e = 0.0;
+        for dy in -1..=2 {
+            let yy = (iy + dy).clamp(0, res - 1) as usize * self.res;
+            let mut r = 0.0;
+            for dx in -1..=2 {
+                r += wx[(dx + 1) as usize] * face.elev_km[yy + (ix + dx).clamp(0, res - 1) as usize] as f64;
+            }
+            e += wy[(dy + 1) as usize] * r;
+        }
+        e
+    }
+
+    /// Elevation gradient (km per radian of u, v) of face `f`'s equal-angle
+    /// chart at gnomonic (a, b), by central differences one texel wide; the
+    /// stencil reaches across the face edge onto the neighbouring raster.
+    fn elev_gradient_fd(&self, f: u8, a: f64, b: f64) -> (f64, f64) {
+        let (axis, right, up) = FACES[f as usize];
+        let (u, v) = (a.atan(), b.atan());
+        let h = 0.5 * FRAC_PI_4 * 2.0 / (self.res - 1) as f64; // half a texel in angle
+        let at = |u: f64, v: f64| self.elev_at((axis + u.tan() * right + v.tan() * up).normalize());
+        ((at(u + h, v) - at(u - h, v)) / (2.0 * h), (at(u, v + h) - at(u, v - h)) / (2.0 * h))
+    }
+}
+
 impl Bake for RasterBake {
     fn sample(&self, dir: DVec3) -> BakeSample {
         let (f, a, b) = Self::face_ab(dir);
@@ -369,6 +415,19 @@ impl Bake for RasterBake {
         let (du, dv) = if self.equiangular { (half / FRAC_PI_4, half / FRAC_PI_4) } else { (half * (1.0 + a * a), half * (1.0 + b * b)) };
         let m = (self.res - 1) as f64;
         let edge_texels = x.min(m - x).min(y).min(m - y);
+        // Near a face edge the taps are clamped to this face, which bends
+        // the derivative (at the edge texel it is half the one-sided slope),
+        // and the face across the edge bends it differently: the gradient
+        // would jump where the sample switches faces. Within EDGE_FD_TEXELS
+        // take it from central differences of the elevation across the
+        // edge instead (the elevation itself is continuous), blended in.
+        let (mut ex_c, mut ey_c) = (ex * du, ey * dv);
+        if edge_texels < EDGE_FD_TEXELS {
+            let (fdu, fdv) = self.elev_gradient_fd(f as u8, a, b);
+            let w = smooth01((edge_texels - 1.0) / (EDGE_FD_TEXELS - 1.0));
+            ex_c = w * ex_c + (1.0 - w) * fdu;
+            ey_c = w * ey_c + (1.0 - w) * fdv;
+        }
         // Bilinear for the mask-like fields.
         let (x1, y1) = (((ix + 1).min(res - 1)) as usize, ((iy + 1).min(res - 1)) as usize);
         let (ix, iy) = (ix as usize, iy as usize);
@@ -395,8 +454,8 @@ impl Bake for RasterBake {
             flow_log10: bil(&face.flow_log10),
             lake: bil(&face.lake),
             face: f as u8,
-            elev_du_km: ex * du,
-            elev_dv_km: ey * dv,
+            elev_du_km: ex_c,
+            elev_dv_km: ey_c,
             smooth_du_km: sx * du,
             smooth_dv_km: sy * dv,
             smooth_uu_km: sxx * du * du,
