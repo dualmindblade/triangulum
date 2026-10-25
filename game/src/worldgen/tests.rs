@@ -109,6 +109,19 @@ fn profile_column_parts() {
     }
     let gen_us = t3.elapsed().as_micros() as f64 / 20.0;
     let _ = t;
+    for lod in [1u8, 2, 3, 4, 5] {
+        let k = key_at(&g, hills, lod, g.ground_height_m(hills));
+        let t5 = Instant::now();
+        for _ in 0..10 {
+            black_box(g.chunk_columns(k));
+        }
+        let c_us = t5.elapsed().as_micros() as f64 / 10.0;
+        let t6 = Instant::now();
+        for _ in 0..10 {
+            black_box(g.generate(k));
+        }
+        println!("LOD {lod}: chunk columns {c_us:.0} us, generate {:.0} us", t6.elapsed().as_micros() as f64 / 10.0);
+    }
     let t4 = Instant::now();
     for k in 0..200u32 {
         black_box(g.footprint_height_range_m(crate::grid::FootprintKey { face: key.face, lod: (k % 6) as u8, cx: (key.cx >> (k % 6)) + k / 6, cy: key.cy >> (k % 6) }));
@@ -163,6 +176,34 @@ fn chunk_grid_matches_direct_columns() {
         }
         assert!(used_grid > 20, "the grid path should be taken ({used_grid})");
     }
+}
+
+/// No seam at cube edges (the landform's charts cross-fade there): walking
+/// across a face edge at 1 m steps, the step between the two columns that
+/// straddle the edge is no larger than the steps beside it on the same walk.
+/// 48 walks over all 12 edges at 1/8, where relief is largest.
+#[test]
+fn no_seam_across_cube_edges() {
+    let g = generator_with(Some(0.125), 4096, 1536);
+    let p = g.planet;
+    let n = p.n as f64;
+    let mut worst_ratio: f64 = 0.0;
+    for face in 0..6u8 {
+        for &jf in &[0.13, 0.37, 0.61, 0.83] {
+            let j = (n * jf).floor() + 0.5;
+            for &from_low in &[false, true] {
+                // Columns i = N - 60.5 .. N + 59.5 (or across the i = 0 edge).
+                let i_at = |k: i32| if from_low { -59.5 + k as f64 } else { n - 60.5 + k as f64 };
+                let h: Vec<f64> = (0..120).map(|k| g.column(p.dir(face, i_at(k), j), 1.0).height_m as f64).collect();
+                let steps: Vec<f64> = h.windows(2).map(|w| (w[1] - w[0]).abs()).collect();
+                let at_edge = steps[59];
+                let beside = steps.iter().enumerate().filter(|(k, _)| (*k as i32 - 59).abs() > 2).map(|(_, v)| *v).fold(0.0, f64::max);
+                worst_ratio = worst_ratio.max(at_edge / (beside + 0.25));
+                assert!(at_edge <= 1.5 * beside + 0.25, "seam on face {face} at j {j}: {at_edge:.2} m step at the edge, at most {beside:.2} m beside it");
+            }
+        }
+    }
+    println!("cube edges: worst (step at the edge) / (largest step beside it + 0.25 m) = {worst_ratio:.2}");
 }
 
 #[test]
@@ -336,11 +377,14 @@ fn enclosed_chunks_hold_the_full_per_block_result() {
         assert!(!out.chunk.is_uniform(), "an enclosed chunk shows strata, not uniform stone");
         let p = g.planet;
         let vb = key.voxel_blocks() as f64;
-        let (i0, j0, k0) = key.origin_blocks();
+        let (_i0, _j0, k0) = key.origin_blocks();
+        let cols = g.chunk_columns(key);
         let sea = p.sea_level as f64 * p.block_size;
         for x in 0..CHUNK as i32 {
             for y in 0..CHUNK as i32 {
-                let c = g.column(p.dir(key.face, i0 as f64 + (x as f64 + 0.5) * vb, j0 as f64 + (y as f64 + 0.5) * vb), p.voxel_m(lod));
+                // The chunk's own column samples (its strata offset is interpolated
+                // from the chunk grid), each voxel worked out on its own.
+                let c = cols[((x + 1) as usize) * PAD + (y + 1) as usize];
                 for z in 0..CHUNK as i32 {
                     let k_lo = k0 as f64 + z as f64 * vb;
                     let centre = (k_lo + 0.5 * vb) * p.block_size - sea;

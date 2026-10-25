@@ -195,11 +195,9 @@ impl Landform {
         let step_m = (0.45 * relief0).clamp(3.0, 60.0);
         // Coasts: weaker at the shoreline (beaches, low coastal plains), and
         // a third on the sea floor.
-        let fac = if s.ocean > 0.5 && s.elev_km < 0.0 {
-            0.35
-        } else {
-            0.3 + 0.7 * smoothstep(0.0, 3.0, elev_m) * smoothstep(0.5, 0.05, s.ocean)
-        };
+        // Continuous across the shoreline: 0.3 on the sea floor and at the
+        // water's edge, full strength a few metres up and away from the sea.
+        let fac = 0.3 + 0.7 * smoothstep(0.0, 3.0, elev_m) * smoothstep(0.5, 0.05, s.ocean);
         // The discharge on a river's axis can exceed the local value by the
         // ridge's own height; half a decade covers the bake's ridges.
         let valley_m = if self.landform > 0.0 && s.flow_smooth > VALLEY_FLOW_LO - 0.5 { 2.0 + 0.3 * relief0 * self.landform + CHANNEL_DEPTH_M } else { 0.0 };

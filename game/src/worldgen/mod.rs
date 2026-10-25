@@ -37,7 +37,7 @@ use landform::{Landform, Local};
 use noise::gradient_noise;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use strata::{GeoHint, Strata};
+use strata::{GeoHint, RockCache, Strata};
 
 /// The landform dial every new `Generator` starts with (1.0 unless `main`
 /// sets it from world.json / --landform). `Engine::build` passes only the
@@ -234,15 +234,15 @@ impl Generator {
 
     /// The column plus the landform's displacement and local parameters.
     fn column_full(&self, dir: DVec3, voxel_m: f64) -> (Column, f64, Local) {
-        self.column_from(dir, voxel_m, None)
+        self.column_from(dir, voxel_m, None, None)
     }
 
     /// A column, with the landform's coarse part optionally given
     /// (interpolated from a chunk's grid; see `chunk_columns`).
-    fn column_from(&self, dir: DVec3, voxel_m: f64, coarse: Option<(f64, f64, f64, f64)>) -> (Column, f64, Local) {
+    fn column_from(&self, dir: DVec3, voxel_m: f64, coarse: Option<(f64, f64, f64, f64)>, strata_off: Option<f64>) -> (Column, f64, Local) {
         let s = self.bake.sample(dir);
         let base = s.elev_km * 1000.0 * self.vscale;
-        let strata_off = self.strata.column_offset_m(dir);
+        let strata_off = strata_off.unwrap_or_else(|| self.strata.column_offset_m(dir));
         let lf = self.lf.sample_with(dir, &s, voxel_m, strata_off, coarse);
         let mut h = base + lf.dh;
         // Inland, ground pushed below sea level is held just above it; toward
@@ -496,7 +496,7 @@ impl Generator {
     /// (k_lo >= 0 and below the world top; the caller handles the rest).
     /// `z_lo` is the voxel's bottom in metres above sea level.
     #[inline]
-    fn block_at(&self, c: &Column, sf: &Surface, z_lo: f64, voxel_m: f64, k_lo: f64, lod: u8) -> BlockId {
+    fn block_at(&self, c: &Column, sf: &Surface, z_lo: f64, voxel_m: f64, k_lo: f64, lod: u8, rock: &mut RockCache) -> BlockId {
         let b = &self.blocks;
         let h = c.height_m as f64;
         let z_hi = z_lo + voxel_m;
@@ -519,7 +519,7 @@ impl Generator {
             } else if depth < voxel_m + sf.soil_m as f64 {
                 sf.soil
             } else {
-                self.strata.rock_at(centre, c.strata_off as f64, c.geo)
+                self.strata.rock_at_cached(centre, c.strata_off as f64, c.geo, rock)
             };
         }
         if water && centre < 0.0 {
@@ -548,20 +548,24 @@ impl Generator {
         let mut cols = vec![Column::default(); PAD * PAD];
         for x in -1..=CHUNK as i32 {
             for y in -1..=CHUNK as i32 {
-                let coarse = grid.as_ref().map(|(cut, nodes)| {
-                    let (a, b) = interp_grid(nodes, x, y);
-                    (*cut, a.0, a.1, b)
-                });
-                cols[((x + 1) as usize) * PAD + (y + 1) as usize] = self.column_from(col_dir(x, y), voxel_m, coarse).0;
+                let (coarse, off) = match grid.as_ref() {
+                    Some((cut, nodes)) => {
+                        let v = interp_grid(nodes, x, y);
+                        (Some((*cut, v[0], v[1], v[2])), Some(v[3]))
+                    }
+                    None => (None, None),
+                };
+                cols[((x + 1) as usize) * PAD + (y + 1) as usize] = self.column_from(col_dir(x, y), voxel_m, coarse, off).0;
             }
         }
         cols
     }
 
-    /// The coarse landform at a chunk's grid nodes: voxel offsets -8, -4,
-    /// ..., 40 on each axis (13 x 13), or None if any node leaves the face
-    /// or lies in a chart cross-fade.
-    fn coarse_grid(&self, key: ChunkKey, cut: f64, col_dir: &dyn Fn(i32, i32) -> DVec3) -> Option<Vec<(f64, f64, f64)>> {
+    /// The coarse landform (height, steering gradient) and the strata
+    /// offset at a chunk's grid nodes: voxel offsets -8, -4, ..., 40 on each
+    /// axis (13 x 13), or None if any node leaves the face or lies in a
+    /// chart cross-fade.
+    fn coarse_grid(&self, key: ChunkKey, cut: f64, col_dir: &dyn Fn(i32, i32) -> DVec3) -> Option<Vec<[f64; 4]>> {
         let voxel_m = self.planet.voxel_m(key.lod);
         let mut nodes = Vec::with_capacity(GRID_N * GRID_N);
         for a in 0..GRID_N as i32 {
@@ -571,7 +575,8 @@ impl Generator {
                 if s.face != key.face {
                     return None;
                 }
-                nodes.push(self.lf.coarse_node(dir, &s, voxel_m, cut)?);
+                let (h, gx, gy) = self.lf.coarse_node(dir, &s, voxel_m, cut)?;
+                nodes.push([h, gx, gy, self.strata.column_offset_m(dir)]);
             }
         }
         Some(nodes)
@@ -627,6 +632,7 @@ impl Generator {
                     let p = ((x + 1) as usize) * PAD + (y + 1) as usize;
                     let c = &cols[p];
                     let sf = &surf[p];
+                    let mut rock = RockCache::default();
                     for z in -1..=CHUNK as i32 {
                         let k_lo = k0 + z as f64 * vox_blocks;
                         if k_lo >= world_top {
@@ -635,7 +641,7 @@ impl Generator {
                         let id = if k_lo < 0.0 {
                             self.blocks.bedrock // below the world
                         } else {
-                            self.block_at(c, sf, k_lo * planet.block_size - sea, voxel_m, k_lo, lod)
+                            self.block_at(c, sf, k_lo * planet.block_size - sea, voxel_m, k_lo, lod, &mut rock)
                         };
                         ids[pidx(x, y, z)] = id;
                         if id == self.blocks.water && (0..CHUNK as i32).contains(&x) && (0..CHUNK as i32).contains(&y) && (0..CHUNK as i32).contains(&z) {
@@ -708,9 +714,9 @@ impl Generator {
 const GRID_N: usize = 13;
 
 /// Catmull-Rom interpolation of a chunk's coarse grid at column (x, y):
-/// ((height, gradient x), gradient y).
+/// [height, gradient x, gradient y, strata offset].
 #[inline]
-fn interp_grid(nodes: &[(f64, f64, f64)], x: i32, y: i32) -> ((f64, f64), f64) {
+fn interp_grid(nodes: &[[f64; 4]], x: i32, y: i32) -> [f64; 4] {
     let w = |t: f64| {
         let (t2, t3) = (t * t, t * t * t);
         [0.5 * (-t3 + 2.0 * t2 - t), 0.5 * (3.0 * t3 - 5.0 * t2 + 2.0), 0.5 * (-3.0 * t3 + 4.0 * t2 + t), 0.5 * (t3 - t2)]
@@ -718,17 +724,17 @@ fn interp_grid(nodes: &[(f64, f64, f64)], x: i32, y: i32) -> ((f64, f64), f64) {
     let (tx, ty) = ((x + 8) as f64 / 4.0, (y + 8) as f64 / 4.0);
     let (nx, ny) = (tx.floor() as usize, ty.floor() as usize);
     let (wx, wy) = (w(tx - nx as f64), w(ty - ny as f64));
-    let (mut h, mut gx, mut gy) = (0.0, 0.0, 0.0);
+    let mut out = [0.0; 4];
     for (da, wa) in wx.iter().enumerate() {
         for (db, wb) in wy.iter().enumerate() {
             let n = nodes[(nx + da - 1) * GRID_N + (ny + db - 1)];
             let k = wa * wb;
-            h += k * n.0;
-            gx += k * n.1;
-            gy += k * n.2;
+            for (o, v) in out.iter_mut().zip(n) {
+                *o += k * v;
+            }
         }
     }
-    ((h, gx), gy)
+    out
 }
 
 /// The cube face a direction points into (largest component, FACES order).
