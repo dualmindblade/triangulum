@@ -13,10 +13,17 @@
 - The July process and docs are retired to `docs/archive/`. The old viewer
   still builds and runs from `viewer/`.
 
+## Done
+
+- **M1-grid v1** (Astra, verified by Opus, merged): `crates/cubesphere` with
+  five projections and a smooth, exactly equal-area map. Areas equal to
+  within 6e-7, no crease, exact round trips. Trade-off: 23% of the surface
+  more than 10° off square (16% for COBE and the creased version).
+
 ## In progress
 
-- M1a engine skeleton (Fable)
-- M1-grid equal-area map (Astra)
+- M1a engine skeleton (Fable), plus vertical-scale renders for Andrew
+- M1-grid v2 (Astra): equal-area that keeps COBE's squareness
 - M1-bake smooth world bake (Opus)
 - M1-inventory of old features (Opus)
 
