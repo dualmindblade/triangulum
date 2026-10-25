@@ -1,0 +1,37 @@
+{
+  "_comment": "Andrew's look: the render dials of the look panel (F1 in the game). Edit it here or in the panel; the game reloads it as soon as it changes. Colours are linear RGB 0..1. Block colours are in blocks.json, terrain in world.json. Missing fields take the default (the M1 look).",
+  "sky": {
+    "atmosphere_height_m": 639.7,
+    "fog_density_per_km": 0.2462,
+    "fog_strength": 0.7,
+    "horizon_colour": [0.55, 0.7, 0.88],
+    "zenith_colour": [0.1, 0.28, 0.62],
+    "sunset_colour": [0.95, 0.55, 0.3],
+    "sunset_strength": 0.55,
+    "night_sky": 0.03,
+    "star_brightness": 1.0
+  },
+  "light": {
+    "sun_strength": 1.0,
+    "sky_ambient": 0.4,
+    "shadow_light": 0.1,
+    "night_light": 0.0,
+    "moonlight": 1.0,
+    "moon_colour": [0.4, 0.5, 0.72],
+    "side_shade": 0.9,
+    "underside_shade": 0.55,
+    "corner_shadows": 0.45
+  },
+  "water": {
+    "opacity": 0.62,
+    "edge_opacity": 0.95,
+    "glint": 0.6,
+    "glint_sharpness": 60.0,
+    "underwater_colour": [0.02, 0.07, 0.16],
+    "underwater_strength": 0.6,
+    "far_ocean_follows_water": true
+  },
+  "detail": {
+    "lod_factor": 5.0
+  }
+}

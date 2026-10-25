@@ -4,7 +4,52 @@ The new engine: a planet-sized cube-sphere voxel world you can walk on, dig
 into, build on and come back to. This is the M2b state: walk, fly, dig,
 build, save, the July sky and lighting (M1c), planetgen's lakes and rivers
 as water at rest (M2-hydro), and the simulation: sand and gravel fall
-(M2a), water flows by Andrew's 256-level rule (M2b).
+(M2a), water flows by Andrew's 256-level rule (M2b), and Andrew's look
+panel (M3a).
+
+## For Andrew: the look panel
+
+Press **F1** in the game. A panel opens on the right and the mouse is
+yours to use it (F1 again closes it and gives the mouse back to the game).
+You can keep walking or flying with the keys while it is open, and
+everything you change shows straight away.
+
+- **Sky and light**: the time of day and how fast it goes; how high the
+  air goes (raise *Atmosphere height* when the sky turns black on a
+  mountain); the fog; the colours of the sky low down, overhead and around
+  a setting sun; the stars; the sun; the light in shadow; how bright the
+  night is and the moonlight; and how bright the sides and undersides of
+  blocks are.
+- **Water**: its colour, how see-through it is, the sun's sparkle on it,
+  and the tint when your eyes are under water. *Far ocean follows the
+  water colour* keeps the sea seen from high up matching.
+- **Blocks**: every block's colour. Tick *faces* to give a block its own
+  top, sides and bottom. Grass is green on top and dirt on the sides and
+  bottom, so a tunnel under grass has a dirt ceiling.
+- **Distance detail**: how much detail far-away land keeps. Higher looks
+  better and costs speed.
+- **Terrain**: roughness, landforms and how tall the mountains are
+  (vertical scale 1/70, 1/20, 1/8). These rebuild the world, so the game
+  shows you a *preview world* with saving turned off: your own world and
+  its save are never touched. *Back to my world* takes you home. *Make
+  this the default...* makes new worlds start with this terrain, but saves
+  made with the old terrain will not load any more, so only do it when you
+  are sure.
+
+Each section has a reset button that puts it back the way it was before
+the panel existed.
+
+**Saving and sharing.** *Save look* writes your choices into two files:
+`game/assets/look.json` (sky, light, water, detail) and
+`game/assets/blocks.json` (block colours). *Revert to saved* throws away
+what you changed since. To share a look, commit and push those two files,
+or just send them: everyone who pulls gets your look. You can also edit
+the files in a text editor; the game notices within half a second.
+
+**Screenshots.** *Screenshot* saves exactly what you see, without the
+panel, to `game/out/look/`, with a `.json` file beside it that lists every
+look value, the time of day and where you stood. Send both, and whoever
+gets them sees what you saw and can rebuild your look.
 
 ## Running
 
@@ -57,6 +102,7 @@ mode when higher; `--walk` and `--fly` force it.
 | H | stats panel on / off |
 | V | vsync on / off |
 | [ / ] | slow / speed up time (0, 0.1, 1, 10, 60, 600, 3600×) |
+| F1 | the look panel (frees the mouse while open) |
 | Q | save and quit |
 
 The HUD shows the targeted block (with an outline around it), the hotbar,
@@ -79,9 +125,12 @@ gravity, a 1.28 m jump and simple buoyancy in water. There is no fall damage.
 --hotbar a,b,c        blocks on keys 1-9 by name (default: the first eight solid blocks and water)
 --walk | --fly        starting mode
 --hide-water          start with water hidden
---lod-factor F        LOD aggressiveness (5)
+--lod-factor F        LOD aggressiveness (look.json's detail.lod_factor, 5)
+--look-file FILE      the look to start from and save to (assets/look.json)
+--panel               start with the look panel open
 --size WxH --no-vsync --backend vulkan|dx12
---screenshot PATH --exit-after SECS     save a frame with the HUD and quit
+--screenshot PATH --exit-after SECS     save a frame with the HUD (and a
+                      PATH.json sidecar with the look) and quit
 --time HH:MM          start at local solar time at the starting longitude (default 12:00)
 --time-scale F        clock speed, 0 pauses (default 1; maximum 3600)
 --day-length SECS     seconds per game day (1440 = 24 real minutes)
@@ -114,8 +163,10 @@ The gradient, sunset colors, sun disc/halo, star colors, sun/sky lighting,
 moonlight levels and underwater tint retain July's equations. Atmosphere
 height, limb thickness and fog distance scale with planet radius. The
 `sky` JSON fields `atmosphere_height_radii`, `limb_height_radii` and
-`fog_per_radius` expose those optical lengths for later look tuning.
-The moon's orbit supplies light only; a visible moon, eclipses, clouds
+`fog_per_radius` set those optical lengths' defaults; since M3a the look
+(`assets/look.json`, below) carries the atmosphere height and the fog in
+metres and overrides them, and the limb keeps its July proportion to the
+atmosphere. The moon's orbit supplies light only; a visible moon, eclipses, clouds
 and weather remain M5 work. Cube face normals and per-vertex AO stay in
 the existing packed quad format; continuous natural-surface normals and
 cave skylight propagation need additional terrain data.
@@ -140,6 +191,59 @@ also checks liquid occupancy and byte-identical paused captures.
 `--time` sets the starting time for ordinary bench poses;
 the reel selects its own four times. Reversed-Z, the infinite far plane
 and camera-relative vertex positions are preserved.
+
+## The look (M3a)
+
+Andrew's dials live in three files, all tracked in git:
+
+- `assets/look.json` (`src/look.rs`): the render look in plain units:
+  `sky` (atmosphere height in metres, fog per km and its strength, horizon
+  / overhead / sunset colours, sunset strength, night sky, stars), `light`
+  (sun, sky ambient, light in shadow, extra night light, moonlight and its
+  colour, side / underside shades, corner shadows), `water` (opacity, edge
+  opacity, glint and its sharpness, underwater tint, `far_ocean_follows_water`)
+  and `detail.lod_factor`. Missing fields take the default, which is the M1
+  look (July's constants, the optical lengths from `world.json`'s `sky`):
+  with the shipped file the M3a renderer draws the M2b frames to within
+  2/255 (`scripts/m3a-look.play` run on both engines with the M2b
+  blocks.json). Unknown fields and out-of-range values are refused by name.
+  Every renderer (app, bench, harness, reels) starts from the installed
+  look; `--look-file` names another.
+- `assets/blocks.json`: block colours. `color` is every face unless the
+  block gives `top`, `side` or `bottom` its own. The GPU colour table has
+  three entries per id (`id * 3 + face`) and meshes carry ids, so a colour
+  change rewrites a few hundred bytes and remeshes nothing. The panel
+  writes the file back in its own style (one aligned line per block, ids
+  and every other field kept); `blocks::colours_into_text` reproduces the
+  shipped file byte for byte.
+- `assets/world.json`: the terrain dials (`roughness`, `landform`,
+  `vertical_scale`), written only by the panel's *Make this the default*,
+  which changes the three values in place and nothing else.
+
+`src/workshop.rs` is the panel. Per frame it applies changes (the look into
+the sky uniform, colours into the colour table, the LOD factor into the
+streamer) and polls the three files twice a second; with the panel closed
+that is a few comparisons and three metadata reads a second. A changed file
+applies at once: look.json whole, blocks.json the colours of the blocks
+whose colours changed in it (new blocks or flags need a restart), and a
+change to world.json's terrain dials starts a preview. Terrain dials build
+a *preview world*: a new generator and streamer over an empty edit store,
+with the save detached (`Session::save = None`) and the real engine, save
+and simulation set aside untouched; anything unsaved in the real world is
+flushed first, and when nothing is, the save's files are not touched at
+all. *Back to my world* (or the dials returning to the save's values)
+restores them. The *Screenshot* button reads back the next frame, drawn
+without the panel, into `out/look/look-<UTC time>.png` with a JSON sidecar
+(the tidied look, every block's face colours, terrain, time, and the
+session state); `--screenshot` writes the same sidecar.
+
+Evidence scripts: `scripts/m3a-tunnel.play` digs a tunnel and a shaft
+under grass (asserts the blocks, shoots the ceiling and walls);
+`scripts/m3a-look.play` shoots the sky from 1.5 km, the hills at night,
+dusk and golden hour, and the sea, for comparing look files;
+`scripts/m3a-look-vscale8.play` the 1/8 highest peak. For panel
+screenshots, `TRIANGULUM_PANEL_SECTION=blocks` (or sky, water, detail,
+terrain) opens `--panel` on that section.
 
 ## The simulation (M2a)
 
@@ -488,6 +592,17 @@ period, and the mesher's shared corners. Several need the bake at
 `cargo test --release -- --ignored water_stress --nocapture` (a 2,000-cell
 pour and a 10,000-cell dam break, with the per-tick cost).
 
+The look (M3a): look.json's round trip (defaults written and read back,
+partial files, unknown and out-of-range fields refused, the shipped file
+is the M1 look), blocks.json's round trip (the shipped file rewritten from
+its own colours is byte-identical, idempotent, keeps comments and ids),
+the per-face colour table (grass, dry grass and snow undersides are dirt),
+world.json's terrain edit changing only its three values, the file watch,
+hot reload (a colour changed in blocks.json in a text editor reaches the
+GPU colour table on the next poll; a changed look.json reaches the look; a
+broken file is reported and not applied), Save look writing both files,
+the far ocean matching the shipped colour, and the time-of-day seek.
+
 The water tests (`src/worldgen/hydro_tests.rs`, they need `hydro.bin`)
 check every generated water cell around 1,537 lake shores and along 300
 river links for walls, perched water and rest, and coarse LODs against
@@ -496,8 +611,24 @@ generation cost before and after (`profile_hydro_chunks`), find the evidence
 sites (`hydro_places`) and print the water model at a column
 (`hydro_probe`, with `HYDRO_PROBE="face i j"`).
 
-## Known gaps (M2b)
+## Known gaps (M2b, M3a)
 
+- Grass and dry grass have dirt sides everywhere, so the natural terrace
+  steps on grassy hills now show as brown risers (dark green before), near
+  and far. That is the starting point the M3a task asked for; Andrew tunes
+  it in the panel (Blocks, grass, sides).
+- Underground is still lit like the surface: *Light in shadow* brightens or
+  darkens tunnels and the night alike. Darkness underground needs skylight
+  data (M3 or later).
+- Hot reload of blocks.json applies colours only; a new block, a renamed
+  one or a changed flag needs a restart (the panel says so).
+- A terrain preview keeps the world's height and sea level. At 1/8 the
+  deepest ocean (about 1,380 m down) reaches below the bottom of the
+  default world (512 m below the sea); 1/8 is normally run with
+  `--height 4096 --sea-level 1536`, a restart setting the panel does not
+  expose. What the preview draws there was not checked.
+- The time of day and its speed are not part of the look; a screenshot's
+  sidecar records them.
 - Resting water leans up to one level per cell, as the rule allows, and the
   dynamics leave the steepest lean they can: a dish around a pit, a film on
   a drained lake that slopes up from the sill. Whether that look is wanted

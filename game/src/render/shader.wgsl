@@ -8,7 +8,7 @@ struct Camera {
     inv_view_proj: mat4x4<f32>,
     sun_dir: vec4<f32>,      // xyz world sun direction
     cam_up: vec4<f32>,       // xyz local up at camera, w = altitude (m)
-    fog: vec4<f32>,          // x = 1/fog range (m), y = sky darkening (0 ground .. 1 space), z = water alpha
+    fog: vec4<f32>,          // x = 1/fog range (m), y = sky darkening (0 ground .. 1 space), z = water alpha (unread since M3a: the look's sky.water.x)
     sky_horizon: vec4<f32>,
     sky_zenith: vec4<f32>,
     light: vec4<f32>,        // x = ambient, y = diffuse, z = AO strength, w = unused
@@ -23,6 +23,16 @@ struct Sky {
     eye: vec4<f32>,
     atmosphere: vec4<f32>,
     fixed_to_inertial: mat4x4<f32>,
+    // Andrew's look (M3a, render/sky.rs); the defaults are the constants
+    // these replaced, so look.json's defaults draw the M1 frame.
+    light: vec4<f32>,      // sun strength, sky ambient, shadow light, night light
+    shade: vec4<f32>,      // side shade, underside shade, corner shadows, fog strength
+    horizon: vec4<f32>,    // rgb (also the fog), night sky
+    zenith: vec4<f32>,     // rgb, star brightness
+    sunset: vec4<f32>,     // rgb, sunset strength
+    moon: vec4<f32>,       // moonlight rgb
+    water: vec4<f32>,      // opacity, edge opacity, glint, glint sharpness
+    underwater: vec4<f32>, // rgb, strength
 };
 
 struct Draw {
@@ -189,13 +199,17 @@ fn vertex(vi: u32, ii: u32, water: bool) -> VOut {
 
     var out: VOut;
     out.pos = cam.view_proj * vec4<f32>(world, 1.0);
-    out.color = colours[block].rgb;
-    // July risers 0.90, undersides 0.55; no extra darkening from the old
-    // 0.72 riser multiplier or a normal inferred from integer terraces.
-    out.face_shade = select(0.90, select(0.55, 1.0, sign == 1u), axis == 2u);
-    // Packed AO is brightness 0..3. July's four levels are .55/.70/.85/1.
-    // Reduce its footprint at coarse LODs instead of darkening huge spans.
-    out.ao = 1.0 - 0.45 * (1.0 - ao) / max(1.0, sqrt(d.voxel));
+    // Three colours per block (M3a): top, sides, bottom (world/blocks.rs).
+    let face = select(1u, select(2u, 0u, sign == 1u), axis == 2u);
+    out.color = colours[block * 3u + face].rgb;
+    // July risers 0.90, undersides 0.55 (the look's side and underside
+    // shades); no extra darkening from the old 0.72 riser multiplier or a
+    // normal inferred from integer terraces.
+    out.face_shade = select(sky.shade.x, select(sky.shade.y, 1.0, sign == 1u), axis == 2u);
+    // Packed AO is brightness 0..3. July's four levels are .55/.70/.85/1
+    // (corner shadows 0.45). Reduce its footprint at coarse LODs instead
+    // of darkening huge spans.
+    out.ao = 1.0 - sky.shade.z * (1.0 - ao) / max(1.0, sqrt(d.voxel));
     out.side = select(1.0, 0.0, axis == 2u);
     out.view = world;
     out.normal = n;
@@ -220,14 +234,16 @@ fn lighting(base: vec3<f32>, n: vec3<f32>, rel: vec3<f32>) -> vec3<f32> {
     // Per-fragment horizon everywhere: the orbit's far hemisphere stays dark.
     let day = smoothstep(-0.08, 0.15, dot(sun, up));
     let hemi = clamp(0.5 + 0.5 * dot(n, up), 0.0, 1.0);
-    let ambient = 0.10 + 0.40 * day * hemi;
+    // July: 0.10 everywhere + 0.40 of sky light on what faces up, by day;
+    // the look adds light at night only (0 by default).
+    let ambient = sky.light.z + sky.light.y * day * hemi + sky.light.w * (1.0 - day);
     // A set sun MUST NOT light faces pointing down toward it (July fix).
-    let sun_coeff = mix(1.0, 0.60, day) * day;
+    let sun_coeff = mix(1.0, 0.60, day) * day * sky.light.x;
     var c = base * (ambient + sun_coeff * max(dot(n, sun), 0.0));
     if (day < 1.0) {
         let moon = normalize(sky.moon_position.xyz - point);
         let phase = 0.5 + 0.5 * dot(normalize(sky.sun_position.xyz - sky.moon_position.xyz), -moon);
-        c += base * vec3<f32>(0.40, 0.50, 0.72)
+        c += base * sky.moon.rgb
             * (0.10 * max(dot(n, moon), 0.0) + 0.015 + 0.05 * hemi)
             * (1.0 - day) * smoothstep(0.0, 0.15, dot(moon, up)) * phase * 1.15;
     }
@@ -240,14 +256,14 @@ fn air_density() -> f32 {
 }
 
 fn underwater(c: vec3<f32>) -> vec3<f32> {
-    return mix(c, vec3<f32>(0.02, 0.07, 0.16), 0.6 * sky.atmosphere.w);
+    return mix(c, sky.underwater.rgb, sky.underwater.w * sky.atmosphere.w);
 }
 
 fn atmosphere(c: vec3<f32>, rel: vec3<f32>) -> vec3<f32> {
     let up = normalize(sky.eye.xyz + rel / sky.eye.w);
     let day = smoothstep(-0.08, 0.15, dot(normalize(sky.sun_position.xyz), up));
-    let fog = (1.0 - exp(-length(rel) * sky.atmosphere.z)) * air_density() * 0.7;
-    return underwater(mix(c, vec3<f32>(0.55, 0.70, 0.88) * (0.15 + 0.85 * day), fog));
+    let fog = (1.0 - exp(-length(rel) * sky.atmosphere.z)) * air_density() * sky.shade.w;
+    return underwater(mix(c, sky.horizon.rgb * (0.15 + 0.85 * day), fog));
 }
 
 @vertex
@@ -262,12 +278,13 @@ fn fs_water(in: VOut) -> @location(0) vec4<f32> {
     // July water-step fix: gently sky-facing sides avoid bright/black bands.
     let n = normalize(mix(in.normal, in.normal * 0.18 + up, in.side));
     let facing = abs(dot(v, n));
-    // Fresnel-ish: more opaque and brighter at grazing angles; a sun glint.
-    let alpha = mix(cam.fog.z, 0.95, pow(1.0 - facing, 3.0));
+    // Fresnel-ish: more opaque and brighter at grazing angles; a sun glint
+    // (the look's water opacity, edge opacity, glint and its sharpness).
+    let alpha = mix(sky.water.x, sky.water.y, pow(1.0 - facing, 3.0));
     let r = reflect(-v, n);
     let sun = normalize(sky.sun_position.xyz);
     let day = smoothstep(-0.08, 0.15, dot(sun, up));
-    let glint = pow(max(dot(r, sun), 0.0), 60.0) * 0.6 * day;
+    let glint = pow(max(dot(r, sun), 0.0), sky.water.w) * sky.water.z * day;
     var col = lighting(in.color * mix(1.0, 0.93, in.side), n, in.view) + vec3<f32>(glint);
     col = atmosphere(col, in.view);
     return vec4<f32>(col * alpha, alpha);
@@ -302,8 +319,9 @@ fn fs_sky(in: SkyOut) -> @location(0) vec4<f32> {
     let d = dot(dir, sky.sun.xyz);
     let toward = pow(max(d, 0.0), 6.0);
     let low = 1.0 - smoothstep(0.05, 0.35, sunh);
-    var c = mix(vec3<f32>(0.55, 0.70, 0.88), vec3<f32>(0.10, 0.28, 0.62), pow(clamp(h, 0.0, 1.0), 0.55)) * (0.03 + 0.97 * day);
-    c = mix(c, vec3<f32>(0.95, 0.55, 0.30), toward * low * 0.55 * day);
+    let night = sky.horizon.w;
+    var c = mix(sky.horizon.rgb, sky.zenith.rgb, pow(clamp(h, 0.0, 1.0), 0.55)) * (night + (1.0 - night) * day);
+    c = mix(c, sky.sunset.rgb, toward * low * sky.sunset.w * day);
     let tint = vec3<f32>(1.0, 0.96, 0.86);
     c += tint * pow(max(d, 0.0), 800.0) * 0.50 * day;
     let atm = air_density();
@@ -323,7 +341,7 @@ fn fs_sky(in: SkyOut) -> @location(0) vec4<f32> {
     let star_visibility = 1.0 - smoothstep(0.01, 0.18, sky_lum);
     if (star_visibility > 0.0) {
         let star_dir = (sky.fixed_to_inertial * vec4<f32>(dir, 0.0)).xyz;
-        c += stars(star_dir) * star_visibility;
+        c += stars(star_dir) * star_visibility * sky.zenith.w;
     }
 
     // Analytic silhouette of the same 109 R / ~12190 R sphere as July.

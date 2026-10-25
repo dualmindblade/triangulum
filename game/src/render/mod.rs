@@ -22,8 +22,9 @@ pub struct CameraUniform {
     pub view_proj: [[f32; 4]; 4],
     pub inv_view_proj: [[f32; 4]; 4],
     // Retained for compatibility with camera/bench constructors owned by
-    // other missions. SkyUniform supplies the ephemeris and optical values;
-    // the shader consumes only view matrices and fog.z (water alpha) here.
+    // other missions. SkyUniform supplies the ephemeris, optical values and
+    // the look (M3a: water opacity too); the shader consumes only the view
+    // matrices here, and cam_up when no observer was set.
     pub sun_dir: [f32; 4],
     pub cam_up: [f32; 4],
     pub fog: [f32; 4],
@@ -126,6 +127,9 @@ pub struct Renderer {
     indirect_buf: wgpu::Buffer,
     index_buf: wgpu::Buffer,
     colours_buf: wgpu::Buffer,
+    /// Entries the colour buffer holds (it grows when blocks are added).
+    colours_cap: usize,
+    bind_layout: wgpu::BindGroupLayout,
     bind_group: wgpu::BindGroup,
     terrain_pipeline: wgpu::RenderPipeline,
     water_pipeline: wgpu::RenderPipeline,
@@ -224,18 +228,7 @@ impl Renderer {
             label: Some("terrain-bgl"),
             entries: &[entry(0, wgpu::BufferBindingType::Uniform), entry(1, ro), entry(2, ro), entry(3, ro), entry(4, ro), entry(5, wgpu::BufferBindingType::Uniform)],
         });
-        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("terrain-bg"),
-            layout: &bgl,
-            entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: camera_buf.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 1, resource: quads_buf.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 2, resource: grids_buf.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 3, resource: draws_buf.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 4, resource: colours_buf.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 5, resource: sky_buf.as_entire_binding() },
-            ],
-        });
+        let bind_group = make_bind_group(&device, &bgl, [&camera_buf, &quads_buf, &grids_buf, &draws_buf, &colours_buf, &sky_buf]);
         let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: None,
             bind_group_layouts: &[Some(&bgl)],
@@ -306,6 +299,8 @@ impl Renderer {
             indirect_buf,
             index_buf,
             colours_buf,
+            colours_cap: colours.len().max(1),
+            bind_layout: bgl,
             bind_group,
             terrain_pipeline,
             water_pipeline,
@@ -349,6 +344,24 @@ impl Renderer {
         let cv = color.create_view(&Default::default());
         let dv = depth.create_view(&Default::default());
         (color, cv, dv)
+    }
+
+    /// Replace the block colour table (three RGBA per id: top, sides,
+    /// bottom; `Registry::colour_table`). Chunk meshes carry block ids,
+    /// not colours, so a colour change needs no remeshing: the next frame
+    /// draws everything already resident in the new colours.
+    pub fn set_colours(&mut self, colours: &[[f32; 4]]) {
+        if colours.len() > self.colours_cap {
+            self.colours_cap = colours.len().next_power_of_two();
+            self.colours_buf = self.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("colours"),
+                size: (self.colours_cap * 16) as u64,
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+            self.bind_group = make_bind_group(&self.device, &self.bind_layout, [&self.camera_buf, &self.quads_buf, &self.grids_buf, &self.draws_buf, &self.colours_buf, &self.sky_buf]);
+        }
+        self.queue.write_buffer(&self.colours_buf, 0, bytemuck::cast_slice(colours));
     }
 
     pub fn resize(&mut self, width: u32, height: u32) {
@@ -580,6 +593,12 @@ impl Renderer {
         let rgba = self.read_rgba();
         write_png(path, self.width, self.height, &rgba);
     }
+}
+
+/// The terrain bind group: camera, quads, grids, draws, colours, sky.
+fn make_bind_group(device: &wgpu::Device, layout: &wgpu::BindGroupLayout, bufs: [&wgpu::Buffer; 6]) -> wgpu::BindGroup {
+    let entries: Vec<wgpu::BindGroupEntry> = bufs.iter().enumerate().map(|(i, b)| wgpu::BindGroupEntry { binding: i as u32, resource: b.as_entire_binding() }).collect();
+    device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("terrain-bg"), layout, entries: &entries })
 }
 
 pub fn write_png(path: &str, width: u32, height: u32, rgba: &[u8]) {

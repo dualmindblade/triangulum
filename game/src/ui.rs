@@ -131,10 +131,12 @@ pub fn draw_hud(ctx: &egui::Context, h: &Hud, stats: bool) {
                     line(h.sim_line.clone());
                 }
                 line("WASD move  Space jump/up  Ctrl sneak/down  Shift sprint  G walk/fly  LMB break  RMB place  1-9 block  scroll fly speed".into());
-                line("P preset  R to ground  V vsync  F water  H hud  Q quit".into());
+                line("P preset  R to ground  V vsync  F water  H hud  F1 look panel  Q quit".into());
             });
     }
-    let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("crosshair")));
+    // Under every window (the look panel covers the hotbar's corner, not
+    // the other way round).
+    let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Background, egui::Id::new("crosshair")));
     let c = ctx.content_rect().center();
     let col = egui::Color32::from_rgba_unmultiplied(255, 255, 255, 180);
     painter.line_segment([c - egui::vec2(10.0, 0.0), c + egui::vec2(10.0, 0.0)], egui::Stroke::new(1.5, col));

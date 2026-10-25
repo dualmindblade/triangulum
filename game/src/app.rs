@@ -9,6 +9,7 @@ use crate::session::Session;
 use crate::sim::draw::FallingDraws;
 use crate::stream::Streamer;
 use crate::ui::{EguiPaint, Hud, draw_hud, outline_segments};
+use crate::workshop::Workshop;
 use std::collections::{HashSet, VecDeque};
 use std::sync::Arc;
 use std::time::Instant;
@@ -72,6 +73,8 @@ struct App {
     mouse_held: Option<(MouseButton, u64)>,
     save_note: String,
     falling_draw: FallingDraws,
+    /// Andrew's look panel (F1) and the look files it saves and watches (M3a).
+    workshop: Workshop,
 }
 
 impl App {
@@ -102,6 +105,19 @@ impl App {
             let _ = gfx.window.set_cursor_grab(CursorGrabMode::None);
             gfx.window.set_cursor_visible(true);
             self.captured = false;
+        }
+    }
+
+    /// F1: open the look panel (freeing the mouse) or close it (giving the
+    /// mouse back to the game if it had it).
+    fn toggle_panel(&mut self) {
+        self.workshop.open = !self.workshop.open;
+        if self.workshop.open {
+            self.workshop.recapture = self.captured;
+            self.mouse_held = None;
+            self.set_capture(false);
+        } else if self.workshop.recapture {
+            self.set_capture(true);
         }
     }
 
@@ -204,6 +220,9 @@ impl App {
             }
         };
         let view = frame.texture.create_view(&Default::default());
+        // The look panel's changes and the look files (M3a): render dials,
+        // block colours, distance detail, terrain previews.
+        self.workshop.update(&mut self.session, streamer, &mut self.falling_draw, &mut gfx.gpu);
         let t0 = Instant::now();
         let aspect = gfx.gpu.width as f64 / gfx.gpu.height as f64;
         let vp = cam.view_proj(aspect);
@@ -226,19 +245,29 @@ impl App {
             let (w, h) = (gfx.config.width, gfx.config.height);
             let hud = self.hud_info(gpu_ms, &cam, aspect, w, h);
             let stats = self.show_stats;
-            let full = self.egui_ctx.run_ui(raw, |ui| draw_hud(ui.ctx(), &hud, stats));
+            let workshop = &mut self.workshop;
+            let full = self.egui_ctx.run_ui(raw, |ui| {
+                draw_hud(ui.ctx(), &hud, stats);
+                workshop.ui(ui.ctx());
+            });
             let gfx = self.gfx.as_mut().unwrap();
             gfx.egui_state.handle_platform_output(&gfx.window, full.platform_output);
             let prims = self.egui_ctx.tessellate(full.shapes, full.pixels_per_point);
             gfx.egui_paint.paint(&gfx.gpu.device, &gfx.gpu.queue, &view, (gfx.config.width, gfx.config.height), full.pixels_per_point, &prims, &full.textures_delta);
         }
         let gfx = self.gfx.as_mut().unwrap();
-        if self.exit_after.is_some_and(|s| self.started.elapsed().as_secs_f64() >= s) {
-            if let Some(path) = &self.screenshot {
-                let rgba = gfx.gpu.read_texture(&frame.texture, gfx.config.width, gfx.config.height);
-                crate::render::write_png(path, gfx.config.width, gfx.config.height, &rgba);
-                println!("screenshot saved to {path}");
+        // The look panel's screenshot button and --screenshot both write the
+        // frame and a JSON sidecar with the look (M3a).
+        let quit_shot = self.exit_after.is_some_and(|s| self.started.elapsed().as_secs_f64() >= s);
+        let shot = if quit_shot { self.screenshot.clone().map(std::path::PathBuf::from) } else { None };
+        if let Some(path) = shot.or_else(|| self.workshop.shot_pending().then(Workshop::shot_path)) {
+            let rgba = gfx.gpu.read_texture(&frame.texture, gfx.config.width, gfx.config.height);
+            match self.workshop.save_frame(&path, &rgba, gfx.config.width, gfx.config.height, &self.session, &gfx.gpu) {
+                Ok(()) => println!("screenshot saved to {}", path.display()),
+                Err(e) => eprintln!("screenshot failed: {e}"),
             }
+        }
+        if quit_shot {
             self.want_exit = true;
         }
         gfx.window.pre_present_notify();
@@ -294,7 +323,7 @@ impl App {
             mode: if p.mode == Mode::Walk { "walk".into() } else { "fly".into() },
             on_ground: p.on_ground,
             in_water: p.in_water,
-            hotbar: engine.hotbar.iter().map(|&id| (engine.registry.def(id).name.clone(), engine.registry.def(id).color)).collect(),
+            hotbar: engine.hotbar.iter().map(|&id| (engine.registry.def(id).name.clone(), engine.registry.colour(id))).collect(),
             selected: p.selected,
             outline,
             edits: engine.edits.len(),
@@ -362,6 +391,14 @@ impl ApplicationHandler for App {
             WindowEvent::KeyboardInput { event, .. } => {
                 if let PhysicalKey::Code(code) = event.physical_key {
                     if event.state == ElementState::Pressed {
+                        // The look panel (M3a): F1 opens and closes it; keys
+                        // typed into one of its fields are not game input.
+                        if code == KeyCode::F1 && !event.repeat {
+                            self.toggle_panel();
+                        }
+                        if self.workshop.typing(&self.egui_ctx) {
+                            return;
+                        }
                         let first = self.keys.insert(code);
                         if first {
                             match code {
@@ -412,6 +449,9 @@ impl ApplicationHandler for App {
                     }
                 }
             }
+            // While the look panel is open the mouse is its (M3a).
+            WindowEvent::MouseInput { state: ElementState::Pressed, .. } if self.workshop.open => {}
+            WindowEvent::MouseWheel { .. } if self.workshop.open && self.egui_ctx.is_pointer_over_egui() => {}
             WindowEvent::MouseInput { state: ElementState::Pressed, button, .. } => {
                 if !self.captured {
                     self.set_capture(true);
@@ -464,6 +504,7 @@ pub fn run(session: Session, opts: AppOptions) {
     let (screenshot, exit_after) = (opts.screenshot.clone(), opts.exit_after);
     let egui_ctx = egui::Context::default();
     egui_ctx.all_styles_mut(|s| s.animation_time = 0.0);
+    let workshop = Workshop::new(&session.engine);
     let mut app = App {
         session,
         opts: Some(opts),
@@ -490,6 +531,7 @@ pub fn run(session: Session, opts: AppOptions) {
         mouse_held: None,
         save_note: String::new(),
         falling_draw: FallingDraws::default(),
+        workshop,
     };
     el.run_app(&mut app).unwrap();
 }
