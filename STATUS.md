@@ -55,7 +55,9 @@ Click to capture the mouse (Esc releases). WASD to move, Space/Ctrl up and
 down, scroll for speed, Shift to boost, P cycles scenic places, F hides
 water, H hides the HUD, Q quits. Known look issues that aren't decisions:
 flat placeholder lighting (the real sky comes in M1c), missing mid-size
-landforms (being fixed now), and ripple patterns on distant steep terrain.
+landforms (being fixed now), ripple patterns on distant steep terrain, and
+oceans that turn grey rock when seen from very high up (a bug found in
+review, being fixed now).
 
 ## In progress
 
