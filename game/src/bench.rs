@@ -372,8 +372,8 @@ pub fn run_shots(engine: Arc<Engine>, opts: ShotOptions) {
     let marker_pair = |dir: DVec3, e: &Engine| -> Vec<Marker> {
         let beside = e.offset_dir(dir, 90.0, 8.0 * p.block_size);
         vec![
-            Marker { dir, height_blocks: (100.0 / p.block_size) as u32, width_blocks: (4.0 / p.block_size).max(1.0) as u32, block: b.marker_red },
-            Marker { dir: beside, height_blocks: (2.0 / p.block_size) as u32, width_blocks: 1, block: b.marker_white },
+            Marker { dir, height_blocks: (100.0 / p.block_size) as u32, width_blocks: (4.0 / p.block_size).max(1.0) as u32, block: b.marker_red, below: false },
+            Marker { dir: beside, height_blocks: (2.0 / p.block_size) as u32, width_blocks: 1, block: b.marker_white, below: false },
         ]
     };
     let scale_label = format!("vertical scale 1/{:.0} ({:.4})", 1.0 / vs, vs);
@@ -463,12 +463,15 @@ pub fn run_shots(engine: Arc<Engine>, opts: ShotOptions) {
     {
         let floor = trench_h.max(bottom_m);
         let depth = -floor;
-        let hd = best_heading(trench_dir, 3000.0, false);
-        let cam_dir = engine.offset_dir(trench_dir, hd, 3000.0);
+        // The basin is tens of km wide (planetgen cells are ~30 km), so the
+        // camera backs off in proportion to the depth it has to show.
+        let reach = (depth * 6.0).clamp(3000.0, 15_000.0);
+        let hd = best_heading(trench_dir, reach, false);
+        let cam_dir = engine.offset_dir(trench_dir, hd, reach);
         let (heading, dist) = engine.heading_to(cam_dir, trench_dir);
         let ground = engine.generator.column(cam_dir, p.block_size).height_m.max(bottom_m as f32) as f64;
-        let alt = (ground + 40.0).max(floor + depth * 0.35);
-        let pitch = ((floor - alt) / dist).atan().to_degrees() * 0.8;
+        let alt = (ground + (depth * 0.05).max(40.0)).max(floor + depth * 0.35);
+        let pitch = ((floor - alt) / dist).atan().to_degrees();
         let clipped = if trench_h < bottom_m { format!(", floor clipped at bedrock {bottom_m:.0} m (true {trench_h:.0} m)") } else { String::new() };
         shots.push(Shot {
             name: "d_trench",
@@ -492,6 +495,27 @@ pub fn run_shots(engine: Arc<Engine>, opts: ShotOptions) {
             hide_water: true,
             markers: marker_pair(coast_dir, &engine),
             caption: format!("(e) steep coast with shelf and slope, water hidden | {scale_label} | {world_label} | coast point {coast_h:.0} m, sea floor under camera {sea_floor:.0} m | camera {:.1} km offshore at {alt:.0} m ASL | markers at coast: red 100 m, white 2 m", dist / 1000.0),
+        });
+    }
+
+    // (f) a quarry cut on the hills: a 48 m pit, 28 m deep, seen from its
+    // floor so the wall shows the soil and the beds as real blocks.
+    {
+        let hills = gnomonic_dir(HILLS.0, HILLS.1, HILLS.2);
+        let pit = engine.offset_dir(hills, 0.0, 120.0);
+        let side = (48.0 / p.block_size) as u32;
+        let depth = (28.0 / p.block_size) as u32;
+        let cam_dir = engine.offset_dir(pit, 180.0, 14.0);
+        let ground = engine.ground(pit);
+        let (heading, _) = engine.heading_to(cam_dir, pit);
+        let mut m = vec![Marker { dir: pit, height_blocks: depth, width_blocks: side, block: b.air, below: true }];
+        m.extend(marker_pair(engine.offset_dir(pit, 0.0, 30.0), &engine));
+        shots.push(Shot {
+            name: "f_strata_cut",
+            cam: engine.camera_asl(cam_dir, ground - 28.0 + 1.7, heading, 8.0),
+            hide_water: false,
+            markers: m,
+            caption: format!("(f) quarry cut on the hills, {side} m square and {depth} m deep | {scale_label} | {world_label} | camera on the pit floor, eye 1.7 m, facing the north wall 38 m away | soil over hashed 2-6 block beds, folded; marker red 100 m, white 2 m behind the wall"),
         });
     }
 

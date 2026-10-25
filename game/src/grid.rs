@@ -158,10 +158,22 @@ impl Planet {
     /// column centres their neighbours do.
     pub fn dir(&self, face: u8, i: f64, j: f64) -> DVec3 {
         let n = self.n as f64;
-        let d = cs::face_to_dir(self.proj, face, self.p_of(i), self.p_of(j));
         if (0.0..=n).contains(&i) && (0.0..=n).contains(&j) {
-            return d;
+            return cs::face_to_dir(self.proj, face, self.p_of(i), self.p_of(j));
         }
+        // Past the face edge: `warp` is only defined on the face, so extend
+        // linearly in gnomonic space from the edge (the gnomonic plane
+        // continues onto the neighbour), then snap to that face's lattice.
+        let (p, q) = (self.p_of(i), self.p_of(j));
+        let (pc, qc) = (p.clamp(-1.0, 1.0), q.clamp(-1.0, 1.0));
+        let eps = 1e-4;
+        let (a0, b0) = cs::warp(self.proj, pc, qc);
+        let (a1, _) = cs::warp(self.proj, pc - eps * pc.signum().max(0.0) + eps * (-pc.signum()).max(0.0), qc);
+        let (_, b1) = cs::warp(self.proj, pc, qc - eps * qc.signum().max(0.0) + eps * (-qc.signum()).max(0.0));
+        let a = a0 + (a0 - a1) / eps * (p - pc).abs() * pc.signum();
+        let b = b0 + (b0 - b1) / eps * (q - qc).abs() * qc.signum();
+        let (axis, right, up) = cs::FACES[face as usize];
+        let d = (axis + a * right + b * up).normalize();
         let (f2, p2, q2) = cs::dir_to_face(self.proj, d);
         if f2 == face {
             return d;

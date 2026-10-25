@@ -76,13 +76,14 @@ pub fn gradient_noise(p: DVec3, seed: u64) -> f64 {
 /// Fractal sum: `octaves` gradient octaves starting at wavelength `wl`,
 /// each `lacunarity` times finer and `gain` times weaker. Returns the sum
 /// of amp_i * noise_i (unnormalised; the first octave has amplitude 1).
-/// `octave_weight(i, wavelength)` scales each octave (for LOD band limits).
-pub fn fbm(p: DVec3, octaves: u32, wl: f64, lacunarity: f64, gain: f64, seed: u64, octave_weight: impl Fn(f64) -> f64) -> f64 {
+/// `octave_weight(octave, wavelength)` scales each octave (LOD band
+/// limits, slope caps).
+pub fn fbm(p: DVec3, octaves: u32, wl: f64, lacunarity: f64, gain: f64, seed: u64, octave_weight: impl Fn(u32, f64) -> f64) -> f64 {
     let mut sum = 0.0;
     let mut amp = 1.0;
     let mut w = wl;
     for o in 0..octaves {
-        let k = octave_weight(w);
+        let k = octave_weight(o, w);
         if k > 0.0 {
             let q = p / w + DVec3::splat(o as f64 * 19.17);
             sum += gradient_noise(q, seed.wrapping_add(o as u64 * 0x9E37_79B9)) * amp * k;

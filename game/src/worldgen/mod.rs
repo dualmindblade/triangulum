@@ -78,6 +78,9 @@ pub struct Marker {
     pub height_blocks: u32,
     pub width_blocks: u32,
     pub block: BlockId,
+    /// Stamp downward from the ground instead of upward (with `block` = air
+    /// this cuts a pit whose walls expose the strata).
+    pub below: bool,
 }
 
 /// One terrain column sampled at a voxel centre.
@@ -191,7 +194,17 @@ impl Generator {
         let amp = relief_amp_m(s.rough_km, self.vscale, self.roughness);
         let land_fac = if ocean { 0.35 } else { 0.25 + 0.75 * smoothstep(0.0, 10.0 * self.planet.block_size, elev) };
         let cutoff = voxel_m * 4.0;
-        let relief = fbm(p, RELIEF_OCTAVES, RELIEF_WL_M, 2.5, 0.5, self.seed, |wl| ((wl / cutoff) - 1.0).clamp(0.0, 1.0)) * amp * land_fac;
+        // Each octave's slope is capped at RELIEF_MAX_EARTH_SLOPE (times the
+        // vertical scale and the dial): the roughness field is relief at
+        // ~30 km, and extrapolating it down to metres unchecked makes
+        // mountains a thicket of 1 m cliffs.
+        let slope_cap = RELIEF_MAX_EARTH_SLOPE * self.vscale * self.roughness / std::f64::consts::TAU;
+        let relief = fbm(p, RELIEF_OCTAVES, RELIEF_WL_M, 2.5, RELIEF_GAIN, self.seed, |o, wl| {
+            let band = ((wl / cutoff) - 1.0).clamp(0.0, 1.0);
+            let octave_amp = amp * RELIEF_GAIN.powi(o as i32);
+            band * (slope_cap * wl / octave_amp).min(1.0)
+        }) * amp
+            * land_fac;
         let height = elev + relief;
         let dither = gradient_noise(p / 41.0 + DVec3::splat(3.1), self.seed ^ 0xD17) as f32;
         Column {
@@ -233,9 +246,15 @@ impl Generator {
         for m in &self.markers {
             let (f, i, j) = planet.lattice_of_dir(m.dir);
             if f == fp.face && i >= i0 && i < i1 && j >= j0 && j < j1 {
-                let top = self.ground_height_m(m.dir) + (m.height_blocks as f64 + 2.0) * planet.block_size;
-                hmax = hmax.max(top);
-                hmin = hmin.min(self.column(m.dir, planet.block_size).height_m as f64 - margin);
+                let ground = self.ground_height_m(m.dir);
+                let reach = (m.height_blocks as f64 + 2.0) * planet.block_size;
+                if m.below {
+                    hmin = hmin.min(ground - reach - margin);
+                    hmax = hmax.max(ground + margin);
+                } else {
+                    hmax = hmax.max(ground + reach);
+                    hmin = hmin.min(self.column(m.dir, planet.block_size).height_m as f64 - margin);
+                }
             }
         }
         (hmin, hmax)
@@ -259,7 +278,7 @@ impl Generator {
         };
         let soil_blocks = (base + 0.6 * d - 2.5 * slope.min(1.2)).clamp(1.0, 4.0);
         let soil_m = soil_blocks.round() * s;
-        if c.ocean && !self.hide_water {
+        if c.ocean {
             let deep = -c.height_m > 6.0 * s + 2.0 * d;
             let floor = if deep { b.gravel } else { b.sand };
             return Surface { top: floor, soil: floor, soil_m: 2.0 * s };
@@ -429,7 +448,11 @@ impl Generator {
             let half = (m.width_blocks as i64) / 2;
             let (mi0, mi1) = (i.floor() as i64 - half, i.floor() as i64 - half + m.width_blocks as i64);
             let (mj0, mj1) = (j.floor() as i64 - half, j.floor() as i64 - half + m.width_blocks as i64);
-            let (mk0, mk1) = (ground_k + 1, ground_k + 1 + m.height_blocks as i64);
+            let (mk0, mk1) = if m.below {
+                ((ground_k + 1 - m.height_blocks as i64).max(1), ground_k + 1)
+            } else {
+                (ground_k + 1, ground_k + 1 + m.height_blocks as i64)
+            };
             // Voxel ranges (padded coords) that intersect the marker box.
             let vr = |lo: i64, hi: i64, origin: i64| -> (i32, i32) {
                 let a = ((lo - origin).div_euclid(vb)).clamp(-1, CHUNK as i64) as i32;
@@ -456,6 +479,11 @@ impl Generator {
 /// Relief octaves: 10 km, 4 km, 1.6 km, 640 m, 256 m, 102 m, 41 m, 16 m.
 const RELIEF_OCTAVES: u32 = 8;
 const RELIEF_WL_M: f64 = 10_000.0;
+/// Amplitude ratio per octave (lacunarity 2.5): slopes stay about equal
+/// across octaves instead of growing toward the fine ones.
+const RELIEF_GAIN: f64 = 0.42;
+/// Largest Earth-scale slope one octave may add (rise over run).
+const RELIEF_MAX_EARTH_SLOPE: f64 = 0.7;
 
 /// First-octave relief amplitude (m) for a roughness value (km, Earth
 /// scale). The bake's roughness is relief at the ~30 km cell scale; at the

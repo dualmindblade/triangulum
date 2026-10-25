@@ -49,6 +49,7 @@ struct Args {
     bench: bool,
     shots: bool,
     find_places: bool,
+    probe: bool,
     out: String,
     frames: usize,
     skip_flight: bool,
@@ -87,6 +88,7 @@ fn parse_args() -> Args {
         bench: false,
         shots: false,
         find_places: false,
+        probe: false,
         out: format!("{root}/out/run"),
         frames: 120,
         skip_flight: false,
@@ -130,6 +132,7 @@ fn parse_args() -> Args {
             "--bench" => a.bench = true,
             "--shots" => a.shots = true,
             "--find-places" => a.find_places = true,
+            "--probe" => a.probe = true,
             "--out" => a.out = val(),
             "--frames" => a.frames = val().parse().unwrap(),
             "--skip-flight" => a.skip_flight = true,
@@ -204,6 +207,28 @@ fn main() {
     );
     let engine = Arc::new(engine);
 
+    if args.probe {
+        // Height profile along 96 columns around --at, in the lattice i direction.
+        let (lat, lon, _) = args.at.expect("--probe needs --at LAT LON ALT");
+        let dir = grid::Planet::dir_of_lat_lon_deg(lat, lon);
+        let (f, i, j) = p.lattice_of_dir(dir);
+        let mut prev = f64::NAN;
+        let mut max_step: f64 = 0.0;
+        for di in -48..48 {
+            let d = p.dir(f, i.floor() + di as f64 + 0.5, j.floor() + 0.5);
+            let c = engine.generator.column(d, p.block_size);
+            let h = c.height_m as f64;
+            if !prev.is_nan() {
+                max_step = max_step.max((h - prev).abs());
+            }
+            if di % 8 == 0 {
+                println!("i{:+4}: height {:8.2} m  ocean {}  temp {:.1}", di, h, c.ocean, c.temp_c);
+            }
+            prev = h;
+        }
+        println!("max |step| between adjacent columns over 96 columns: {max_step:.2} m");
+        return;
+    }
     if args.find_places {
         let pl = engine.places;
         for (name, dir, v) in [("highest land", pl.peak.0, pl.peak.1), ("deepest ocean", pl.trench.0, pl.trench.1), ("steepest coast", pl.coast.0, pl.coast.1)] {
