@@ -25,10 +25,16 @@
   specs and reference images, which were only on one disk, are now in git
   under `docs/source/`.
 
+- **M1-bake** (Opus, verified by Opus, merged): `scripts/bake_world.py`
+  removes the old "texel artifacts" at the source. Cell-structure noise is
+  down from 18% to 0.6%, and it carries planetgen's geology (soil depth,
+  continental cores, volcanic zones, erodibility) for real strata. Run it
+  with `python scripts/bake_world.py` (about 20 s); check it with
+  `python scripts/bake_world_check.py`.
+
 ## In progress
 
 - M1a engine skeleton (Fable), plus vertical-scale renders for Andrew
-- M1-bake smooth world bake (Opus)
 
 ## Waiting on you
 
