@@ -24,6 +24,16 @@
 //!                           particular block face deterministically
 //!   turn DH DP              relative view change, degrees
 //!   mode walk|fly           like the G key
+//!   find flat|shore|river|lake|waterfall
+//!                           stand (walk mode) at the nearest such site,
+//!                           deterministically: a dry column with that water
+//!                           1-3 columns away along a lattice axis (a fall:
+//!                           beside a lip with a 3+ block drop), or a 5 x 5
+//!                           patch of level dry ground; looks at the water
+//!                           (a fall: below its lip; flat: along +i). Sets
+//!                           find_kind, find_face/i/j/k (the block stood
+//!                           on), find_target_face/i/j/k, find_axis,
+//!                           find_gap, find_drop, find_dist_m, find_columns
 //!
 //! ---- time and input (fixed 60 Hz) -----------------------------------
 //!   hold KEYS SECONDS       keys held: w a s d space shift ctrl, written
@@ -57,6 +67,21 @@
 //!   reload                  save, drop every chunk and the edit store, and
 //!                           load the save from disk: quit and restart
 //!
+//! ---- replays (M2c, replay.rs) ----------------------------------------
+//!   replay record FILE      start recording a replay to FILE (under the out
+//!                           directory), exactly as F10 does in the game:
+//!                           every command after this is in it
+//!   replay stop             finish it; sets replay_steps, replay_events,
+//!                           replay_checks_written, replay_notes (things the
+//!                           recorder could not capture: must be 0),
+//!                           replay_bytes
+//!   replay check FILE       play FILE in a fresh session built from its own
+//!                           snapshot (scratch save saves/_replay/<stem>),
+//!                           here, and compare; sets replay_ok, replay_checks,
+//!                           replay_matched, replay_steps_played,
+//!                           replay_ended, replay_end_match,
+//!                           replay_divergence_step (none when it matched)
+//!
 //! ---- output and checks ---------------------------------------------
 //!   shot NAME               settled frame (streaming drained) with the HUD
 //!                           as NAME.png, plus NAME.json state
@@ -86,6 +111,10 @@
 //!                             water_placed water_removed water_displaced
 //!                             water_lost water_balance water_updates_last
 //!                             water_period sim_radius (units: 255 = a cell)
+//!                             sky_seconds sky_speed (the session's sky
+//!                             clock) steps recording
+//!                             video_frames video_falling_drawn_max (after
+//!                             a recording's stop)
 //!                           or block[F,I,J,K]  the block at lattice coords
 //!                           or block_rel[DI,DJ,DK]  relative to the feet block
 //!                           or level[F,I,J,K] / level_rel[DI,DJ,DK]  the water
@@ -123,7 +152,10 @@
 //!   sun ELEV [am|pm]        seek the clock to when the sun is ELEV degrees
 //!                           above the horizon here (pm: afternoon, default)
 //!   skyspeed F              sky clock speed on every step, game s per s
-//!                           (default 0: the sky holds, as before)
+//!                           (default 0: the sky holds, as before). The
+//!                           clock is the session's and advances on every
+//!                           60 Hz step, whatever command takes it (hold,
+//!                           wait, tick, travel, fly, pan, zoom; M2c)
 //!   target FACE I J K | rel DI DJ DK | ll LAT LON ALT | off
 //!                           a look-at point: a block centre, a point
 //!                           relative to the feet cell (as aim), or lat/lon/alt
@@ -141,6 +173,8 @@
 //!                           space), easing in/out (default both), looking
 //!                           by the keys' angles, along the path (keys'
 //!                           pitch), or at the target; leaves fly mode on.
+//!                           Every frame is a step of the session (the
+//!                           world simulates and the sky turns meanwhile).
 //!                           Fails if the eye comes within 1 m of the ground
 //!   pan SECONDS look H P | turn DH DP | lookaxis AXIS P | aim DI DJ DK | target
 //!                           turn the view smoothly to where that command
@@ -151,15 +185,19 @@
 //!   zoom SECONDS DEGREES    change the field of view smoothly, stepping
 //!                           with no input
 
+mod find;
 mod video;
 
 use crate::bench::Harness;
 use crate::grid::BlockPos;
 use crate::player::{Input, Mode, STEP};
-use crate::session::Session;
+use crate::replay::{self, Replay};
+use crate::session::{Action, Button, Session};
 use crate::sim::STEPS_PER_TICK;
 use crate::ui::{Hud, draw_hud, outline_segments};
 use std::fmt::Write as _;
+use std::path::Path;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 pub struct PlayOptions {
@@ -178,11 +216,63 @@ struct Run {
     asserts: usize,
     last_bench: serde_json::Value,
     last_stream: serde_json::Value,
+    /// The last `find` and `replay` results, as state fields.
+    last_find: serde_json::Value,
+    last_replay: serde_json::Value,
     out: String,
     video: video::Video,
 }
 
 impl Run {
+    fn new(session: Session, harness: Harness, out: &str) -> Self {
+        Run { session, harness, log: String::new(), failed: 0, asserts: 0, last_bench: serde_json::Value::Null, last_stream: serde_json::Value::Null, last_find: serde_json::Value::Null, last_replay: serde_json::Value::Null, out: out.to_string(), video: video::Video::default() }
+    }
+
+    /// `replay record FILE | replay stop | replay check FILE` (M2c): the
+    /// recorder the app's F10 uses, and a playback of the file in a fresh
+    /// session built from its snapshot (in a scratch save), in this process.
+    fn replay_command(&mut self, args: &[&str]) -> Result<(), String> {
+        match (args.first().copied(), args.get(1).copied()) {
+            (Some("record"), Some(file)) => {
+                let path = Path::new(&self.out).join(file);
+                let p = self.session.start_recording(&path, "recorded by a harness script")?;
+                self.say(format!("  recording a replay to {}", p.display()));
+                Ok(())
+            }
+            (Some("stop"), _) => {
+                let s = self.session.stop_recording()?;
+                self.say(format!("  replay {}: {} steps, {} events, {} checks, {} notes; {:.1} KB ({:.1} KB of it the snapshot)", s.path.display(), s.steps, s.events, s.checks, s.notes, s.bytes as f64 / 1e3, s.snapshot_bytes as f64 / 1e3));
+                self.last_replay = serde_json::json!({ "replay_steps": s.steps, "replay_events": s.events, "replay_checks_written": s.checks, "replay_notes": s.notes, "replay_bytes": s.bytes });
+                Ok(())
+            }
+            (Some("check"), Some(file)) => {
+                let path = Path::new(&self.out).join(file);
+                let rep = replay::read(&path)?;
+                let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("replay").to_string();
+                let t0 = Instant::now();
+                let mut s = replay::session_from(&self.session, &rep, &replay::scratch_dir(&stem))?;
+                let report = replay::Runner::new(&rep, &s).run(&mut s);
+                for l in report.text().lines() {
+                    self.say(format!("  {l}"));
+                }
+                let secs = t0.elapsed().as_secs_f64();
+                self.say(format!("  (played in {secs:.1} s)"));
+                self.last_replay = serde_json::json!({
+                    "replay_ok": report.ok(),
+                    "replay_checks": report.checks,
+                    "replay_matched": report.matched,
+                    "replay_steps_played": report.steps,
+                    "replay_ended": report.ended,
+                    "replay_end_match": report.end_sha.as_ref().is_some_and(|(a, b)| a == b),
+                    "replay_divergence_step": report.first.as_ref().map(|d| d.step),
+                    "replay_secs": secs,
+                });
+                Ok(())
+            }
+            _ => Err("replay record FILE | replay stop | replay check FILE".into()),
+        }
+    }
+
     fn say(&mut self, s: impl AsRef<str>) {
         let s = s.as_ref();
         println!("{s}");
@@ -207,9 +297,12 @@ impl Run {
         self.say(format!("  ticked {} -> {}: {}", before, self.session.sim.tick(), self.session.sim.describe()));
     }
 
-    /// Hand the harness the blocks in flight so the next frames draw them.
+    /// Hand the harness what the next frames draw from the session: the
+    /// blocks in flight and the sky clock (the session advances it on its
+    /// steps; M2c).
     fn sync_falling(&mut self) {
         self.harness.falling = self.session.sim.view();
+        self.harness.gpu.sky.clock = self.session.sky;
     }
 
     fn state(&self) -> serde_json::Value {
@@ -220,9 +313,11 @@ impl Run {
                     m.insert(k.clone(), val.clone());
                 }
             }
-            if let serde_json::Value::Object(b) = &self.last_bench {
-                for (k, val) in b {
-                    m.insert(k.clone(), val.clone());
+            for extra in [&self.last_bench, &self.last_find, &self.last_replay] {
+                if let serde_json::Value::Object(b) = extra {
+                    for (k, val) in b {
+                        m.insert(k.clone(), val.clone());
+                    }
                 }
             }
         }
@@ -577,7 +672,10 @@ pub fn run_play(session: Session, opts: PlayOptions) -> i32 {
     let _ = std::fs::create_dir_all(&opts.out);
     let engine = session.engine.clone();
     let harness = Harness::new(engine, opts.width, opts.height, &opts.out, opts.backend.as_deref());
-    let mut run = Run { session, harness, log: String::new(), failed: 0, asserts: 0, last_bench: serde_json::Value::Null, last_stream: serde_json::Value::Null, out: opts.out.clone(), video: video::Video::default() };
+    let mut run = Run::new(session, harness, &opts.out);
+    // The harness's sky holds unless a script sets `skyspeed` (as before
+    // M2c); the session advances it on its steps.
+    run.session.sky.speed = 0.0;
     run.say(format!("play {} -> {}", opts.script, opts.out));
     let t0 = Instant::now();
     let mut errors = 0usize;
@@ -666,8 +764,12 @@ pub fn run_play(session: Session, opts: PlayOptions) -> i32 {
                 _ => bad(&mut run, "turn DH DP"),
             },
             "mode" => match args.first().map(|s| s.to_lowercase()).as_deref() {
-                Some("walk") => run.session.set_mode(Mode::Walk),
-                Some("fly") => run.session.set_mode(Mode::Fly),
+                Some("walk") => {
+                    let _ = run.session.apply(Action::SetMode(Mode::Walk));
+                }
+                Some("fly") => {
+                    let _ = run.session.apply(Action::SetMode(Mode::Fly));
+                }
                 _ => bad(&mut run, "mode walk|fly"),
             },
             "hold" => match (args.first(), num(1)) {
@@ -687,17 +789,17 @@ pub fn run_play(session: Session, opts: PlayOptions) -> i32 {
             },
             "sim" => match (args.first().map(|s| s.to_lowercase()).as_deref(), num(1)) {
                 (Some(v @ ("on" | "off")), _) => {
-                    run.session.sim.config.enabled = v == "on";
+                    let _ = run.session.apply(Action::Sim(v == "on"));
                     let d = run.session.sim.describe();
                     run.say(format!("  {d}"));
                 }
                 (Some("radius"), Some(m)) if m >= 0.0 => {
-                    run.session.sim.set_radius(m);
+                    let _ = run.session.apply(Action::SimRadius(m));
                     let d = run.session.sim.describe();
                     run.say(format!("  radius {m} m: {d}"));
                 }
                 (Some("period"), Some(n)) if n >= 1.0 => {
-                    run.session.sim.config.water_period = n as u64;
+                    let _ = run.session.apply(Action::WaterPeriod(n as u64));
                     run.say(format!("  water period {} tick(s)", n as u64));
                 }
                 _ => bad(&mut run, "sim on|off | sim radius M | sim period N"),
@@ -715,31 +817,36 @@ pub fn run_play(session: Session, opts: PlayOptions) -> i32 {
             },
             "tap" => match args.first().map(|s| s.to_lowercase()).as_deref() {
                 Some("break") | Some("lmb") => {
-                    let r = run.session.break_block();
+                    let r = run.session.apply(Action::Click(Button::Break)).ok().flatten();
                     run.say(format!("  break: {}", r.map_or("nothing in reach".to_string(), |b| format!("face {} i {} j {} k {}", b.face, b.i, b.j, b.k))));
                 }
                 Some("place") | Some("rmb") => {
-                    let r = run.session.place_block();
+                    let r = run.session.apply(Action::Click(Button::Place)).ok().flatten();
                     run.say(format!("  place: {}", r.map_or("not placed".to_string(), |b| format!("face {} i {} j {} k {}", b.face, b.i, b.j, b.k))));
                 }
                 Some("jump") | Some("space") => run.steps(Input { jump: true, ..Default::default() }, STEP),
-                Some("g") => run.session.toggle_mode(),
-                Some("f") => {
-                    let hide = !run.session.engine.hide_water;
-                    let e = run.session.set_hide_water(hide);
-                    run.harness.set_engine(e);
+                Some("g") => {
+                    let _ = run.session.apply(Action::ToggleMode);
                 }
-                Some(d) if d.len() == 1 && d.as_bytes()[0].is_ascii_digit() && d != "0" => run.session.select(d.parse::<usize>().unwrap() - 1),
+                Some("f") => {
+                    let _ = run.session.apply(Action::ToggleWater);
+                    run.harness.set_engine(run.session.engine.clone());
+                }
+                Some(d) if d.len() == 1 && d.as_bytes()[0].is_ascii_digit() && d != "0" => {
+                    let _ = run.session.apply(Action::Select(d.parse::<usize>().unwrap() - 1));
+                }
                 _ => bad(&mut run, "tap break|place|jump|g|f|1..9"),
             },
             "select" => match num(0) {
-                Some(n) if (1.0..=9.0).contains(&n) => run.session.select(n as usize - 1),
+                Some(n) if (1.0..=9.0).contains(&n) => {
+                    let _ = run.session.apply(Action::Select(n as usize - 1));
+                }
                 _ => bad(&mut run, "select 1..9"),
             },
             "water" => match args.first().map(|s| s.to_lowercase()).as_deref() {
                 Some(v @ ("on" | "off")) => {
-                    let e = run.session.set_hide_water(v == "off");
-                    run.harness.set_engine(e);
+                    let _ = run.session.apply(Action::HideWater(v == "off"));
+                    run.harness.set_engine(run.session.engine.clone());
                 }
                 _ => bad(&mut run, "water on|off"),
             },
@@ -747,12 +854,27 @@ pub fn run_play(session: Session, opts: PlayOptions) -> i32 {
                 Ok(n) => run.say(format!("  saved {n} chunk(s)")),
                 Err(e) => bad(&mut run, &format!("save: {e}")),
             },
-            "reload" => match run.session.reload() {
-                Ok((engine, report)) => {
-                    run.harness.set_engine(engine);
+            "reload" => match run.session.apply(Action::Reload) {
+                Ok(_) => {
+                    run.harness.set_engine(run.session.engine.clone());
+                    let report = run.session.last_reload.take().expect("a reload report");
                     run.say(format!("  reloaded {} chunk(s) from disk{}", report.chunks, if report.warnings.is_empty() { String::new() } else { format!("; warnings: {}", report.warnings.join("; ")) }));
                 }
                 Err(e) => bad(&mut run, &format!("reload: {e}")),
+            },
+            "find" => match args.first() {
+                Some(kind) => match find::find(&mut run.session, kind) {
+                    Ok(site) => {
+                        run.say(format!("  {}", site.describe()));
+                        run.last_find = site.fields();
+                    }
+                    Err(e) => bad(&mut run, &format!("find: {e}")),
+                },
+                None => bad(&mut run, "find flat|shore|river|lake|waterfall"),
+            },
+            "replay" => match run.replay_command(args) {
+                Ok(()) => {}
+                Err(e) => bad(&mut run, &format!("replay: {e}")),
             },
             "shot" => match args.first() {
                 Some(name) => run.shot(name),
@@ -788,4 +910,118 @@ pub fn run_play(session: Session, opts: PlayOptions) -> i32 {
     run.say(summary);
     std::fs::write(format!("{}/run.log", opts.out), &run.log).unwrap();
     if run.failed > 0 || errors > 0 { 1 } else { 0 }
+}
+
+pub struct ReplayOptions {
+    pub out: String,
+    /// The scratch save's name (`saves/_replay/<name>`).
+    pub name: String,
+    /// `--shot-at` values: step numbers, or "end".
+    pub shots: Vec<String>,
+    /// Play in the window at real time instead.
+    pub watch: bool,
+    pub width: u32,
+    pub height: u32,
+    pub backend: Option<String>,
+    pub vsync: bool,
+    /// With `watch`: save a frame and quit after this many seconds.
+    pub screenshot: Option<String>,
+    pub exit_after: Option<f64>,
+}
+
+/// `--replay FILE` (M2c): play a replay from its snapshot in a scratch save,
+/// check it as it goes, take the settled shots asked for, report the first
+/// divergence. Exit code 0 when it reproduced, 1 when it diverged, 2 when it
+/// could not play.
+pub fn run_replay(template: Session, rep: Replay, opts: ReplayOptions) -> i32 {
+    let _ = std::fs::create_dir_all(&opts.out);
+    let h = &rep.header;
+    println!("replay {}: recorded {} UTC by {} ({}); {} steps ({:.1} s), {} events, {} snapshot files ({:.1} KB), {} edited chunks at the start", rep.path.display(), h.created_utc, h.engine, h.note, rep.steps(), rep.steps() as f64 / 60.0, rep.lines.len(), h.files.len(), h.files.iter().map(|f| f.bytes).sum::<u64>() as f64 / 1e3, h.start_edits);
+    let scratch = replay::scratch_dir(&opts.name);
+    let session = match replay::session_from(&template, &rep, &scratch) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("error: {e}");
+            return 2;
+        }
+    };
+    drop(template);
+    println!("playing in the scratch save {} (your own save is not touched)", scratch.display());
+    let mut shots = std::collections::BTreeSet::new();
+    let mut shot_end = false;
+    for s in &opts.shots {
+        match s.as_str() {
+            "end" => shot_end = true,
+            n => match n.parse::<u64>() {
+                Ok(n) => {
+                    shots.insert(n);
+                }
+                Err(_) => {
+                    eprintln!("error: --shot-at takes a step number or \"end\", not {n:?}");
+                    return 2;
+                }
+            },
+        }
+    }
+    if opts.watch {
+        return crate::app::run_replay(session, rep, crate::app::AppOptions { width: opts.width, height: opts.height, vsync: opts.vsync, backend: opts.backend, screenshot: opts.screenshot, exit_after: opts.exit_after, record: None });
+    }
+    let t0 = Instant::now();
+    let mut log = String::new();
+    let report = if shots.is_empty() && !shot_end {
+        let mut s = session;
+        replay::Runner::new(&rep, &s).run(&mut s)
+    } else {
+        let engine = session.engine.clone();
+        let harness = Harness::new(engine.clone(), opts.width, opts.height, &opts.out, opts.backend.as_deref());
+        let mut run = Run::new(session, harness, &opts.out);
+        let mut seen = engine;
+        let mut runner = replay::Runner::new(&rep, &run.session);
+        loop {
+            if !Arc::ptr_eq(&seen, &run.session.engine) {
+                // A reload or a water toggle made a new engine: draw from it.
+                seen = run.session.engine.clone();
+                run.harness.set_engine(seen.clone());
+            }
+            if shots.remove(&runner.step()) {
+                run.shot(&format!("step{:06}", runner.step()));
+            }
+            if !runner.advance(&mut run.session) {
+                break;
+            }
+        }
+        if !Arc::ptr_eq(&seen, &run.session.engine) {
+            run.harness.set_engine(run.session.engine.clone());
+        }
+        if shot_end {
+            run.shot(&format!("end_step{:06}", runner.step()));
+        }
+        for s in &shots {
+            run.say(format!("  no shot at step {s}: the replay ends at step {}", runner.step()));
+        }
+        log = std::mem::take(&mut run.log);
+        runner.report
+    };
+    let text = report.text();
+    println!("{text}");
+    println!("(played in {:.1} s)", t0.elapsed().as_secs_f64());
+    log.push_str(&text);
+    log.push('\n');
+    let json = serde_json::json!({
+        "replay": rep.path.display().to_string(),
+        "ok": report.ok(),
+        "steps": report.steps,
+        "checks": report.checks,
+        "matched": report.matched,
+        "ended": report.ended,
+        "end_sha": report.end_sha,
+        "divergence": report.first.as_ref().map(|d| serde_json::json!({ "step": d.step, "event_line": d.line_no, "what": d.what })),
+        "notes": report.notes,
+        "warnings": report.warnings,
+        "errors": report.errors,
+    });
+    let _ = std::fs::write(format!("{}/report.json", opts.out), serde_json::to_string_pretty(&json).unwrap());
+    let _ = std::fs::write(format!("{}/run.log", opts.out), log);
+    println!("report: {}/report.json", opts.out);
+    if report.ok() { 0 } else { 1 }
 }

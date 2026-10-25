@@ -1,0 +1,92 @@
+# M2c: a replay reproduces a session exactly. The script records one with
+# the same recorder F10 uses in the game, then plays the file back in a
+# fresh session built from the file's own snapshot (in a scratch save,
+# saves/_replay/m2c-river) and checks every per-second check and the end.
+#
+# The session goes to its sites with `find` (deterministic: the asserts
+# pin the sites), so nothing here depends on hand-copied coordinates:
+#   1. flat ground near the start: two sand blocks stacked on the ground in
+#      front, the bottom one knocked out, the top one falls and lands;
+#   2. a river bank: dig at the bank, pour water, swim;
+#   3. sky speed, hiding water, the active region, fly mode, a save, a
+#      sim_hash (both absorb pending changes early: the replay, which does
+#      neither, must still match) and a reload from the save.
+# Play the file yourself:
+#   cargo run --release -- --replay out/play/m2c-replay/m2c-river.replay --shot-at 120 --shot-at end
+
+replay record m2c-river.replay
+assert recording == true
+
+# ---- 1. flat ground: a sand collapse ----------------------------------
+find flat
+assert find_kind == flat
+assert find_face == 2
+assert find_i == 107155
+assert find_j == 57522
+assert find_k == 555
+assert on_ground == true
+assert block_rel[1,0,0] == air
+assert block_rel[1,0,1] == air
+select 4
+assert selected_block == sand
+aim 1 0 0
+tap place
+assert block_rel[1,0,0] == sand
+aim 1 0 1
+tap place
+assert block_rel[1,0,1] == sand
+aim 1 0 0.2
+assert crosshair == sand
+tap break
+assert block_rel[1,0,0] == air
+tick 12
+assert falling == 0
+assert landings == 1
+assert block_rel[1,0,0] == sand
+assert block_rel[1,0,1] == air
+
+# ---- 2. a river bank: dig, pour, swim ----------------------------------
+find river
+assert find_kind == river
+assert find_i == 108271
+assert find_j == 55925
+assert find_k == 535
+select 1
+tap break
+wait 0.3
+tap break
+wait 0.3
+select 9
+tap place
+wait 0.5
+hold w 0.8
+turn 35 -10
+hold d,shift 0.6
+tick 20
+
+# ---- 3. sky, view, region, fly, save, hash, reload --------------------
+skyspeed 30
+wait 1
+water off
+wait 0.2
+water on
+sim radius 48
+mode fly
+speed 40
+hold w,shift 1
+save
+assert sim_hash != 0
+wait 0.5
+reload
+mode walk
+wait 1
+replay stop
+assert replay_notes == 0
+assert replay_steps > 400
+
+# ---- play it back ----------------------------------------------------
+replay check m2c-river.replay
+assert replay_ok == true
+assert replay_end_match == true
+assert replay_divergence_step == none
+assert replay_checks >= 7

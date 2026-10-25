@@ -1,0 +1,8 @@
+  shot step000000: C:\code\triangulum\.claude\worktrees\agent-a79596cd21d5293e5\game/out/replay/m2c-river/step000000.png (settled in 2.3 s / 1020 frames; 813 draws)
+  state step000000: walk lat -4.56535 lon 117.47443 alt 44.00 m (agl 0.18) face 2 i 107155 j 57518 k 556 ground true water false crosshair null edits 0 dirty 0
+  shot step000120: C:\code\triangulum\.claude\worktrees\agent-a79596cd21d5293e5\game/out/replay/m2c-river/step000120.png (settled in 1.5 s / 567 frames; 41 draws)
+  state step000120: walk lat -5.45867 lon 118.23121 alt 23.93 m (agl 0.16) face 2 i 108270 j 55925 k 535 ground false water false crosshair "water" edits 2 dirty 2
+  shot end_step000468: C:\code\triangulum\.claude\worktrees\agent-a79596cd21d5293e5\game/out/replay/m2c-river/end_step000468.png (settled in 2.3 s / 1280 frames; 14 draws)
+  state end_step000468: walk lat -5.43528 lon 118.19571 alt 25.00 m (agl 0.16) face 2 i 108218 j 55967 k 537 ground true water false crosshair "grass" edits 2 dirty 0
+replayed 468 steps (7.8 s), 40 events; 8 of 8 checks matched; the end state hash matches (e44f83d5de16442c..)
+replay OK: the session reproduced exactly

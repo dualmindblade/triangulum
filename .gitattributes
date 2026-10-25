@@ -2,3 +2,5 @@
 * text=auto
 *.png binary
 *.bin binary
+# replays embed a binary save snapshot: never convert line endings (M2c)
+*.replay binary

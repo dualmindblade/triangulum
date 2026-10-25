@@ -507,6 +507,66 @@ impl SaveDir {
     }
 }
 
+/// A whole save as files, built in memory from every edited chunk and a
+/// simulation state: generation 1 of a fresh save (`header.json`,
+/// `commit.json`, one file per chunk, `sim.g1.bin`), byte for byte what
+/// `flush` would write into an empty directory. A replay (M2c) embeds this
+/// as its starting snapshot; nothing touches the disk.
+pub fn snapshot_image(store: &EditStore, config: &WorldConfig, registry: &Registry, bake_sha256: &str, sim: &[u8]) -> Result<Vec<(String, Vec<u8>)>, String> {
+    let generation = 1;
+    let header = serde_json::to_string_pretty(&Header::for_world(config, registry, bake_sha256)).map_err(|e| e.to_string())?;
+    let mut files = vec![("header.json".to_string(), header.into_bytes())];
+    let mut commit = Commit { generation, chunks: Vec::new(), sim: None };
+    for d in store.snapshot_full() {
+        let file = SaveDir::chunk_file(d.key, generation);
+        let bytes = chunk_file_bytes(d.key, &Chunk::from_dense(&d.ids, d.water.as_deref()));
+        commit.chunks.push(CommitEntry { key: key_array(d.key), file: file.clone(), sha256: hex(&sha256(&bytes)) });
+        files.push((file, bytes));
+    }
+    let sim_file = format!("sim.g{generation}.bin");
+    commit.sim = Some(CommitFile { file: sim_file.clone(), sha256: hex(&sha256(sim)) });
+    files.push((sim_file, sim.to_vec()));
+    commit.chunks.sort_by_key(|e| e.key);
+    let text = serde_json::to_string_pretty(&commit).map_err(|e| e.to_string())?;
+    files.insert(1, ("commit.json".to_string(), text.into_bytes()));
+    Ok(files)
+}
+
+/// Is `name` a file a save may hold (`header.json`, `commit.json`,
+/// `sim.gN.bin`, `chunks/<name>.gN.chunk`)? Replays come from other
+/// machines: an image is never allowed to name a path outside its directory.
+pub fn is_save_file_name(name: &str) -> bool {
+    let plain = |s: &str| s.bytes().next().is_some_and(|b| b.is_ascii_alphanumeric()) && s.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'.') && !s.contains("..");
+    match name {
+        "header.json" | "commit.json" => true,
+        _ => match name.strip_prefix("chunks/") {
+            Some(rest) => plain(rest) && rest.ends_with(".chunk"),
+            None => plain(name) && name.starts_with("sim.g") && name.ends_with(".bin"),
+        },
+    }
+}
+
+impl SaveDir {
+    /// Write a save image (`snapshot_image`) into this directory, which
+    /// must not hold a save yet. Names are checked first; nothing outside
+    /// the directory can be written. Loading then verifies every digest as
+    /// for any save.
+    pub fn install_image(&self, files: &[(String, Vec<u8>)]) -> Result<(), String> {
+        if let Some((bad, _)) = files.iter().find(|(n, _)| !is_save_file_name(n)) {
+            return Err(format!("refusing a save image with the file name {bad:?}"));
+        }
+        if self.exists() {
+            return Err(format!("{} already holds a save; a save image is only installed into an empty directory", self.path.display()));
+        }
+        std::fs::create_dir_all(self.chunks_dir()).map_err(|e| format!("create {}: {e}", self.chunks_dir().display()))?;
+        // commit.json last, as `flush` does.
+        for (name, bytes) in files.iter().filter(|(n, _)| n != "commit.json").chain(files.iter().filter(|(n, _)| n == "commit.json")) {
+            write_atomic(&self.path.join(name), bytes)?;
+        }
+        Ok(())
+    }
+}
+
 fn chunk_file_bytes(key: ChunkKey, chunk: &Chunk) -> Vec<u8> {
     let mut bytes = Vec::new();
     bytes.extend_from_slice(CHUNK_MAGIC);
@@ -893,5 +953,34 @@ mod tests {
         std::fs::write(dir.path.join("sim.g2.bin"), b"state-X").unwrap();
         assert!(dir.read_sim().unwrap_err().contains("digest"));
         let _ = std::fs::remove_dir_all(&dir.path);
+    }
+
+    #[test]
+    fn a_save_image_installs_and_loads_like_the_store_it_came_from() {
+        let (cfg, reg) = (config(), registry());
+        let store = EditStore::new();
+        let (a, b) = (ChunkKey::neisor(2, 0, 100, 200, 17), ChunkKey::neisor(3, 0, 5, 6, 7));
+        store.set(a, 1, 2, 3, 4, || vec![1; VOXELS]);
+        store.set(b, 0, 0, 0, 5, || vec![1; VOXELS]);
+        let image = snapshot_image(&store, &cfg, &reg, BAKE, b"sim-state").unwrap();
+        let names: Vec<&str> = image.iter().map(|(n, _)| n.as_str()).collect();
+        assert_eq!(names[..2], ["header.json", "commit.json"]);
+        assert!(names.iter().all(|n| is_save_file_name(n)), "{names:?}");
+        let dir = temp_dir("image");
+        dir.install_image(&image).unwrap();
+        let back = EditStore::new();
+        let report = dir.load_into(&cfg, &reg, BAKE, &back).unwrap();
+        assert_eq!((report.chunks, report.generation), (2, 1));
+        assert_eq!(back.snapshot(), store.snapshot());
+        assert_eq!(dir.read_sim().unwrap().as_deref(), Some(&b"sim-state"[..]));
+        // Never over an existing save, never outside the directory.
+        assert!(dir.install_image(&image).unwrap_err().contains("already holds"));
+        let _ = std::fs::remove_dir_all(&dir.path);
+        for bad in ["../x.json", "chunks/../../evil.chunk", "C:/evil.chunk", "chunks/a/b.chunk", "/etc/passwd", "sim.g1.exe", "chunks/.chunk", "header.json/x"] {
+            assert!(!is_save_file_name(bad), "{bad}");
+            let mut evil = image.clone();
+            evil.push((bad.to_string(), b"x".to_vec()));
+            assert!(temp_dir("evil").install_image(&evil).unwrap_err().contains("refusing"), "{bad}");
+        }
     }
 }

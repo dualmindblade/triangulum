@@ -389,6 +389,32 @@ fn find_shore(w: &World) -> (BlockPos, BlockPos) {
     panic!("no shore found on face 1");
 }
 
+/// Review 3 #6: pouring into a full sea cell changes nothing, so it must
+/// leave nothing behind: no edited chunk (a clean one would be in the hash
+/// but never saved, so a reload changed the hash), and a chunk dug and put
+/// back is the natural chunk as far as the hash goes.
+#[test]
+fn a_write_that_changes_nothing_leaves_no_chunk_and_no_trace_in_the_hash() {
+    let w = test_world();
+    let (sea, land) = find_shore(&w);
+    let sim = Sim::new(SimConfig::default());
+    let before = sim.state_hash(&w);
+    assert_eq!(w.block_and_level_at(sea), (w.water_id(), FULL));
+    assert!(!w.set_water(sea, w.water_id(), FULL), "the cell is already full");
+    assert!(!w.set_block(BlockPos { k: sea.k + 30, ..sea }, w.generator.blocks.air), "the air over the sea is air");
+    assert_eq!(w.edits.len(), 0, "a write that changed nothing leaves no edited chunk behind");
+    assert_eq!(w.edits.dirty_count(), 0);
+    assert_eq!(sim.state_hash(&w), before, "and nothing in the hash");
+    // Dig a block of the shore and put it back: the chunk is edited (and
+    // saved), its content is the generator's, and so is its hash.
+    let stone = w.block_at(land);
+    assert!(w.set_block(land, w.generator.blocks.air));
+    assert!(w.set_block(land, stone));
+    assert_eq!(w.edits.len(), 1);
+    let _ = w.edits.take_changed();
+    assert_eq!(sim.state_hash(&w), before, "the hash is of content, not of history");
+}
+
 #[test]
 fn a_pit_dug_at_the_shore_fills_from_the_sea_and_the_sea_stays_full() {
     let w = test_world();
@@ -683,6 +709,11 @@ fn water_waits_for_its_period_and_the_period_is_in_the_hash() {
     }
     sim.step(&w, focus);
     assert_ne!(w.water_level_at(centre), 51, "tick 8 moves again");
+    // The period is in the hash (review 3 #4: this test never checked it).
+    let mut other = Sim::from_snapshot(SimConfig { water_period: 1, ..sim.config }, sim.snapshot(&w));
+    assert_ne!(other.state_hash(&w), sim.state_hash(&w), "the same state under another period hashes differently");
+    other.config.water_period = 4;
+    assert_eq!(other.state_hash(&w), sim.state_hash(&w));
 }
 
 /// The mesher's sloped surfaces (mesh.rs `Surface`): corners shared between

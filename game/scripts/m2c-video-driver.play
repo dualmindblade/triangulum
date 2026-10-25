@@ -1,0 +1,64 @@
+# Review 3 #13 (M2c): a camera flight is steps of the one 60 Hz driver.
+# Before, `fly` moved the camera and wrote frames without stepping the
+# session: sand hung in the air and the simulation tick stood still for
+# the whole flight, and frames written while blocks fell drew a stale list
+# of them. Here a sand block is knocked off its support and a one-second
+# recorded flight follows: the block must land during the flight, the tick
+# must advance by 20, the sky clock by skyspeed x 1 s, and the written
+# frames must draw the falling block. Needs ffmpeg (as the showcase does).
+#
+# Site: the flat m2a-sand patch, row J = 57531: S = 107155 and T = 107156
+# have level ground.
+
+mode walk
+atblock 2 107156 57531 2000
+assert on_ground == true
+assert block_rel[0,0,-1] != air
+# Two sand blocks on T's ground: one at the feet, one above it.
+mode fly
+select 4
+assert selected_block == sand
+aim 0 0 -0.5
+tap place
+assert block_rel[0,0,0] == sand
+hold space 0.05
+aim 0 0 -0.5
+tap place
+assert block_rel[0,0,0] == sand
+assert block_rel[0,0,-1] == sand
+# From S, knock out the bottom one: the top one falls a layer.
+mode walk
+atblock 2 107155 57531 2000
+assert on_ground == true
+lookaxis +i 0
+aim 1 0 0.2
+assert crosshair == sand
+tap break
+assert block_rel[1,0,0] == air
+assert block_rel[1,0,1] == sand
+assert falling == 0
+state before_fly
+assert sim_tick == 1
+# The sky held so far (skyspeed 0): the clock at 12:00 at the spawn.
+assert sky_seconds ~ 1142.5417 0.001
+# A one-second flight, recorded, with the sky at 60x.
+target rel 1 0 1
+keyrel 1 30 -j 15
+skyspeed 60
+record m2c-fly.mp4 30
+fly none target
+stop
+assert sim_tick == 21
+assert falling == 0
+assert landings == 1
+assert video_falling_drawn_max >= 1
+assert sky_speed == 60
+# 60 steps at 60x: one game minute.
+assert sky_seconds ~ 1202.5417 0.001
+state after_fly
+skyspeed 0
+# The block landed on T's ground (absolute: the camera is elsewhere now).
+mode walk
+atblock 2 107155 57531 2000
+assert block_rel[1,0,0] == sand
+assert block_rel[1,0,1] == air
