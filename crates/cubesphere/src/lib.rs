@@ -56,6 +56,8 @@ pub enum Projection {
     Cobe,
     /// Smooth Moser equal-area map, represented by an embedded quintic spline.
     EqualArea,
+    /// Smooth equal-area correction of COBE, with an area-preserving relaxation.
+    EqualAreaCobe,
 }
 
 // Rows are powers of y; columns are powers of x, with x=p*p and y=q*q.
@@ -130,8 +132,10 @@ fn smooth_warp<const DERIV: bool>(proj: Projection, p: f64, q: f64) -> [f64; 6] 
     let y = q * q;
     let (g, h) = if proj == Projection::Cobe {
         (cobe_residual::<DERIV>(x, y), cobe_residual::<DERIV>(y, x))
+    } else if proj == Projection::EqualAreaCobe {
+        table::residual::<DERIV, true>(x, y)
     } else {
-        table::residual::<DERIV>(x, y)
+        table::residual::<DERIV, false>(x, y)
     };
     let mut r = [
         p + p * (1.0 - x) * g[0],
@@ -213,7 +217,7 @@ pub fn warp(proj: Projection, p: f64, q: f64) -> (f64, f64) {
             (angle(p), angle(q))
         }
         Projection::EqualAreaCrease => crease(p, q, false),
-        Projection::Cobe | Projection::EqualArea => {
+        Projection::Cobe | Projection::EqualArea | Projection::EqualAreaCobe => {
             let r = smooth_warp::<false>(proj, p, q);
             (r[0], r[1])
         }
@@ -223,14 +227,14 @@ pub fn warp(proj: Projection, p: f64, q: f64) -> (f64, f64) {
 /// Inverse of [`warp`], to floating-point accuracy (not a fitted inverse).
 ///
 /// Input coordinates must be finite and in `[-1,1]`. COBE and the smooth
-/// equal-area map use Newton iterations with their analytic Jacobians.
+/// equal-area maps use Newton iterations with their analytic Jacobians.
 #[inline]
 pub fn unwarp(proj: Projection, a: f64, b: f64) -> (f64, f64) {
     match proj {
         Projection::Gnomonic => (a, b),
         Projection::Equiangular => (a.atan() / FRAC_PI_4, b.atan() / FRAC_PI_4),
         Projection::EqualAreaCrease => crease(a, b, true),
-        Projection::Cobe | Projection::EqualArea => {
+        Projection::Cobe | Projection::EqualArea | Projection::EqualAreaCobe => {
             let mut p = a.atan() / FRAC_PI_4;
             let mut q = b.atan() / FRAC_PI_4;
             for _ in 0..12 {
