@@ -1,0 +1,28 @@
+bake loaded in 0.30s: equal-angle world bake C:/code/triangulum/game/assets/world/seed42 (1024x1024 per face, land min -3.67 km, rough max 5.61 km, with soil and geology fields)
+blocks: 19 definitions from C:\code\triangulum\.claude\worktrees\agent-ae99c5b30c1596805\game/assets/blocks.json
+save C:\code\triangulum\.claude\worktrees\agent-ae99c5b30c1596805\game/saves/_play/water-lod-seam-high: 0 edited chunk(s) loaded
+planet Neisor: s = 1 m, H = 2048 blocks (sea level 512), N = 131072, R = 90.569 km, vertical scale 0.01422 (1/70.3), landforms v2, roughness 1, landform 1, max LOD 9 (512 m voxels), lod factor 5, 16 rayon threads
+sky: absolute 309.967164s, local start 12.00h, speed 1x, day 1440s, lunar month 7d, 3 months/season, year 84d; sun lat 10.208080 lon -36.590000
+simulation: 20 Hz tick, 112 m active radius; resumed at tick 0 with 0 queued, 0 frozen, 0 falling
+adapter: NVIDIA GeForce RTX 2060 (Vulkan, DiscreteGpu)
+quad buffer: 512 MB (67 M quads); grid slots 131072
+play scripts/water-lod-seam-high.play -> out/play/seam-off-f5
+> mode fly
+> at 39.88 -36.59 30000
+> look 0 -45
+> shot 01_high_north
+  shot 01_high_north: out/play/seam-off-f5/01_high_north.png (settled in 0.1 s / 92 frames; 218 draws)
+  state 01_high_north: fly lat 39.88000 lon -36.59000 alt 30000.00 m (agl 30000.00) face 4 i 13619 j 1458 k 30512 ground false water false crosshair null edits 0 dirty 0
+> look 0 -65
+> shot 02_high_steep
+  shot 02_high_steep: out/play/seam-off-f5/02_high_steep.png (settled in 0.0 s / 10 frames; 286 draws)
+  state 02_high_steep: fly lat 39.88000 lon -36.59000 alt 30000.00 m (agl 30000.00) face 4 i 13619 j 1458 k 30512 ground false water false crosshair null edits 0 dirty 0
+> look 90 -45
+> shot 03_high_east
+  shot 03_high_east: out/play/seam-off-f5/03_high_east.png (settled in 0.0 s / 10 frames; 215 draws)
+  state 03_high_east: fly lat 39.88000 lon -36.59000 alt 30000.00 m (agl 30000.00) face 4 i 13619 j 1458 k 30512 ground false water false crosshair null edits 0 dirty 0
+> look 0 -45
+> bench 120
+  bench 120 frames: wall avg 0.50 ms (p95 0.51, worst 1.10) = 1993 fps; gpu avg 0.23 ms; 218 draws
+done in 0.5 s: 0 asserts, 0 failed, 0 errors
+exit 0

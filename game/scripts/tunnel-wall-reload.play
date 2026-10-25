@@ -5,10 +5,11 @@
 # chunk under that (cz 15, layers 480..511) is naturally Enclosed: solid
 # through its padding, so the streamer never makes a node of it on its own.
 # Digging the shaft down to layer 512 exposes the top face of block 511,
-# which only that buried chunk's mesh can draw. The two chunks' ancestors
-# meet only at LOD 5 (cz 16 and 15 sit in different parents up to there),
-# so the buried chunk is not a sibling of the dug one: before the fix it
-# was never admitted, live or after a reload, and the shaft had no floor.
+# which only that buried chunk's mesh can draw. Live, the dig's
+# invalidation materialises it under its parent and it is drawn; the
+# reload rebuilds the tree from the roots through the admission test,
+# which, before the fix, knew nothing of the dig next door, so the shaft
+# had no floor from then on (and after any merge and re-split).
 #
 # Fly mode: "hold ctrl 0.05" descends exactly one layer, so 26 cycles of
 # aim, break, descend dig layers 537 down to 512 without falling.
