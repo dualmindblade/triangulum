@@ -21,7 +21,9 @@
 //!   --water-period N (1; ticks per water step: how many 20 Hz ticks a cell of water takes to move one cell)
 //! Player: --walk | --fly (default: walk when starting within 50 m of the ground)
 //!   --hotbar stone,dirt,...  (blocks on keys 1-9; default: the first eight solid blocks and water)
-//! Other options: --lod-factor F (5) --threads N --no-ao --no-split --skirt N
+//! Look (M3a): F1 opens the look panel  --panel (start with it open)
+//!   --look-file FILE (default assets/look.json; the panel saves to it, and to --blocks and --world)
+//! Other options: --lod-factor F (look.json's, 5) --threads N --no-ao --no-split --skirt N
 //!   --no-vsync --size WxH --hide-water --markers --backend vulkan|dx12
 //!   --frames N --skip-flight --only pose,pose --label TEXT --which a,b --map-px N
 //!   --screenshot PATH --exit-after SECS   (app: save a frame with the HUD, then quit)
@@ -44,6 +46,7 @@ pub mod controls;
 pub mod engine;
 pub mod grid;
 pub mod landform_shots;
+pub mod look;
 pub mod mesh;
 pub mod play;
 pub mod player;
@@ -55,6 +58,7 @@ pub mod sim;
 pub mod sky;
 pub mod stream;
 pub mod ui;
+pub mod workshop;
 pub mod world;
 pub mod worldgen;
 
@@ -114,7 +118,9 @@ struct Args {
     only: Option<String>,
     which: Option<String>,
     label: String,
-    lod_factor: f64,
+    lod_factor: Option<f64>,
+    look_file: Option<String>,
+    panel: bool,
     threads: usize,
     ao: bool,
     split: bool,
@@ -180,7 +186,9 @@ fn parse_args() -> Args {
         only: None,
         which: None,
         label: String::new(),
-        lod_factor: 5.0,
+        lod_factor: None,
+        look_file: None,
+        panel: false,
         threads: 0,
         ao: true,
         split: true,
@@ -256,7 +264,9 @@ fn parse_args() -> Args {
             "--only" => a.only = Some(val()),
             "--which" => a.which = Some(val()),
             "--label" => a.label = val(),
-            "--lod-factor" => a.lod_factor = val().parse().unwrap(),
+            "--lod-factor" => a.lod_factor = Some(val().parse().unwrap()),
+            "--look-file" => a.look_file = Some(val()),
+            "--panel" => a.panel = true,
             "--threads" => a.threads = val().parse().unwrap(),
             "--no-ao" => a.ao = false,
             "--no-split" => a.split = false,
@@ -375,7 +385,16 @@ fn main() {
         }
     }
 
-    let lod = LodParams { factor: args.lod_factor, max_inflight: (rayon::current_num_threads() * 2).max(4) };
+    // Andrew's look (M3a): assets/look.json or --look-file, over the M1 look
+    // on this planet; the renderer and the look panel start from it.
+    let radius = grid::Planet::try_new(config.block_size_m, config.world_height, config.sea_level, config.columns_per_face).unwrap_or_else(|e| fail(&e)).radius;
+    let look_defaults = look::Look::defaults(&sky_settings, radius);
+    let look_path = args.look_file.clone().unwrap_or_else(|| format!("{root}/assets/look.json"));
+    let start_look = look::load_startup(Path::new(&look_path), &look_defaults).unwrap_or_else(|e| fail(&e));
+    println!("look: {look_path}");
+    look::install(look::Startup { look: start_look.clone(), defaults: look_defaults, look_path: look_path.into(), blocks_path: args.blocks.clone().into(), world_path: args.world.clone().into(), panel_open: args.panel });
+
+    let lod = LodParams { factor: args.lod_factor.unwrap_or(start_look.detail.lod_factor), max_inflight: (rayon::current_num_threads() * 2).max(4) };
     let mut engine = Engine::build(config, registry.clone(), bake, edits, lod, MeshOptions { split: args.split, ao: args.ao }, args.skirt, args.hide_water, Vec::new(), args.markers).unwrap_or_else(|e| fail(&e));
     if let Some(h) = &args.hotbar {
         engine.hotbar = registry.hotbar_from(h).unwrap_or_else(|e| fail(&e));

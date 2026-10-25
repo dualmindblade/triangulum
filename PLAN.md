@@ -66,7 +66,8 @@ asking anyone.
 
 | Task | What | Who | State |
 |---|---|---|---|
-| M3a | Live look panel (F1): sky, light, fog, water, per-face block colours, distance detail, terrain dials as a preview world; `look.json` and `blocks.json` hot-reloaded; a screenshot button | Opus | started |
+| M3a | Live look panel (F1): sky, light, fog, water, per-face block colours, distance detail, terrain dials as a preview world; `look.json` and `blocks.json` hot-reloaded; a screenshot button | Opus | done |
+| M3b | Block and texture editor: add blocks and set their physics in the panel, hotbar assignment, per-face 16×16 textures (texture array, hot-reloaded PNGs), an in-game pixel editor, saves stay compatible when blocks are added | Opus | started |
 
 ## M4 — Things that move
 

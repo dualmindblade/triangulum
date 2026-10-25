@@ -1,0 +1,376 @@
+play scripts/m2b-water.play -> out/m3a/gate2-m2b-water
+> atblock 2 107157 57531 2000
+> assert mode == walk
+  assert ok: mode == walk (actual walk)
+> assert on_ground == true
+  assert ok: on_ground == true (actual true)
+> assert sim_enabled == true
+  assert ok: sim_enabled == true (actual true)
+> lookaxis +i 0
+> aim 1 0 -0.5
+> assert crosshair != none
+  assert ok: crosshair != none (actual grass)
+> tap break
+  break: face 2 i 107158 j 57531 k 554
+> aim 1 0 -1.5
+> tap break
+  break: face 2 i 107158 j 57531 k 553
+> assert block_rel[1,0,-1] == air
+  assert ok: block_rel[1,0,-1] == air (actual air)
+> assert block_rel[1,0,-2] == air
+  assert ok: block_rel[1,0,-2] == air (actual air)
+> assert block_rel[1,0,-3] != air
+  assert ok: block_rel[1,0,-3] != air (actual limestone)
+> atblock 2 107153 57531 2000
+> lookaxis +i 0
+> aim 1 0 -0.5
+> tap break
+  break: face 2 i 107154 j 57531 k 554
+> aim 2 0 -0.5
+> tap break
+  break: face 2 i 107155 j 57531 k 554
+> aim 3 0 -0.5
+> tap break
+  break: face 2 i 107156 j 57531 k 554
+> aim 4 0 -0.5
+> tap break
+  break: face 2 i 107157 j 57531 k 554
+> assert block_rel[1,0,-1] == air
+  assert ok: block_rel[1,0,-1] == air (actual air)
+> assert block_rel[2,0,-1] == air
+  assert ok: block_rel[2,0,-1] == air (actual air)
+> assert block_rel[3,0,-1] == air
+  assert ok: block_rel[3,0,-1] == air (actual air)
+> assert block_rel[4,0,-1] == air
+  assert ok: block_rel[4,0,-1] == air (actual air)
+> assert block_rel[5,0,-1] == air
+  assert ok: block_rel[5,0,-1] == air (actual air)
+> assert block_rel[5,0,-2] == air
+  assert ok: block_rel[5,0,-2] == air (actual air)
+> assert block_rel[5,0,-3] != air
+  assert ok: block_rel[5,0,-3] != air (actual limestone)
+> assert block_rel[1,0,-2] != air
+  assert ok: block_rel[1,0,-2] != air (actual dirt)
+> assert block_rel[1,1,-1] != air
+  assert ok: block_rel[1,1,-1] != air (actual grass)
+> assert block_rel[1,-1,-1] != air
+  assert ok: block_rel[1,-1,-1] != air (actual grass)
+> tick 2
+  ticked 0 -> 2: sim on  tick 2  falling 0  queued 0  frozen 0  active 352 chunks  water 0 updates, 0 moved, in 0 out 0  tick cost 0.001 ms (avg 0.334, max 0.667)
+> assert queued == 0
+  assert ok: queued == 0 (actual 0)
+> assert water_moved == 0
+  assert ok: water_moved == 0 (actual 0)
+> select 9
+> assert selected_block == water
+  assert ok: selected_block == water (actual water)
+> aim 1 0 -1.5
+> assert crosshair != none
+  assert ok: crosshair != none (actual dirt)
+> tap place
+  place: face 2 i 107154 j 57531 k 554
+> assert block_rel[1,0,-1] == water
+  assert ok: block_rel[1,0,-1] == water (actual water)
+> assert level_rel[1,0,-1] == 255
+  assert ok: level_rel[1,0,-1] == 255 (actual 255)
+> assert water_placed == 255
+  assert ok: water_placed == 255 (actual 255)
+> assert water_rel[1,-1,-3,5,1,0] == 255
+  assert ok: water_rel[1,-1,-3,5,1,0] == 255 (actual 255)
+> tick 1
+  ticked 2 -> 3: sim on  tick 3  falling 0  queued 12  frozen 0  active 352 chunks  water 3 updates, 128 moved, in 0 out 0  tick cost 0.010 ms (avg 0.226, max 0.667)
+> assert level_rel[1,0,-1] == 127
+  assert ok: level_rel[1,0,-1] == 127 (actual 127)
+> assert level_rel[2,0,-1] == 128
+  assert ok: level_rel[2,0,-1] == 128 (actual 128)
+> assert level_rel[3,0,-1] == 0
+  assert ok: level_rel[3,0,-1] == 0 (actual 0)
+> assert water_rel[1,-1,-3,5,1,0] == 255
+  assert ok: water_rel[1,-1,-3,5,1,0] == 255 (actual 255)
+> tick 1
+  ticked 3 -> 4: sim on  tick 4  falling 0  queued 12  frozen 0  active 352 chunks  water 5 updates, 192 moved, in 0 out 0  tick cost 0.009 ms (avg 0.172, max 0.667)
+> assert level_rel[1,0,-1] == 127
+  assert ok: level_rel[1,0,-1] == 127 (actual 127)
+> assert level_rel[2,0,-1] == 64
+  assert ok: level_rel[2,0,-1] == 64 (actual 64)
+> assert level_rel[3,0,-1] == 64
+  assert ok: level_rel[3,0,-1] == 64 (actual 64)
+> assert water_rel[1,-1,-3,5,1,0] == 255
+  assert ok: water_rel[1,-1,-3,5,1,0] == 255 (actual 255)
+> mode fly
+> hold space 0.12
+> aim 3 0 -1.0
+> shot 01_slope
+  shot 01_slope: out/m3a/gate2-m2b-water/01_slope.png (settled in 3.0 s / 1273 frames; 258 draws)
+  state 01_slope: fly lat -4.55810 lon 117.47294 alt 45.33 m (agl 2.67) face 2 i 107153 j 57531 k 557 ground false water false crosshair "water" edits 1 dirty 1
+> mode walk
+> tick 6
+  ticked 6 -> 12: sim on  tick 12  falling 0  queued 26  frozen 0  active 352 chunks  water 11 updates, 652 moved, in 0 out 0  tick cost 0.013 ms (avg 0.069, max 0.667)
+> assert level_rel[5,0,-2] > 0
+  assert ok: level_rel[5,0,-2] > 0 (actual 16)
+> assert water_rel[1,-1,-3,5,1,0] == 255
+  assert ok: water_rel[1,-1,-3,5,1,0] == 255 (actual 255)
+> mode fly
+> hold space 0.12
+> aim 4 0 -1.5
+> shot 02_drop
+  shot 02_drop: out/m3a/gate2-m2b-water/02_drop.png (settled in 0.0 s / 12 frames; 443 draws)
+  state 02_drop: fly lat -4.55810 lon 117.47294 alt 46.48 m (agl 3.81) face 2 i 107153 j 57531 k 558 ground false water false crosshair null edits 1 dirty 1
+> mode walk
+> tick 80
+  ticked 14 -> 94: sim on  tick 94  falling 0  queued 0  frozen 0  active 352 chunks  water 0 updates, 1235 moved, in 0 out 0  tick cost 0.001 ms (avg 0.015, max 0.667)
+> assert queued == 0
+  assert ok: queued == 0 (actual 0)
+> assert water_rel[1,-1,-3,5,1,0] == 255
+  assert ok: water_rel[1,-1,-3,5,1,0] == 255 (actual 255)
+> assert level_rel[5,0,-2] >= 225
+  assert ok: level_rel[5,0,-2] >= 225 (actual 245)
+> assert level_rel[5,0,-1] == 0
+  assert ok: level_rel[5,0,-1] == 0 (actual 0)
+> assert level_rel[1,0,-1] <= 6
+  assert ok: level_rel[1,0,-1] <= 6 (actual 4)
+> assert level_rel[4,0,-1] <= 3
+  assert ok: level_rel[4,0,-1] <= 3 (actual 1)
+> assert water_lost == 0
+  assert ok: water_lost == 0 (actual 0)
+> assert water_in == 0
+  assert ok: water_in == 0 (actual 0)
+> assert water_out == 0
+  assert ok: water_out == 0 (actual 0)
+> mode fly
+> hold space 0.1
+> aim 1 0 -1.5
+> assert crosshair == water
+  assert ok: crosshair == water (actual water)
+> tap place
+  place: face 2 i 107154 j 57531 k 555
+> assert water_placed == 510
+  assert ok: water_placed == 510 (actual 510)
+> tick 1
+  ticked 96 -> 97: sim on  tick 97  falling 0  queued 28  frozen 0  active 352 chunks  water 7 updates, 1616 moved, in 0 out 0  tick cost 0.023 ms (avg 0.015, max 0.667)
+> aim 1 0 -1.5
+> tap place
+  place: face 2 i 107154 j 57531 k 555
+> assert water_placed == 765
+  assert ok: water_placed == 765 (actual 765)
+> tick 5
+  ticked 97 -> 102: sim on  tick 102  falling 0  queued 107  frozen 0  active 352 chunks  water 67 updates, 2458 moved, in 0 out 0  tick cost 0.084 ms (avg 0.010, max 0.667)
+> aim 4 0 -1.5
+> shot 03_fall_into_the_hole
+  shot 03_fall_into_the_hole: out/m3a/gate2-m2b-water/03_fall_into_the_hole.png (settled in 0.0 s / 12 frames; 699 draws)
+  state 03_fall_into_the_hole: fly lat -4.55810 lon 117.47294 alt 45.00 m (agl 2.33) face 2 i 107153 j 57531 k 557 ground false water false crosshair "water" edits 1 dirty 1
+> mode walk
+> tick 150
+  ticked 102 -> 252: sim on  tick 252  falling 0  queued 0  frozen 0  active 352 chunks  water 0 updates, 2827 moved, in 0 out 0  tick cost 0.001 ms (avg 0.001, max 0.667)
+> assert queued == 0
+  assert ok: queued == 0 (actual 0)
+> assert level_rel[5,0,-2] == 255
+  assert ok: level_rel[5,0,-2] == 255 (actual 255)
+> assert level_rel[5,0,-1] >= 90
+  assert ok: level_rel[5,0,-1] >= 90 (actual 95)
+> assert level_rel[5,0,-1] <= 110
+  assert ok: level_rel[5,0,-1] <= 110 (actual 95)
+> assert level_rel[1,0,-1] >= 90
+  assert ok: level_rel[1,0,-1] >= 90 (actual 98)
+> assert level_rel[1,0,-1] <= 110
+  assert ok: level_rel[1,0,-1] <= 110 (actual 98)
+> assert water_rel[-8,-8,-3,13,8,1] == 765
+  assert ok: water_rel[-8,-8,-3,13,8,1] == 765 (actual 765)
+> assert water_balance == 765
+  assert ok: water_balance == 765 (actual 765)
+> state site_a
+  state site_a: walk lat -4.55810 lon 117.47294 alt 43.00 m (agl 0.33) face 2 i 107153 j 57531 k 555 ground true water false crosshair "water" edits 1 dirty 1
+> atblock 1 1803 59003 511
+> assert on_ground == true
+  assert ok: on_ground == true (actual true)
+> assert block[1,1799,59003,511] == water
+  assert ok: block[1,1799,59003,511] == water (actual water)
+> assert level[1,1799,59003,511] == 255
+  assert ok: level[1,1799,59003,511] == 255 (actual 255)
+> assert block[1,1800,59003,511] == sand
+  assert ok: block[1,1800,59003,511] == sand (actual sand)
+> assert block[1,1800,59003,510] == sand
+  assert ok: block[1,1800,59003,510] == sand (actual sand)
+> assert block[1,1800,59003,512] == air
+  assert ok: block[1,1800,59003,512] == air (actual air)
+> mode fly
+> select 1
+> lookaxis -i 0
+> aim -3 0 -1.5
+> assert crosshair == sand
+  assert ok: crosshair == sand (actual sand)
+> tap break
+  break: face 1 i 1800 j 59003 k 511
+> aim -3 -1 -1.5
+> tap break
+  break: face 1 i 1800 j 59002 k 511
+> aim -3 1 -1.5
+> tap break
+  break: face 1 i 1800 j 59004 k 511
+> aim -2 0 -1.5
+> tap break
+  break: face 1 i 1801 j 59003 k 511
+> aim -2 -1 -1.5
+> tap break
+  break: face 1 i 1801 j 59002 k 511
+> aim -2 1 -1.5
+> tap break
+  break: face 1 i 1801 j 59004 k 511
+> aim -1 0 -1.5
+> tap break
+  break: face 1 i 1802 j 59003 k 511
+> aim -1 -1 -1.5
+> tap break
+  break: face 1 i 1802 j 59002 k 511
+> aim -1 1 -1.5
+> tap break
+  break: face 1 i 1802 j 59004 k 511
+> atblock 1 1801 59003 510
+> aim 0 0 -0.5
+> assert crosshair == sand
+  assert ok: crosshair == sand (actual sand)
+> tap break
+  break: face 1 i 1801 j 59003 k 510
+> aim -1 0 -0.5
+> tap break
+  break: face 1 i 1800 j 59003 k 510
+> aim 1 0 -0.5
+> tap break
+  break: face 1 i 1802 j 59003 k 510
+> aim 0 -1 -0.5
+> tap break
+  break: face 1 i 1801 j 59002 k 510
+> aim 0 1 -0.5
+> tap break
+  break: face 1 i 1801 j 59004 k 510
+> aim -1 -1 -0.5
+> tap break
+  break: face 1 i 1800 j 59002 k 510
+> aim -1 1 -0.5
+> tap break
+  break: face 1 i 1800 j 59004 k 510
+> aim 1 -1 -0.5
+> tap break
+  break: face 1 i 1802 j 59002 k 510
+> aim 1 1 -0.5
+> tap break
+  break: face 1 i 1802 j 59004 k 510
+> atblock 1 1803 59003 512
+> lookaxis -i 0
+> assert block[1,1800,59003,511] == air
+  assert ok: block[1,1800,59003,511] == air (actual air)
+> assert block[1,1800,59003,510] == air
+  assert ok: block[1,1800,59003,510] == air (actual air)
+> assert block[1,1802,59004,510] == air
+  assert ok: block[1,1802,59004,510] == air (actual air)
+> assert block[1,1802,59002,510] == air
+  assert ok: block[1,1802,59002,510] == air (actual air)
+> assert block[1,1800,59003,509] != air
+  assert ok: block[1,1800,59003,509] != air (actual sand)
+> assert level[1,1800,59003,511] == 0
+  assert ok: level[1,1800,59003,511] == 0 (actual 0)
+> tick 1
+  ticked 252 -> 253: sim on  tick 253  falling 0  queued 28  frozen 0  active 360 chunks  water 30 updates, 3211 moved, in 0 out 0  tick cost 0.685 ms (avg 0.008, max 0.685)
+> assert level[1,1800,59003,511] > 0
+  assert ok: level[1,1800,59003,511] > 0 (actual 128)
+> tick 2
+  ticked 253 -> 255: sim on  tick 255  falling 0  queued 97  frozen 0  active 360 chunks  water 41 updates, 4865 moved, in 0 out 0  tick cost 0.065 ms (avg 0.009, max 0.685)
+> assert level[1,1800,59003,510] > 0
+  assert ok: level[1,1800,59003,510] > 0 (actual 48)
+> aim -2 0 -2.0
+> shot 04_shore_pit_filling
+  shot 04_shore_pit_filling: out/m3a/gate2-m2b-water/04_shore_pit_filling.png (settled in 7.3 s / 928 frames; 41 draws)
+  state 04_shore_pit_filling: fly lat -3.41531 lon 136.39687 alt 1.00 m (agl 0.45) face 1 i 1803 j 59003 k 513 ground false water false crosshair "sand" edits 2 dirty 2
+> tick 200
+  ticked 255 -> 455: sim on  tick 455  falling 0  queued 0  frozen 0  active 360 chunks  water 0 updates, 64214 moved, in 0 out 0  tick cost 0.001 ms (avg 0.050, max 10.772)
+> assert queued == 0
+  assert ok: queued == 0 (actual 0)
+> assert level[1,1800,59003,510] == 255
+  assert ok: level[1,1800,59003,510] == 255 (actual 255)
+> assert level[1,1801,59003,510] == 255
+  assert ok: level[1,1801,59003,510] == 255 (actual 255)
+> assert level[1,1802,59004,510] == 255
+  assert ok: level[1,1802,59004,510] == 255 (actual 255)
+> assert level[1,1801,59003,511] >= 200
+  assert ok: level[1,1801,59003,511] >= 200 (actual 234)
+> assert level[1,1799,59003,511] >= 230
+  assert ok: level[1,1799,59003,511] >= 230 (actual 236)
+> assert level[1,1779,59003,511] == 255
+  assert ok: level[1,1779,59003,511] == 255 (actual 255)
+> assert level[1,1760,59003,511] == 255
+  assert ok: level[1,1760,59003,511] == 255 (actual 255)
+> assert water_in == 0
+  assert ok: water_in == 0 (actual 0)
+> assert water_out == 0
+  assert ok: water_out == 0 (actual 0)
+> assert water_lost == 0
+  assert ok: water_lost == 0 (actual 0)
+> aim -2 0 -2.0
+> shot 05_shore_pit_full
+  shot 05_shore_pit_full: out/m3a/gate2-m2b-water/05_shore_pit_full.png (settled in 0.0 s / 15 frames; 41 draws)
+  state 05_shore_pit_full: fly lat -3.41531 lon 136.39687 alt 1.00 m (agl 0.45) face 1 i 1803 j 59003 k 513 ground false water false crosshair "sand" edits 5 dirty 5
+> aim 0 0 -0.5
+> assert crosshair == sand
+  assert ok: crosshair == sand (actual sand)
+> tap break
+  break: face 1 i 1803 j 59003 k 512
+> aim 0 0 -1.5
+> tap break
+  break: face 1 i 1803 j 59003 k 511
+> aim 0 0 -2.5
+> tap break
+  break: face 1 i 1803 j 59003 k 510
+> aim 1 0 -0.5
+> tap break
+  break: face 1 i 1804 j 59003 k 512
+> aim 1 0 -1.5
+> tap break
+  break: face 1 i 1804 j 59003 k 511
+> aim 1 0 -2.5
+> tap break
+  break: face 1 i 1804 j 59003 k 510
+> assert block[1,1803,59003,512] == air
+  assert ok: block[1,1803,59003,512] == air (actual air)
+> assert block[1,1803,59003,510] == air
+  assert ok: block[1,1803,59003,510] == air (actual air)
+> assert block[1,1804,59003,510] == air
+  assert ok: block[1,1804,59003,510] == air (actual air)
+> assert block[1,1804,59003,509] != air
+  assert ok: block[1,1804,59003,509] != air (actual limestone)
+> tick 3
+  ticked 455 -> 458: sim on  tick 458  falling 0  queued 34  frozen 0  active 360 chunks  water 17 updates, 65060 moved, in 0 out 0  tick cost 0.038 ms (avg 0.034, max 10.772)
+> assert level[1,1803,59003,510] > 0
+  assert ok: level[1,1803,59003,510] > 0 (actual 234)
+> tick 200
+  ticked 458 -> 658: sim on  tick 658  falling 0  queued 0  frozen 0  active 360 chunks  water 0 updates, 84448 moved, in 0 out 0  tick cost 0.001 ms (avg 0.001, max 10.772)
+> assert queued == 0
+  assert ok: queued == 0 (actual 0)
+> assert level[1,1803,59003,510] == 255
+  assert ok: level[1,1803,59003,510] == 255 (actual 255)
+> assert level[1,1804,59003,510] == 255
+  assert ok: level[1,1804,59003,510] == 255 (actual 255)
+> assert level[1,1804,59003,511] >= 150
+  assert ok: level[1,1804,59003,511] >= 150 (actual 229)
+> assert level[1,1779,59003,511] >= 250
+  assert ok: level[1,1779,59003,511] >= 250 (actual 253)
+> assert level[1,1760,59003,511] == 255
+  assert ok: level[1,1760,59003,511] == 255 (actual 255)
+> assert water_in == 0
+  assert ok: water_in == 0 (actual 0)
+> assert water_out == 0
+  assert ok: water_out == 0 (actual 0)
+> atblock 1 1807 59003 511
+> mode fly
+> hold space 0.1
+> aim -4 0 -2.0
+> shot 06_channel
+  shot 06_channel: out/m3a/gate2-m2b-water/06_channel.png (settled in 0.1 s / 15 frames; 860 draws)
+  state 06_channel: fly lat -3.41543 lon 136.39994 alt 2.00 m (agl 0.93) face 1 i 1807 j 59003 k 514 ground false water false crosshair null edits 6 dirty 6
+> assert tick_ms_avg < 2
+  assert ok: tick_ms_avg < 2 (actual 0.00101)
+> state final
+  state final: fly lat -3.41543 lon 136.39994 alt 2.00 m (agl 0.93) face 1 i 1807 j 59003 k 514 ground false water false crosshair null edits 6 dirty 6
+> bench 60
+  bench 60 frames: wall avg 3.54 ms (p95 4.68, worst 6.01) = 282 fps; gpu avg 2.02 ms; 860 draws
+saved 6 chunk(s) at exit
+done in 11.6 s: 97 asserts, 0 failed, 0 errors

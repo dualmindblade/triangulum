@@ -1,0 +1,438 @@
+{
+  "blocks": {
+    "bedrock": {
+      "bottom": [
+        0.03,
+        0.028,
+        0.028
+      ],
+      "side": [
+        0.03,
+        0.028,
+        0.028
+      ],
+      "top": [
+        0.03,
+        0.028,
+        0.028
+      ]
+    },
+    "deep_ocean": {
+      "bottom": [
+        0.117,
+        0.157,
+        0.254
+      ],
+      "side": [
+        0.117,
+        0.157,
+        0.254
+      ],
+      "top": [
+        0.117,
+        0.157,
+        0.254
+      ]
+    },
+    "dirt": {
+      "bottom": [
+        0.18,
+        0.11,
+        0.06
+      ],
+      "side": [
+        0.18,
+        0.11,
+        0.06
+      ],
+      "top": [
+        0.18,
+        0.11,
+        0.06
+      ]
+    },
+    "dry_grass": {
+      "bottom": [
+        0.18,
+        0.11,
+        0.06
+      ],
+      "side": [
+        0.18,
+        0.11,
+        0.06
+      ],
+      "top": [
+        0.27,
+        0.28,
+        0.07
+      ]
+    },
+    "grass": {
+      "bottom": [
+        0.18,
+        0.11,
+        0.06
+      ],
+      "side": [
+        0.18,
+        0.11,
+        0.06
+      ],
+      "top": [
+        0.09,
+        0.26,
+        0.05
+      ]
+    },
+    "gravel": {
+      "bottom": [
+        0.25,
+        0.235,
+        0.215
+      ],
+      "side": [
+        0.25,
+        0.235,
+        0.215
+      ],
+      "top": [
+        0.25,
+        0.235,
+        0.215
+      ]
+    },
+    "ice": {
+      "bottom": [
+        0.48,
+        0.68,
+        0.82
+      ],
+      "side": [
+        0.48,
+        0.68,
+        0.82
+      ],
+      "top": [
+        0.48,
+        0.68,
+        0.82
+      ]
+    },
+    "limestone": {
+      "bottom": [
+        0.273,
+        0.281,
+        0.294
+      ],
+      "side": [
+        0.273,
+        0.281,
+        0.294
+      ],
+      "top": [
+        0.273,
+        0.281,
+        0.294
+      ]
+    },
+    "marker_red": {
+      "bottom": [
+        1.0,
+        0.01,
+        0.01
+      ],
+      "side": [
+        1.0,
+        0.01,
+        0.01
+      ],
+      "top": [
+        1.0,
+        0.01,
+        0.01
+      ]
+    },
+    "marker_white": {
+      "bottom": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "side": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "top": [
+        1.0,
+        1.0,
+        1.0
+      ]
+    },
+    "mudstone": {
+      "bottom": [
+        0.354,
+        0.316,
+        0.255
+      ],
+      "side": [
+        0.354,
+        0.316,
+        0.255
+      ],
+      "top": [
+        0.354,
+        0.316,
+        0.255
+      ]
+    },
+    "sand": {
+      "bottom": [
+        0.58,
+        0.48,
+        0.25
+      ],
+      "side": [
+        0.58,
+        0.48,
+        0.25
+      ],
+      "top": [
+        0.58,
+        0.48,
+        0.25
+      ]
+    },
+    "sandstone": {
+      "bottom": [
+        0.33,
+        0.284,
+        0.23
+      ],
+      "side": [
+        0.33,
+        0.284,
+        0.23
+      ],
+      "top": [
+        0.33,
+        0.284,
+        0.23
+      ]
+    },
+    "shale": {
+      "bottom": [
+        0.216,
+        0.232,
+        0.246
+      ],
+      "side": [
+        0.216,
+        0.232,
+        0.246
+      ],
+      "top": [
+        0.216,
+        0.232,
+        0.246
+      ]
+    },
+    "snow": {
+      "bottom": [
+        0.18,
+        0.11,
+        0.06
+      ],
+      "side": [
+        0.83,
+        0.85,
+        0.88
+      ],
+      "top": [
+        0.83,
+        0.85,
+        0.88
+      ]
+    },
+    "stone": {
+      "bottom": [
+        0.3,
+        0.29,
+        0.28
+      ],
+      "side": [
+        0.3,
+        0.29,
+        0.28
+      ],
+      "top": [
+        0.3,
+        0.29,
+        0.28
+      ]
+    },
+    "umber": {
+      "bottom": [
+        0.246,
+        0.223,
+        0.202
+      ],
+      "side": [
+        0.246,
+        0.223,
+        0.202
+      ],
+      "top": [
+        0.246,
+        0.223,
+        0.202
+      ]
+    },
+    "water": {
+      "bottom": [
+        0.015,
+        0.09,
+        0.26
+      ],
+      "side": [
+        0.015,
+        0.09,
+        0.26
+      ],
+      "top": [
+        0.015,
+        0.09,
+        0.26
+      ]
+    }
+  },
+  "look": {
+    "_comment": "Andrew's look: the render dials of the look panel (F1 in the game). Edit it here or in the panel; the game reloads it as soon as it changes. Colours are linear RGB 0..1. Block colours are in blocks.json, terrain in world.json. Missing fields take the default (the M1 look).",
+    "detail": {
+      "lod_factor": 5.0
+    },
+    "light": {
+      "corner_shadows": 0.45,
+      "moon_colour": [
+        0.4,
+        0.5,
+        0.72
+      ],
+      "moonlight": 1.0,
+      "night_light": 0.0,
+      "shadow_light": 0.1,
+      "side_shade": 0.9,
+      "sky_ambient": 0.4,
+      "sun_strength": 1.0,
+      "underside_shade": 0.55
+    },
+    "sky": {
+      "atmosphere_height_m": 639.7,
+      "fog_density_per_km": 0.2462,
+      "fog_strength": 0.7,
+      "horizon_colour": [
+        0.55,
+        0.7,
+        0.88
+      ],
+      "night_sky": 0.03,
+      "star_brightness": 1.0,
+      "sunset_colour": [
+        0.95,
+        0.55,
+        0.3
+      ],
+      "sunset_strength": 0.55,
+      "zenith_colour": [
+        0.1,
+        0.28,
+        0.62
+      ]
+    },
+    "water": {
+      "edge_opacity": 0.95,
+      "far_ocean_follows_water": true,
+      "glint": 0.6,
+      "glint_sharpness": 60.0,
+      "opacity": 0.62,
+      "underwater_colour": [
+        0.02,
+        0.07,
+        0.16
+      ],
+      "underwater_strength": 0.6
+    }
+  },
+  "png": "C:\\code\\triangulum\\.claude\\worktrees\\agent-a65a3babd4599ed76\\game/out/look/look-2026-10-25-153610.png",
+  "state": {
+    "alt": 44.0,
+    "alt_agl": 0.1773681640625,
+    "block_below": "grass",
+    "crosshair": null,
+    "dirty": 0,
+    "edits": 1,
+    "face": 2,
+    "falling": 0,
+    "falls": 0,
+    "fi": 107155.93186489769,
+    "fj": 57518.7385337446,
+    "fk": 556.0,
+    "frozen": 0,
+    "ground": 43.8226318359375,
+    "head_in_water": false,
+    "heading": -59.99999999999999,
+    "hide_water": false,
+    "i": 107155,
+    "in_water": false,
+    "j": 57518,
+    "k": 556,
+    "landings": 0,
+    "lat": -4.565353668503545,
+    "lon": 117.47443162627711,
+    "mode": "walk",
+    "on_ground": true,
+    "pitch": 0.0,
+    "queued": 0,
+    "refocus_ms": 0.892,
+    "saved_chunks": 0,
+    "selected": 1,
+    "selected_block": "stone",
+    "sim_active_chunks": 358,
+    "sim_enabled": true,
+    "sim_radius": 112.0,
+    "sim_tick": 1389,
+    "speed": 4.956361248141313e-18,
+    "tick_ms_avg": 0.00466,
+    "tick_ms_last": 0.005,
+    "tick_ms_max": 0.904,
+    "vanished": 0,
+    "vel_up": -6.185864648585242e-17,
+    "water_balance": 0,
+    "water_displaced": 0,
+    "water_in": 0,
+    "water_lost": 0,
+    "water_moved": 0,
+    "water_out": 0,
+    "water_period": 1,
+    "water_placed": 0,
+    "water_removed": 0,
+    "water_updates_last": 0,
+    "water_writes": 0,
+    "x": -41672.018095806154,
+    "y": 80138.49633808888,
+    "z": -7212.4646704279985
+  },
+  "terrain": {
+    "landform": 1.0,
+    "preview_world": false,
+    "roughness": 1.0,
+    "vertical_scale": 0.014215855959663126
+  },
+  "time": {
+    "clock_seconds": 1149.0249986457895,
+    "local_hour": 12.106906585026165,
+    "speed": 1.0
+  },
+  "world": "Neisor"
+}

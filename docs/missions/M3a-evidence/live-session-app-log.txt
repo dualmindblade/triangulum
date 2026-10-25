@@ -1,0 +1,18 @@
+bake loaded in 0.65s: equal-angle world bake C:/code/triangulum/game/assets/world/seed42 (1024x1024 per face, land min -3.67 km, rough max 5.61 km, with soil and geology fields, 20504 river links and 771 lakes)
+blocks: 19 definitions from C:\Users\Austin\AppData\Local\Temp\claude\C--code-triangulum\d342b492-b4e1-4ca0-aed0-a98693098744\scratchpad\live\run3\blocks.json
+save C:\Users\Austin\AppData\Local\Temp\claude\C--code-triangulum\d342b492-b4e1-4ca0-aed0-a98693098744\scratchpad\live\run3\save: 1 edited chunk(s) loaded
+look: C:\Users\Austin\AppData\Local\Temp\claude\C--code-triangulum\d342b492-b4e1-4ca0-aed0-a98693098744\scratchpad\live\run3\look.json
+planet Neisor: s = 1 m, H = 2048 blocks (sea level 512), N = 131072, R = 90.569 km, vertical scale 0.01422 (1/70.3), landforms v2, roughness 1, landform 1, max LOD 9 (512 m voxels), lod factor 5, 16 rayon threads
+sky: absolute 1142.541665s, local start 12.00h, speed 1x, day 1440s, lunar month 7d, 3 months/season, year 84d; sun lat 11.020410 lon 117.474432
+simulation: 20 Hz tick, 112 m active radius; resumed at tick 1260 with 0 queued, 0 frozen, 0 falling
+adapter: NVIDIA GeForce RTX 2060 (Vulkan, DiscreteGpu)
+quad buffer: 512 MB (67 M quads); grid slots 131072
+app: WASD move, Space jump/up, Ctrl sneak (fly: down), Shift sprint, mouse look (click to capture, Esc releases), LMB break, RMB place, 1-9 block, G walk/fly, scroll fly speed, P preset, R to ground, V vsync, F water, H hud, [ slower time, ] faster time, Q quit
+look panel: Screenshot saved: C:\code\triangulum\.claude\worktrees\agent-a65a3babd4599ed76\game/out/look/look-2026-10-25-153610.png (the look's values are in look-2026-10-25-153610.json).
+screenshot saved to C:\code\triangulum\.claude\worktrees\agent-a65a3babd4599ed76\game/out/look/look-2026-10-25-153610.png
+look panel: blocks.json changed on disk: 1 block colour(s) applied.
+look panel: Preview world built in 3.5 s: roughness 1.00, landforms 1.00, vertical scale 1/20. Saving is off and your save is untouched; anything you dig here is thrown away.
+look panel: Wrote this terrain to C:\Users\Austin\AppData\Local\Temp\claude\C--code-triangulum\d342b492-b4e1-4ca0-aed0-a98693098744\scratchpad\live\run3\world.json as the default. Existing saves will NOT load with it: next time the game starts, a save made with the old terrain is refused. Play it again by putting world.json back (git checkout game/assets/world.json), or start fresh with --save saves/another-name.
+look panel: Back in your world: saving is on again.
+look panel: Screenshot saved: C:\Users\Austin\AppData\Local\Temp\claude\C--code-triangulum\d342b492-b4e1-4ca0-aed0-a98693098744\scratchpad\live\run3\final.png (the look's values are in final.json).
+screenshot saved to C:\Users\Austin\AppData\Local\Temp\claude\C--code-triangulum\d342b492-b4e1-4ca0-aed0-a98693098744\scratchpad\live\run3\final.png
