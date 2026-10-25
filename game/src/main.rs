@@ -286,9 +286,6 @@ fn main() {
     if let Some(v) = args.vscale { config.vertical_scale = Some(v); }
     if let Some(v) = args.roughness { config.roughness = v; }
     if let Some(v) = args.landform { config.landform = v; }
-    // The generator reads the landform dial from here (Engine::build only
-    // passes the roughness dial through).
-    worldgen::set_default_landform(config.landform);
 
     let t0 = std::time::Instant::now();
     let registry = Arc::new(Registry::load(&args.blocks).unwrap_or_else(|e| fail(&e)));

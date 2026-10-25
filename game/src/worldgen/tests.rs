@@ -17,7 +17,7 @@ fn registry() -> Registry {
 fn generator_with(vscale: Option<f64>, h: u32, sea: u32) -> Generator {
     let planet = Planet::new(1.0, h, sea, 131072);
     let vs = vscale.unwrap_or(planet.radius / 6_371_000.0);
-    Generator::new(planet, shared_bake(), 42, vs, 1.0, &registry()).unwrap()
+    Generator::new(planet, shared_bake(), 42, vs, 1.0, 1.0, &registry()).unwrap()
 }
 
 pub fn test_generator() -> Generator {
@@ -29,7 +29,7 @@ fn key_at(g: &Generator, dir: DVec3, lod: u8, height_m: f64) -> ChunkKey {
     let (f, i, j) = p.lattice_of_dir(dir);
     let e = (CHUNK as f64) * (1u64 << lod) as f64;
     let k = p.sea_level as f64 + height_m / p.block_size;
-    ChunkKey { face: f, lod, cx: (i / e) as u32, cy: (j / e) as u32, cz: (k / e).max(0.0) as u32 }
+    ChunkKey::neisor(f, lod, (i / e) as u32, (j / e) as u32, (k / e).max(0.0) as u32)
 }
 
 /// Deterministic pseudo-random unit directions.
@@ -124,7 +124,7 @@ fn profile_column_parts() {
     }
     let t4 = Instant::now();
     for k in 0..200u32 {
-        black_box(g.footprint_height_range_m(crate::grid::FootprintKey { face: key.face, lod: (k % 6) as u8, cx: (key.cx >> (k % 6)) + k / 6, cy: key.cy >> (k % 6) }));
+        black_box(g.footprint_height_range_m(crate::grid::FootprintKey { body: crate::grid::BODY_NEISOR, face: key.face, lod: (k % 6) as u8, cx: (key.cx >> (k % 6)) + k / 6, cy: key.cy >> (k % 6) }));
     }
     println!("footprint_height_range_m {:.0} us", t4.elapsed().as_micros() as f64 / 200.0);
     println!("bake.sample {bake_ns:.0} ns, landform {lf_ns:.0} ns, strata offset {strata_ns:.0} ns, column {col_ns:.0} ns; chunk columns {cols_us:.0} us, generate {gen_us:.0} us");
@@ -229,9 +229,9 @@ fn no_seam_across_cube_edges() {
 fn determinism_across_runs_and_thread_counts() {
     let g = test_generator();
     let keys = [
-        ChunkKey { face: 2, lod: 0, cx: 3295, cy: 1813, cz: 16 },
-        ChunkKey { face: 2, lod: 3, cx: 400, cy: 220, cz: 2 },
-        ChunkKey { face: 0, lod: 9, cx: 3, cy: 5, cz: 0 },
+        ChunkKey::neisor(2, 0, 3295, 1813, 16),
+        ChunkKey::neisor(2, 3, 400, 220, 2),
+        ChunkKey::neisor(0, 9, 3, 5, 0),
     ];
     let once: Vec<Vec<u8>> = keys.iter().map(|k| g.generate(*k).chunk.to_bytes()).collect();
     for threads in [1usize, 8] {
@@ -254,7 +254,7 @@ fn surface_chunk_has_air_above_and_rock_below() {
     let (f, i, j) = g.planet.lattice_of_dir(dir);
     let h = g.ground_height_m(dir);
     let k = g.planet.sea_level as f64 + h;
-    let key = ChunkKey { face: f, lod: 0, cx: i as u32 / 32, cy: j as u32 / 32, cz: (k as u32) / 32 };
+    let key = ChunkKey::neisor(f, 0, i as u32 / 32, j as u32 / 32, (k as u32) / 32);
     let generated = g.generate(key);
     let top = generated.ids[pidx(0, 0, 32)];
     let bottom = generated.ids[pidx(0, 0, -1)];
@@ -271,7 +271,7 @@ fn landform_height_is_deterministic() {
     let a = test_generator();
     let b = test_generator();
     let planet = Planet::new(1.0, 2048, 512, 131072);
-    let other = Generator::new(planet, shared_bake(), 43, a.vscale, 1.0, &registry()).unwrap();
+    let other = Generator::new(planet, shared_bake(), 43, a.vscale, 1.0, 1.0, &registry()).unwrap();
     let mut differs = 0;
     for d in stress_dirs(&a) {
         for v in [1.0, 4.0, 64.0] {
@@ -478,7 +478,7 @@ fn footprint_bounds_contain_every_sampled_column() {
             for lod in [0u8, 3, 7, 9] {
                 let last = p.chunks_per_edge(lod) - 1;
                 for (cx, cy) in [(0, last / 2), (last, last / 3), (0, 0), (last, last)] {
-                    keys.push(ChunkKey { face, lod, cx, cy, cz: 0 });
+                    keys.push(ChunkKey::neisor(face, lod, cx, cy, 0));
                 }
             }
         }

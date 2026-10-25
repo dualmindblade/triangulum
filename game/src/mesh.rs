@@ -5,6 +5,13 @@
 //! Opaque quads are emitted where a solid voxel meets a non-solid one; water
 //! quads where a liquid voxel meets air. Quads never cross a curvature-grid
 //! cell in the tangent directions, so the bilinear warp stays crack-free.
+//!
+//! Grid record: 25 offsets (vec4, xyz = corner position at the chunk's
+//! lattice floor relative to the chunk origin) then 25 unit directions
+//! (vec4). `off[0].w` carries `r0`, the radius of the lattice floor, so a
+//! vertex shader can place vertices at their exact radius `r0 + z` instead
+//! of on the bilinear chord (review #11: at LOD 9 the chord sags 23 m below
+//! the sphere mid-cell, so coarse and fine water surfaces did not meet).
 
 use crate::worldgen::{Generated, PAD, pidx};
 use crate::grid::{CHUNK, ChunkKey, Planet};
@@ -18,6 +25,8 @@ pub const GRID_CORNERS: usize = GRID_CELLS + 1;
 /// f32s per grid record: 25 offsets (vec4) + 25 directions (vec4).
 pub const GRID_F32S: usize = GRID_CORNERS * GRID_CORNERS * 4 * 2;
 pub const GRID_BYTES: usize = GRID_F32S * 4;
+/// Index of `r0` (the lattice floor's radius) in the grid record.
+pub const GRID_R0_INDEX: usize = 3;
 
 pub type Quad = [u32; 2];
 
@@ -136,11 +145,9 @@ pub fn mesh_chunk(generated: &Generated, registry: &Registry, planet: &Planet, o
         let base = (GRID_CORNERS * GRID_CORNERS + g) * 4;
         grid[base..base + 3].copy_from_slice(&[dirs[g].x as f32, dirs[g].y as f32, dirs[g].z as f32]);
     }
-    let voxel_m = planet.voxel_m(key.lod);
-    let mid = dirs[GRID_CORNERS * GRID_CORNERS / 2];
-    let center = mid * (r0 + 16.0 * voxel_m);
-    let radius = (CHUNK as f64 * voxel_m * 0.5 * 3f64.sqrt() * 1.05 + 1.0) as f32;
-    MeshData { key, opaque, water, grid, origin, center, radius, mesh_us: t0.elapsed().as_micros() as u32 }
+    grid[GRID_R0_INDEX] = r0 as f32;
+    let bounds = planet.chunk_bounds(key);
+    MeshData { key, opaque, water, grid, origin, center: bounds.centre, radius: bounds.radius as f32, mesh_us: t0.elapsed().as_micros() as u32 }
 }
 
 /// Emit greedy quads for every face of `occ` voxels that borders a non-`blocking` voxel.
@@ -327,7 +334,7 @@ mod tests {
         let bake = std::sync::Arc::new(crate::worldgen::bake::open("C:/code/triangulum/game/assets/world/seed42").expect("world bake"));
         let planet = Planet::new(1.0, 2048, 512, 131072);
         let vscale = planet.radius / 6_371_000.0;
-        (Generator::new(planet, bake, 42, vscale, 1.0, &registry).unwrap(), registry)
+        (Generator::new(planet, bake, 42, vscale, 1.0, 1.0, &registry).unwrap(), registry)
     }
 
     #[test]
@@ -337,9 +344,9 @@ mod tests {
         let (f, i, j) = g.planet.lattice_of_dir(dir);
         let k = g.planet.sea_level as f64 + g.ground_height_m(dir);
         let keys = [
-            ChunkKey { face: f, lod: 0, cx: i as u32 / 32, cy: j as u32 / 32, cz: (k as u32) / 32 },
-            ChunkKey { face: f, lod: 4, cx: i as u32 / 512, cy: j as u32 / 512, cz: (k as u32) / 512 },
-            ChunkKey { face: 0, lod: 9, cx: 0, cy: 0, cz: 0 },
+            ChunkKey::neisor(f, 0, i as u32 / 32, j as u32 / 32, (k as u32) / 32),
+            ChunkKey::neisor(f, 4, i as u32 / 512, j as u32 / 512, (k as u32) / 512),
+            ChunkKey::neisor(0, 9, 0, 0, 0),
         ];
         let (mut with, mut without) = (0usize, 0usize);
         for key in keys {
@@ -362,5 +369,81 @@ mod tests {
         }
         assert!(with > 0);
         println!("opaque quads with AO {with}, without {without}");
+    }
+
+    /// The shader's vertex transform, in f64 on the f32 grid record the
+    /// GPU gets: bilinear offset and direction over the 4x4 cells.
+    /// `exact` adds the radial correction `r0 (1 - |m|)` along the
+    /// normalised direction (review #11), which `grid[GRID_R0_INDEX]` is for.
+    fn vertex_pos(grid: &[f32], origin: DVec3, lp: DVec3, voxel: f64, exact: bool) -> DVec3 {
+        let g = lp.truncate() * 0.125;
+        let gi = (g.x.floor().min(3.0) as usize, g.y.floor().min(3.0) as usize);
+        let gf = (g.x - gi.0 as f64, g.y - gi.1 as f64);
+        let b = gi.1 * 5 + gi.0;
+        let off = |c: usize| DVec3::new(grid[c * 4] as f64, grid[c * 4 + 1] as f64, grid[c * 4 + 2] as f64);
+        let dir = |c: usize| {
+            let base = (GRID_CORNERS * GRID_CORNERS + c) * 4;
+            DVec3::new(grid[base] as f64, grid[base + 1] as f64, grid[base + 2] as f64)
+        };
+        let mix = |a: DVec3, b: DVec3, t: f64| a + (b - a) * t;
+        let o = mix(mix(off(b), off(b + 1), gf.0), mix(off(b + 5), off(b + 6), gf.0), gf.1);
+        let m = mix(mix(dir(b), dir(b + 1), gf.0), mix(dir(b + 5), dir(b + 6), gf.0), gf.1);
+        if !exact {
+            return origin + o + m * (lp.z * voxel);
+        }
+        let len = m.length();
+        let r0 = grid[GRID_R0_INDEX] as f64;
+        origin + o + (m / len) * (lp.z * voxel + r0 * (1.0 - len))
+    }
+
+    /// Review #11: at a LOD-8/LOD-9 boundary the coarse chunk's sea surface
+    /// is a chord 23 m below the fine chunk's mid-cell; with the exact-radius
+    /// correction the two surfaces are at the same radius to a centimetre.
+    #[test]
+    fn water_surfaces_meet_across_lod_boundaries_with_the_radius_correction() {
+        let (g, registry) = generator();
+        let planet = g.planet;
+        // LOD 9 chunk (4, 4) of face 0 and its LOD 8 child (8, 8): both
+        // start at the face centre and share their left edge i = 65536.
+        let coarse = ChunkKey::neisor(0, 9, 4, 4, 0);
+        let fine = ChunkKey::neisor(0, 8, 8, 8, 0);
+        let mc = mesh_chunk(&g.generate(coarse), &registry, &planet, MeshOptions::default());
+        let mf = mesh_chunk(&g.generate(fine), &registry, &planet, MeshOptions::default());
+        assert!((mc.grid[GRID_R0_INDEX] as f64 - planet.radius_at(0.0)).abs() < 0.02, "r0 rides in the grid record");
+        // The same lattice point on the shared edge: 2048 blocks along it
+        // (the coarse cell's midpoint, a fine grid corner), at sea level.
+        let sea_k = planet.sea_level as f64;
+        let lp_c = DVec3::new(0.0, 2048.0 / 512.0, sea_k / 512.0);
+        let lp_f = DVec3::new(0.0, 2048.0 / 256.0, sea_k / 256.0);
+        let (vc, vf) = (planet.voxel_m(9), planet.voxel_m(8));
+        let (mut worst_before, mut worst_after, mut worst_lateral) = (0.0f64, 0.0f64, 0.0f64);
+        // Along the whole shared edge at the coarse cells' midpoints.
+        for cell in 0..4 {
+            let along = (cell as f64 + 0.5) * 8.0;
+            let lp_c = DVec3::new(lp_c.x, along, lp_c.z);
+            let lp_f = DVec3::new(lp_f.x, along * 2.0, lp_f.z);
+            if lp_f.y > 32.0 {
+                break; // the fine chunk covers half the coarse edge
+            }
+            let before = (vertex_pos(&mc.grid, mc.origin, lp_c, vc, false).length() - vertex_pos(&mf.grid, mf.origin, lp_f, vf, false).length()).abs();
+            let pc = vertex_pos(&mc.grid, mc.origin, lp_c, vc, true);
+            let pf = vertex_pos(&mf.grid, mf.origin, lp_f, vf, true);
+            let after = (pc.length() - pf.length()).abs();
+            worst_before = worst_before.max(before);
+            worst_after = worst_after.max(after);
+            worst_lateral = worst_lateral.max((pc - pf).length());
+        }
+        println!("L9/L8 sea surface radial mismatch: {worst_before:.2} m before, {worst_after:.4} m after; lateral {worst_lateral:.2} m");
+        assert!(worst_before > 20.0 && worst_before < 26.0, "the chord sags about 23 m mid-cell at LOD 9: {worst_before}");
+        assert!(worst_after < 0.05, "surfaces meet radially: {worst_after} m");
+        // Both chunks' sea-level vertices land on the sea-level sphere.
+        let pc = vertex_pos(&mc.grid, mc.origin, lp_c, vc, true);
+        assert!((pc.length() - planet.radius).abs() < 0.05, "{}", pc.length() - planet.radius);
+        // At LOD 0 the correction is below a millimetre, so skipping it there costs nothing.
+        let k0 = ChunkKey::neisor(0, 0, 2048, 2048, 16);
+        let m0 = mesh_chunk(&g.generate(k0), &registry, &planet, MeshOptions::default());
+        let lp = DVec3::new(4.0, 4.0, 1.0);
+        let d = (vertex_pos(&m0.grid, m0.origin, lp, 1.0, true) - vertex_pos(&m0.grid, m0.origin, lp, 1.0, false)).length();
+        assert!(d < 0.002, "LOD 0 sag {d} m");
     }
 }

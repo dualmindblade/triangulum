@@ -1,0 +1,15 @@
+# Water at a coarse LOD boundary (review #11). Run with --lod-factor 0.2 so
+# LOD 8 and 9 chunks (8 and 16 km) sit a few kilometres from the camera,
+# where a 23 m radial step between their sea surfaces is pixels tall:
+#
+#   cargo run --release -- --play scripts/water-lod-seam.play --lod-factor 0.2
+#
+# Over the deepest ocean, 1.5 km up, looking north toward the horizon.
+mode fly
+at 39.88 -36.59 1500
+look 0 -10
+shot 01_seam_north
+look 90 -10
+shot 02_seam_east
+look 45 -25
+shot 03_seam_down

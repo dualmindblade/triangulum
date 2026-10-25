@@ -39,7 +39,7 @@ mode when higher; `--walk` and `--fly` force it.
 | mouse | look |
 | W A S D | walk (fly: move along the view) |
 | Space | jump; swim up; fly up |
-| Ctrl | swim down; fly down |
+| Ctrl | sneak: slow, and never off an edge (build a bridge by backing up); swim down; fly down |
 | Shift | sprint (fly: 4× speed) |
 | G | toggle walk / fly |
 | left mouse | break the targeted block (hold to repeat) |
@@ -225,13 +225,18 @@ on a floor, walls, jumping onto a step, half-metre blocks, walking across a
 face edge and round a corner, swimming, picking). Several need the bake at
 `C:/code/triangulum/game/assets/world/seed42`.
 
-## Known gaps (M1b)
+## Known gaps (M1c)
 
 - No water simulation or falling blocks (M2).
-- Chunks entirely below every surface are uniform stone until worldgen's
-  `classify`/`generate` rework lands; digging into one shows no strata.
-- The edit overlay on coarse chunks ignores edits across a face edge in
-  the one-voxel padding (a face-culling detail at cube edges next to edits).
+- Chunks entirely below every surface (`Enclosed`) are never streamed; one
+  that gets edited appears under its coarser parent and refines down to
+  LOD 0 over the next frames, so a deep shaft shows its walls coarsely for
+  a moment.
+- Water surfaces at coarse LOD boundaries sag up to 23 m below their finer
+  neighbours (a chord against the sphere) until the exact-radius vertex
+  correction lands in the shader (`docs/missions/M1c-stream-evidence/shader-exact-radius.patch`).
+- In coarse chunks' padding, an edit at the one diagonal column of a cube
+  corner (three faces meet there) is left natural.
 - The corner policy for lattice coordinates past two sides of a face maps
   the missing diagonal onto the neighbouring face; collision there is
   approximate within a block of a cube corner.

@@ -164,9 +164,9 @@ impl Harness {
             );
             print!("{row}");
             println!(
-                "    loaded {} visited {} culled {} fallback {} desired {} settle frames {} cpu split: traverse {:.2} recv {:.2} cull {:.2} ms; alloc peak {:.1} MB; drops {} alloc failures {}",
-                st.loaded, st.visited, st.culled_frustum, st.fallback_draws, st.desired, settle_frames, st.traverse_ms, st.recv_ms, st.cull_ms,
-                self.gpu.alloc.peak as f64 * 8.0 / 1e6, st.dropped_results, st.alloc_failures
+                "    resident {} nodes {} drawn {} hidden {} retained {} culled {} settle frames {} cpu split: tree {:.3} edits+results {:.3} draw lists {:.3} ms; alloc peak {:.1} MB; drops {} stale {} alloc failures {}",
+                st.loaded, st.visited, st.desired, st.hidden, st.retained, st.culled_frustum, settle_frames, st.traverse_ms, st.recv_ms, st.cull_ms,
+                self.gpu.alloc.peak as f64 * 8.0 / 1e6, st.dropped_results, st.stale_results, st.alloc_failures
             );
             report.push_str(&row);
         }
@@ -243,7 +243,7 @@ impl Harness {
     /// compare quad counts: the triangle cost of per-vertex AO.
     pub fn ao_cost(&self) -> String {
         use rayon::prelude::*;
-        let keys: Vec<_> = self.streamer.loaded.keys().copied().collect();
+        let keys: Vec<_> = self.streamer.resident_keys();
         let engine = &self.engine;
         let (with, without): (usize, usize) = keys
             .par_iter()
@@ -298,6 +298,8 @@ pub struct BenchOptions {
 
 pub fn run_bench(engine: Arc<Engine>, opts: BenchOptions) {
     let mut h = Harness::new(engine.clone(), 1920, 1080, &opts.out, opts.backend.as_deref());
+    // Worker timing history is only kept here (review #15).
+    h.streamer.timing.enabled = true;
     let hills = gnomonic_dir(HILLS.0, HILLS.1, HILLS.2);
     let mountains = gnomonic_dir(MOUNTAINS.0, MOUNTAINS.1, MOUNTAINS.2);
     let c = engine.generator.column(hills, engine.planet.block_size);

@@ -18,6 +18,7 @@ use super::chunk::VOXELS;
 use super::edits::EditStore;
 use super::{BlockId, Chunk, Registry};
 use crate::grid::{ChunkKey, WorldConfig};
+pub use crate::grid::BODY_NEISOR;
 use crate::sha256::{Sha256, hex, sha256};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -30,11 +31,6 @@ pub const FORMAT_VERSION: u32 = 2;
 /// generator version is refused: its edits sit in terrain that no longer
 /// exists around them.
 pub const GENERATOR_VERSION: u32 = 2; // 2: landforms v2 (ridges, gullies, valleys, mesas)
-
-/// The planet this engine builds; the moon and vehicle grids come later and
-/// get their own ids. (Chunk keys themselves gain the body id once
-/// worldgen's key literals can be touched.)
-pub const BODY_NEISOR: u8 = 0;
 
 const CHUNK_MAGIC: &[u8; 4] = b"TRC2";
 
@@ -246,16 +242,17 @@ impl SaveDir {
     }
 
     fn chunk_path(&self, key: ChunkKey) -> PathBuf {
-        self.chunks_dir().join(format!("b{}_f{}_{}_{}_{}.chunk", BODY_NEISOR, key.face, key.cx, key.cy, key.cz))
+        self.chunks_dir().join(format!("b{}_f{}_{}_{}_{}.chunk", key.body, key.face, key.cx, key.cy, key.cz))
     }
 
     pub fn write_chunk(&self, key: ChunkKey, chunk: &Chunk) -> Result<(), String> {
         assert_eq!(key.lod, 0, "only LOD-0 chunks are saved");
+        assert_eq!(key.body, BODY_NEISOR, "a Neisor save holds Neisor chunks");
         let dir = self.chunks_dir();
         std::fs::create_dir_all(&dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
         let mut bytes = Vec::new();
         bytes.extend_from_slice(CHUNK_MAGIC);
-        bytes.push(BODY_NEISOR);
+        bytes.push(key.body);
         bytes.push(key.face);
         bytes.push(key.lod);
         bytes.extend_from_slice(&key.cx.to_le_bytes());
@@ -323,7 +320,7 @@ fn parse_chunk_file(bytes: &[u8]) -> Result<(ChunkKey, Chunk), String> {
         return Err(format!("chunk of body {} in a body-{} save", bytes[4], BODY_NEISOR));
     }
     let u = |at: usize| u32::from_le_bytes(bytes[at..at + 4].try_into().unwrap());
-    let key = ChunkKey { face: bytes[5], lod: bytes[6], cx: u(7), cy: u(11), cz: u(15) };
+    let key = ChunkKey { body: bytes[4], face: bytes[5], lod: bytes[6], cx: u(7), cy: u(11), cz: u(15) };
     if key.lod != 0 || key.face > 5 {
         return Err(format!("bad chunk key {key:?}"));
     }
@@ -394,8 +391,8 @@ mod tests {
         let dir = temp_dir("rt");
         let (cfg, reg) = (config(), registry());
         let store = EditStore::new();
-        let key = ChunkKey { face: 2, lod: 0, cx: 100, cy: 200, cz: 17 };
-        let key2 = ChunkKey { face: 4, lod: 0, cx: 1, cy: 2, cz: 3 };
+        let key = ChunkKey::neisor(2, 0, 100, 200, 17);
+        let key2 = ChunkKey::neisor(4, 0, 1, 2, 3);
         let natural = || vec![1u16; VOXELS];
         assert!(store.set(key, 5, 6, 7, 0, natural));
         assert!(store.set(key, 5, 6, 8, 8, natural)); // water
@@ -432,7 +429,7 @@ mod tests {
         let dir = temp_dir("mismatch");
         let (cfg, reg) = (config(), registry());
         let store = EditStore::new();
-        store.set(ChunkKey { face: 0, lod: 0, cx: 0, cy: 0, cz: 0 }, 0, 0, 0, 0, || vec![1; VOXELS]);
+        store.set(ChunkKey::neisor(0, 0, 0, 0, 0), 0, 0, 0, 0, || vec![1; VOXELS]);
         dir.flush(&store, &cfg, &reg, BAKE, 8).unwrap();
         let header = dir.read_header().unwrap().unwrap();
         assert_eq!(header.format_version, FORMAT_VERSION);

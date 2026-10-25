@@ -24,6 +24,9 @@ const GRAVITY: f64 = 25.0;
 const JUMP_SPEED: f64 = 8.0;
 const WALK_SPEED: f64 = 4.3;
 const SPRINT_SPEED: f64 = 6.5;
+/// Sneaking (Ctrl on the ground): slow, and the feet never leave the edge
+/// of whatever they stand on, so you can build a bridge by backing up.
+const SNEAK_SPEED: f64 = 1.3;
 const SWIM_SPEED: f64 = 2.2;
 const TERMINAL: f64 = 70.0;
 /// Skin in lattice units: boxes stop this short of a face and ignore cells
@@ -43,6 +46,7 @@ pub struct Input {
     pub left: bool,
     pub right: bool,
     pub jump: bool,
+    /// Ctrl: down in fly mode and in water; sneak on the ground.
     pub down: bool,
     pub sprint: bool,
 }
@@ -318,7 +322,16 @@ impl Player {
         if input.right {
             wish += right;
         }
-        let speed = if self.in_water { SWIM_SPEED } else if input.sprint { SPRINT_SPEED } else { WALK_SPEED };
+        let sneak = input.down && self.on_ground && !self.in_water;
+        let speed = if self.in_water {
+            SWIM_SPEED
+        } else if sneak {
+            SNEAK_SPEED
+        } else if input.sprint {
+            SPRINT_SPEED
+        } else {
+            WALK_SPEED
+        };
         let wish = if wish != DVec3::ZERO { wish.normalize() * speed } else { DVec3::ZERO };
         let mut vh = self.vel - up * self.vel.dot(up);
         let accel = if self.on_ground { 60.0 } else if self.in_water { 12.0 } else { 10.0 };
@@ -352,11 +365,17 @@ impl Player {
         let hit_z = dz != dl.z;
         bmin.z += dz;
         bmax.z += dz;
-        let dx = sweep(vox, f.face, bmin, bmax, 0, dl.x);
+        let mut dx = sweep(vox, f.face, bmin, bmax, 0, dl.x);
+        if sneak {
+            dx = hold_edge(vox, f.face, bmin, bmax, 0, dx);
+        }
         let hit_x = dx != dl.x;
         bmin.x += dx;
         bmax.x += dx;
-        let dy = sweep(vox, f.face, bmin, bmax, 1, dl.y);
+        let mut dy = sweep(vox, f.face, bmin, bmax, 1, dl.y);
+        if sneak {
+            dy = hold_edge(vox, f.face, bmin, bmax, 1, dy);
+        }
         let hit_y = dy != dl.y;
         self.on_ground = hit_z && dl.z < 0.0;
         if hit_z {
@@ -398,6 +417,45 @@ impl Player {
         self.vel = DVec3::ZERO;
         self.on_ground = true;
     }
+}
+
+/// Is there something solid under any part of the box's footprint?
+fn supported(vox: &dyn Voxels, face: u8, bmin: DVec3, bmax: DVec3) -> bool {
+    // Resting on a floor puts the feet at the layer boundary to within
+    // float noise either way; the layer below is one down from there.
+    let below = (bmin.z + 1e-6).floor() as i64 - 1;
+    let (i0, i1) = ((bmin.x + EPS).floor() as i64, (bmax.x - EPS).floor() as i64);
+    let (j0, j1) = ((bmin.y + EPS).floor() as i64, (bmax.y - EPS).floor() as i64);
+    (i0..=i1).any(|i| (j0..=j1).any(|j| vox.is_solid(vox.block(face, i, j, below))))
+}
+
+/// Sneaking: shorten a horizontal move so the box keeps something solid
+/// under it, by bisection on the displacement (Minecraft's sneak rule).
+fn hold_edge(vox: &dyn Voxels, face: u8, bmin: DVec3, bmax: DVec3, axis: usize, d: f64) -> f64 {
+    if d == 0.0 {
+        return 0.0;
+    }
+    let shifted = |t: f64| {
+        let mut off = DVec3::ZERO;
+        off[axis] = d * t;
+        (bmin + off, bmax + off)
+    };
+    let (a, b) = shifted(1.0);
+    if supported(vox, face, a, b) {
+        return d;
+    }
+    // Largest fraction that still has support (0 always has: we are on the ground).
+    let (mut lo, mut hi) = (0.0, 1.0);
+    for _ in 0..12 {
+        let mid = 0.5 * (lo + hi);
+        let (a, b) = shifted(mid);
+        if supported(vox, face, a, b) {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    d * lo
 }
 
 /// Sweep an axis-aligned box along `axis` by `d` lattice units; return the
@@ -502,7 +560,7 @@ mod tests {
         pl
     }
 
-    fn run(pl: &mut Player, w: &Flat, p: &Planet, input: Input, steps: usize) {
+    fn run(pl: &mut Player, w: &dyn Voxels, p: &Planet, input: Input, steps: usize) {
         for _ in 0..steps {
             pl.step(w, p, &input, STEP);
         }
@@ -701,6 +759,69 @@ mod tests {
         run(&mut pl, &w, &p, Input { jump: true, ..Default::default() }, 180);
         let f = Frame::at(&p, pl.pos);
         assert!(f.k > 604.5, "swam up: k = {}", f.k);
+    }
+
+    /// A four-column stone platform over nothing.
+    struct Platform;
+    impl Voxels for Platform {
+        fn block(&self, _face: u8, i: i64, _j: i64, k: i64) -> BlockId {
+            if k < 600 && (1000..=1003).contains(&i) { STONE } else { 0 }
+        }
+        fn is_solid(&self, id: BlockId) -> bool {
+            id != 0 && id != WATER
+        }
+        fn is_liquid(&self, id: BlockId) -> bool {
+            id == WATER
+        }
+    }
+
+    #[test]
+    fn sneaking_holds_the_edge_and_walking_falls_off() {
+        let p = planet(1.0);
+        let w = Platform;
+        // Walking off the end: airborne within two seconds, falling.
+        let mut pl = standing(&p, 2, 1001.5, 2000.5, 600);
+        run(&mut pl, &w, &p, Input { forward: true, ..Default::default() }, 120);
+        let f = Frame::at(&p, pl.pos);
+        assert!(!pl.on_ground && f.k < 599.0, "walked off: k = {}", f.k);
+        // Sneaking: slower, and the box's leading edge stops at the platform's edge.
+        let mut pl = standing(&p, 2, 1001.5, 2000.5, 600);
+        run(&mut pl, &w, &p, Input { forward: true, down: true, ..Default::default() }, 60);
+        let f = Frame::at(&p, pl.pos);
+        assert!(pl.on_ground && (f.k - 600.0).abs() < 1e-6);
+        assert!(f.i > 1001.5 && f.i < 1003.0, "sneaking moves, slowly: i = {}", f.i);
+        run(&mut pl, &w, &p, Input { forward: true, down: true, ..Default::default() }, 240);
+        let f = Frame::at(&p, pl.pos);
+        assert!(pl.on_ground && (f.k - 600.0).abs() < 1e-6, "still on the platform: k = {}", f.k);
+        // Like Minecraft, the box may overhang until its trailing edge is at the platform's edge.
+        let trail = f.i - 0.3 / f.mi;
+        assert!(trail <= 1004.0 + 1e-6 && trail > 1003.99, "trailing edge held at the platform's edge: {trail}");
+        // Sideways and backwards too.
+        for input in [Input { back: true, down: true, ..Default::default() }, Input { left: true, down: true, ..Default::default() }, Input { right: true, down: true, ..Default::default() }] {
+            let mut pl = standing(&p, 2, 1000.5, 2000.5, 600);
+            run(&mut pl, &w, &p, input, 240);
+            let f = Frame::at(&p, pl.pos);
+            assert!(pl.on_ground && (f.k - 600.0).abs() < 1e-6, "{input:?}: k = {}", f.k);
+        }
+        // Releasing Ctrl at the edge walks off.
+        run(&mut pl, &w, &p, Input { forward: true, ..Default::default() }, 120);
+        assert!(!pl.on_ground);
+        // In water Ctrl still swims down.
+        let mut cells = HashMap::new();
+        for di in 990..1010 {
+            for dj in 1990..2010 {
+                for k in 600..610 {
+                    cells.insert((di, dj, k), WATER);
+                }
+            }
+        }
+        let pool = Flat { floor_k: 600, cells };
+        let mut pl = standing(&p, 2, 1000.5, 2000.5, 600);
+        pl.pos = pl.pos.normalize() * p.radius_at(607.0);
+        pl.on_ground = false;
+        run(&mut pl, &pool, &p, Input { down: true, ..Default::default() }, 120);
+        let f = Frame::at(&p, pl.pos);
+        assert!(pl.in_water && f.k < 604.0, "swam down: k = {}", f.k);
     }
 
     #[test]

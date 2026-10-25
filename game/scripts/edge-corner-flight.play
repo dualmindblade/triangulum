@@ -1,0 +1,49 @@
+# A fast flight across a cube edge and past a cube corner, with the
+# coverage tree checked every frame: no overlapping draws, no visible drawn
+# chunk without a mesh, nothing left uncovered.
+#
+# Faces: 0 is +X, 2 is +Y, 4 is +Z (cubesphere FACES). The +X/+Y edge is the
+# meridian lon 45; the (+X, +Y, +Z) corner is lat 35.26, lon 45.
+#
+#   leg 1: lat 0, lon 30 -> east at 1 km/s for 30 s (30 km): crosses lon 45
+#          after ~24 km, onto face 2.
+#   leg 2: lat 20, lon 44.5 -> north at 1 km/s for 50 s: passes ~800 m from
+#          the corner and onto face 4 (+Z).
+
+mode fly
+speed 1000
+at 0 30 3000
+look 90 0
+assert face == 0
+assert mode == fly
+travel 30
+assert face == 2
+assert travel_violations == 0
+assert travel_overlaps_max == 0
+assert travel_gaps_max == 0
+assert travel_uncovered_max == 0
+assert travel_frames == 1800
+shot 01_after_edge
+
+at 20 44.5 3000
+look 0 0
+assert face == 0
+travel 50
+assert face == 4
+assert lat > 48
+assert travel_violations == 0
+assert travel_overlaps_max == 0
+assert travel_gaps_max == 0
+assert travel_uncovered_max == 0
+shot 02_after_corner
+
+# And low and fast over the ground near the edge, where the horizon hides
+# most of the tree: 250 m up at 400 m/s, back across lon 45.
+at 0 46 250
+look 270 0
+speed 400
+travel 20
+assert face == 0
+assert travel_violations == 0
+shot 03_low_back_across_edge
+bench 60

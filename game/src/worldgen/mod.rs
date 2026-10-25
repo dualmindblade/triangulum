@@ -36,23 +36,7 @@ use glam::DVec3;
 use landform::{Landform, Local};
 use noise::gradient_noise;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
 use strata::{GeoHint, RockCache, Strata};
-
-/// The landform dial every new `Generator` starts with (1.0 unless `main`
-/// sets it from world.json / --landform). `Engine::build` passes only the
-/// roughness dial to `Generator::new`, and engine.rs belongs to another
-/// mission right now; passing the dial explicitly there is a one-line
-/// follow-up that makes this global unnecessary.
-static DEFAULT_LANDFORM_BITS: AtomicU64 = AtomicU64::new(0x3FF0_0000_0000_0000);
-
-pub fn set_default_landform(dial: f64) {
-    DEFAULT_LANDFORM_BITS.store(dial.to_bits(), Ordering::Relaxed);
-}
-
-pub fn default_landform() -> f64 {
-    f64::from_bits(DEFAULT_LANDFORM_BITS.load(Ordering::Relaxed))
-}
 
 /// Padded voxel grid edge (one voxel border on every side).
 pub const PAD: usize = CHUNK + 2;
@@ -202,14 +186,13 @@ pub struct Generated {
 }
 
 impl Generator {
-    pub fn new(planet: Planet, bake: Arc<dyn Bake>, seed: u64, vscale: f64, roughness: f64, registry: &Registry) -> Result<Self, String> {
+    pub fn new(planet: Planet, bake: Arc<dyn Bake>, seed: u64, vscale: f64, roughness: f64, landform: f64, registry: &Registry) -> Result<Self, String> {
         let blocks = Blocks::resolve(registry)?;
         let beds = ["shale", "mudstone", "umber", "sandstone", "limestone"]
             .iter()
             .map(|n| registry.id(n))
             .collect::<Result<Vec<_>, _>>()?;
         let strata = Strata::new(beds, planet.block_size, planet.radius, seed);
-        let landform = default_landform();
         let lf = Landform { seed: seed ^ 0x1A4D_F0E1, radius: planet.radius, vscale, landform, roughness };
         let elev_max = (0..6u8).map(|f| bake.elev_range_km(f, -1.0, -1.0, 1.0, 1.0).1).fold(f32::MIN, f32::max) as f64;
         let max_relief_m = lf.bound_m(lf.relief_bound_m(bake.rough_max_km() as f64, elev_max));

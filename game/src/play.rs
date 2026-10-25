@@ -27,12 +27,23 @@
 //!
 //! ---- time and input (fixed 60 Hz) -----------------------------------
 //!   hold KEYS SECONDS       keys held: w a s d space shift ctrl, written
-//!                           as "w", "wa", "w,space" or "w+shift"
+//!                           as "w", "wa", "w,space" or "w+shift" (ctrl
+//!                           sneaks on the ground, dives in water, descends
+//!                           in fly mode)
 //!   tap break|place|jump|g|f|1..9
 //!                           one action: left click, right click, a jump
 //!                           step, walk/fly toggle, water toggle, hotbar
 //!   wait SECONDS            time passes with no input (gravity acts)
 //!   select N                hotbar slot 1-9
+//!   speed M_PER_S           fly speed (scroll wheel), 1..5000
+//!   travel SECONDS [KEYS]   like hold (default "w"), but every step also
+//!                           streams and renders a frame and checks the
+//!                           coverage tree (no overlapping draws, no
+//!                           visible drawn chunk without a mesh, nothing
+//!                           uncovered); reports travel_frames,
+//!                           travel_violations, travel_overlaps_max,
+//!                           travel_gaps_max, travel_uncovered_max,
+//!                           travel_faces, travel_cpu_avg_ms / p99 / max
 //!
 //! ---- world ---------------------------------------------------------
 //!   water on|off            show or hide water (rebuilds the generator)
@@ -193,6 +204,78 @@ impl Run {
         self.harness.save_with_ui(&path, &|ctx| draw_hud(ctx, &hud, true));
         self.say(format!("  shot {name}: {path} (settled in {secs:.1} s / {frames} frames{}; {} draws)", if ok { "" } else { " TIMEOUT" }, self.harness.streamer.stats.drawn));
         self.write_state(name);
+    }
+
+    /// Move with `input` held for `seconds`, streaming and rendering a
+    /// frame every step and checking the cover after each one.
+    fn travel(&mut self, input: Input, seconds: f64) {
+        let n = (seconds * 60.0).round().max(0.0) as usize;
+        let mut violations = 0usize;
+        let (mut overlaps, mut gaps, mut uncovered) = (0usize, 0usize, 0usize);
+        let mut faces = std::collections::BTreeSet::new();
+        let mut cpu = Vec::with_capacity(n);
+        let mut nodes_max = 0usize;
+        let (mut tree_max, mut recv_max, mut lists_max) = (0.0f64, 0.0f64, 0.0f64);
+        let (mut split_max, mut range_max, mut misses_max) = (0.0f64, 0.0f64, 0usize);
+        let (mut ranges_inflight_max, mut range_job_max) = (0usize, 0u32);
+        let (mut policy_max, mut structure_max, mut counts_max) = (0.0f64, 0.0f64, 0.0f64);
+        let t0 = Instant::now();
+        for _ in 0..n {
+            self.session.step(&input, STEP);
+            let cam = self.session.player.camera();
+            let s = self.harness.frame(&cam);
+            cpu.push(s.cpu_ms);
+            let st = &self.harness.streamer.stats;
+            tree_max = tree_max.max(st.traverse_ms);
+            recv_max = recv_max.max(st.recv_ms);
+            lists_max = lists_max.max(st.cull_ms);
+            split_max = split_max.max(st.split_ms);
+            range_max = range_max.max(st.range_ms);
+            misses_max = misses_max.max(st.range_misses);
+            ranges_inflight_max = ranges_inflight_max.max(st.ranges_inflight);
+            policy_max = policy_max.max(st.policy_ms);
+            structure_max = structure_max.max(st.structure_ms);
+            counts_max = counts_max.max(st.counts_ms);
+            range_job_max = range_job_max.max(st.range_job_us);
+            let r = self.harness.streamer.check_cover();
+            if !r.ok() {
+                violations += 1;
+            }
+            overlaps = overlaps.max(r.overlaps);
+            gaps = gaps.max(r.gaps);
+            uncovered = uncovered.max(r.uncovered);
+            nodes_max = nodes_max.max(r.nodes);
+            faces.insert(crate::player::Frame::at(&self.session.engine.planet, self.session.player.pos).face);
+        }
+        self.record_stream();
+        let mut sorted = cpu.clone();
+        sorted.sort_by(|a, b| a.total_cmp(b));
+        let avg = cpu.iter().sum::<f64>() / n.max(1) as f64;
+        let p99 = sorted.get(((n as f64 - 1.0) * 0.99).round() as usize).copied().unwrap_or(0.0);
+        let max = sorted.last().copied().unwrap_or(0.0);
+        let faces_s: Vec<String> = faces.iter().map(|f| f.to_string()).collect();
+        if let serde_json::Value::Object(m) = &mut self.last_stream {
+            m.insert("travel_frames".into(), n.into());
+            m.insert("travel_violations".into(), violations.into());
+            m.insert("travel_overlaps_max".into(), overlaps.into());
+            m.insert("travel_gaps_max".into(), gaps.into());
+            m.insert("travel_uncovered_max".into(), uncovered.into());
+            m.insert("travel_faces".into(), faces_s.join(",").into());
+            m.insert("travel_nodes_max".into(), nodes_max.into());
+            m.insert("travel_cpu_avg_ms".into(), avg.into());
+            m.insert("travel_cpu_p99_ms".into(), p99.into());
+            m.insert("travel_cpu_max_ms".into(), max.into());
+            m.insert("travel_tree_max_ms".into(), tree_max.into());
+            m.insert("travel_results_max_ms".into(), recv_max.into());
+            m.insert("travel_lists_max_ms".into(), lists_max.into());
+            m.insert("travel_range_jobs_max".into(), ranges_inflight_max.into());
+        }
+        let wall = t0.elapsed().as_secs_f64();
+        let faces_s = faces_s.join(",");
+        let job_ms = range_job_max as f64 / 1e3;
+        self.say(format!(
+            "  travel {n} frames in {wall:.1} s: faces {faces_s}; cover violations {violations} (overlaps max {overlaps}, gaps max {gaps}, uncovered max {uncovered}); nodes max {nodes_max}; cpu avg {avg:.2} ms p99 {p99:.2} max {max:.2}; worst phases: tree {tree_max:.2} (policy {policy_max:.2}, structure {structure_max:.2} of which splits {split_max:.2}, counts {counts_max:.2}; inline ranges {range_max:.2} / {misses_max}), results {recv_max:.2}, draw lists {lists_max:.2}; range jobs in flight max {ranges_inflight_max}, worst {job_ms:.2} ms"
+        ));
     }
 
     fn bench(&mut self, n: usize) {
@@ -449,6 +532,17 @@ pub fn run_play(session: Session, opts: PlayOptions) -> i32 {
             "wait" => match num(0) {
                 Some(secs) => run.steps(Input::default(), secs),
                 None => bad(&mut run, "wait SECONDS"),
+            },
+            "speed" => match num(0) {
+                Some(v) if (1.0..=5000.0).contains(&v) => run.session.player.fly_speed = v,
+                _ => bad(&mut run, "speed M_PER_S (1..5000)"),
+            },
+            "travel" => match num(0) {
+                Some(secs) => match parse_keys(args.get(1).copied().unwrap_or("w")) {
+                    Ok(input) => run.travel(input, secs),
+                    Err(e) => bad(&mut run, &e),
+                },
+                None => bad(&mut run, "travel SECONDS [KEYS]"),
             },
             "tap" => match args.first().map(|s| s.to_lowercase()).as_deref() {
                 Some("break") | Some("lmb") => {

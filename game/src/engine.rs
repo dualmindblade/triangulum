@@ -102,7 +102,7 @@ impl Engine {
     ) -> Result<Self, String> {
         let planet = Planet::try_new(config.block_size_m, config.world_height, config.sea_level, config.columns_per_face)?;
         let vscale = config.vertical_scale.unwrap_or(planet.radius / 6_371_000.0);
-        let mut generator = Generator::new(planet, bake.clone(), config.seed, vscale, config.roughness, &registry)?;
+        let mut generator = Generator::new(planet, bake.clone(), config.seed, vscale, config.roughness, config.landform, &registry)?;
         generator.skirt = skirt;
         generator.hide_water = hide_water;
         if markers_on {
@@ -167,7 +167,7 @@ impl Engine {
     }
 
     fn rebuild(&self, markers: Vec<Marker>, hide_water: bool, markers_on: bool, edits: Arc<EditStore>) -> Engine {
-        let mut generator = Generator::new(self.planet, self.bake.clone(), self.config.seed, self.generator.vscale, self.config.roughness, &self.registry).expect("generator");
+        let mut generator = Generator::new(self.planet, self.bake.clone(), self.config.seed, self.generator.vscale, self.config.roughness, self.config.landform, &self.registry).expect("generator");
         generator.skirt = self.skirt;
         generator.hide_water = hide_water;
         if markers_on {

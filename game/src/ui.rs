@@ -125,7 +125,7 @@ pub fn draw_hud(ctx: &egui::Context, h: &Hud, stats: bool) {
                     if h.save_note.is_empty() { String::new() } else { format!("  {}", h.save_note) },
                     if h.captured { "mouse captured: Esc releases" } else { "click to capture mouse" }
                 ));
-                line("WASD move  Space jump/up  Ctrl down  Shift sprint  G walk/fly  LMB break  RMB place  1-9 block  scroll fly speed".into());
+                line("WASD move  Space jump/up  Ctrl sneak/down  Shift sprint  G walk/fly  LMB break  RMB place  1-9 block  scroll fly speed".into());
                 line("P preset  R to ground  V vsync  F water  H hud  Q quit".into());
             });
     }

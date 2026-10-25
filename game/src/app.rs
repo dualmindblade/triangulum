@@ -344,7 +344,7 @@ impl ApplicationHandler for App {
         self.vsync = opts.vsync;
         self.gfx = Some(Gfx { window, surface, config, gpu, egui_state, egui_paint });
         el.set_control_flow(ControlFlow::Poll);
-        println!("app: WASD move, Space jump/up, Ctrl down, Shift sprint, mouse look (click to capture, Esc releases), LMB break, RMB place, 1-9 block, G walk/fly, scroll fly speed, P preset, R to ground, V vsync, F water, H hud, [ slower time, ] faster time, Q quit");
+        println!("app: WASD move, Space jump/up, Ctrl sneak (fly: down), Shift sprint, mouse look (click to capture, Esc releases), LMB break, RMB place, 1-9 block, G walk/fly, scroll fly speed, P preset, R to ground, V vsync, F water, H hud, [ slower time, ] faster time, Q quit");
     }
 
     fn window_event(&mut self, el: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
