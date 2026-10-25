@@ -1,0 +1,11 @@
+test replay::tests::a_tap_shorter_than_a_frame_still_counts ... FAILED
+
+failures:
+--
+thread 'replay::tests::a_tap_shorter_than_a_frame_still_counts' (8452) panicked at src\replay_tests.rs:233:9:
+30 fps: the tap jumped
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+--
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 130 filtered out; finished in 2.52s
+
+error: test failed, to rerun pass `--bin triangulum`

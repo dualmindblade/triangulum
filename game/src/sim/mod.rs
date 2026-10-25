@@ -49,7 +49,7 @@ pub mod water;
 
 use crate::grid::{BlockPos, CHUNK, ChunkKey, FastMap, FastSet};
 use crate::sha256::{Sha256, hex};
-use crate::world::{BlockId, EditStore, World};
+use crate::world::{BlockId, World};
 use glam::DVec3;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::time::Instant;
@@ -165,10 +165,34 @@ pub struct Snapshot {
     pub queue: Vec<(u64, PosKey)>,
     pub frozen: Vec<(ChunkKey, Vec<(u64, PosKey)>)>,
     pub falling: Vec<Falling>,
+    /// Version 2 (review 3 #4): the settings the state ran under, where the
+    /// active region was computed (it depends on where in its chunk the
+    /// player stood, so a restore brings it back rather than recomputing it
+    /// around wherever the player is), and the digest of the block rules
+    /// (`rules_digest`). None in a version-1 file.
+    pub config: Option<SimConfig>,
+    pub focus: Option<DVec3>,
+    pub rules: Option<[u8; 32]>,
 }
 
 const SNAPSHOT_MAGIC: &[u8; 4] = b"TRSM";
-const SNAPSHOT_VERSION: u32 = 1;
+const SNAPSHOT_VERSION: u32 = 2;
+
+/// The SHA-256 of the block definitions the simulation's rules read: each
+/// id's name and its solid, liquid, gravity and replaceable flags. Colours
+/// are left out: they are look, and changing one must not change the hash
+/// (Andrew's live look panel edits them while the game runs).
+pub fn rules_digest(reg: &crate::world::Registry) -> [u8; 32] {
+    let mut h = Sha256::new();
+    h.update(b"triangulum-block-rules-1");
+    for d in reg.defs() {
+        h.update(&d.id.to_le_bytes());
+        h.update(&(d.name.len() as u32).to_le_bytes());
+        h.update(d.name.as_bytes());
+        h.update(&[d.solid as u8 | (d.liquid as u8) << 1 | (d.gravity as u8) << 2 | (d.replaceable as u8) << 3]);
+    }
+    h.finish()
+}
 
 impl Snapshot {
     pub fn is_empty(&self) -> bool {
@@ -205,6 +229,21 @@ impl Snapshot {
             w.extend_from_slice(&f.z.to_bits().to_le_bytes());
             w.extend_from_slice(&f.vel.to_bits().to_le_bytes());
         }
+        // Version 2: a presence byte, then each part present.
+        w.push(self.config.is_some() as u8 | (self.focus.is_some() as u8) << 1 | (self.rules.is_some() as u8) << 2);
+        if let Some(c) = &self.config {
+            w.extend_from_slice(&c.radius_m.to_bits().to_le_bytes());
+            w.push(c.enabled as u8);
+            w.extend_from_slice(&c.water_period.to_le_bytes());
+        }
+        if let Some(p) = self.focus {
+            for x in [p.x, p.y, p.z] {
+                w.extend_from_slice(&x.to_bits().to_le_bytes());
+            }
+        }
+        if let Some(r) = &self.rules {
+            w.extend_from_slice(r);
+        }
         w
     }
 
@@ -214,8 +253,8 @@ impl Snapshot {
             return Err("not a simulation state file".into());
         }
         let version = r.u32()?;
-        if version != SNAPSHOT_VERSION {
-            return Err(format!("simulation state version {version}, this build reads {SNAPSHOT_VERSION}"));
+        if version != 1 && version != SNAPSHOT_VERSION {
+            return Err(format!("simulation state version {version}, this build reads 1 and {SNAPSHOT_VERSION}"));
         }
         let tick = r.u64()?;
         let queue = r.entries()?;
@@ -247,10 +286,40 @@ impl Snapshot {
             }
             falling.push(Falling { id, face, i, j, z, vel });
         }
+        let (mut config, mut focus, mut rules) = (None, None, None);
+        if version >= 2 {
+            let parts = r.take(1)?[0];
+            if parts & !7 != 0 {
+                return Err(format!("bad simulation state parts {parts:#x}"));
+            }
+            if parts & 1 != 0 {
+                let radius_m = f64::from_bits(r.u64()?);
+                let enabled = match r.take(1)?[0] {
+                    0 => false,
+                    1 => true,
+                    x => return Err(format!("bad simulation enabled flag {x}")),
+                };
+                let water_period = r.u64()?;
+                if !radius_m.is_finite() || radius_m < 0.0 || water_period == 0 {
+                    return Err(format!("bad simulation settings: radius {radius_m}, water period {water_period}"));
+                }
+                config = Some(SimConfig { radius_m, enabled, water_period });
+            }
+            if parts & 2 != 0 {
+                let p = DVec3::new(f64::from_bits(r.u64()?), f64::from_bits(r.u64()?), f64::from_bits(r.u64()?));
+                if !p.is_finite() {
+                    return Err(format!("bad active-region focus {p}"));
+                }
+                focus = Some(p);
+            }
+            if parts & 4 != 0 {
+                rules = Some(r.take(32)?.try_into().unwrap());
+            }
+        }
         if r.at != b.len() {
             return Err(format!("{} trailing bytes after simulation state", b.len() - r.at));
         }
-        Ok(Self { tick, queue, frozen, falling })
+        Ok(Self { tick, queue, frozen, falling, config, focus, rules })
     }
 }
 
@@ -373,6 +442,13 @@ pub struct Sim {
     falling: Vec<Falling>,
     active: FastSet<ChunkKey>,
     focus_chunk: Option<ChunkKey>,
+    /// The exact position the active region was last computed for: the
+    /// region depends on where in its chunk the player stood when it was
+    /// computed (review 3 #4), so it is saved, hashed and restored.
+    focus_pos: Option<DVec3>,
+    /// A restored focus: the next tick computes the region here first,
+    /// as it was when the state was saved.
+    pending_focus: Option<DVec3>,
     ghosts: Vec<(Falling, u64)>,
     /// Queue, frozen or falling changed since the last snapshot.
     dirty: bool,
@@ -395,6 +471,8 @@ impl Sim {
             falling: Vec::new(),
             active: FastSet::default(),
             focus_chunk: None,
+            focus_pos: None,
+            pending_focus: None,
             ghosts: Vec::new(),
             dirty: false,
             stats: SimStats::default(),
@@ -411,7 +489,10 @@ impl Sim {
     }
 
     /// Replace the state with a saved one (a reload). The active region is
-    /// recomputed on the next tick.
+    /// computed on the next tick where the saved one was (a version-1 state
+    /// has no focus: there, around the player). The settings stay the
+    /// caller's (`from_snapshot`'s config): what the command line or the
+    /// running session says.
     pub fn restore(&mut self, snap: Snapshot) {
         self.tick = snap.tick;
         self.queue = snap.queue.into_iter().collect();
@@ -426,6 +507,8 @@ impl Sim {
         self.falling.sort_by_key(Falling::sort_key);
         self.active.clear();
         self.focus_chunk = None;
+        self.focus_pos = None;
+        self.pending_focus = snap.focus;
         self.ghosts.clear();
         self.overlay = Overlay::default();
         self.dirty = false;
@@ -461,6 +544,85 @@ impl Sim {
     pub fn set_radius(&mut self, radius_m: f64) {
         self.config.radius_m = radius_m;
         self.focus_chunk = None;
+        self.pending_focus = None;
+    }
+
+    /// Where the active region was (or, restored, will be) computed. None:
+    /// it is computed on the next tick from wherever the player is then.
+    pub fn focus(&self) -> Option<DVec3> {
+        self.pending_focus.or(self.focus_chunk.and(self.focus_pos))
+    }
+
+    /// A cheap digest of the tick state for the replay's periodic checks
+    /// (M2c), and the queue length it saw: the tick, the configuration,
+    /// the active region's focus, the queue, the frozen updates and the
+    /// falling blocks. It changes nothing, and it counts the changes still
+    /// waiting in the world's log as the updates they become (due next
+    /// tick, exactly as `absorb` schedules them), so it does not depend on
+    /// when they are absorbed: a save absorbs them early, a replay that
+    /// does not save absorbs them at the next tick, and both hash the
+    /// same. The edited chunks are left out; the replay digests them chunk
+    /// by chunk.
+    pub fn state_digest(&self, world: &World) -> (u64, usize) {
+        let changed = world.edits.take_changed();
+        world.edits.push_changed(changed.iter().copied());
+        let mut virtual_queue;
+        let queue = if changed.is_empty() {
+            &self.queue
+        } else {
+            virtual_queue = self.queue.clone();
+            let due = self.tick + 1;
+            for bp in changed {
+                virtual_queue.insert((due, PosKey::of(bp)));
+                for n in world.neighbours(bp) {
+                    virtual_queue.insert((due, PosKey::of(n)));
+                }
+            }
+            &virtual_queue
+        };
+        let mut h = crate::replay::Digest::new(b"sim-state");
+        h.u64(self.tick);
+        h.u64(self.config.radius_m.to_bits());
+        h.u64(self.config.enabled as u64);
+        h.u64(self.config.water_period);
+        match self.focus() {
+            Some(p) => {
+                h.u64(1);
+                h.u64(p.x.to_bits());
+                h.u64(p.y.to_bits());
+                h.u64(p.z.to_bits());
+            }
+            None => h.u64(0),
+        }
+        h.u64(queue.len() as u64);
+        for (due, key) in queue {
+            h.u64(*due);
+            h.u64(key.0);
+        }
+        h.u64(self.frozen.len() as u64);
+        for (ck, es) in &self.frozen {
+            h.bytes(&[ck.body, ck.face, ck.lod]);
+            h.u64(ck.cx as u64);
+            h.u64(ck.cy as u64);
+            h.u64(ck.cz as u64);
+            h.u64(es.len() as u64);
+            for (key, due) in es {
+                h.u64(*due);
+                h.u64(key.0);
+            }
+        }
+        let mut falling = self.falling.clone();
+        falling.sort_by_key(Falling::sort_key);
+        h.u64(falling.len() as u64);
+        for f in &falling {
+            h.u64(f.id as u64);
+            h.u64(f.face as u64);
+            h.u64(f.i as u64);
+            h.u64(f.j as u64);
+            h.u64(f.z.to_bits());
+            h.u64(f.vel.to_bits());
+        }
+        (h.finish(), queue.len())
     }
 
     /// The blocks to draw: those in flight plus, briefly, those that just
@@ -522,17 +684,39 @@ impl Sim {
             queue: self.queue.iter().copied().collect(),
             frozen: self.frozen.iter().map(|(k, v)| (*k, v.iter().map(|(key, due)| (*due, *key)).collect())).collect(),
             falling,
+            config: Some(self.config),
+            focus: self.focus(),
+            rules: Some(rules_digest(&world.registry)),
         }
     }
 
-    /// SHA-256 over the tick, the queue, the frozen updates, the falling
-    /// blocks and every edited chunk: two simulations in the same state
-    /// hash the same. Pending (unabsorbed) changes are not part of it;
-    /// call it after a tick or a snapshot.
-    pub fn state_hash(&self, edits: &EditStore) -> String {
+    /// SHA-256 over everything that decides the future (review 3 #4): the
+    /// tick, the settings (radius, on or off, water period), where the
+    /// active region was computed, the block rules (`rules_digest`; not
+    /// the colours), the queue, the frozen updates, the falling blocks,
+    /// and the content of every edited chunk that differs from the
+    /// generator's (review 3 #6: content, not history, so a chunk dug and
+    /// filled back hashes as untouched). Two simulations that hash the same
+    /// run the same from here. Pending (unabsorbed) changes are not part of
+    /// it; call it after a tick or a snapshot.
+    pub fn state_hash(&self, world: &World) -> String {
+        let edits = &world.edits;
         let mut h = Sha256::new();
-        h.update(b"triangulum-sim-state-1");
+        h.update(b"triangulum-sim-state-2");
         h.update(&self.tick.to_le_bytes());
+        h.update(&self.config.radius_m.to_bits().to_le_bytes());
+        h.update(&[self.config.enabled as u8]);
+        h.update(&self.config.water_period.to_le_bytes());
+        match self.focus() {
+            Some(p) => {
+                h.update(&[1]);
+                for x in [p.x, p.y, p.z] {
+                    h.update(&x.to_bits().to_le_bytes());
+                }
+            }
+            None => h.update(&[0]),
+        }
+        h.update(&rules_digest(&world.registry));
         let entries = |h: &mut Sha256, es: &BTreeSet<(u64, PosKey)>| {
             h.update(&(es.len() as u64).to_le_bytes());
             for (due, key) in es {
@@ -564,7 +748,25 @@ impl Sim {
             h.update(&f.z.to_bits().to_le_bytes());
             h.update(&f.vel.to_bits().to_le_bytes());
         }
-        let chunks = edits.snapshot_full();
+        // Only chunks whose content differs from the generator's: an edited
+        // chunk equal to its natural one is the same world.
+        let no_water = |l: &Option<Vec<u8>>| l.as_ref().is_none_or(|v| v.iter().all(|&x| x == 0));
+        let chunks: Vec<_> = edits
+            .snapshot_full()
+            .into_iter()
+            .filter(|c| {
+                let n = world.natural(c.key);
+                if n.to_dense() != c.ids {
+                    return true;
+                }
+                let nw = n.water_dense();
+                match (no_water(&c.water), no_water(&nw)) {
+                    (true, true) => false,
+                    (false, false) => c.water != nw,
+                    _ => true,
+                }
+            })
+            .collect();
         h.update(&(chunks.len() as u64).to_le_bytes());
         let mut buf = Vec::with_capacity(crate::world::chunk::VOXELS * 2);
         for c in &chunks {
@@ -579,11 +781,11 @@ impl Sim {
             }
             h.update(&buf);
             match &c.water {
-                Some(levels) => {
+                Some(levels) if !no_water(&c.water) => {
                     h.update(&[1]);
                     h.update(levels);
                 }
-                None => h.update(&[0]),
+                _ => h.update(&[0]),
             }
         }
         hex(&h.finish())
@@ -599,6 +801,7 @@ impl Sim {
         }
         let t0 = Instant::now();
         self.focus_chunk = Some(here);
+        self.focus_pos = Some(focus);
         self.active.clear();
         let r = self.config.radius_m;
         let c = CHUNK as i64;
@@ -648,6 +851,10 @@ impl Sim {
         self.absorb(world, next);
         self.tick = next;
         self.ghosts.retain(|(_, t)| next - *t < GHOST_TICKS);
+        // A restored state first gets back the region it was saved with.
+        if let Some(p) = self.pending_focus.take() {
+            self.refocus(world, p);
+        }
         self.refocus(world, focus);
 
         let upto = (self.tick, PosKey(u64::MAX));

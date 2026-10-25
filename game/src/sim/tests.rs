@@ -1,5 +1,6 @@
 use super::*;
 use crate::grid::Planet;
+use crate::world::EditStore;
 use crate::world::save::SaveDir;
 use crate::world::tests::{hills_ground, test_world};
 use std::sync::Arc;
@@ -35,10 +36,19 @@ fn snapshot_bytes_round_trip_and_reject_damage() {
         queue: vec![(78, PosKey(5)), (78, PosKey(9)), (80, PosKey(1))],
         frozen: vec![(ChunkKey::neisor(3, 0, 10, 11, 12), vec![(70, PosKey(123)), (71, PosKey(124))]), (ChunkKey::neisor(4, 0, 0, 0, 0), vec![])],
         falling: vec![Falling { id: 4, face: 2, i: 100, j: 200, z: 612.25, vel: -3.5 }, Falling { id: 5, face: 2, i: 100, j: 200, z: 615.0, vel: 0.0 }],
+        config: Some(SimConfig { radius_m: 37.5, enabled: false, water_period: 3 }),
+        focus: Some(DVec3::new(1.0e6, -2.5e6, 3.25e5)),
+        rules: Some([7; 32]),
     };
     let bytes = snap.to_bytes();
     assert_eq!(Snapshot::from_bytes(&bytes).unwrap(), snap);
-    assert_eq!(Snapshot::default().to_bytes().len(), 4 + 4 + 8 + 8 * 3);
+    // Version 2 adds one byte saying which parts follow.
+    assert_eq!(Snapshot::default().to_bytes().len(), 4 + 4 + 8 + 8 * 3 + 1);
+    // A version-1 file (no settings, focus or rules) still reads.
+    let mut v1 = Snapshot { config: None, focus: None, rules: None, ..snap.clone() }.to_bytes();
+    v1.pop();
+    v1[4..8].copy_from_slice(&1u32.to_le_bytes());
+    assert_eq!(Snapshot::from_bytes(&v1).unwrap(), Snapshot { config: None, focus: None, rules: None, ..snap.clone() });
     assert!(Snapshot::from_bytes(&bytes[..bytes.len() - 3]).is_err(), "truncated");
     let mut extra = bytes.clone();
     extra.push(0);
@@ -332,10 +342,10 @@ fn straight_run(radius: f64) -> (String, String, u64, u64) {
     let script = Script::new(&w);
     let mut sim = Sim::new(SimConfig { radius_m: radius, enabled: true, water_period: 1 });
     run_ticks(&w, &mut sim, &script, 0, MID);
-    let mid = sim.state_hash(&w.edits);
+    let mid = sim.state_hash(&w);
     run_ticks(&w, &mut sim, &script, MID, TICKS);
     assert!(sim.falling().is_empty(), "everything has landed by the end");
-    (mid, sim.state_hash(&w.edits), sim.stats.falls, sim.stats.landings)
+    (mid, sim.state_hash(&w), sim.stats.falls, sim.stats.landings)
 }
 
 #[test]
@@ -382,10 +392,88 @@ fn the_hash_is_the_same_across_a_save_and_a_reload_in_the_middle() {
     assert_eq!(report.chunks, written);
     let w2 = world_sharing(&w, edits);
     let mut sim2 = Sim::from_snapshot(sim.config, Snapshot::from_bytes(&dir.read_sim().unwrap().unwrap()).unwrap());
-    assert_eq!(sim2.state_hash(&w2.edits), sim.state_hash(&w.edits), "the reloaded state is the saved state");
+    assert_eq!(sim2.state_hash(&w2), sim.state_hash(&w), "the reloaded state is the saved state");
     run_ticks(&w2, &mut sim2, &script, MID, TICKS);
-    assert_eq!(sim2.state_hash(&w2.edits), straight);
+    assert_eq!(sim2.state_hash(&w2), straight);
     let _ = std::fs::remove_dir_all(&dir.path);
+}
+
+/// A second world over a copy of `w`'s edited chunks (no pending changes).
+fn copy_world(w: &World) -> World {
+    let edits = Arc::new(EditStore::new());
+    for d in w.edits.snapshot_full() {
+        edits.insert_chunk(d.key, d.ids, d.water, false);
+    }
+    world_sharing(w, edits)
+}
+
+/// Review 3 #4: the active region depends on where in its chunk it was
+/// computed, so a restore must bring that back; before, it was recomputed
+/// around wherever the player stood at the reload, and two states with
+/// the same hash simulated different cells.
+#[test]
+fn a_reload_keeps_the_active_region_it_was_computed_for() {
+    let w = test_world();
+    let (g, _) = site(&w);
+    let p = w.planet;
+    let ck = World::chunk_of(g).0;
+    let (i0, j0, k0) = ck.origin_blocks();
+    let at = |x: f64| p.pos(ck.face, i0 as f64 + x, j0 as f64 + 16.0, k0 as f64 + 16.0);
+    let (edge, middle) = (at(31.5), at(16.0));
+    let cfg = SimConfig { radius_m: 1.0, ..SimConfig::default() };
+    // A sand block in the air of the +i neighbour chunk: simulated from the
+    // edge's region, not from the middle's.
+    let (air, _, sand, _) = ids(&w);
+    let col = |k: u64| BlockPos { face: ck.face, i: (i0 + 33) as u32, j: (j0 + 16) as u32, k: k as u32 };
+    let k = (k0 + 1..k0 + 31).rev().find(|&k| w.block_at(col(k)) == air && w.block_at(col(k - 1)) == air).expect("air in the neighbour chunk");
+    let next = World::chunk_of(col(k)).0;
+    let mut probe = Sim::new(cfg);
+    probe.step(&w, middle);
+    let mut sim = Sim::new(cfg);
+    sim.step(&w, edge);
+    let from_edge = sim.active_chunks();
+    assert!(sim.is_active(next) && !probe.is_active(next), "the scenario needs a chunk the region holds from the edge only");
+    assert!(w.set_block(col(k), sand));
+    // Walk to the middle of the same chunk (no recompute), then save and restore.
+    sim.step(&w, middle);
+    assert_eq!(sim.active_chunks(), from_edge, "walking inside a chunk keeps the region");
+    let w2 = copy_world(&w);
+    let mut back = Sim::from_snapshot(cfg, Snapshot::from_bytes(&sim.snapshot(&w).to_bytes()).unwrap());
+    assert_eq!(back.state_hash(&w2), sim.state_hash(&w), "restored as saved");
+    for _ in 0..10 {
+        sim.step(&w, middle);
+        back.step(&w2, middle);
+    }
+    assert_eq!(back.active_chunks(), sim.active_chunks(), "the restored region is the saved one");
+    assert!(sim.stats.falls > 0, "the sand fell in the original");
+    assert_eq!(back.state_hash(&w2), sim.state_hash(&w), "equal hashes, equal futures");
+}
+
+/// Review 3 #4: what decides the future is in the hash: the region's
+/// radius, whether the simulation runs, the water period.
+#[test]
+fn the_hash_covers_the_simulation_settings() {
+    let w = test_world();
+    let base = Sim::new(SimConfig::default()).state_hash(&w);
+    for (what, cfg) in [
+        ("radius", SimConfig { radius_m: 50.0, ..SimConfig::default() }),
+        ("enabled", SimConfig { enabled: false, ..SimConfig::default() }),
+        ("water period", SimConfig { water_period: 3, ..SimConfig::default() }),
+    ] {
+        assert_ne!(Sim::new(cfg).state_hash(&w), base, "{what} is in the hash");
+    }
+    // The block rules are in it; the colours (look, hot-edited by Andrew's
+    // panel) are not.
+    let sim = Sim::new(SimConfig::default());
+    let with = |edit: &dyn Fn(&mut Vec<crate::world::BlockDef>)| {
+        let mut defs = w.registry.defs().to_vec();
+        edit(&mut defs);
+        World::new(w.generator.clone(), Arc::new(crate::world::Registry::from_defs(defs).unwrap()), w.edits.clone())
+    };
+    let no_gravity = with(&|d| d.iter_mut().find(|b| b.name == "sand").unwrap().gravity = false);
+    assert_ne!(sim.state_hash(&no_gravity), base, "sand that does not fall is another future");
+    let recoloured = with(&|d| d.iter_mut().find(|b| b.name == "sand").unwrap().color = [0.9, 0.1, 0.5]);
+    assert_eq!(sim.state_hash(&recoloured), base, "a colour is not");
 }
 
 /// Not part of `cargo test`: 5,041 sand blocks dropped at once, with the

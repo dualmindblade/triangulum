@@ -2,18 +2,19 @@
 //! egui HUD, block breaking and placing, and autosave.
 
 use crate::camera::Camera;
+use crate::controls::Controls;
 use crate::engine::{Engine, Preset};
-use crate::player::{Input, Mode, STEP};
+use crate::player::Mode;
 use crate::render::{DrawRecord, Renderer};
 use crate::session::Session;
 use crate::sim::draw::FallingDraws;
 use crate::stream::Streamer;
 use crate::ui::{EguiPaint, Hud, draw_hud, outline_segments};
-use std::collections::{HashSet, VecDeque};
+use std::collections::VecDeque;
 use std::sync::Arc;
 use std::time::Instant;
 use winit::application::ApplicationHandler;
-use winit::event::{DeviceEvent, ElementState, MouseButton, MouseScrollDelta, WindowEvent};
+use winit::event::{DeviceEvent, ElementState, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{CursorGrabMode, Window, WindowId};
@@ -26,6 +27,9 @@ pub struct AppOptions {
     /// Save the frame to this PNG and quit after `exit_after` seconds (for headless checks).
     pub screenshot: Option<String>,
     pub exit_after: Option<f64>,
+    /// Start recording a replay to this file at launch, as F10 does (M2c;
+    /// with `exit_after` it is stopped and written at the exit).
+    pub record: Option<String>,
 }
 
 struct Gfx {
@@ -37,28 +41,22 @@ struct Gfx {
     egui_paint: EguiPaint,
 }
 
-/// Holding a mouse button repeats its action every this many fixed steps
-/// (0.25 s), counted in simulation steps rather than wall time so a held
-/// click breaks the same blocks at the same steps whatever the frame rate
-/// (review #16; the first click still lands on its event).
-const REPEAT_STEPS: u64 = 15;
-
 struct App {
     session: Session,
     opts: Option<AppOptions>,
     gfx: Option<Gfx>,
     streamer: Option<Streamer>,
     egui_ctx: egui::Context,
-    keys: HashSet<KeyCode>,
+    /// Window events in, step-positioned game inputs out (M2c).
+    controls: Controls,
     last: Instant,
-    /// Fixed-step accumulator (s).
-    acc: f64,
+    /// The sky speed the window title shows.
+    title_speed: f64,
     opaque: Vec<DrawRecord>,
     water: Vec<DrawRecord>,
     captured: bool,
     vsync: bool,
     show_stats: bool,
-    preset: usize,
     presets: Vec<Preset>,
     /// (time, frame ms) over the last five seconds.
     frames: VecDeque<(Instant, f64)>,
@@ -68,10 +66,17 @@ struct App {
     screenshot: Option<String>,
     exit_after: Option<f64>,
     want_exit: bool,
-    /// The held button and the session step it last acted on.
-    mouse_held: Option<(MouseButton, u64)>,
     save_note: String,
     falling_draw: FallingDraws,
+    /// `--replay FILE --watch` (M2c): the replay drives the steps instead
+    /// of the keyboard and mouse.
+    replay: Option<WatchedReplay>,
+}
+
+struct WatchedReplay {
+    runner: crate::replay::Runner<'static>,
+    acc: f64,
+    reported: bool,
 }
 
 impl App {
@@ -105,51 +110,54 @@ impl App {
         }
     }
 
-    fn apply_preset(&mut self, i: usize) {
-        if self.presets.is_empty() {
-            return;
-        }
-        self.preset = i % self.presets.len();
-        let p = self.presets[self.preset].clone();
-        self.session.player.heading = p.heading_deg.to_radians();
-        self.session.player.pitch = p.pitch_deg.to_radians();
-        if p.alt_agl > 50.0 {
-            self.session.set_mode(Mode::Fly);
-            let ground = self.engine().ground(p.dir);
-            self.session.teleport(p.dir, Some(ground + p.alt_agl));
+    /// F10: start or stop recording a replay (M2c). The file goes to
+    /// `game/replays/`; the console, the window title and the stats panel
+    /// say where.
+    fn toggle_recording(&mut self) {
+        self.toggle_recording_to(None);
+    }
+
+    /// `path`: where a new recording goes (None: `game/replays/<world>-<time>.replay`).
+    fn toggle_recording_to(&mut self, path: Option<std::path::PathBuf>) {
+        if self.session.recording() {
+            match self.session.stop_recording() {
+                Ok(s) => {
+                    self.save_note = format!("replay saved: {} ({:.1} s, {:.1} MB)", s.path.display(), s.steps as f64 / 60.0, s.bytes as f64 / 1e6);
+                    println!("replay saved to {} ({} steps = {:.1} s, {} checks, {:.1} MB; play it with --replay)", s.path.display(), s.steps, s.steps as f64 / 60.0, s.checks, s.bytes as f64 / 1e6);
+                }
+                Err(e) => {
+                    self.save_note = format!("REPLAY FAILED: {e}");
+                    eprintln!("replay failed: {e}");
+                }
+            }
         } else {
-            self.session.set_mode(Mode::Walk);
-            self.session.teleport(p.dir, None);
+            let path = path.unwrap_or_else(|| crate::replay::default_path(&self.session.engine.config.name));
+            match self.session.start_recording(&path, "recorded in the app (F10)") {
+                Ok(p) => {
+                    self.save_note = format!("RECORDING replay (F10 stops): {}", p.display());
+                    println!("recording a replay to {} (F10 stops)", p.display());
+                }
+                Err(e) => {
+                    self.save_note = format!("REPLAY FAILED: {e}");
+                    eprintln!("replay failed: {e}");
+                }
+            }
         }
-        println!("preset {}: {}", self.preset, p.name);
+        self.update_title();
     }
 
-    fn input(&self) -> Input {
-        let k = &self.keys;
-        Input {
-            forward: k.contains(&KeyCode::KeyW),
-            back: k.contains(&KeyCode::KeyS),
-            left: k.contains(&KeyCode::KeyA),
-            right: k.contains(&KeyCode::KeyD),
-            jump: k.contains(&KeyCode::Space),
-            down: k.contains(&KeyCode::ControlLeft) || k.contains(&KeyCode::ControlRight),
-            sprint: k.contains(&KeyCode::ShiftLeft) || k.contains(&KeyCode::ShiftRight),
-        }
-    }
-
-    fn mouse_action(&mut self, button: MouseButton) {
-        match button {
-            MouseButton::Left => {
-                self.session.break_block();
-            }
-            MouseButton::Right => {
-                self.session.place_block();
-            }
-            _ => {}
-        }
+    fn update_title(&mut self) {
+        let Some(gfx) = &self.gfx else { return };
+        let speed = self.session.sky.speed;
+        self.title_speed = speed;
+        let rec = if self.session.recording() { " | REC replay (F10 stops)" } else { "" };
+        gfx.window.set_title(&format!("Triangulum | time {speed}x ([ slower, ] faster){rec}"));
     }
 
     fn save_on_exit(&mut self) {
+        if self.session.recording() {
+            self.toggle_recording();
+        }
         match self.session.save_now() {
             Ok(n) if n > 0 => println!("saved {n} chunk(s) to {}", self.session.save.as_ref().map_or("-".into(), |s| s.path.display().to_string())),
             Ok(_) => {}
@@ -161,28 +169,37 @@ impl App {
         let now = Instant::now();
         let dt = (now - self.last).as_secs_f64().min(0.25);
         self.last = now;
-        // Fixed-step player physics (the same step the harness uses).
-        self.acc += dt;
-        let input = self.input();
-        let mut steps = 0;
-        while self.acc >= STEP && steps < 8 {
-            self.session.step(&input, STEP);
-            if let Some((button, since)) = self.mouse_held {
-                if self.session.steps() - since >= REPEAT_STEPS {
-                    self.mouse_action(button);
-                    self.mouse_held = Some((button, self.session.steps()));
-                }
+        // Fixed 60 Hz steps (the same steps the harness and a replay take):
+        // the queued inputs go in at the next step, in order (M2c).
+        if let Some(w) = &mut self.replay {
+            // A watched replay: its own inputs, at real time.
+            w.acc += dt;
+            let mut n = 0;
+            while w.acc >= crate::player::STEP && n < crate::controls::MAX_STEPS_PER_FRAME && w.runner.advance(&mut self.session) {
+                w.acc -= crate::player::STEP;
+                n += 1;
             }
-            if let Some(gfx) = &mut self.gfx {
-                gfx.gpu.sky.clock.advance(STEP);
+            if n == crate::controls::MAX_STEPS_PER_FRAME {
+                w.acc = 0.0;
             }
-            self.acc -= STEP;
-            steps += 1;
+            if w.runner.done() && !w.reported {
+                w.reported = true;
+                let r = &w.runner.report;
+                println!("{}", r.text());
+                self.save_note = if r.ok() { format!("replay finished at step {}: reproduced exactly", r.steps) } else { format!("replay DIVERGED at step {} (see the console)", r.first.as_ref().map_or(0, |d| d.step)) };
+            }
+        } else {
+            self.controls.frame(&mut self.session, dt);
         }
-        if steps == 8 {
-            // Overloaded: drop the backlog rather than spiral. A replay (M2c)
-            // counts steps, not wall time, so this costs it nothing.
-            self.acc = 0.0;
+        if let Some(gfx) = &mut self.gfx {
+            gfx.gpu.sky.clock = self.session.sky;
+        }
+        if self.session.sky.speed != self.title_speed {
+            println!("time speed: {}x", self.session.sky.speed);
+            self.update_title();
+        }
+        if let Some(e) = self.session.recorder.as_ref().and_then(|r| r.error.clone()) {
+            self.save_note = format!("REPLAY FAILED: {e}");
         }
         // Autosave (debounced).
         match self.session.save_if_due(now) {
@@ -193,7 +210,7 @@ impl App {
                 eprintln!("save failed: {e}");
             }
         }
-        let cam = self.session.player.camera();
+        let cam = self.controls.camera(&self.session.player);
 
         let (Some(gfx), Some(streamer)) = (&mut self.gfx, &mut self.streamer) else { return };
         let frame = match gfx.surface.get_current_texture() {
@@ -288,7 +305,7 @@ impl App {
             water_tris: self.last_tris.1,
             draws: self.last_tris.2,
             vram_mb: self.gfx.as_ref().map_or(0.0, |g| g.gpu.resident_bytes() as f64 / 1e6),
-            preset: self.presets.get(self.preset).map_or("-".into(), |p| p.name.clone()),
+            preset: self.presets.get(self.controls.preset()).map_or("-".into(), |p| p.name.clone()),
             hide_water: engine.hide_water,
             captured: self.captured,
             mode: if p.mode == Mode::Walk { "walk".into() } else { "fly".into() },
@@ -347,7 +364,10 @@ impl ApplicationHandler for App {
         self.vsync = opts.vsync;
         self.gfx = Some(Gfx { window, surface, config, gpu, egui_state, egui_paint });
         el.set_control_flow(ControlFlow::Poll);
-        println!("app: WASD move, Space jump/up, Ctrl sneak (fly: down), Shift sprint, mouse look (click to capture, Esc releases), LMB break, RMB place, 1-9 block, G walk/fly, scroll fly speed, P preset, R to ground, V vsync, F water, H hud, [ slower time, ] faster time, Q quit");
+        if let Some(p) = opts.record {
+            self.toggle_recording_to(Some(p.into()));
+        }
+        println!("app: WASD move, Space jump/up, Ctrl sneak (fly: down), Shift sprint, mouse look (click to capture, Esc releases), LMB break, RMB place, 1-9 block, G walk/fly, scroll fly speed, P preset, R to ground, V vsync, F water, H hud, [ slower time, ] faster time, F10 record a replay, Q quit");
     }
 
     fn window_event(&mut self, el: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
@@ -361,75 +381,46 @@ impl ApplicationHandler for App {
             }
             WindowEvent::KeyboardInput { event, .. } => {
                 if let PhysicalKey::Code(code) = event.physical_key {
-                    if event.state == ElementState::Pressed {
-                        let first = self.keys.insert(code);
-                        if first {
-                            match code {
-                                KeyCode::Escape => self.set_capture(false),
-                                KeyCode::KeyQ => {
-                                    self.save_on_exit();
-                                    el.exit()
-                                }
-                                KeyCode::KeyP => self.apply_preset(self.preset + 1),
-                                KeyCode::KeyV => {
-                                    self.vsync = !self.vsync;
-                                    self.configure_surface();
-                                }
-                                KeyCode::KeyH => self.show_stats = !self.show_stats,
-                                KeyCode::BracketLeft | KeyCode::BracketRight => {
-                                    if let Some(gfx) = &mut self.gfx {
-                                        gfx.gpu.sky.clock.change_speed(code == KeyCode::BracketRight);
-                                        let speed = gfx.gpu.sky.clock.speed;
-                                        gfx.window.set_title(&format!("Triangulum | time {speed}x ([ slower, ] faster)"));
-                                        println!("time speed: {speed}x");
-                                    }
-                                }
-                                KeyCode::KeyF => {
-                                    // A view flag: the streamer keeps its chunks.
-                                    let hide = !self.engine().hide_water;
-                                    self.session.set_hide_water(hide);
-                                }
-                                KeyCode::KeyG => self.session.toggle_mode(),
-                                KeyCode::KeyR => {
-                                    let dir = self.session.player.pos.normalize();
-                                    self.session.set_mode(Mode::Walk);
-                                    self.session.teleport(dir, None);
-                                }
-                                KeyCode::Digit1 => self.session.select(0),
-                                KeyCode::Digit2 => self.session.select(1),
-                                KeyCode::Digit3 => self.session.select(2),
-                                KeyCode::Digit4 => self.session.select(3),
-                                KeyCode::Digit5 => self.session.select(4),
-                                KeyCode::Digit6 => self.session.select(5),
-                                KeyCode::Digit7 => self.session.select(6),
-                                KeyCode::Digit8 => self.session.select(7),
-                                KeyCode::Digit9 => self.session.select(8),
-                                _ => {}
+                    // Game keys queue their input for the next step (controls.rs);
+                    // the app's own keys act here.
+                    let pressed = event.state == ElementState::Pressed;
+                    // Watching a replay, only the app's own keys work.
+                    let first = if self.replay.is_some() { pressed && !event.repeat } else { self.controls.key(code, pressed, self.presets.len()) };
+                    if first {
+                        match code {
+                            KeyCode::Escape => self.set_capture(false),
+                            KeyCode::KeyQ => {
+                                self.save_on_exit();
+                                el.exit()
                             }
+                            KeyCode::KeyV => {
+                                self.vsync = !self.vsync;
+                                self.configure_surface();
+                            }
+                            KeyCode::KeyH => self.show_stats = !self.show_stats,
+                            KeyCode::F10 if self.replay.is_none() => self.toggle_recording(),
+                            _ => {}
                         }
-                    } else {
-                        self.keys.remove(&code);
                     }
                 }
             }
-            WindowEvent::MouseInput { state: ElementState::Pressed, button, .. } => {
-                if !self.captured {
+            WindowEvent::MouseInput { .. } | WindowEvent::MouseWheel { .. } if self.replay.is_some() => {}
+            WindowEvent::MouseInput { state, button, .. } => {
+                if state == ElementState::Pressed && !self.captured {
+                    // The capturing click is not game input.
                     self.set_capture(true);
-                } else {
-                    self.mouse_action(button);
-                    self.mouse_held = Some((button, self.session.steps()));
+                } else if self.captured || state == ElementState::Released {
+                    self.controls.button(button, state == ElementState::Pressed);
                 }
             }
-            WindowEvent::MouseInput { state: ElementState::Released, .. } => self.mouse_held = None,
             WindowEvent::MouseWheel { delta, .. } => {
-                let steps = match delta {
+                let lines = match delta {
                     MouseScrollDelta::LineDelta(_, y) => y as f64,
                     MouseScrollDelta::PixelDelta(p) => p.y / 40.0,
                 };
-                let p = &mut self.session.player;
-                p.fly_speed = (p.fly_speed * 1.3f64.powf(steps)).clamp(1.0, 5000.0);
+                self.controls.scroll(lines);
             }
-            WindowEvent::Focused(false) => self.mouse_held = None,
+            WindowEvent::Focused(false) => self.controls.focus_lost(),
             WindowEvent::Resized(_) => self.configure_surface(),
             WindowEvent::RedrawRequested => self.frame(),
             _ => {}
@@ -438,10 +429,8 @@ impl ApplicationHandler for App {
 
     fn device_event(&mut self, _el: &ActiveEventLoop, _id: winit::event::DeviceId, event: DeviceEvent) {
         if let DeviceEvent::MouseMotion { delta } = event {
-            if self.captured {
-                let p = &mut self.session.player;
-                p.heading += delta.0 * 0.0022;
-                p.pitch = (p.pitch - delta.1 * 0.0022).clamp(-1.55, 1.55);
+            if self.captured && self.replay.is_none() {
+                self.controls.motion(delta.0, delta.1);
             }
         }
     }
@@ -459,26 +448,40 @@ impl ApplicationHandler for App {
 }
 
 pub fn run(session: Session, opts: AppOptions) {
+    run_with(session, opts, None);
+}
+
+/// `--replay FILE --watch` (M2c): play a replay in the window at real
+/// time, checking it as it goes. Returns the exit code (0: reproduced).
+pub fn run_replay(session: Session, rep: crate::replay::Replay, opts: AppOptions) -> i32 {
+    // The window owns the runner until the process ends.
+    let rep: &'static crate::replay::Replay = Box::leak(Box::new(rep));
+    let runner = crate::replay::Runner::new(rep, &session);
+    let ok = run_with(session, opts, Some(WatchedReplay { runner, acc: 0.0, reported: false }));
+    if ok { 0 } else { 1 }
+}
+
+fn run_with(session: Session, opts: AppOptions, replay: Option<WatchedReplay>) -> bool {
     let el = EventLoop::new().unwrap();
     let presets = session.engine.presets();
     let (screenshot, exit_after) = (opts.screenshot.clone(), opts.exit_after);
     let egui_ctx = egui::Context::default();
     egui_ctx.all_styles_mut(|s| s.animation_time = 0.0);
+    let title_speed = session.sky.speed;
     let mut app = App {
         session,
         opts: Some(opts),
         gfx: None,
         streamer: None,
         egui_ctx,
-        keys: HashSet::new(),
+        controls: Controls::default(),
         last: Instant::now(),
-        acc: 0.0,
+        title_speed,
         opaque: Vec::new(),
         water: Vec::new(),
         captured: false,
         vsync: true,
         show_stats: true,
-        preset: 0,
         presets,
         frames: VecDeque::new(),
         cpu_ms: 0.0,
@@ -487,9 +490,10 @@ pub fn run(session: Session, opts: AppOptions) {
         screenshot,
         exit_after,
         want_exit: false,
-        mouse_held: None,
         save_note: String::new(),
         falling_draw: FallingDraws::default(),
+        replay,
     };
     el.run_app(&mut app).unwrap();
+    app.replay.as_ref().is_none_or(|w| w.runner.report.ok())
 }

@@ -226,6 +226,12 @@ pub fn startup() -> Startup {
         .clone()
 }
 
+/// The installed startup, if main installed one (tests run without; a
+/// replay records the calendar when there is one).
+pub fn installed() -> Option<Startup> {
+    STARTUP.get().cloned()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
