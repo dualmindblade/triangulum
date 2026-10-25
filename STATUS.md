@@ -13,12 +13,15 @@
   file** that plays back exactly. Astra's third review found edge cases;
   all but two minor ones are fixed.
 - **The one number** (RTX 2060, 1080p, 60 s test flight, idle machine):
-  **1,185 fps average, 578 fps for the worst 1% of frames, worst frame
-  7.0 ms.** The target is 60 fps (16.7 ms).
-- **New: press F1 for Andrew's look panel.** Sky, light, fog, water,
-  every block's colours and the terrain dials, live; *Save look* writes
-  them to files in git, so his look becomes everyone's. How it works, in
-  plain words: "For Andrew: the look panel" in `game/README.md`.
+  **1,134 fps average, 611 fps for the worst 1% of frames, worst frame
+  6.0 ms** (everything through M3b, 2026-10-25). The target is 60 fps
+  (16.7 ms).
+- **M3, Andrew's workshop: half done.** Press F1: the look panel (sky,
+  light, fog, water, block colours, terrain dials) and the block and
+  texture editor (add blocks, paint textures). *Save look* writes it all
+  to files in git, so his look becomes everyone's. In plain words: "For
+  Andrew" in `game/README.md`. Still to come: non-full blocks (slabs,
+  poles, plants) and parts inside blocks.
 - Analysis and plan: https://claude.ai/artifact/7q7Lk9YM4DZxCX5WfcvxPo ·
   grid comparison: https://claude.ai/artifact/7qz75zidRkhjMbVcKU3apY. The
   July docs are in `docs/archive/`; the old viewer still runs from
@@ -140,6 +143,18 @@
   a quarter of the memory they did. Replays recorded before this are
   refused (the simulation's rules changed); record new ones.
 
+- **M3b** (Opus, verified by Opus, merged): Andrew's block and texture
+  editor, in the look panel's Blocks section. He can add a block (name,
+  colour, solid or falls like sand), rename or hide one, and put any block
+  on keys 1-9. He paints each face's 16×16 texture in a pixel editor
+  (pencil, fill, pick colour, undo) or imports a PNG; every stroke shows on
+  the blocks in the world at once, and *Save look* writes the pictures and
+  `blocks.json`. Saves and replays made before a block was added still
+  load and play. Example textures (stone, dirt, grass) are included but
+  off; the default look is unchanged until he adds one. Driven in the
+  real window by `game/tools/window.ps1`, a new tool that lets agents
+  click and type in the game.
+
 **M1 is feature-complete.** The last step is yours: play it and tell me what
 feels wrong.
 
@@ -176,10 +191,8 @@ detail (still about 500 fps).
 
 ## In progress
 
-- **M3b, blocks and textures** (Opus): Andrew adds a new block from the
-  look panel, puts any block on the hotbar, and paints its textures in a
-  pixel editor (or imports a PNG). Existing saves keep loading. Nothing
-  changes in the default look until he adds textures.
+Nothing: paused for the week. The next steps are in
+`docs/handoffs/2026-10-25-week-end.md`.
 
 ## Waiting on you
 

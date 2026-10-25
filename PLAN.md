@@ -31,7 +31,7 @@ flight holds 60 fps at 1080p.
 | M1c-sky | Sky, sun, stars and fog from the old viewer, 24-minute days, day/night lighting | Astra | done |
 | M1c-stream | Non-overlapping coverage tree with incremental traversal (finer distant detail), review findings #8 #9 #11 #12 #15, chunk keys per body, sneak key, skipping buried chunks via `classify` | Fable | done |
 
-## M2 — Things fall and flow
+## M2 — Things fall and flow ✅ (2026-10-25)
 
 The simulation tick and block updates. Falling sand and gravel, collapses.
 Water with 256 levels and sloped surfaces, following Andrew's rules in
@@ -67,7 +67,7 @@ asking anyone.
 | Task | What | Who | State |
 |---|---|---|---|
 | M3a | Live look panel (F1): sky, light, fog, water, per-face block colours, distance detail, terrain dials as a preview world; `look.json` and `blocks.json` hot-reloaded; a screenshot button | Opus | done |
-| M3b | Block and texture editor: add blocks and set their physics in the panel, hotbar assignment, per-face 16×16 textures (texture array, hot-reloaded PNGs), an in-game pixel editor, saves stay compatible when blocks are added | Opus | started |
+| M3b | Block and texture editor: add blocks and set their physics in the panel, hotbar assignment, per-face 16×16 textures (texture array, hot-reloaded PNGs), an in-game pixel editor, saves stay compatible when blocks are added | Opus | done |
 
 ## M4 — Things that move
 
