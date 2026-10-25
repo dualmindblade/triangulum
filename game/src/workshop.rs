@@ -229,8 +229,10 @@ impl Workshop {
         if let Some(s) = self.set_speed.take() {
             gpu.sky.clock.speed = s;
         }
-        self.hour_now = local_hour(&gpu.sky.settings, gpu.sky.clock.seconds, lon);
-        self.speed_now = gpu.sky.clock.speed;
+        if self.open {
+            self.hour_now = local_hour(&gpu.sky.settings, gpu.sky.clock.seconds, lon);
+            self.speed_now = gpu.sky.clock.speed;
+        }
         // The look and the distance detail.
         if self.look_applied.as_ref() != Some(&self.look) {
             gpu.sky.look = self.look.clone();
@@ -534,7 +536,7 @@ impl Workshop {
                 "preview_world": self.previewing(),
             },
             "time": {
-                "local_hour": self.hour_now,
+                "local_hour": local_hour(&gpu.sky.settings, gpu.sky.clock.seconds, session.player.pos.y.atan2(session.player.pos.x)),
                 "speed": gpu.sky.clock.speed,
                 "clock_seconds": gpu.sky.clock.seconds,
             },

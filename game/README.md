@@ -36,8 +36,9 @@ everything you change shows straight away.
   made with the old terrain will not load any more, so only do it when you
   are sure.
 
-Each section has a reset button that puts it back the way it was before
-the panel existed.
+Sky and light, Water, Blocks and Distance detail each have a reset button
+that puts that section back to the look the game ships with (each block
+also has its own small reset); in Terrain, *Back to my world* does that.
 
 **Saving and sharing.** *Save look* writes your choices into two files:
 `game/assets/look.json` (sky, light, water, detail) and
