@@ -604,6 +604,44 @@ impl Session {
         sum
     }
 
+    /// Wet cells and level-1 cells in a box of cells relative to the feet
+    /// block, corners inclusive (for `wet_rel[...]` and `film_rel[...]`).
+    pub fn wet_in_box_rel(&self, a: (i64, i64, i64), b: (i64, i64, i64)) -> (u64, u64) {
+        let f = Frame::at(&self.engine.planet, self.player.pos);
+        let (ci, cj, ck) = f.feet_cell();
+        let (mut wet, mut film) = (0, 0);
+        for di in a.0.min(b.0)..=a.0.max(b.0) {
+            for dj in a.1.min(b.1)..=a.1.max(b.1) {
+                for dk in a.2.min(b.2)..=a.2.max(b.2) {
+                    let l = self.level_at(f.face, ci + di, cj + dj, ck + dk);
+                    wet += (l > 0) as u64;
+                    film += (l == 1) as u64;
+                }
+            }
+        }
+        (wet, film)
+    }
+
+    /// Set a box of cells relative to the feet block, corners inclusive (the
+    /// harness's `fill`: building a scene without a click per cell). Returns
+    /// the cells that changed.
+    pub fn fill_rel(&self, a: (i64, i64, i64), b: (i64, i64, i64), id: BlockId, level: Option<u8>) -> usize {
+        let f = Frame::at(&self.engine.planet, self.player.pos);
+        let (ci, cj, ck) = f.feet_cell();
+        let world = &self.engine.world;
+        let mut writes = Vec::new();
+        for di in a.0.min(b.0)..=a.0.max(b.0) {
+            for dj in a.1.min(b.1)..=a.1.max(b.1) {
+                for dk in a.2.min(b.2)..=a.2.max(b.2) {
+                    if let Some(bp) = world.resolve_block(f.face, ci + di, cj + dj, ck + dk) {
+                        writes.push((bp, id, level));
+                    }
+                }
+            }
+        }
+        world.commit_levels(&writes)
+    }
+
     /// Blocks in flight in the column DI, DJ from the feet (for `falling_rel[DI,DJ]` asserts).
     pub fn falling_in_column_rel(&self, di: i64, dj: i64) -> usize {
         let f = Frame::at(&self.engine.planet, self.player.pos);

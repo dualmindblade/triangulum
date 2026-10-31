@@ -65,6 +65,12 @@
 //!                           travel_faces, travel_cpu_avg_ms / p99 / max
 //!
 //! ---- world ---------------------------------------------------------
+//!   fill DI DJ DK DI2 DJ2 DK2 BLOCK [LEVEL]
+//!                           set a box of cells relative to the feet block,
+//!                           corners inclusive, at once (LEVEL: water's, 255
+//!                           if left out). A scene-building shortcut, written
+//!                           straight into the world: not a player input, so
+//!                           a replay being recorded notes it
 //!   water on|off            show or hide water (rebuilds the generator)
 //!   save                    write unsaved chunks now
 //!   reload                  save, drop every chunk and the edit store, and
@@ -94,6 +100,10 @@
 //!   log TEXT...             annotate the transcript
 //!   column DI DJ            print the blocks of a column near the feet
 //!                           (layers -4..+3 relative to the feet block)
+//!   levels DI DJ DI2 DJ2 DK print the water levels of one layer as a grid
+//!   heights DI DJ DI2 DJ2 DK_LOW DK_HIGH
+//!                           print how far above DK_LOW the top sand or
+//!                           gravel of each column stands, as a grid
 //!   assert FIELD [OP] VALUE [TOL]
 //!                           OP: == != < <= > >= ~ (approx, TOL default
 //!                           0.01); omitted means ==. VALUE: number,
@@ -124,6 +134,8 @@
 //!                              level 0..255 of a cell
 //!                           or water_rel[DI,DJ,DK,DI2,DJ2,DK2]  the total water
 //!                              (units) in that box of cells, corners inclusive
+//!                           or wet_rel[DI,DJ,DK,DI2,DJ2,DK2]  the water cells in
+//!                              that box, and film_rel[...] those at level 1
 //!                           or falling_rel[DI,DJ]  blocks in flight in that column
 //!                           or cover[F,I,J,K] / cover_rel[DI,DJ,DK]  what the
 //!                              streamer's cut shows at that block, after a
@@ -574,6 +586,16 @@ impl Run {
             }
             return Some(serde_json::Value::from(self.session.water_in_box_rel((v[0], v[1], v[2]), (v[3], v[4], v[5]))));
         }
+        for (prefix, film) in [("wet_rel[", false), ("film_rel[", true)] {
+            if let Some(inner) = field.strip_prefix(prefix).and_then(|r| r.strip_suffix(']')) {
+                let v: Vec<i64> = inner.split(',').map(|x| x.trim().parse().ok()).collect::<Option<_>>()?;
+                if v.len() != 6 {
+                    return None;
+                }
+                let (wet, level_one) = self.session.wet_in_box_rel((v[0], v[1], v[2]), (v[3], v[4], v[5]));
+                return Some(serde_json::Value::from(if film { level_one } else { wet }));
+            }
+        }
         if let Some(inner) = field.strip_prefix("cover[").and_then(|r| r.strip_suffix(']')) {
             let v: Vec<i64> = inner.split(',').map(|x| x.trim().parse().ok()).collect::<Option<_>>()?;
             if v.len() != 4 {
@@ -758,6 +780,48 @@ pub fn run_play(session: Session, opts: PlayOptions) -> i32 {
                     run.say(format!("  column face {} i {} j {} (feet layer {}): {}", f.face, ci, cj, ck, names.join(" ")));
                 }
                 _ => bad(&mut run, "column DI DJ"),
+            },
+            "levels" => match (num(0), num(1), num(2), num(3), num(4)) {
+                (Some(i0), Some(j0), Some(i1), Some(j1), Some(dk)) => {
+                    let (i0, j0, i1, j1, dk) = (i0 as i64, j0 as i64, i1 as i64, j1 as i64, dk as i64);
+                    run.say(format!("  water levels, layer {dk:+}, i {i0:+}..{i1:+} across, j {j1:+}..{j0:+} down:"));
+                    for dj in (j0..=j1).rev() {
+                        let row: Vec<String> = (i0..=i1).map(|di| format!("{:3}", run.session.level_rel(di, dj, dk))).collect();
+                        run.say(format!("  {}", row.join(" ")));
+                    }
+                }
+                _ => bad(&mut run, "levels DI DJ DI2 DJ2 DK"),
+            },
+            "heights" => match (num(0), num(1), num(2), num(3), num(4), num(5)) {
+                (Some(i0), Some(j0), Some(i1), Some(j1), Some(lo), Some(hi)) => {
+                    let (i0, j0, i1, j1, lo, hi) = (i0 as i64, j0 as i64, i1 as i64, j1 as i64, lo as i64, hi as i64);
+                    run.say(format!("  top of the powder above layer {lo:+}, i {i0:+}..{i1:+} across, j {j1:+}..{j0:+} down:"));
+                    for dj in (j0..=j1).rev() {
+                        let row: Vec<String> = (i0..=i1)
+                            .map(|di| {
+                                let top = (lo + 1..=hi).rev().find(|&dk| matches!(run.session.block_name_rel(di, dj, dk).as_str(), "sand" | "gravel"));
+                                top.map_or("  .".to_string(), |dk| format!("{:3}", dk - lo))
+                            })
+                            .collect();
+                        run.say(format!("  {}", row.join(" ")));
+                    }
+                }
+                _ => bad(&mut run, "heights DI DJ DI2 DJ2 DK_LOW DK_HIGH"),
+            },
+            "fill" => match (num(0), num(1), num(2), num(3), num(4), num(5), args.get(6)) {
+                (Some(a), Some(b), Some(c), Some(d), Some(e), Some(f), Some(name)) => match run.session.engine.registry.id(name) {
+                    Ok(id) => {
+                        let level = match num(7) {
+                            Some(l) => Some(l as u8),
+                            None if run.session.engine.registry.is_liquid(id) => Some(crate::sim::water::FULL),
+                            None => None,
+                        };
+                        let n = run.session.fill_rel((a as i64, b as i64, c as i64), (d as i64, e as i64, f as i64), id, level);
+                        run.say(format!("  fill: {n} cells of {name} changed"));
+                    }
+                    Err(e) => bad(&mut run, &e),
+                },
+                _ => bad(&mut run, "fill DI DJ DK DI2 DJ2 DK2 BLOCK [LEVEL]"),
             },
             "turn" => match (num(0), num(1)) {
                 (Some(h), Some(p)) => {
