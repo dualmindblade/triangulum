@@ -12,10 +12,11 @@
   diverting a river keeps the area wet. **F10 records a bug as a replay
   file** that plays back exactly. Astra's third review found edge cases;
   all but two minor ones are fixed.
-- **The one number** (RTX 2060, 1080p, 60 s test flight, idle machine):
-  **1,134 fps average, 611 fps for the worst 1% of frames, worst frame
-  6.0 ms** (everything through M3b, 2026-10-25). The target is 60 fps
-  (16.7 ms).
+- **The one number** (RTX 2060, 1080p, 60 s test flight): **920 fps
+  average, 425 fps for the worst 1% of frames, worst frame 8.2 ms**
+  (everything through the bug round, 2026-10-31). That's provisional: Plex
+  was transcoding during the run. The last idle number, through M3b, was
+  1,134 / 611 / 6.0. The target is 60 fps (16.7 ms).
 - **M3, Andrew's workshop: half done.** Press F1: the look panel (sky,
   light, fog, water, block colours, terrain dials) and the block and
   texture editor (add blocks, paint textures). *Save look* writes it all
@@ -196,6 +197,18 @@
   refused, with a message saying why. Saves load and stay still. Nobody has
   played it yet, so the feel is Andrew's to judge.
 
+- **B2** (Opus, verified by Opus, merged): the shores. Lakes keep their water
+  from orbit (78-85% of lake columns lost it at the coarsest detail levels;
+  none do now). The sea floor is the same block at every detail level, so
+  the bands are gone. Coasts are one clean line with a continuous beach about
+  70 m wide, built from the planet's own coastline instead of from noise, and
+  the torn inland sea at lat 3, lon -15 is one body of water with its islands.
+  A strict check of 50 million water cells found no water walls and nothing
+  perched. Saves and replays from before this are refused, because the terrain
+  changed; the build that made them still plays them. Thin lines remain where
+  a lake's surface steps between detail levels: the fix has a trade-off that's
+  Andrew's call.
+
 **M1 is feature-complete.** The last step is yours: play it and tell me what
 feels wrong.
 
@@ -238,7 +251,7 @@ tool, matched to his recordings in `docs/missions/2026-10-30-bug-round.md`.
 | Mission | Bugs | Who | State |
 |---|---|---|---|
 | B1 water surfaces | #1 water under a solid, #10 dip at the edge, review 3 #8 | Opus | merged; hairlines passed to B2 |
-| B2 shores | #2 lakes from space, #4 ocean bands, #5 beaches | Opus | running |
+| B2 shores | #2 lakes from space, #4 ocean bands, #5 beaches | Opus | merged; the lake step between detail levels is open |
 | B3 picking | #3 raycasting at cube seams and corners | Astra | merged |
 | B4 flow | #7 sliding powder and water, #9 level-1 film | Opus | merged |
 | B5 tools | #6 colourised mesh view, #11 map, screenshots and teleport | Opus | merged |
@@ -249,6 +262,29 @@ B6 (annotating screenshots and recordings), saves off the main thread.
 
 ## Waiting on you
 
+- **Your old save won't load.** The terrain changed, so `saves/Neisor` is
+  refused. It's untouched. Start a new world:
+  `cargo run --release -- --save saves/neisor2`.
+- **Try the new keys in a real window.** T, P, Shift+P, M, Shift+M, Esc, the
+  mouse wheel on the map, and clicking at cube corners were all driven by
+  test events, never by real hands. Tell me if any of them misbehave.
+- **Austin: Visual Studio needs repairing** when a restart suits you: restart,
+  then tick *Desktop development with C++* in the Visual Studio Installer, then
+  delete `game/.cargo/config.toml`. Until then the game builds from a linker
+  on `E:/triangulum-build/`.
+- **Andrew, from the bug round** (each is yours to judge by playing):
+  1. Poured water now dries up on flat ground in about three minutes. It's
+     the first time water leaves the world by itself. `--film seek` keeps it.
+  2. Sand rests at one block per block, pits in sand fill themselves in, and
+     river beds slump into a trench dug beside them. Is that the feel?
+  3. The beach is about 70 m wide, down from 300-400 m. All the dials are in
+     `game/src/worldgen/coast.rs`.
+  4. The sea floor past the shallows is one grey gravel at every detail
+     level: consistent now, but it's still the "single grey block".
+  5. Thin lines where a lake's surface steps between detail levels, or a low
+     curb of water beside land? The patch for the curb is
+     `docs/missions/B2-shores-evidence/coarse-levels-experiment.patch`.
+  6. Do the mesh view's colours and the map suit him?
 - **Andrew: the look panel is yours** (F1). Most of the art notes below
   are now dials he can turn himself: atmosphere height, night brightness,
   dusk colours, water colour, grass sides. *Save look*, then commit the

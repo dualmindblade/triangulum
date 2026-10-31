@@ -69,6 +69,17 @@ asking anyone.
 | M3a | Live look panel (F1): sky, light, fog, water, per-face block colours, distance detail, terrain dials as a preview world; `look.json` and `blocks.json` hot-reloaded; a screenshot button | Opus | done |
 | M3b | Block and texture editor: add blocks and set their physics in the panel, hotbar assignment, per-face 16×16 textures (texture array, hot-reloaded PNGs), an in-game pixel editor, saves stay compatible when blocks are added | Opus | done |
 
+Bug round from Andrew's first playthrough (`docs/missions/2026-10-30-bug-round.md`):
+
+| Task | What | Who | State |
+|---|---|---|---|
+| B1 | Water under solids, the shore dip, watertight water corners (review 3 #8) | Opus | done |
+| B2 | Lakes from space, one sea floor at every LOD, coherent coasts; generator v4 | Opus | done |
+| B3 | Picking follows the true ray across cube seams and corners | Astra | done |
+| B4 | Sand and water slide off ledges, the level-1 film drains or dries; `sim_rules` 3 | Opus | done |
+| B5 | Colourised mesh view (M), the T window (map, photos, places, teleport), P photos, repros | Opus | done |
+| Review 4 | M2c, M3a, hardening, M3b: 13 findings (`docs/reviews/2026-10-31-engine-review4-astra.md`) | Astra | done, findings open |
+
 ## M4 — Things that move
 
 Falling trees and Create-style contraptions that snap back into the grid.

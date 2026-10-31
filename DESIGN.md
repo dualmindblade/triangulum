@@ -45,6 +45,8 @@ with their OK; record the change here with the date.
 - Relief finer than planetgen's resolution comes from the engine's
   generator. Its roughness is a dial for Andrew.
 - Sampling is smooth everywhere: no visible raster texels or noise seams.
+- The coast is a smooth curve from the bake's coastline with bounded detail;
+  noise never decides where the sea ends (2026-10-31).
 - Keep the old world's character: geological strata (now as real blocks),
   biome surfaces, trees, rocks, caves, rivers, lakes, shores, ice.
   See `docs/feature-inventory.md`.
