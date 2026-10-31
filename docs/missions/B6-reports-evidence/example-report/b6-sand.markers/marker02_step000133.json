@@ -1,0 +1,539 @@
+{
+  "annotated": "marker02_step000133_annotated.png",
+  "annotations": {
+    "image": [
+      1920,
+      1080
+    ],
+    "marks": [
+      {
+        "colour": "blue",
+        "from": [
+          768.0,
+          324.0
+        ],
+        "to": [
+          1152.0,
+          594.0
+        ],
+        "tool": "box"
+      }
+    ]
+  },
+  "bake_sha256": "90735e721a63c903f12be013d151e4c8d24aea88dff111850c309a29de47ac34",
+  "blocks": {
+    "bedrock": {
+      "bottom": [
+        0.03,
+        0.028,
+        0.028
+      ],
+      "side": [
+        0.03,
+        0.028,
+        0.028
+      ],
+      "top": [
+        0.03,
+        0.028,
+        0.028
+      ]
+    },
+    "deep_ocean": {
+      "bottom": [
+        0.104,
+        0.145,
+        0.243
+      ],
+      "side": [
+        0.104,
+        0.145,
+        0.243
+      ],
+      "top": [
+        0.104,
+        0.145,
+        0.243
+      ]
+    },
+    "dirt": {
+      "bottom": [
+        0.18,
+        0.11,
+        0.06
+      ],
+      "side": [
+        0.18,
+        0.11,
+        0.06
+      ],
+      "top": [
+        0.18,
+        0.11,
+        0.06
+      ]
+    },
+    "dry_grass": {
+      "bottom": [
+        0.18,
+        0.11,
+        0.06
+      ],
+      "side": [
+        0.18,
+        0.11,
+        0.06
+      ],
+      "top": [
+        0.27,
+        0.28,
+        0.07
+      ]
+    },
+    "grass": {
+      "bottom": [
+        0.18,
+        0.11,
+        0.06
+      ],
+      "side": [
+        0.18,
+        0.11,
+        0.06
+      ],
+      "top": [
+        0.09,
+        0.26,
+        0.05
+      ]
+    },
+    "gravel": {
+      "bottom": [
+        0.25,
+        0.235,
+        0.215
+      ],
+      "side": [
+        0.25,
+        0.235,
+        0.215
+      ],
+      "top": [
+        0.25,
+        0.235,
+        0.215
+      ]
+    },
+    "ice": {
+      "bottom": [
+        0.48,
+        0.68,
+        0.82
+      ],
+      "side": [
+        0.48,
+        0.68,
+        0.82
+      ],
+      "top": [
+        0.48,
+        0.68,
+        0.82
+      ]
+    },
+    "limestone": {
+      "bottom": [
+        0.273,
+        0.281,
+        0.294
+      ],
+      "side": [
+        0.273,
+        0.281,
+        0.294
+      ],
+      "top": [
+        0.273,
+        0.281,
+        0.294
+      ]
+    },
+    "marker_red": {
+      "bottom": [
+        1.0,
+        0.01,
+        0.01
+      ],
+      "side": [
+        1.0,
+        0.01,
+        0.01
+      ],
+      "top": [
+        1.0,
+        0.01,
+        0.01
+      ]
+    },
+    "marker_white": {
+      "bottom": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "side": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "top": [
+        1.0,
+        1.0,
+        1.0
+      ]
+    },
+    "mudstone": {
+      "bottom": [
+        0.354,
+        0.316,
+        0.255
+      ],
+      "side": [
+        0.354,
+        0.316,
+        0.255
+      ],
+      "top": [
+        0.354,
+        0.316,
+        0.255
+      ]
+    },
+    "sand": {
+      "bottom": [
+        0.58,
+        0.48,
+        0.25
+      ],
+      "side": [
+        0.58,
+        0.48,
+        0.25
+      ],
+      "top": [
+        0.58,
+        0.48,
+        0.25
+      ]
+    },
+    "sandstone": {
+      "bottom": [
+        0.33,
+        0.284,
+        0.23
+      ],
+      "side": [
+        0.33,
+        0.284,
+        0.23
+      ],
+      "top": [
+        0.33,
+        0.284,
+        0.23
+      ]
+    },
+    "shale": {
+      "bottom": [
+        0.216,
+        0.232,
+        0.246
+      ],
+      "side": [
+        0.216,
+        0.232,
+        0.246
+      ],
+      "top": [
+        0.216,
+        0.232,
+        0.246
+      ]
+    },
+    "snow": {
+      "bottom": [
+        0.18,
+        0.11,
+        0.06
+      ],
+      "side": [
+        0.83,
+        0.85,
+        0.88
+      ],
+      "top": [
+        0.83,
+        0.85,
+        0.88
+      ]
+    },
+    "stone": {
+      "bottom": [
+        0.3,
+        0.29,
+        0.28
+      ],
+      "side": [
+        0.3,
+        0.29,
+        0.28
+      ],
+      "top": [
+        0.3,
+        0.29,
+        0.28
+      ]
+    },
+    "umber": {
+      "bottom": [
+        0.246,
+        0.223,
+        0.202
+      ],
+      "side": [
+        0.246,
+        0.223,
+        0.202
+      ],
+      "top": [
+        0.246,
+        0.223,
+        0.202
+      ]
+    },
+    "water": {
+      "bottom": [
+        0.015,
+        0.09,
+        0.26
+      ],
+      "side": [
+        0.015,
+        0.09,
+        0.26
+      ],
+      "top": [
+        0.015,
+        0.09,
+        0.26
+      ]
+    }
+  },
+  "build": {
+    "engine": "triangulum 0.1.0",
+    "git": "d132cd89a"
+  },
+  "edits": {
+    "chunks": 1,
+    "hash": "b97b7f5b21f99c29",
+    "sim_tick": 44
+  },
+  "format": "triangulum-shot",
+  "generator_version": 4,
+  "kind": "marker",
+  "look": {
+    "_comment": "Andrew's look: the render dials of the look panel (F1 in the game). Edit it here or in the panel; the game reloads it as soon as it changes. Colours are linear RGB 0..1. Block colours are in blocks.json, terrain in world.json. Missing fields take the default (the M1 look).",
+    "detail": {
+      "lod_factor": 5.0
+    },
+    "light": {
+      "corner_shadows": 0.45,
+      "moon_colour": [
+        0.4,
+        0.5,
+        0.72
+      ],
+      "moonlight": 1.0,
+      "night_light": 0.0,
+      "shadow_light": 0.1,
+      "side_shade": 0.9,
+      "sky_ambient": 0.4,
+      "sun_strength": 1.0,
+      "underside_shade": 0.55
+    },
+    "sky": {
+      "atmosphere_height_m": 639.7,
+      "fog_density_per_km": 0.2462,
+      "fog_strength": 0.7,
+      "horizon_colour": [
+        0.55,
+        0.7,
+        0.88
+      ],
+      "night_sky": 0.03,
+      "star_brightness": 1.0,
+      "sunset_colour": [
+        0.95,
+        0.55,
+        0.3
+      ],
+      "sunset_strength": 0.55,
+      "zenith_colour": [
+        0.1,
+        0.28,
+        0.62
+      ]
+    },
+    "water": {
+      "edge_opacity": 0.95,
+      "far_ocean_follows_water": true,
+      "glint": 0.6,
+      "glint_sharpness": 60.0,
+      "opacity": 0.62,
+      "underwater_colour": [
+        0.02,
+        0.07,
+        0.16
+      ],
+      "underwater_strength": 0.6
+    }
+  },
+  "marker": {
+    "n": 2,
+    "recording": "b6-sand.replay",
+    "step": 133,
+    "time_s": 2.216666666666667
+  },
+  "notes": "Second look from further along",
+  "png": "marker02_step000133.png",
+  "pose": {
+    "alt_agl_m": 2.9407664489845047,
+    "alt_m": 46.620000000009895,
+    "exact": "-41673.58975586993,80139.16810740788,-7208.482050887318,-0.6193514407483758,0.060642683430701005,4.254729868956341,1.6923787409636868,-0.1492668487310418,walk,1,0,0,20.0,3",
+    "ground_m": 43.67923355102539,
+    "heading_deg": 96.96615919488326,
+    "lat": -4.562776940312347,
+    "lon": 117.47511952837874,
+    "mode": "walk",
+    "pitch_deg": -8.552360453506383
+  },
+  "settle": {
+    "frames": 0,
+    "seconds": 0.0,
+    "settled": false
+  },
+  "sim_rules": 3,
+  "sky": {
+    "clock_exact": "990.9304144885082",
+    "clock_seconds": 990.9304144885082,
+    "local_hour": 9.50004796853515,
+    "season": 0.458192215728245,
+    "settings": {
+      "day_length_s": 1440.0,
+      "lunar_month_days": 7.0,
+      "months_per_season": 3,
+      "year_days": 84.0
+    },
+    "speed": 0.0,
+    "sun_dir": [
+      -0.8898499132281597,
+      0.41542797162541983,
+      0.18864446008040056
+    ]
+  },
+  "state": {
+    "alt": 45.0,
+    "alt_agl": 1.3207664489746094,
+    "block_below": "air",
+    "crosshair": null,
+    "dirty": 1,
+    "drying": 0,
+    "edits": 1,
+    "face": 2,
+    "falling": 0,
+    "falls": 2,
+    "fi": 107156.80198023055,
+    "fj": 57523.23306202049,
+    "fk": 557.0,
+    "flow": "slide=on film=seek+dry reach=8 dry=200",
+    "frozen": 0,
+    "ground": 43.67923355102539,
+    "head_in_water": false,
+    "heading": 96.96615919488326,
+    "hide_water": false,
+    "i": 107156,
+    "in_water": false,
+    "j": 57523,
+    "k": 557,
+    "landings": 2,
+    "lat": -4.562776940312347,
+    "lon": 117.47511952837874,
+    "mode": "walk",
+    "on_ground": true,
+    "pitch": -8.552360453506383,
+    "queued": 0,
+    "recording": true,
+    "refocus_ms": 0.723,
+    "saved_chunks": 0,
+    "selected": 4,
+    "selected_block": "sand",
+    "sim_active_chunks": 359,
+    "sim_enabled": true,
+    "sim_radius": 112.0,
+    "sim_tick": 44,
+    "sky_seconds": 990.9304144885082,
+    "sky_speed": 0.0,
+    "slides": 0,
+    "speed": 4.299999999998656,
+    "steps": 133,
+    "tick_ms_avg": 0.01959090909090909,
+    "tick_ms_last": 0.001,
+    "tick_ms_max": 0.775,
+    "vanished": 0,
+    "vel_up": 3.4008641451865884e-6,
+    "water_balance": 0,
+    "water_displaced": 0,
+    "water_dried": 0,
+    "water_in": 0,
+    "water_lost": 0,
+    "water_moved": 0,
+    "water_out": 0,
+    "water_period": 1,
+    "water_placed": 0,
+    "water_removed": 0,
+    "water_updates_last": 0,
+    "water_writes": 0,
+    "x": -41673.58975586993,
+    "y": 80139.16810740788,
+    "z": -7208.482050887318
+  },
+  "taken_utc": "20261031-093623",
+  "terrain": {
+    "landform": 1.0,
+    "preview_world": false,
+    "roughness": 1.0,
+    "vertical_scale": 0.014215855959663126
+  },
+  "texture_size": 16,
+  "title": "",
+  "version": 1,
+  "view": {
+    "fov_deg": 59.99999999999999,
+    "height": 1080,
+    "hide_water": false,
+    "hud": false,
+    "mesh_view": "normal",
+    "width": 1920
+  },
+  "world": {
+    "block_size_m": 1.0,
+    "columns_per_face": 131072,
+    "landform": 1.0,
+    "name": "Neisor",
+    "roughness": 1.0,
+    "sea_level": 512,
+    "seed": 42,
+    "vertical_scale": null,
+    "world_height": 2048
+  }
+}
