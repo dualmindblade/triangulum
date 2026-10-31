@@ -19,6 +19,30 @@
 //!    it levelled with, and water that nothing moves differs from every
 //!    lateral neighbour by at most 1: "resting water may lean up to 1/256".
 //!
+//! 3. **Slide** (B4, Andrew's #7). A cell that can neither fall nor spread,
+//!    with a free cell beside it whose floor is open (replaceable and not
+//!    full), moves half its level, rounded up, straight into the cell below
+//!    that free cell, as much as fits. This is what moves the level-1 cell at
+//!    a ledge, which is only 1 above the air beside it, so the spread can
+//!    never move it. Anything thicker gets there by spreading into the free
+//!    cell and falling out of it next tick. Of several ledges the lowest of
+//!    `choice` goes.
+//! 4. **The film** (B4, Andrew's #9). What is left at level 1 is not at a
+//!    ledge, and what the rule does with it is `Flow::film`:
+//!    - `seek`: it looks along the four straight lines from the cell, through
+//!      dry cells, up to `film_reach` cells, and its unit goes to the nearest
+//!      drop, straight into the cell below it: the slide, from further off.
+//!    - `merge`: no cell is wetted with fewer than 2 units, so a spread never
+//!      thins an edge to 1, and a level-1 cell gives its unit to its wettest
+//!      neighbour. Water beads up.
+//!    - `dry`: it dries, one to three `film_dry_ticks` after it came to rest
+//!      (`Sim::drying`), unless it leans on water that is not a puddle: the
+//!      thicker water it touches reaches the boundary or runs to more than
+//!      `PUDDLE_CELLS` cells (`Sim::may_dry`). So a puddle dries away from
+//!      its edge, and a lake or a fed trickle keeps its edge and comes to
+//!      rest. The units are counted (`SimStats::water_dried`).
+//!    - `seek+dry`, the default: what has nowhere to go dries.
+//!
 //! Updates are applied in a deterministic order with a tick-local overlay:
 //! a cell processed later in the same tick sees the writes of earlier ones,
 //! and every write is committed in one batch at the end of the tick. A cell
@@ -51,8 +75,36 @@
 //! more (it always has: the lowest included neighbour is at least 2 below
 //! the cell). Phi is a non-negative integer, so only finitely many moves
 //! can happen: no cycle, no squirming. The tests check Phi strictly falls
-//! on every tick in which any unit moves (`water_potential`). The argument
-//! is for a closed body; the active region's boundary (below) can supply
+//! on every tick in which any unit moves (`water_potential`).
+//!
+//! A slide moves d units from layer k to layer k - 1, exactly like a fall:
+//! that they land one column over changes nothing in Phi, which sees only
+//! layers and levels. With B the level below, d <= L and B + d <= 255, so
+//! Phi changes by -A d + 2 d (B - L + d) <= -A d + 2 d * 254, the same bound,
+//! and drops by at least (1024 - 508) d > 0. So the reason water comes to
+//! rest is unchanged: every move either goes down a layer or evens out a
+//! layer. That is why a slide is one move into the lower cell and not a
+//! sideways step and then a fall: a sideways step of the last unit leaves
+//! the sum of squares as it was, and Phi would stand still on that tick.
+//! A `seek` is the same move from further along a dry line, so the same
+//! bound holds for it: that is why it goes straight to the lower cell.
+//!
+//! Drying removes a unit from a level-1 cell at layer k: Phi drops by
+//! A k + 1. It is the only move that wakes neighbours without going down or
+//! levelling, and it cannot run forever: a cell dries only from a puddle
+//! that the boundary does not feed, so all the water it can ever take was
+//! already there.
+//!
+//! `merge` moves water uphill, so it needs its own potential: `film_potential`
+//! adds `FILM_WEIGHT` = 510 to Phi for every level-1 cell. A merge of level 1
+//! into level l drops that by 510 for the cell it empties (and 510 more if
+//! l = 1) and adds at most 2 * 254 + 1 = 509 for the squares. A spread never
+//! makes more level-1 cells than it removes, since none is wetted with less
+//! than 2 and a level-1 cell it levels with is raised. A fall can add one (a
+//! remainder of 1), at most 510 + 505 over a drop of 1024. So that potential
+//! strictly falls in `merge`, and the tests check it.
+//!
+//! The argument is for a closed body; the active region's boundary (below) can supply
 //! and absorb water, and a river flowing in at one side and out at the
 //! other is a steady flow by design, not a failure to settle.
 //!
@@ -71,7 +123,7 @@
 //! `SimStats::water_in` / `water_out`; the tests check that the water inside
 //! changes by exactly in - out.
 
-use super::{PosKey, Sim};
+use super::{PosKey, Sim, choice, lateral};
 use crate::grid::BlockPos;
 use crate::world::edits::WATER_FULL;
 use crate::world::{BlockId, EditStore, World};
@@ -80,6 +132,11 @@ use crate::world::{BlockId, EditStore, World};
 pub const FULL: u8 = WATER_FULL;
 /// Weight of the layer in the potential: more than 2 * 254 (see the module doc).
 pub const POTENTIAL_LAYER_WEIGHT: u64 = 1024;
+/// What a level-1 cell adds to the potential under `Film::Merge`.
+pub const FILM_WEIGHT: u64 = 510;
+/// The largest body a film may dry from (`Sim::may_dry`): a poured block is
+/// about 60 cells of level 2 or more, a pond past this is not a puddle.
+pub const PUDDLE_CELLS: usize = 256;
 
 /// How an active cell sees a neighbour in an inactive chunk.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -124,9 +181,28 @@ pub fn water_potential(edits: &EditStore) -> u64 {
     phi
 }
 
+/// `water_potential` plus `FILM_WEIGHT` per level-1 cell: the quantity that
+/// strictly falls under `Film::Merge` (the module doc).
+pub fn film_potential(edits: &EditStore) -> u64 {
+    let film: u64 = edits.snapshot_full().iter().filter_map(|c| c.water.as_ref()).map(|w| w.iter().filter(|&&l| l == 1).count() as u64).sum();
+    water_potential(edits) + FILM_WEIGHT * film
+}
+
 /// Total water (units) over every edited chunk.
 pub fn water_total(edits: &EditStore) -> u64 {
     edits.snapshot_full().iter().filter_map(|c| c.water.as_ref()).map(|w| w.iter().map(|&l| l as u64).sum::<u64>()).sum()
+}
+
+/// The next cell on a straight line from `prev` through `cur`, across
+/// chunk borders, cube edges and cube corners. Over a cube edge the line's
+/// way in the new face's frame is the one opposite the way it came in.
+fn straight_on(world: &World, prev: BlockPos, cur: BlockPos) -> Option<BlockPos> {
+    if prev.face == cur.face {
+        return world.resolve_block(cur.face, 2 * cur.i as i64 - prev.i as i64, 2 * cur.j as i64 - prev.j as i64, cur.k as i64);
+    }
+    let around = lateral(world, cur);
+    let came_from = around.iter().position(|n| *n == Some(prev))?;
+    around[came_from ^ 1]
 }
 
 impl Sim {
@@ -188,6 +264,9 @@ impl Sim {
         if !reg.is_replaceable(id) {
             return;
         }
+        if start == 0 && self.config.flow.slide {
+            self.wake_beside_drop(world, p);
+        }
         let flux = self.stats.water_in + self.stats.water_out;
         let mut level = start;
         if level < FULL && p.k + 1 < world.planet.height {
@@ -225,6 +304,194 @@ impl Sim {
         self.finish_cell(world, p, start, level, flux);
     }
 
+    /// An empty cell has been notified. If it has room below it may just have
+    /// become a way down for what rests beside it, which is diagonal to the
+    /// change and heard nothing: wake that water and powder for next tick.
+    fn wake_beside_drop(&mut self, world: &World, p: BlockPos) {
+        if p.k == 0 {
+            return;
+        }
+        let (bid, bl) = self.cell(world, BlockPos { k: p.k - 1, ..p });
+        if !world.registry.is_replaceable(bid) || bl >= FULL {
+            return;
+        }
+        let next = self.tick + 1;
+        for n in lateral(world, p).into_iter().flatten() {
+            let (id, level) = self.cell(world, n);
+            if level > 0 || world.registry.has_gravity(id) {
+                self.queue.insert((next, PosKey::of(n)));
+                self.dirty = true;
+            }
+        }
+    }
+
+    /// Steps 3 and 4: the level left after a slide off a ledge, or from a
+    /// level-1 cell under `seek` after a run to one further off along a
+    /// straight dry line (the module doc): the nearest wins, then the lowest
+    /// of `choice`. A line that leaves the region waits for that chunk.
+    fn water_slide(&mut self, world: &World, p: BlockPos, beside: &[Option<BlockPos>; 4], level: u8) -> u8 {
+        if p.k == 0 {
+            return level;
+        }
+        let flow = self.config.flow;
+        let reach = if level == 1 && flow.film.seeks() { flow.film_reach.max(1) } else { 1 };
+        let key = PosKey::of(p);
+        let reg = world.registry.clone();
+        let mut best: Option<((u32, u64), BlockPos, u8)> = None;
+        let mut outside = [None; 4];
+        for (way, first) in beside.iter().enumerate() {
+            let Some(mut cur) = *first else { continue };
+            let mut prev = p;
+            for dist in 1..=reach {
+                if best.is_some_and(|b| b.0.0 < dist) {
+                    break;
+                }
+                if !self.is_active_block(cur) {
+                    // At one step `wake_new_pairs` takes this pair when the
+                    // chunk joins; further on, the cells between are dry.
+                    if dist > 1 {
+                        outside[way] = Some(World::chunk_of(cur).0);
+                    }
+                    break;
+                }
+                let (nid, nl) = self.cell(world, cur);
+                if !reg.is_replaceable(nid) || nl >= if dist == 1 { level } else { 1 } {
+                    break;
+                }
+                let low = BlockPos { k: cur.k - 1, ..cur };
+                if !self.is_active_block(low) {
+                    outside[way] = Some(World::chunk_of(low).0);
+                    break;
+                }
+                let (bid, bl) = self.cell(world, low);
+                if reg.is_replaceable(bid) && bl < FULL {
+                    let rank = (dist, choice(key, PosKey::of(low), self.tick));
+                    if best.is_none_or(|b| rank < b.0) {
+                        best = Some((rank, low, bl));
+                    }
+                    break;
+                }
+                let Some(next) = straight_on(world, prev, cur) else { break };
+                prev = cur;
+                cur = next;
+            }
+        }
+        let Some((_, low, bl)) = best else {
+            for c in outside.into_iter().flatten() {
+                self.wait_for(c, key);
+            }
+            return level;
+        };
+        let d = level.div_ceil(2).min(FULL - bl);
+        self.write(world, low, bl + d, Receipt::Fall);
+        self.overlay.moved += d as u64;
+        level - d
+    }
+
+    /// `Film::Merge`: the level-1 cell gives its unit to its wettest
+    /// neighbour with room, ties by `choice`. The level left.
+    fn water_merge(&mut self, world: &World, p: BlockPos, beside: &[Option<BlockPos>; 4]) -> u8 {
+        let key = PosKey::of(p);
+        let mut best: Option<((u8, u64), BlockPos)> = None;
+        for n in beside.iter().flatten() {
+            if !self.is_active_block(*n) {
+                continue;
+            }
+            let (id, nl) = self.cell(world, *n);
+            if world.registry.is_replaceable(id) && nl >= 1 && nl < FULL {
+                let rank = (nl, u64::MAX - choice(key, PosKey::of(*n), self.tick));
+                if best.is_none_or(|b| rank > b.0) {
+                    best = Some((rank, *n));
+                }
+            }
+        }
+        let Some(((nl, _), n)) = best else { return 1 };
+        self.write(world, n, nl + 1, Receipt::Spread);
+        self.overlay.moved += 1;
+        0
+    }
+
+    /// `Film::Dry`: a level-1 cell at rest waits to dry. Due between one and
+    /// three drying times from now, on a beat of its own, so a film dries in
+    /// patches over time instead of all in one tick, and a cell notified
+    /// again in the same stretch files the same entry.
+    fn plan_drying(&mut self, p: BlockPos) {
+        let t = self.config.flow.film_dry_ticks.max(1);
+        let key = PosKey::of(p);
+        let due = (self.tick + t).div_ceil(t) * t + choice(key, key, 0) % t;
+        if self.drying.insert((due, key)) {
+            self.dirty = true;
+        }
+    }
+
+    /// May this level-1 cell dry? Not if the thicker water it leans on is a
+    /// body rather than a puddle: walking the cells of level 2 and more that
+    /// connect to it on this layer, it may not reach the boundary's water or
+    /// run past `PUDDLE_CELLS`. That keeps the edge of a lake and of a fed
+    /// trickle, where drying would draw water in for ever.
+    fn may_dry(&self, world: &World, p: BlockPos) -> bool {
+        let mut cells = vec![p];
+        let mut seen: crate::grid::FastSet<PosKey> = Default::default();
+        let mut at = 0;
+        while at < cells.len() {
+            let c = cells[at];
+            at += 1;
+            for n in lateral(world, c).into_iter().flatten() {
+                if !self.is_active_block(n) {
+                    if matches!(self.boundary_cell(world, n), Boundary::Water { level, .. } if level >= 2) {
+                        return false;
+                    }
+                    continue;
+                }
+                let (id, l) = self.cell(world, n);
+                if world.registry.is_replaceable(id) && l >= 2 && seen.insert(PosKey::of(n)) {
+                    if cells.len() > PUDDLE_CELLS {
+                        return false;
+                    }
+                    cells.push(n);
+                }
+            }
+        }
+        true
+    }
+
+    /// Dry the films whose time has come. A cell outside the region goes
+    /// with the frozen updates and files again when it wakes.
+    pub(super) fn dry_films(&mut self, world: &World) {
+        let due: Vec<(u64, PosKey)> = self.drying.range(..=(self.tick, PosKey(u64::MAX))).copied().collect();
+        for e in &due {
+            self.drying.remove(e);
+        }
+        self.dirty = true;
+        for (_, key) in due {
+            let p = key.pos();
+            if !self.is_active_block(p) {
+                self.wait_for(World::chunk_of(p).0, key);
+                continue;
+            }
+            let (_, level) = self.cell(world, p);
+            if level == 1 && !self.room_below(world, p) && self.may_dry(world, p) {
+                self.write(world, p, 0, Receipt::Own);
+                self.stats.water_dried += 1;
+            }
+        }
+    }
+
+    /// Water here would fall: the cell below takes it, or drains it at the
+    /// boundary.
+    fn room_below(&self, world: &World, p: BlockPos) -> bool {
+        if p.k == 0 {
+            return false;
+        }
+        let below = BlockPos { k: p.k - 1, ..p };
+        if self.is_active_block(below) {
+            let (bid, bl) = self.cell(world, below);
+            world.registry.is_replaceable(bid) && bl < FULL
+        } else {
+            matches!(self.boundary_cell(world, below), Boundary::Water { level: bl, drains: true } if bl < FULL)
+        }
+    }
+
     /// Record a cell's own new level; a cell that exchanged water with the
     /// boundary and came out where it started (a steady throughflow: in
     /// from a reservoir, on into a drain) writes nothing but still runs
@@ -257,10 +524,9 @@ impl Sim {
         }
         let flux = self.stats.water_in + self.stats.water_out;
         let mut level = start;
-        let (i, j, k) = (p.i as i64, p.j as i64, p.k as i64);
-        let lateral: [Option<BlockPos>; 4] = [(-1, 0), (1, 0), (0, -1), (0, 1)].map(|(di, dj)| world.resolve_block(p.face, i + di, j + dj, k));
+        let beside = lateral(world, p);
         // Reservoirs beside the cell: pairwise, half the difference.
-        for n in lateral.iter().flatten() {
+        for n in beside.iter().flatten() {
             if !self.is_active_block(*n)
                 && let Boundary::Water { level: ln, .. } = self.boundary_cell(world, *n)
                 && ln >= level.saturating_add(2)
@@ -274,19 +540,12 @@ impl Sim {
         // Down first: a cell that water fell into this tick may still have
         // room below (its own fall step ran before it was filled); it falls
         // next tick instead of spreading now.
-        let can_fall = p.k > 0 && {
-            let below = BlockPos { k: p.k - 1, ..p };
-            if self.is_active_block(below) {
-                let (bid, bl) = self.cell(world, below);
-                reg.is_replaceable(bid) && bl < FULL
-            } else {
-                matches!(self.boundary_cell(world, below), Boundary::Water { level: bl, drains: true } if bl < FULL)
-            }
-        };
+        let can_fall = self.room_below(world, p);
+        let mut spread = false;
         if level >= 2 && !can_fall {
             // Candidates: (level, neighbour order, cell, is a boundary drain).
             let mut cands: Vec<(u8, usize, BlockPos, bool)> = Vec::with_capacity(4);
-            for (idx, n) in lateral.iter().enumerate() {
+            for (idx, n) in beside.iter().enumerate() {
                 let Some(n) = n else { continue };
                 if self.is_active_block(*n) {
                     let (nid, nl) = self.cell(world, *n);
@@ -299,13 +558,12 @@ impl Sim {
                     cands.push((nl, idx, *n, true));
                 }
             }
-            if !cands.is_empty() {
-                cands.sort_by_key(|c| (c.0, c.1));
-                let mut total = level as u32;
-                let mut count = 1u32;
-                let mut included = 0usize;
-                for c in &cands {
-                    // Include while the neighbour is at or below the running mean.
+            cands.sort_by_key(|c| (c.0, c.1));
+            // Water-filling: the lowest neighbours, while each is at or below
+            // the running mean.
+            let fill = |cands: &[(u8, usize, BlockPos, bool)]| {
+                let (mut total, mut count, mut included) = (level as u32, 1u32, 0usize);
+                for c in cands {
                     if c.0 as u32 * count <= total {
                         total += c.0 as u32;
                         count += 1;
@@ -314,6 +572,15 @@ impl Sim {
                         break;
                     }
                 }
+                (total, count, included)
+            };
+            // Merge: a dry cell is only ever wetted with 2 or more, so nothing
+            // spreads that would have to leave it less.
+            if self.config.flow.film.merges() && (fill(&cands).0 / fill(&cands).1) < 2 {
+                cands.retain(|c| c.0 > 0);
+            }
+            if !cands.is_empty() {
+                let (total, count, included) = fill(&cands);
                 let m = total / count;
                 let r = total - m * count; // < count, so at most `included` units
                 for (n, c) in cands[..included].iter().enumerate() {
@@ -327,6 +594,18 @@ impl Sim {
                     self.overlay.moved += d as u64;
                 }
                 level = m as u8;
+                spread = true;
+            }
+        }
+        if level > 0 && !can_fall && !spread && self.config.flow.slide {
+            level = self.water_slide(world, p, &beside, level);
+        }
+        if level == 1 && !can_fall {
+            let film = self.config.flow.film;
+            if film.merges() {
+                level = self.water_merge(world, p, &beside);
+            } else if film.dries() {
+                self.plan_drying(p);
             }
         }
         self.finish_cell(world, p, start, level, flux);

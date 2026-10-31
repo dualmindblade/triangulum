@@ -42,12 +42,37 @@
 //! `Falling` entity in its own column, accelerating under the player's
 //! gravity to a terminal speed, and lands in the first cell above a
 //! non-replaceable one, written back through `World::set_block`. Columns
-//! keep their shape (DESIGN.md, "Things that move" 1): the entity never
-//! leaves (face, i, j). Removing the block notifies the one above, which
-//! falls a tick later, so a column drains from the bottom in a chain and
-//! lands in order. Falling blocks do not collide with each other or the
-//! player in flight; if something is built into the cell a block is in, it
-//! settles in the first free cell above.
+//! keep their shape (DESIGN.md, "Things that move" 1): an entity never
+//! leaves (face, i, j) once it is falling. Removing the block notifies the
+//! one above, which falls a tick later, so a column drains from the bottom
+//! in a chain and lands in order. Falling blocks do not collide with each
+//! other or the player in flight; if something is built into the cell a
+//! block is in, it settles in the first free cell above.
+//!
+//! Sliding (B4, Andrew's #7). A resting block with a free cell beside it and
+//! a free cell below that one moves over and falls: it becomes a `Falling`
+//! in the neighbouring column at its own height. So powder comes to rest
+//! with no two lateral neighbour columns more than one block apart. Every
+//! slide of a tick is decided against the same world, after that tick's
+//! falls and before anything else moves, and the way a block goes when it
+//! has several is the lowest of `choice`, a pure function of the two cells
+//! and the tick: neither the order the blocks ran in nor the lattice's axes
+//! decide it. A slide needs a free cell of its own below the free cell:
+//! the blocks already in flight in that column, and the slides that won it
+//! this tick, have theirs first (lowest `choice` first), and a block that
+//! finds none tries again next tick. So every slide ends at least one layer
+//! lower, the sum of the blocks' layers falls, and a heap cannot cycle or
+//! jitter. Without that, four blocks round a one-cell pit would all go and
+//! stack above where they started. A block whose only way lies through a
+//! chunk outside the region waits where it is,
+//! and its update waits under that chunk (`frozen`), so it is saved and goes
+//! when the region arrives.
+//!
+//! The way a slide opens: digging the cell below the free cell does not
+//! notify the block beside it (they are diagonal). The free cell is
+//! notified, and an empty cell with room below wakes the water and the
+//! powder beside it (`Sim::wake_beside_drop`), so the news travels one tick
+//! later without four more neighbours on every change.
 
 pub mod draw;
 pub mod water;
@@ -65,8 +90,9 @@ pub use water::Boundary;
 /// refuses to play it rather than diverge. 1: M2a to M2c. 2: M2-hardening
 /// (review 3): a region that grows wakes both sides of the pairs it takes
 /// in (#3), a steady throughflow at the boundary stays scheduled (#9), and
-/// falling blocks wait at the region's edge (#7).
-pub const RULES_VERSION: u32 = 2;
+/// falling blocks wait at the region's edge (#7). 3: B4 (Andrew's #7 and #9):
+/// powder and water slide off a ledge, and what becomes of a level-1 film.
+pub const RULES_VERSION: u32 = 3;
 
 /// Simulation rate.
 pub const TICK_HZ: u32 = 20;
@@ -83,6 +109,104 @@ const GHOST_TICKS: u64 = 5;
 /// Ticks kept for the average cost.
 const COST_WINDOW: usize = 100;
 
+/// What becomes of level-1 water, which the 2-level rule cannot move
+/// (Andrew's #9; `--film`, `sim film`). water.rs has the rules and the
+/// findings say how each behaves: Andrew chooses by playing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Film {
+    /// Nothing more than the slide: the film stays.
+    Keep,
+    /// A level-1 cell runs to the nearest drop within `Flow::film_reach`.
+    Seek,
+    /// Thin water pulls together: no cell is wetted with less than 2, and a
+    /// level-1 cell gives its unit to its wettest neighbour.
+    Merge,
+    /// A level-1 cell dries after `Flow::film_dry_ticks`.
+    Dry,
+    /// Seek, and what has nowhere to go dries.
+    SeekDry,
+}
+
+impl Film {
+    pub const ALL: [Film; 5] = [Film::Keep, Film::Seek, Film::Merge, Film::Dry, Film::SeekDry];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Film::Keep => "keep",
+            Film::Seek => "seek",
+            Film::Merge => "merge",
+            Film::Dry => "dry",
+            Film::SeekDry => "seek+dry",
+        }
+    }
+
+    pub fn parse(name: &str) -> Result<Self, String> {
+        Self::ALL.into_iter().find(|f| f.name() == name).ok_or_else(|| format!("bad film rule {name:?}: keep, seek, merge, dry or seek+dry"))
+    }
+
+    pub fn seeks(self) -> bool {
+        matches!(self, Film::Seek | Film::SeekDry)
+    }
+    pub fn dries(self) -> bool {
+        matches!(self, Film::Dry | Film::SeekDry)
+    }
+    pub fn merges(self) -> bool {
+        self == Film::Merge
+    }
+}
+
+/// How powder and water move beyond straight down (B4). Part of `SimConfig`,
+/// so it is saved, hashed and replayed with the other settings.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Flow {
+    /// Andrew's #7: powder and water go sideways and down into a lower open
+    /// space directly beside them. Off (`--no-slide`, `sim slide off`) is
+    /// the rule before: straight down only.
+    pub slide: bool,
+    /// Andrew's #9.
+    pub film: Film,
+    /// How many cells away along a straight dry line a level-1 cell finds a
+    /// drop under `Film::Seek` (`--film-reach`). 1 is the plain slide.
+    pub film_reach: u32,
+    /// How long a level-1 cell waits to dry under `Film::Dry`: between this
+    /// and three times this many ticks (`--film-dry-s`, in seconds).
+    pub film_dry_ticks: u64,
+}
+
+impl Default for Flow {
+    fn default() -> Self {
+        Self { slide: true, film: Film::SeekDry, film_reach: 8, film_dry_ticks: 200 }
+    }
+}
+
+impl Flow {
+    /// The rules before B4: straight down, and the film stays.
+    pub fn before() -> Self {
+        Self { slide: false, film: Film::Keep, ..Self::default() }
+    }
+
+    /// `key=value` words: how a save and a replay write these settings.
+    pub fn text(&self) -> String {
+        format!("slide={} film={} reach={} dry={}", if self.slide { "on" } else { "off" }, self.film.name(), self.film_reach, self.film_dry_ticks)
+    }
+
+    /// `text` back; a setting left out keeps its default.
+    pub fn parse(words: &[&str]) -> Result<Self, String> {
+        let mut f = Self::default();
+        for w in words {
+            match w.split_once('=') {
+                Some(("slide", "on")) => f.slide = true,
+                Some(("slide", "off")) => f.slide = false,
+                Some(("film", name)) => f.film = Film::parse(name)?,
+                Some(("reach", n)) => f.film_reach = n.parse().map_err(|_| format!("bad film reach {n:?}"))?,
+                Some(("dry", n)) => f.film_dry_ticks = n.parse().ok().filter(|t| *t > 0).ok_or_else(|| format!("bad film drying time {n:?}"))?,
+                _ => return Err(format!("bad flow setting {w:?}")),
+            }
+        }
+        Ok(f)
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct SimConfig {
     /// Radius of the active region around the player, metres.
@@ -93,11 +217,12 @@ pub struct SimConfig {
     /// multiple of this and wait for the next one otherwise. 1 is a cell
     /// per tick (20 cells per second); Andrew's dial for the flow speed.
     pub water_period: u64,
+    pub flow: Flow,
 }
 
 impl Default for SimConfig {
     fn default() -> Self {
-        Self { radius_m: 112.0, enabled: true, water_period: 1 }
+        Self { radius_m: 112.0, enabled: true, water_period: 1, flow: Flow::default() }
     }
 }
 
@@ -116,6 +241,27 @@ struct Overlay {
     exchanged: FastSet<PosKey>,
     /// Units moved this tick (falls, spreads, boundary flows).
     moved: u64,
+}
+
+/// Which of a cell's possible moves goes first when it has several: the
+/// lowest of this over the moves (SplitMix64's finaliser). A pure function
+/// of the two cells and the tick, all of it recorded, so a direction depends
+/// on no iteration order and on no axis of the lattice.
+#[inline]
+pub(crate) fn choice(from: PosKey, to: PosKey, tick: u64) -> u64 {
+    let mut x = from.0 ^ to.0.rotate_left(23) ^ tick.wrapping_mul(0x9E37_79B9_7F4A_7C15);
+    x = (x ^ (x >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    x = (x ^ (x >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    x ^ (x >> 31)
+}
+
+/// The four cells beside `p` on its layer, across chunk borders, cube edges
+/// and cube corners. Index 0 and 1 are opposite ways (-i, +i), as are 2 and 3
+/// (-j, +j), in `p`'s own face's frame.
+#[inline]
+pub(crate) fn lateral(world: &World, p: BlockPos) -> [Option<BlockPos>; 4] {
+    let (i, j, k) = (p.i as i64, p.j as i64, p.k as i64);
+    [(-1, 0), (1, 0), (0, -1), (0, 1)].map(|(di, dj)| world.resolve_block(p.face, i + di, j + dj, k))
 }
 
 /// The canonical position key the queue sorts by: face, i, j, k packed so
@@ -193,10 +339,12 @@ pub struct Snapshot {
     pub config: Option<SimConfig>,
     pub focus: Option<DVec3>,
     pub rules: Option<[u8; 32]>,
+    /// Version 3 (B4): level-1 cells waiting to dry.
+    pub drying: Vec<(u64, PosKey)>,
 }
 
 const SNAPSHOT_MAGIC: &[u8; 4] = b"TRSM";
-const SNAPSHOT_VERSION: u32 = 2;
+const SNAPSHOT_VERSION: u32 = 3;
 
 /// The SHA-256 of the block definitions the simulation's rules read: each
 /// id's name and its solid, liquid, gravity and replaceable flags. Colours
@@ -232,7 +380,7 @@ pub fn rules_extend(reg: &crate::world::Registry, digest: &[u8; 32]) -> bool {
 
 impl Snapshot {
     pub fn is_empty(&self) -> bool {
-        self.queue.is_empty() && self.frozen.is_empty() && self.falling.is_empty()
+        self.queue.is_empty() && self.frozen.is_empty() && self.falling.is_empty() && self.drying.is_empty()
     }
 
     pub fn to_bytes(&self) -> Vec<u8> {
@@ -266,11 +414,15 @@ impl Snapshot {
             w.extend_from_slice(&f.vel.to_bits().to_le_bytes());
         }
         // Version 2: a presence byte, then each part present.
-        w.push(self.config.is_some() as u8 | (self.focus.is_some() as u8) << 1 | (self.rules.is_some() as u8) << 2);
+        w.push(self.config.is_some() as u8 | (self.focus.is_some() as u8) << 1 | (self.rules.is_some() as u8) << 2 | (!self.drying.is_empty() as u8) << 3);
         if let Some(c) = &self.config {
             w.extend_from_slice(&c.radius_m.to_bits().to_le_bytes());
             w.push(c.enabled as u8);
             w.extend_from_slice(&c.water_period.to_le_bytes());
+            // Version 3: the flow settings, as their text.
+            let flow = c.flow.text();
+            w.extend_from_slice(&(flow.len() as u32).to_le_bytes());
+            w.extend_from_slice(flow.as_bytes());
         }
         if let Some(p) = self.focus {
             for x in [p.x, p.y, p.z] {
@@ -279,6 +431,9 @@ impl Snapshot {
         }
         if let Some(r) = &self.rules {
             w.extend_from_slice(r);
+        }
+        if !self.drying.is_empty() {
+            entries(&mut w, &self.drying);
         }
         w
     }
@@ -289,8 +444,8 @@ impl Snapshot {
             return Err("not a simulation state file".into());
         }
         let version = r.u32()?;
-        if version != 1 && version != SNAPSHOT_VERSION {
-            return Err(format!("simulation state version {version}, this build reads 1 and {SNAPSHOT_VERSION}"));
+        if !(1..=SNAPSHOT_VERSION).contains(&version) {
+            return Err(format!("simulation state version {version}, this build reads 1 to {SNAPSHOT_VERSION}"));
         }
         let tick = r.u64()?;
         let queue = r.entries()?;
@@ -323,9 +478,10 @@ impl Snapshot {
             falling.push(Falling { id, face, i, j, z, vel });
         }
         let (mut config, mut focus, mut rules) = (None, None, None);
+        let mut drying = Vec::new();
         if version >= 2 {
             let parts = r.take(1)?[0];
-            if parts & !7 != 0 {
+            if parts & !15 != 0 {
                 return Err(format!("bad simulation state parts {parts:#x}"));
             }
             if parts & 1 != 0 {
@@ -339,7 +495,17 @@ impl Snapshot {
                 if !radius_m.is_finite() || radius_m < 0.0 || water_period == 0 {
                     return Err(format!("bad simulation settings: radius {radius_m}, water period {water_period}"));
                 }
-                config = Some(SimConfig { radius_m, enabled, water_period });
+                // Older states have no flow settings; what they carry is
+                // only for the note at load, and this build's rules apply
+                // from here on (`Session::load_sim`).
+                let flow = if version >= 3 {
+                    let n = r.u32()? as usize;
+                    let text = std::str::from_utf8(r.take(n)?).map_err(|_| "flow settings are not text".to_string())?;
+                    Flow::parse(&text.split_whitespace().collect::<Vec<_>>())?
+                } else {
+                    Flow::default()
+                };
+                config = Some(SimConfig { radius_m, enabled, water_period, flow });
             }
             if parts & 2 != 0 {
                 let p = DVec3::new(f64::from_bits(r.u64()?), f64::from_bits(r.u64()?), f64::from_bits(r.u64()?));
@@ -351,11 +517,14 @@ impl Snapshot {
             if parts & 4 != 0 {
                 rules = Some(r.take(32)?.try_into().unwrap());
             }
+            if parts & 8 != 0 {
+                drying = r.entries()?;
+            }
         }
         if r.at != b.len() {
             return Err(format!("{} trailing bytes after simulation state", b.len() - r.at));
         }
-        Ok(Self { tick, queue, frozen, falling, config, focus, rules })
+        Ok(Self { tick, queue, frozen, falling, config, focus, rules, drying })
     }
 }
 
@@ -405,6 +574,8 @@ pub struct SimStats {
     /// Updates whose rule ran.
     pub processed: u64,
     pub falls: u64,
+    /// Blocks that moved over a ledge (a slide, then a fall in the next column).
+    pub slides: u64,
     pub landings: u64,
     /// Blocks that found no free cell above when their cell was taken.
     pub vanished: u64,
@@ -429,6 +600,8 @@ pub struct SimStats {
     /// no room above (lost under a solid ceiling).
     pub water_displaced: u64,
     pub water_lost: u64,
+    /// Units of film that dried (B4, `Film::Dry`): water that left the world.
+    pub water_dried: u64,
     /// Water cell updates run last tick.
     pub water_updates_last: u32,
     /// Last tick's cost by phase (microseconds): the water rule's two
@@ -444,7 +617,7 @@ impl SimStats {
     /// inside the active region changed by, in units, if the rule itself
     /// conserved it (the tests check it did).
     pub fn water_balance(&self) -> i64 {
-        self.water_in as i64 - self.water_out as i64 + self.water_placed as i64 - self.water_removed as i64 - self.water_lost as i64
+        self.water_in as i64 - self.water_out as i64 + self.water_placed as i64 - self.water_removed as i64 - self.water_lost as i64 - self.water_dried as i64
     }
 }
 
@@ -478,6 +651,9 @@ pub struct Sim {
     frozen: BTreeMap<ChunkKey, BTreeMap<PosKey, u64>>,
     /// Sorted by (column, height) after every tick.
     falling: Vec<Falling>,
+    /// Level-1 cells waiting to dry: (due tick, position), apart from the
+    /// queue because a film waiting is settled water, not work to do.
+    drying: BTreeSet<(u64, PosKey)>,
     active: FastSet<ChunkKey>,
     focus_chunk: Option<ChunkKey>,
     /// The exact position the active region was last computed for: the
@@ -510,6 +686,7 @@ impl Sim {
             queue: BTreeSet::new(),
             frozen: BTreeMap::new(),
             falling: Vec::new(),
+            drying: BTreeSet::new(),
             active: FastSet::default(),
             focus_chunk: None,
             focus_pos: None,
@@ -547,6 +724,7 @@ impl Sim {
         }
         self.falling = snap.falling;
         self.falling.sort_by_key(Falling::sort_key);
+        self.drying = snap.drying.into_iter().collect();
         self.active.clear();
         self.focus_chunk = None;
         self.focus_pos = None;
@@ -566,6 +744,10 @@ impl Sim {
     pub fn queued(&self) -> usize {
         self.queue.len()
     }
+    /// Level-1 cells waiting to dry.
+    pub fn drying_count(&self) -> usize {
+        self.drying.len()
+    }
     pub fn frozen_count(&self) -> usize {
         self.frozen.values().map(|s| s.len()).sum()
     }
@@ -581,7 +763,7 @@ impl Sim {
         self.dirty
     }
     pub fn has_state(&self) -> bool {
-        !(self.queue.is_empty() && self.frozen.is_empty() && self.falling.is_empty())
+        !(self.queue.is_empty() && self.frozen.is_empty() && self.falling.is_empty() && self.drying.is_empty())
     }
 
     pub fn set_radius(&mut self, radius_m: f64) {
@@ -628,6 +810,7 @@ impl Sim {
         h.u64(self.config.radius_m.to_bits());
         h.u64(self.config.enabled as u64);
         h.u64(self.config.water_period);
+        h.bytes(self.config.flow.text().as_bytes());
         match self.focus() {
             Some(p) => {
                 h.u64(1);
@@ -665,6 +848,11 @@ impl Sim {
             h.u64(f.z.to_bits());
             h.u64(f.vel.to_bits());
         }
+        h.u64(self.drying.len() as u64);
+        for (due, key) in &self.drying {
+            h.u64(*due);
+            h.u64(key.0);
+        }
         (h.finish(), queue.len())
     }
 
@@ -679,7 +867,7 @@ impl Sim {
     /// One line for the HUD and the harness transcript.
     pub fn describe(&self) -> String {
         format!(
-            "sim {}  tick {}  falling {}  queued {}  frozen {}  active {} chunks  water {} updates, {} moved, in {} out {}  tick cost {:.3} ms (avg {:.3}, max {:.3})",
+            "sim {}  tick {}  falling {}  queued {}  frozen {}  active {} chunks  water {} updates, {} moved, in {} out {}, {} drying, {} dried  tick cost {:.3} ms (avg {:.3}, max {:.3})",
             if self.config.enabled { "on" } else { "off" },
             self.tick,
             self.falling.len(),
@@ -690,6 +878,8 @@ impl Sim {
             self.stats.water_moved,
             self.stats.water_in,
             self.stats.water_out,
+            self.drying.len(),
+            self.stats.water_dried,
             self.stats.last_us as f64 / 1e3,
             self.stats.avg_us() / 1e3,
             self.stats.max_us as f64 / 1e3
@@ -730,6 +920,7 @@ impl Sim {
             config: Some(self.config),
             focus: self.focus(),
             rules: Some(rules_digest(&world.registry)),
+            drying: self.drying.iter().copied().collect(),
         }
     }
 
@@ -750,6 +941,7 @@ impl Sim {
         h.update(&self.config.radius_m.to_bits().to_le_bytes());
         h.update(&[self.config.enabled as u8]);
         h.update(&self.config.water_period.to_le_bytes());
+        h.update(self.config.flow.text().as_bytes());
         match self.focus() {
             Some(p) => {
                 h.update(&[1]);
@@ -797,6 +989,7 @@ impl Sim {
             h.update(&f.z.to_bits().to_le_bytes());
             h.update(&f.vel.to_bits().to_le_bytes());
         }
+        entries(&mut h, &self.drying);
         // Only chunks whose content differs from the generator's: an edited
         // chunk equal to its natural one is the same world. Whether it is
         // is kept per chunk until the chunk changes (the comparison
@@ -1058,8 +1251,16 @@ impl Sim {
         self.tick = next;
         self.ghosts.retain(|(_, t)| next - *t < GHOST_TICKS);
         // A restored state first gets back the region it was saved with.
+        // A game starts at its spawn, not where it was saved, so the next
+        // line can jump the whole region. That is a load, not a walk: nothing
+        // around the player ran against a boundary that moved, so no pair
+        // wakes (under the slide they could move, and a save would stir with
+        // nobody touching it). Its frozen updates still run.
         if let Some(p) = self.pending_focus.take() {
             self.refocus(world, p);
+            if self.focus_chunk != Some(World::chunk_of(world.planet.block_of_pos(focus)).0) {
+                self.region_known = false;
+            }
         }
         self.refocus(world, focus);
 
@@ -1094,19 +1295,27 @@ impl Sim {
                 water.push((d, key));
             }
         }
-        for bp in gravity {
+        for &bp in &gravity {
             self.fall_rule(world, bp);
+        }
+        if self.config.flow.slide {
+            self.powder_slides(world, &gravity);
         }
         self.stats.water_updates_last = 0;
         self.stats.water_rule_us = 0;
         self.stats.water_commit_us = 0;
-        if !water.is_empty() {
-            let period = self.config.water_period.max(1);
+        let period = self.config.water_period.max(1);
+        let dries = self.tick % period == 0 && self.drying.first().is_some_and(|e| e.0 <= self.tick);
+        if !water.is_empty() || dries {
             if self.tick % period == 0 {
-                // Pass 1, bottom-up: falls. Pass 2, alternating direction
-                // every water step: spreads (water.rs).
+                // First what has waited long enough dries. Pass 1, bottom-up:
+                // falls. Pass 2, alternating direction every water step:
+                // spreads (water.rs).
                 let t1 = Instant::now();
                 self.stats.water_updates_last = water.len() as u32;
+                if dries {
+                    self.dry_films(world);
+                }
                 for &(_, key) in &water {
                     self.water_fall(world, key.pos());
                 }
@@ -1153,6 +1362,95 @@ impl Sim {
             self.stats.falls += 1;
             self.dirty = true;
         }
+    }
+
+    /// The slide (the module doc). Every decision reads the world as this
+    /// tick's falls left it and none of them writes, so no block's choice
+    /// depends on whether another ran first; then they all go, those that
+    /// have a cell of their own. `due` is this tick's powder cells, some of
+    /// which have just fallen.
+    fn powder_slides(&mut self, world: &World, due: &[BlockPos]) {
+        let reg = world.registry.clone();
+        let mut moves: Vec<(u64, BlockPos, BlockPos, BlockId)> = Vec::new();
+        for &p in due {
+            let id = world.block_at(p);
+            if !reg.has_gravity(id) || p.k == 0 || reg.is_replaceable(world.block_at(BlockPos { k: p.k - 1, ..p })) {
+                continue;
+            }
+            let key = PosKey::of(p);
+            let mut best: Option<(u64, BlockPos)> = None;
+            let mut outside = [None; 8];
+            let mut waits = 0;
+            for n in lateral(world, p).into_iter().flatten() {
+                let low = BlockPos { k: n.k - 1, ..n };
+                if !reg.is_replaceable(world.block_at(n)) || !reg.is_replaceable(world.block_at(low)) {
+                    continue;
+                }
+                let mut inside = true;
+                for c in [World::chunk_of(n).0, World::chunk_of(low).0] {
+                    if !self.active.contains(&c) {
+                        outside[waits] = Some(c);
+                        waits += 1;
+                        inside = false;
+                    }
+                }
+                let rank = choice(key, PosKey::of(n), self.tick);
+                if inside && best.is_none_or(|b| rank < b.0) {
+                    best = Some((rank, n));
+                }
+            }
+            match best {
+                Some((rank, n)) => moves.push((rank, p, n, id)),
+                None => {
+                    for c in outside.into_iter().flatten() {
+                        self.wait_for(c, key);
+                    }
+                }
+            }
+        }
+        if moves.is_empty() {
+            return;
+        }
+        // Each block needs a free cell of its own below the free cell. What
+        // is in flight in the column has its cell already; among this
+        // tick's slides the lowest `choice` goes first, so the winner is a
+        // function of the cells and the tick, not of who ran first.
+        moves.sort_unstable_by_key(|m| (m.0, PosKey::of(m.1)));
+        let mut taken: FastMap<PosKey, u32> = FastMap::default();
+        for f in &self.falling {
+            *taken.entry(f.column()).or_default() += 1;
+        }
+        let air = world.generator.blocks.air;
+        let mut clear = Vec::with_capacity(moves.len());
+        let mut next = Vec::new();
+        for (_, p, n, id) in moves {
+            let column = PosKey::of(BlockPos { k: 0, ..n });
+            let ahead = taken.get(&column).copied().unwrap_or(0);
+            let room = (1..=ahead + 1).all(|d| d <= n.k && reg.is_replaceable(world.block_at(BlockPos { k: n.k - d, ..n })));
+            if room {
+                *taken.entry(column).or_default() += 1;
+                clear.push((p, air));
+                next.push(Falling { id, face: n.face, i: n.i, j: n.j, z: n.k as f64, vel: 0.0 });
+            } else {
+                self.queue.insert((self.tick + 1, PosKey::of(p)));
+                self.dirty = true;
+            }
+        }
+        if !clear.is_empty() {
+            world.commit(&clear);
+            self.stats.slides += next.len() as u64;
+            self.falling.extend(next);
+            self.dirty = true;
+        }
+    }
+
+    /// Run `key`'s update when `chunk`, outside the region, joins it: a move
+    /// that waits on a chunk other than its own cell's. Filed with the
+    /// frozen updates, so it is saved, hashed and costs nothing meanwhile.
+    pub(crate) fn wait_for(&mut self, chunk: ChunkKey, key: PosKey) {
+        let tick = self.tick;
+        self.frozen.entry(chunk).or_default().entry(key).or_insert(tick);
+        self.dirty = true;
     }
 
     fn advance_falling(&mut self, world: &World) {
@@ -1281,6 +1579,10 @@ impl Sim {
     }
 }
 
+#[cfg(test)]
+mod film_tests;
+#[cfg(test)]
+mod flow_tests;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]

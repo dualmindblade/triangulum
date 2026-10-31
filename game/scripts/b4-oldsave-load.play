@@ -1,0 +1,29 @@
+# B4: the second half of the old-save check. Run on the new build, on a copy of
+# the save b4-oldsave-make.play left: it loads, and nothing in it wakes. Sand
+# stands in a tower the slide would never allow and film lies at a ledge,
+# unscheduled, exactly as a generated river is held until disturbed. Then the
+# tower is touched, and only what the touch reaches moves.
+mode fly
+atblock 2 107155 57531 620
+assert block_rel[0,0,0] == sand
+assert level_rel[-8,0,-5] == 1
+assert sim_tick > 200
+assert queued == 0
+assert falling == 0
+assert drying == 0
+tick 400
+assert slides == 0
+assert water_moved == 0
+assert water_dried == 0
+assert water_updates_last == 0
+assert queued == 0
+assert block_rel[0,0,0] == sand
+assert level_rel[-8,0,-5] == 1
+state untouched
+# a touch: one block set down on the tower
+fill 0 0 1 0 0 1 sand
+tick 80
+assert slides > 0
+assert block_rel[0,0,0] == air
+assert level_rel[-8,0,-5] == 1
+state touched

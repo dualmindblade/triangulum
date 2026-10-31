@@ -423,7 +423,10 @@ fn a_pit_dug_at_the_shore_fills_from_the_sea_and_the_sea_stays_full() {
     let (air, ..) = ids(&w);
     let p = w.planet;
     let focus = p.pos(land.face, land.i as f64 + 0.5, land.j as f64 + 0.5, land.k as f64 + 2.0);
-    let mut sim = Sim::new(SimConfig::default());
+    // The pit's walls are beach sand. Under the slide they slump into the
+    // pit, which is `a_pit_dug_in_a_beach_slumps_and_the_water_still_adds_up`;
+    // this test is about the water, so the walls stand.
+    let mut sim = Sim::new(SimConfig { flow: Flow::before(), ..SimConfig::default() });
     // An untouched sea costs nothing.
     for _ in 0..5 {
         sim.step(&w, focus);
@@ -475,6 +478,43 @@ fn a_pit_dug_at_the_shore_fills_from_the_sea_and_the_sea_stays_full() {
         }
     }
     println!("sea levels out from the pit: {dish:?}");
+    assert_at_rest(&w, &sim);
+}
+
+/// The same pit under the slide: the sand walls slump, the water finds what
+/// is left of the pit, everything comes to rest and every unit is accounted
+/// for: a landing in water pushes it up the column, and that is not a
+/// change in the total.
+#[test]
+fn a_pit_dug_in_a_beach_slumps_and_the_water_still_adds_up() {
+    let w = test_world();
+    let (_, land) = find_shore(&w);
+    let (air, ..) = ids(&w);
+    let p = w.planet;
+    let focus = p.pos(land.face, land.i as f64 + 0.5, land.j as f64 + 0.5, land.k as f64 + 2.0);
+    let mut sim = Sim::new(SimConfig::default());
+    sim.step(&w, focus);
+    let mut writes = Vec::new();
+    for di in 0..3 {
+        for dj in -1..=1i64 {
+            for dk in 0..2 {
+                writes.push((BlockPos { i: land.i + di, j: (land.j as i64 + dj) as u32, k: land.k - dk, ..land }, air));
+            }
+        }
+    }
+    w.commit(&writes);
+    let mut t = 0;
+    loop {
+        sim.step(&w, focus);
+        t += 1;
+        if (sim.queued() == 0 && sim.falling().is_empty()) || t > 3000 {
+            break;
+        }
+    }
+    println!("beach pit: settled in {t} ticks, {} slides, {} landings, {} units moved, {} displaced, {} lost, in {} out {}", sim.stats.slides, sim.stats.landings, sim.stats.water_moved, sim.stats.water_displaced, sim.stats.water_lost, sim.stats.water_in, sim.stats.water_out);
+    assert!(t < 3000, "settled");
+    assert!(sim.stats.slides > 0, "the walls slumped");
+    assert_eq!(water_delta(&w), sim.stats.water_in as i64 - sim.stats.water_out as i64 - sim.stats.water_lost as i64 - sim.stats.water_dried as i64);
     assert_at_rest(&w, &sim);
 }
 

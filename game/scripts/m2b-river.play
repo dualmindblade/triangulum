@@ -91,7 +91,10 @@ hold space 0.1
 aim -4 0 -2.5
 shot 08_river_diverted_early
 tick 400
-assert level[3,127717,38665,509] == 255
+# B4: the river's bed is gravel, and the trench undercuts it, so the bed's edge
+# slides into the trench's near end and takes the place of the water there.
+assert block[3,127717,38665,509] == gravel
+assert slides > 0
 assert level[3,127718,38665,509] == 255
 assert level[3,127719,38665,509] == 255
 assert level[3,127720,38665,509] == 255

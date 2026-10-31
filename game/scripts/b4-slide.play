@@ -1,0 +1,215 @@
+# B4, Andrew's #7: "Make powder and water voxels slide horizontally and then
+# downwards when there is a lower available space directly adjacent to it."
+#
+#   A. an eight-high sand tower on a table falls apart into a pile;
+#   B. a 5 x 5 x 5 cube of sand dropped on a table: a pile, its slope printed;
+#   C. a sand cliff held by a stone wall, the wall removed; saved and
+#      reloaded in the middle of the collapse;
+#   D. water on a shelf: the level-1 cell at the ledge goes over;
+#   E. a pit dug in a real beach: its walls slump (the shore of m2b-water.play);
+#   F. a heap over a cube corner: it spreads onto all three faces;
+#   G. the edge of the active region: a block waits there, then goes.
+#
+# Scenes A to D and F are built with `fill` in the air, so no terrain decides
+# anything. Heights are relative to the player, who hovers beside each scene.
+# The same script run on the build before the mission is the "before"
+# evidence: the frames show what the old rules do with each scene (its
+# asserts about sliding fail there, which is the point).
+
+mode fly
+sim radius 112
+
+# ---- A. a tower falls apart ----------------------------------------------
+atblock 2 107147 57531 612
+fill -5 -12 -8 21 12 -8 stone
+tick 2
+assert queued == 0
+fill 8 0 -7 8 0 0 sand
+assert block_rel[8,0,0] == sand
+aim 8 0 -5
+shot A_tower_0_standing
+tick 2
+shot A_tower_1_after_2_ticks
+tick 4
+shot A_tower_2_after_6_ticks
+tick 8
+shot A_tower_3_after_14_ticks
+tick 40
+assert falling == 0
+assert queued == 0
+assert block_rel[8,0,0] == air
+assert block_rel[8,0,-7] == sand
+assert vanished == 0
+state A_settled
+heights 2 -6 14 6 -8 0
+shot A_tower_4_settled
+tick 40
+assert queued == 0
+
+# ---- B. a cube of sand dropped on a table: the pile and its slope --------
+atblock 2 107187 57531 612
+fill -5 -20 -8 29 20 -8 stone
+tick 2
+assert queued == 0
+fill 10 -2 3 14 2 7 sand
+aim 12 0 -3
+shot B_cube_0_in_the_air
+tick 14
+shot B_cube_1_landing
+tick 12
+shot B_cube_2_spreading
+tick 30
+shot B_cube_3_spreading_more
+tick 400
+assert falling == 0
+assert queued == 0
+state B_settled
+heights 2 -10 22 10 -8 2
+shot B_cube_4_settled
+tick 40
+assert queued == 0
+
+# ---- C. a sand cliff, its wall removed, a save in the middle ---------------
+atblock 2 107227 57531 612
+fill -5 -20 -8 33 20 -8 stone
+fill 14 -7 -7 21 -7 2 stone
+fill 14 7 -7 21 7 2 stone
+fill 22 -7 -7 22 7 2 stone
+fill 14 -6 -7 21 6 2 sand
+fill 13 -6 -7 13 6 2 stone
+tick 3
+assert queued == 0
+aim 14 0 -3
+shot C_cliff_0_behind_its_wall
+# the wall goes: a 13 wide, 10 high, 8 deep cliff of sand with nothing in front
+fill 13 -6 -7 13 6 2 air
+tick 3
+aim 14 0 -3
+shot C_cliff_1_after_3_ticks
+tick 3
+shot C_cliff_2_after_6_ticks
+tick 4
+assert falling > 0
+save
+assert dirty == 0
+reload
+assert falling > 0
+assert sim_tick > 0
+shot C_cliff_3_after_10_ticks_reloaded
+tick 20
+shot C_cliff_4_after_30_ticks
+tick 400
+assert falling == 0
+assert queued == 0
+assert vanished == 0
+state C_settled
+heights 0 -8 24 8 -8 2
+shot C_cliff_5_settled
+tick 40
+assert queued == 0
+
+# ---- D. water on a shelf: the cell at the ledge goes over ------------------
+atblock 2 107277 57531 612
+fill -2 -3 -8 12 3 -7 stone
+fill -2 -3 -6 12 -3 -4 stone
+fill -2 3 -6 12 3 -4 stone
+fill -2 -3 -6 -2 3 -4 stone
+fill 12 -3 -6 12 3 -4 stone
+fill 6 -2 -7 11 2 -7 air
+tick 3
+assert queued == 0
+# the shelf is -1..5, its ledge at +5; +6 is open down to the floor at layer -8
+fill 5 0 -6 5 0 -6 water 1
+assert level_rel[5,0,-6] == 1
+assert level_rel[6,0,-7] == 0
+tick 1
+assert level_rel[5,0,-6] == 0
+assert level_rel[6,0,-6] == 0
+assert level_rel[6,0,-7] == 1
+assert water_rel[-1,-2,-7,11,2,-5] == 1
+tick 20
+assert queued == 0
+
+# ---- E. a pit in a real beach: its walls slump ------------------------------
+mode fly
+select 1
+assert block[1,1804,59003,511] == sand
+assert block[1,1804,59003,512] == sand
+atblock 1 1809 59003 516
+lookaxis -i 0
+aim -5 0 -5
+shot E_beach_0_before
+# a shaft four deep, dug from straight above: a slanted ray would take the
+# neighbouring column's top instead
+atblock 1 1804 59003 513
+aim 0 0 -1.5
+assert crosshair == sand
+tap break
+tick 10
+aim 0 0 -2.5
+tap break
+tick 10
+aim 0 0 -3.5
+tap break
+tick 10
+aim 0 0 -4.5
+tap break
+tick 60
+assert falling == 0
+assert queued == 0
+state E_pit
+log the beach around the shaft: under the old rule one column four deep, all else 5
+heights -5 -4 5 4 -7 0
+atblock 1 1809 59003 516
+lookaxis -i 0
+aim -5 0 -5
+shot E_beach_1_after_digging_four_deep
+
+# ---- F. a heap over a cube corner -------------------------------------------
+mode fly
+atblock 0 131071 131071 760
+fill -8 -8 -8 8 8 -8 stone
+tick 3
+assert queued == 0
+fill -1 -1 -7 1 1 3 sand
+hold space 0.3
+tick 80
+assert falling == 0
+assert queued == 0
+assert vanished == 0
+state F_corner
+aim 0 0 -7
+shot F_corner_settled
+tick 40
+assert queued == 0
+
+# ---- G. the edge of the active region --------------------------------------
+# One chunk is simulated: i 107136..107167, j 57504..57535, k 608..639, the
+# player at its centre. A plate reaches the chunk's +i side, a sand block sits
+# on its last cell, and the drop beside it is in the next chunk: it waits,
+# at no cost, and goes the tick the region reaches that chunk.
+sim radius 1
+atblock 2 107152 57520 623
+tick 2
+fill 11 -2 0 15 2 0 stone
+tick 2
+assert queued == 0
+fill 15 0 1 15 0 1 sand
+tick 20
+assert block_rel[15,0,1] == sand
+assert falling == 0
+assert queued == 0
+assert frozen > 0
+state G_waiting
+sim radius 112
+tick 1
+assert block_rel[15,0,1] == air
+assert falling > 0
+tick 160
+assert falling == 0
+assert queued == 0
+state G_went
+
+# ---- the tick budget at this activity ---------------------------------------
+assert tick_ms_avg < 4
+state final

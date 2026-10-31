@@ -1,0 +1,354 @@
+bake loaded and hashed in 0.82s: equal-angle world bake C:/code/triangulum/game/assets/world/seed42 (1024x1024 per face, land min -3.67 km, rough max 5.61 km, with soil and geology fields, 20504 river links and 771 lakes)
+blocks: 19 definitions from C:\code\triangulum\.claude\worktrees\agent-a65302437b6f6f6c7\game/assets/blocks.json
+save C:\code\triangulum\.claude\worktrees\agent-a65302437b6f6f6c7\game/saves/_play/b4-film: reset
+save C:\code\triangulum\.claude\worktrees\agent-a65302437b6f6f6c7\game/saves/_play/b4-film: 0 edited chunk(s) loaded
+look: C:\code\triangulum\.claude\worktrees\agent-a65302437b6f6f6c7\game/assets/look.json
+planet Neisor: s = 1 m, H = 2048 blocks (sea level 512), N = 131072, R = 90.569 km, vertical scale 0.01422 (1/70.3), landforms v2, roughness 1, landform 1, max LOD 9 (512 m voxels), lod factor 5, 16 rayon threads
+sky: absolute 1142.541665s, local start 12.00h, speed 1x, day 1440s, lunar month 7d, 3 months/season, year 84d; sun lat 11.020410 lon 117.474432
+simulation: 20 Hz tick, 112 m active radius; resumed at tick 0 with 0 queued, 0 frozen, 0 falling
+adapter: NVIDIA GeForce RTX 2060 (Vulkan, DiscreteGpu)
+quad buffer: 512 MB (67 M quads); grid slots 131072
+play scripts/b4-film.play -> out/play/b4-film
+> mode fly
+> sim radius 112
+  radius 112 m: sim on  tick 0  falling 0  queued 0  frozen 0  active 0 chunks  water 0 updates, 0 moved, in 0 out 0, 0 drying, 0 dried  tick cost 0.000 ms (avg 0.000, max 0.000)
+> atblock 2 107155 57531 620
+> assert mode == fly
+  assert ok: mode == fly (actual fly)
+> fill -14 -14 -23 14 14 -14 stone
+  fill: 8410 cells of stone changed
+> fill -6 -6 -22 6 6 -15 air
+  fill: 1352 cells of air changed
+> fill -14 -14 -13 14 14 -11 stone
+  fill: 2523 cells of stone changed
+> fill -2 -2 -13 2 2 -13 water
+  fill: 25 cells of water changed
+> fill -6 -6 -12 6 6 -12 water
+  fill: 169 cells of water changed
+> fill -10 -10 -11 10 10 -11 water
+  fill: 441 cells of water changed
+> tick 3
+  ticked 0 -> 3: sim on  tick 3  falling 0  queued 0  frozen 0  active 353 chunks  water 0 updates, 0 moved, in 0 out 0, 0 drying, 0 dried  tick cost 0.002 ms (avg 4.730, max 14.178)
+> assert queued == 0
+  assert ok: queued == 0 (actual 0)
+> assert water_moved == 0
+  assert ok: water_moved == 0 (actual 0)
+> assert water_rel[-10,-10,-13,10,10,-11] == 161925
+  assert ok: water_rel[-10,-10,-13,10,10,-11] == 161925 (actual 161925)
+> aim 0 0 -10
+> shot A_full
+  shot A_full: out/play/b4-film/A_full.png (settled in 4.3 s / 1551 frames; 38 draws)
+  state A_full: fly lat -4.55807 lon 117.47434 alt 109.00 m (agl 66.14) face 2 i 107155 j 57531 k 621 ground false water false crosshair null edits 8 dirty 8
+> fill 0 0 -14 0 0 -14 air
+  fill: 1 cells of air changed
+> tick 60
+  ticked 3 -> 63: sim on  tick 63  falling 0  queued 1654  frozen 0  active 353 chunks  water 1241 updates, 194223 moved, in 0 out 0, 129 drying, 0 dried  tick cost 3.070 ms (avg 2.031, max 14.178)
+> aim 0 0 -10
+> shot A_draining_3s
+  shot A_draining_3s: out/play/b4-film/A_draining_3s.png (settled in 0.0 s / 12 frames; 38 draws)
+  state A_draining_3s: fly lat -4.55807 lon 117.47434 alt 109.00 m (agl 66.14) face 2 i 107155 j 57531 k 621 ground false water false crosshair null edits 8 dirty 8
+> tick 540
+  ticked 63 -> 603: sim on  tick 603  falling 0  queued 1036  frozen 0  active 353 chunks  water 864 updates, 1063451 moved, in 0 out 0, 0 drying, 0 dried  tick cost 0.861 ms (avg 0.987, max 14.178)
+> shot A_draining_30s
+  shot A_draining_30s: out/play/b4-film/A_draining_30s.png (settled in 0.0 s / 12 frames; 38 draws)
+  state A_draining_30s: fly lat -4.55807 lon 117.47434 alt 109.00 m (agl 66.14) face 2 i 107155 j 57531 k 621 ground false water false crosshair null edits 8 dirty 8
+> tick 1800
+  ticked 603 -> 2403: sim on  tick 2403  falling 0  queued 327  frozen 0  active 353 chunks  water 319 updates, 2376992 moved, in 0 out 0, 0 drying, 0 dried  tick cost 0.429 ms (avg 0.344, max 14.178)
+> shot A_draining_2min
+  shot A_draining_2min: out/play/b4-film/A_draining_2min.png (settled in 0.1 s / 12 frames; 38 draws)
+  state A_draining_2min: fly lat -4.55807 lon 117.47434 alt 109.00 m (agl 66.14) face 2 i 107155 j 57531 k 621 ground false water false crosshair null edits 8 dirty 8
+> tick 3000
+  ticked 2403 -> 5403: sim on  tick 5403  falling 0  queued 0  frozen 0  active 353 chunks  water 0 updates, 4047291 moved, in 0 out 0, 25 drying, 251 dried  tick cost 0.001 ms (avg 0.001, max 14.178)
+> state A_settled
+  state A_settled: fly lat -4.55807 lon 117.47434 alt 109.00 m (agl 66.14) face 2 i 107155 j 57531 k 621 ground false water false crosshair null edits 8 dirty 8
+> log the terraces after the drain: the upper one, then the lower one
+> levels -10 -10 10 10 -11
+  water levels, layer -11, i -10..+10 across, j +10..-10 down:
+    0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0
+    0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0
+    0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0
+    0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0
+    0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0
+    0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0
+    0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0
+    0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0
+    0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0
+    0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0
+    0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0
+    0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0
+    0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0
+    0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0
+    0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0
+    0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0
+    0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0
+    0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0
+    0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0
+    0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0
+    0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0
+> levels -6 -6 6 6 -12
+  water levels, layer -12, i -6..+6 across, j +6..-6 down:
+    1   1   0   0   0   0   0   0   0   0   0   0   1
+    0   0   0   0   0   0   0   0   0   0   0   0   0
+    0   0   0   0   0   0   0   0   0   0   0   0   0
+    0   0   0   0   0   0   0   0   0   0   0   0   0
+    0   0   0   0   0   0   0   0   0   0   0   0   0
+    0   0   0   0   0   0   0   0   0   0   0   0   0
+    0   0   0   0   0   0   0   0   0   0   0   0   0
+    0   0   0   0   0   0   0   0   0   0   0   0   0
+    0   0   0   0   0   0   0   0   0   0   0   0   0
+    0   0   0   0   0   0   0   0   0   0   0   0   0
+    0   0   0   0   0   0   0   0   0   0   0   0   0
+    0   0   0   0   0   0   0   0   0   0   0   0   1
+    1   1   0   0   0   0   0   0   0   0   0   0   1
+> aim 4 4 -11
+> shot A_terraces_4min
+  shot A_terraces_4min: out/play/b4-film/A_terraces_4min.png (settled in 0.0 s / 12 frames; 53 draws)
+  state A_terraces_4min: fly lat -4.55807 lon 117.47434 alt 109.00 m (agl 66.14) face 2 i 107155 j 57531 k 621 ground false water false crosshair null edits 8 dirty 8
+> tick 2400
+  ticked 5403 -> 7803: sim on  tick 7803  falling 0  queued 0  frozen 0  active 353 chunks  water 0 updates, 4047291 moved, in 0 out 0, 0 drying, 258 dried  tick cost 0.001 ms (avg 0.001, max 14.178)
+> log the same terraces two minutes later
+> state A_settled_late
+  state A_settled_late: fly lat -4.55807 lon 117.47434 alt 109.00 m (agl 66.14) face 2 i 107155 j 57531 k 621 ground false water false crosshair null edits 8 dirty 8
+> levels -10 -10 10 10 -11
+  water levels, layer -11, i -10..+10 across, j +10..-10 down:
+    0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0
+    0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0
+    0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0
+    0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0
+    0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0
+    0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0
+    0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0
+    0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0
+    0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0
+    0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0
+    0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0
+    0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0
+    0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0
+    0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0
+    0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0
+    0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0
+    0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0
+    0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0
+    0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0
+    0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0
+    0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0
+> aim 4 4 -11
+> shot A_terraces_6min
+  shot A_terraces_6min: out/play/b4-film/A_terraces_6min.png (settled in 0.0 s / 12 frames; 53 draws)
+  state A_terraces_6min: fly lat -4.55807 lon 117.47434 alt 109.00 m (agl 66.14) face 2 i 107155 j 57531 k 621 ground false water false crosshair null edits 8 dirty 8
+> atblock 2 107215 57531 620
+> fill -20 -20 -6 20 20 -6 stone
+  fill: 1681 cells of stone changed
+> tick 2
+  ticked 7803 -> 7805: sim on  tick 7805  falling 0  queued 0  frozen 0  active 348 chunks  water 0 updates, 4047291 moved, in 0 out 0, 0 drying, 258 dried  tick cost 0.006 ms (avg 0.037, max 14.178)
+> fill -2 -2 -5 2 2 -5 water 1
+  fill: 25 cells of water changed
+> tick 40
+  ticked 7805 -> 7845: sim on  tick 7845  falling 0  queued 0  frozen 0  active 348 chunks  water 0 updates, 4047291 moved, in 0 out 0, 25 drying, 258 dried  tick cost 0.001 ms (avg 0.038, max 14.178)
+> assert water_rel[-20,-20,-5,20,20,-5] <= 25
+  assert ok: water_rel[-20,-20,-5,20,20,-5] <= 25 (actual 25)
+> state B_early
+  state B_early: fly lat -4.55732 lon 117.51657 alt 109.00 m (agl 63.22) face 2 i 107215 j 57531 k 621 ground false water false crosshair null edits 12 dirty 12
+> aim 3 0 -5
+> shot B_early
+  shot B_early: out/play/b4-film/B_early.png (settled in 0.2 s / 30 frames; 56 draws)
+  state B_early: fly lat -4.55732 lon 117.51657 alt 109.00 m (agl 63.22) face 2 i 107215 j 57531 k 621 ground false water false crosshair null edits 12 dirty 12
+> tick 400
+  ticked 7845 -> 8245: sim on  tick 8245  falling 0  queued 0  frozen 0  active 348 chunks  water 0 updates, 4047291 moved, in 0 out 0, 30 drying, 261 dried  tick cost 0.002 ms (avg 0.002, max 14.178)
+> state B_settled
+  state B_settled: fly lat -4.55732 lon 117.51657 alt 109.00 m (agl 63.22) face 2 i 107215 j 57531 k 621 ground false water false crosshair null edits 12 dirty 12
+> levels -4 -4 4 4 -5
+  water levels, layer -5, i -4..+4 across, j +4..-4 down:
+    0   0   0   0   0   0   0   0   0
+    0   0   0   0   0   0   0   0   0
+    0   0   1   1   0   0   1   0   0
+    0   0   1   1   1   1   1   0   0
+    0   0   1   1   1   1   1   0   0
+    0   0   1   1   1   1   0   0   0
+    0   0   1   1   1   1   1   0   0
+    0   0   0   0   0   0   0   0   0
+    0   0   0   0   0   0   0   0   0
+> aim 3 0 -5
+> shot B_settled
+  shot B_settled: out/play/b4-film/B_settled.png (settled in 0.0 s / 13 frames; 56 draws)
+  state B_settled: fly lat -4.55732 lon 117.51657 alt 109.00 m (agl 63.22) face 2 i 107215 j 57531 k 621 ground false water false crosshair null edits 12 dirty 12
+> tick 1000
+  ticked 8245 -> 9245: sim on  tick 9245  falling 0  queued 0  frozen 0  active 348 chunks  water 0 updates, 4047291 moved, in 0 out 0, 0 drying, 283 dried  tick cost 0.001 ms (avg 0.002, max 14.178)
+> state B_late
+  state B_late: fly lat -4.55732 lon 117.51657 alt 109.00 m (agl 63.22) face 2 i 107215 j 57531 k 621 ground false water false crosshair null edits 12 dirty 12
+> aim 3 0 -5
+> shot B_late
+  shot B_late: out/play/b4-film/B_late.png (settled in 0.0 s / 13 frames; 56 draws)
+  state B_late: fly lat -4.55732 lon 117.51657 alt 109.00 m (agl 63.22) face 2 i 107215 j 57531 k 621 ground false water false crosshair null edits 12 dirty 12
+> atblock 2 107275 57531 625
+> fill -24 -24 -8 24 24 -8 stone
+  fill: 2401 cells of stone changed
+> tick 2
+  ticked 9245 -> 9247: sim on  tick 9247  falling 0  queued 0  frozen 0  active 354 chunks  water 0 updates, 4047291 moved, in 0 out 0, 0 drying, 283 dried  tick cost 0.006 ms (avg 0.055, max 14.178)
+> atblock 2 107275 57531 620
+> select 9
+> aim 0 0 -2.5
+> tap place
+  place: face 2 i 107275 j 57531 k 619
+> assert level_rel[0,0,-2] == 255
+  assert ok: level_rel[0,0,-2] == 255 (actual 255)
+> atblock 2 107275 57531 625
+> tick 20
+  ticked 9247 -> 9267: sim on  tick 9267  falling 0  queued 0  frozen 0  active 354 chunks  water 0 updates, 4048395 moved, in 0 out 0, 78 drying, 283 dried  tick cost 0.001 ms (avg 0.074, max 14.178)
+> aim 8 0 -7
+> shot C_spreading_1s
+  shot C_spreading_1s: out/play/b4-film/C_spreading_1s.png (settled in 0.1 s / 68 frames; 407 draws)
+  state C_spreading_1s: fly lat -4.55656 lon 117.55880 alt 114.00 m (agl 71.52) face 2 i 107275 j 57531 k 626 ground false water false crosshair null edits 16 dirty 16
+> tick 180
+  ticked 9267 -> 9447: sim on  tick 9447  falling 0  queued 0  frozen 0  active 354 chunks  water 0 updates, 4048395 moved, in 0 out 0, 78 drying, 283 dried  tick cost 0.001 ms (avg 0.001, max 14.178)
+> state C_10s
+  state C_10s: fly lat -4.55656 lon 117.55880 alt 114.00 m (agl 71.52) face 2 i 107275 j 57531 k 626 ground false water false crosshair null edits 16 dirty 16
+> levels -12 -12 12 12 -7
+  water levels, layer -7, i -12..+12 across, j +12..-12 down:
+    0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0
+    0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0
+    0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0
+    0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0
+    0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0
+    0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0
+    0   0   0   0   0   0   0   0   0   0   1   1   1   1   0   0   0   0   0   0   0   0   0   0   0
+    0   0   0   0   0   0   0   0   0   1   1   2   2   1   1   0   0   0   0   0   0   0   0   0   0
+    0   0   0   0   0   0   0   0   1   2   2   2   2   2   2   1   0   0   0   0   0   0   0   0   0
+    0   0   0   0   0   0   0   1   2   3   2   3   3   3   2   2   1   0   0   0   0   0   0   0   0
+    0   0   0   0   0   0   0   1   2   3   3   4   4   3   3   2   1   1   0   0   0   0   0   0   0
+    0   0   0   0   0   0   1   2   2   3   4   4   4   4   3   3   2   1   1   0   0   0   0   0   0
+    0   0   0   0   0   0   1   2   3   3   3   4   5   4   4   3   2   1   1   0   0   0   0   0   0
+    0   0   0   0   0   0   1   2   3   3   4   4   5   4   4   3   2   2   1   0   0   0   0   0   0
+    0   0   0   0   0   0   0   1   2   3   3   3   4   3   3   3   2   1   0   0   0   0   0   0   0
+    0   0   0   0   0   0   0   0   1   2   3   3   3   3   3   2   1   0   0   0   0   0   0   0   0
+    0   0   0   0   0   0   0   0   0   1   2   2   2   2   2   1   0   0   0   0   0   0   0   0   0
+    0   0   0   0   0   0   0   0   0   0   1   2   1   2   1   0   0   0   0   0   0   0   0   0   0
+    0   0   0   0   0   0   0   0   0   0   0   1   1   1   0   0   0   0   0   0   0   0   0   0   0
+    0   0   0   0   0   0   0   0   0   0   0   0   1   0   0   0   0   0   0   0   0   0   0   0   0
+    0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0
+    0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0
+    0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0
+    0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0
+    0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0
+> aim 8 0 -7
+> shot C_10s
+  shot C_10s: out/play/b4-film/C_10s.png (settled in 0.0 s / 10 frames; 407 draws)
+  state C_10s: fly lat -4.55656 lon 117.55880 alt 114.00 m (agl 71.52) face 2 i 107275 j 57531 k 626 ground false water false crosshair null edits 16 dirty 16
+> tick 1000
+  ticked 9447 -> 10447: sim on  tick 10447  falling 0  queued 12  frozen 0  active 354 chunks  water 10 updates, 4048507 moved, in 0 out 0, 77 drying, 381 dried  tick cost 0.016 ms (avg 0.004, max 14.178)
+> state C_60s
+  state C_60s: fly lat -4.55656 lon 117.55880 alt 114.00 m (agl 71.52) face 2 i 107275 j 57531 k 626 ground false water false crosshair null edits 16 dirty 16
+> levels -12 -12 12 12 -7
+  water levels, layer -7, i -12..+12 across, j +12..-12 down:
+    0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0
+    0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0
+    0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0
+    0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0
+    0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0
+    0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0
+    0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0
+    0   0   0   0   0   0   0   0   0   0   0   1   1   0   0   0   0   0   0   0   0   0   0   0   0
+    0   0   0   0   0   0   0   0   0   0   1   1   1   1   1   0   0   0   0   0   0   0   0   0   0
+    0   0   0   0   0   0   0   1   0   1   2   2   2   2   2   1   0   0   0   0   0   0   0   0   0
+    0   0   0   0   0   0   0   1   1   2   3   3   3   3   2   1   0   0   0   0   0   0   0   0   0
+    0   0   0   0   0   0   0   1   1   2   3   3   4   3   2   2   1   0   0   0   0   0   0   0   0
+    0   0   0   0   0   0   1   1   2   3   3   4   5   4   3   2   2   1   0   0   0   0   0   0   0
+    0   0   0   0   0   0   0   1   1   2   3   4   4   4   3   2   1   1   0   0   0   0   0   0   0
+    0   0   0   0   0   0   0   0   1   2   2   3   3   2   2   1   1   1   0   0   0   0   0   0   0
+    0   0   0   0   0   0   0   0   1   1   2   2   2   2   1   1   0   0   0   0   0   0   0   0   0
+    0   0   0   0   0   0   0   0   0   1   1   1   2   1   1   0   0   0   0   0   0   0   0   0   0
+    0   0   0   0   0   0   0   0   0   0   0   0   1   1   0   0   0   0   0   0   0   0   0   0   0
+    0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0
+    0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0
+    0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0
+    0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0
+    0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0
+    0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0
+    0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0
+> aim 8 0 -7
+> shot C_60s
+  shot C_60s: out/play/b4-film/C_60s.png (settled in 0.0 s / 13 frames; 407 draws)
+  state C_60s: fly lat -4.55656 lon 117.55880 alt 114.00 m (agl 71.52) face 2 i 107275 j 57531 k 626 ground false water false crosshair null edits 16 dirty 16
+> tick 2400
+  ticked 10447 -> 12847: sim on  tick 12847  falling 0  queued 0  frozen 0  active 354 chunks  water 0 updates, 4048620 moved, in 0 out 0, 3 drying, 538 dried  tick cost 0.001 ms (avg 0.001, max 14.178)
+> state C_180s
+  state C_180s: fly lat -4.55656 lon 117.55880 alt 114.00 m (agl 71.52) face 2 i 107275 j 57531 k 626 ground false water false crosshair null edits 16 dirty 16
+> levels -12 -12 12 12 -7
+  water levels, layer -7, i -12..+12 across, j +12..-12 down:
+    0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0
+    0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0
+    0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0
+    0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0
+    0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0
+    0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0
+    0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0
+    0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0
+    0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0
+    0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0
+    0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0
+    0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0
+    0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0
+    0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0
+    0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0
+    0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0
+    0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0
+    0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0
+    0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0
+    0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0
+    0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0
+    0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0
+    0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0
+    0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0
+    0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0   0
+> aim 8 0 -7
+> shot C_180s
+  shot C_180s: out/play/b4-film/C_180s.png (settled in 0.0 s / 12 frames; 407 draws)
+  state C_180s: fly lat -4.55656 lon 117.55880 alt 114.00 m (agl 71.52) face 2 i 107275 j 57531 k 626 ground false water false crosshair null edits 16 dirty 16
+> mode walk
+> atblock 2 107095 57531 2000
+> assert on_ground == true
+  assert ok: on_ground == true (actual true)
+> aim 2 0 -0.5
+> tap place
+  place: face 2 i 107097 j 57531 k 554
+> tick 3
+  ticked 12847 -> 12850: sim on  tick 12850  falling 0  queued 69  frozen 0  active 362 chunks  water 30 updates, 4049080 moved, in 0 out 0, 3 drying, 538 dried  tick cost 0.044 ms (avg 0.037, max 14.178)
+> tap place
+  place: face 2 i 107096 j 57531 k 555
+> tick 3
+  ticked 12850 -> 12853: sim on  tick 12853  falling 0  queued 167  frozen 0  active 362 chunks  water 104 updates, 4049984 moved, in 0 out 0, 12 drying, 538 dried  tick cost 0.119 ms (avg 0.069, max 14.178)
+> tap place
+  place: face 2 i 107096 j 57531 k 555
+> tick 3
+  ticked 12853 -> 12856: sim on  tick 12856  falling 0  queued 234  frozen 0  active 362 chunks  water 147 updates, 4051101 moved, in 0 out 0, 35 drying, 538 dried  tick cost 0.162 ms (avg 0.105, max 14.178)
+> tap place
+  place: face 2 i 107096 j 57531 k 555
+> tick 400
+  ticked 12856 -> 13256: sim on  tick 13256  falling 0  queued 12  frozen 3  active 362 chunks  water 6 updates, 4063193 moved, in 0 out 0, 294 drying, 550 dried  tick cost 0.008 ms (avg 0.007, max 14.178)
+> state D_20s
+  state D_20s: walk lat -4.55883 lon 117.43213 alt 42.00 m (agl -0.48) face 2 i 107095 j 57531 k 554 ground true water false crosshair "grass" edits 20 dirty 20
+> mode fly
+> hold space 0.3
+> aim 5 0 -5
+> shot D_ground_20s
+  shot D_ground_20s: out/play/b4-film/D_ground_20s.png (settled in 0.2 s / 103 frames; 74 draws)
+  state D_ground_20s: fly lat -4.55883 lon 117.43213 alt 48.00 m (agl 5.52) face 2 i 107095 j 57531 k 560 ground false water false crosshair null edits 20 dirty 20
+> tick 1600
+  ticked 13262 -> 14862: sim on  tick 14862  falling 0  queued 12  frozen 3  active 362 chunks  water 18 updates, 4063670 moved, in 0 out 0, 75 drying, 748 dried  tick cost 0.020 ms (avg 0.012, max 14.178)
+> state D_100s
+  state D_100s: fly lat -4.55883 lon 117.43213 alt 48.00 m (agl 5.52) face 2 i 107095 j 57531 k 560 ground false water false crosshair null edits 20 dirty 20
+> shot D_ground_100s
+  shot D_ground_100s: out/play/b4-film/D_ground_100s.png (settled in 0.0 s / 16 frames; 74 draws)
+  state D_ground_100s: fly lat -4.55883 lon 117.43213 alt 48.00 m (agl 5.52) face 2 i 107095 j 57531 k 560 ground false water false crosshair null edits 20 dirty 20
+> tick 6000
+  ticked 14862 -> 20862: sim on  tick 20862  falling 0  queued 0  frozen 3  active 362 chunks  water 0 updates, 4065012 moved, in 0 out 0, 52 drying, 1214 dried  tick cost 0.001 ms (avg 0.006, max 14.178)
+> assert queued == 0
+  assert ok: queued == 0 (actual 0)
+> assert falling == 0
+  assert ok: falling == 0 (actual 0)
+> assert water_lost == 0
+  assert ok: water_lost == 0 (actual 0)
+> state final
+  state final: fly lat -4.55883 lon 117.43213 alt 48.00 m (agl 5.52) face 2 i 107095 j 57531 k 560 ground false water false crosshair null edits 20 dirty 20
+saved 20 chunk(s) at exit
+done in 10.4 s: 10 asserts, 0 failed, 0 errors

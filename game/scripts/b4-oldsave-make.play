@@ -1,0 +1,20 @@
+# B4: the first half of the old-save check. Run on the build BEFORE B4, to
+# make a save that holds what the new rules would never leave standing:
+#   triangulum --save out/b4-oldsave --play scripts/b4-oldsave-make.play
+# Then load a copy of it with b4-oldsave-load.play on the new build.
+mode fly
+atblock 2 107155 57531 620
+fill -8 -8 -6 8 8 -6 stone
+tick 2
+# a sand tower six high, a level-1 film at a ledge, a wedge leaning on a wall
+fill 0 0 -5 0 0 0 sand
+fill -8 -3 -5 -8 3 -5 water 1
+fill 3 3 -5 8 8 -5 water 2
+fill 8 8 -5 8 8 -5 water 6
+tick 200
+assert queued == 0
+assert falling == 0
+assert block_rel[0,0,0] == sand
+assert level_rel[-8,0,-5] == 1
+state made
+save
