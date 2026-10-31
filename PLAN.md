@@ -82,4 +82,6 @@ orbits and eclipses, weather and clouds.
 ## Later
 
 Inventory, crafting, technological progression, power and fluid networks,
-proper vehicles, multiplayer.
+proper vehicles, multiplayer. Possibly a smooth mesh that blends with the
+voxels at long distance: Andrew liked how the old planet looked from space
+(Austin, 2026-10-30: not for now).
