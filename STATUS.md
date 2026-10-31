@@ -200,11 +200,11 @@ tool, matched to his recordings in `docs/missions/2026-10-30-bug-round.md`.
 | B2 shores | #2 lakes from space, #4 ocean bands, #5 beaches | Opus | running |
 | B3 picking | #3 raycasting at cube seams and corners | Astra | running |
 | B4 flow | #7 sliding powder and water, #9 level-1 film | Opus | running |
-| B5 tools | #6 mesh view, #11 map, screenshots and teleport | Opus | running |
-| Review 4 | M2c, M3a, hardening, M3b | Astra | running |
+| B5 tools | #6 colourised mesh view, #11 map, screenshots and teleport | Opus | running |
+| Review 4 | M2c, M3a, hardening, M3b: 13 findings, 3 of them P1 (`docs/reviews/2026-10-31-engine-review4-astra.md`) | Astra | done, not yet re-verified |
 
-Next, once those land: #8 (powder with an angle of repose), B6 (annotating
-screenshots and recordings), saves off the main thread.
+Next, once those land: review 4's fixes, #8 (powder with an angle of repose),
+B6 (annotating screenshots and recordings), saves off the main thread.
 
 ## Waiting on you
 
