@@ -155,6 +155,16 @@
   real window by `game/tools/window.ps1`, a new tool that lets agents
   click and type in the game.
 
+- **B3** (Astra, verified by Opus, merged): aiming at cube edges and corners.
+  The ray from the crosshair now follows its real path through each cube
+  face, so the outline, the block you break and the block you place are all
+  where you aimed. Measured against a separate check of the true ray: 1,188
+  wrong blocks in 13,312 test rays near edges and corners before, none after.
+  Picking costs about 0.1 ms more per frame on a busy machine. Recordings made
+  at a corner before this now differ at their clicks, as they should. Walking
+  right at the corners is still approximate, and real mouse use there hasn't
+  been tried yet.
+
 **M1 is feature-complete.** The last step is yours: play it and tell me what
 feels wrong.
 
@@ -198,7 +208,7 @@ tool, matched to his recordings in `docs/missions/2026-10-30-bug-round.md`.
 |---|---|---|---|
 | B1 water surfaces | #1 water under a solid, #10 dip at the edge, review 3 #8, hairlines | Opus | running |
 | B2 shores | #2 lakes from space, #4 ocean bands, #5 beaches | Opus | running |
-| B3 picking | #3 raycasting at cube seams and corners | Astra | running |
+| B3 picking | #3 raycasting at cube seams and corners | Astra | merged |
 | B4 flow | #7 sliding powder and water, #9 level-1 film | Opus | running |
 | B5 tools | #6 colourised mesh view, #11 map, screenshots and teleport | Opus | running |
 | Review 4 | M2c, M3a, hardening, M3b: 13 findings, 3 of them P1 (`docs/reviews/2026-10-31-engine-review4-astra.md`) | Astra | done, not yet re-verified |
