@@ -125,17 +125,18 @@ tick 3
 tap place
 tick 400
 state D_20s
-hold space 0.01
 mode fly
-atblock 2 107095 57531 2000
-hold space 0.5
-aim 8 0 -12
+hold space 0.3
+aim 5 0 -5
 shot D_ground_20s
 tick 1600
 state D_100s
 shot D_ground_100s
 
 # ---- the accounting holds, and nothing is left running -----------------------
+# Five minutes more: under the drying rules the last of the film finishes on
+# its own schedule, so this is the proof that everything comes to rest.
+tick 6000
 assert queued == 0
 assert falling == 0
 assert water_lost == 0

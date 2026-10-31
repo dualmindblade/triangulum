@@ -1,0 +1,70 @@
+   Compiling triangulum v0.1.0 (C:\code\triangulum\.claude\worktrees\agent-a65302437b6f6f6c7\game)
+warning: variable does not need to be mutable
+    --> src\stream.rs:1783:13
+     |
+1783 |         let mut drain = |c: &mut Coverage, gpu: &mut FakeGpu, wants: &mut Vec<Want>| {
+     |             ----^^^^^
+     |             |
+     |             help: remove this `mut`
+     |
+     = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: `triangulum` (bin "triangulum" test) generated 1 warning (run `cargo fix --bin "triangulum" -p triangulum --tests` to apply 1 suggestion)
+    Finished `release` profile [optimized + debuginfo] target(s) in 1m 27s
+     Running unittests src\main.rs (E:/triangulum-build/B4-flow\release\deps\triangulum-bb2955ac79082afe.exe)
+
+running 10 tests
+the fed film at rest: [5, 4, 3, 2, 1, 0, 0, 0], 15 in, 0 dried
+test sim::film_tests::a_film_fed_from_the_boundary_comes_to_rest_and_stays ... ok
+test sim::film_tests::a_film_outside_the_region_does_not_dry_until_the_region_returns ... ok
+test sim::film_tests::a_save_from_before_loads_and_nothing_wakes_until_it_is_touched ... ok
+rule      scene       ticks    wet  level1  units  dried
+test sim::film_tests::a_film_waiting_to_dry_survives_a_save_and_reload ... ok
+keep      plateau         1     25      25     25      0
+test sim::film_tests::seek_runs_across_a_cube_edge ... ok
+keep      lake         1550    204      16    984      0
+keep      poured         15    114      37    255      0
+seek      plateau         1     25      25     25      0
+seek      lake         1619    144      44    364      0
+seek      poured         15    114      37    255      0
+merge     plateau         2      7       0     25      0
+test sim::film_tests::seek_runs_along_a_dry_line_as_far_as_its_reach ... ok
+test sim::film_tests::stress_flow_cost_of_the_new_rules ... ignored
+81 cells of level 2 with a level-1 edge: 0 cells left, 202 units dried
+merge     lake         1529    204       0   1333      0
+625 cells of level 2 with a level-1 edge: 725 cells left, 4 units dried
+test sim::film_tests::the_edge_of_a_large_body_stays_and_the_edge_of_a_puddle_goes ... ok
+merge     poured         12     55       0    255      0
+test sim::film_tests::film_rules_on_the_three_scenes has been running for over 60 seconds
+keep seed 1: settled in 106 ticks, 26354 units moved, 0 dried
+dry       plateau       198      0       0      0     25
+keep seed 2: settled in 94 ticks, 23054 units moved, 0 dried
+keep seed 3: settled in 130 ticks, 21644 units moved, 0 dried
+dry       lake         3168      0       0      0    992
+keep seed 4: settled in 258 ticks, 45045 units moved, 0 dried
+dry       poured        673      0       0      0    255
+seek seed 1: settled in 115 ticks, 26577 units moved, 0 dried
+seek+dry  plateau       198      0       0      0     25
+seek seed 2: settled in 95 ticks, 23252 units moved, 0 dried
+seek seed 3: settled in 148 ticks, 21840 units moved, 0 dried
+seek+dry  lake         2205      0       0      0    373
+seek seed 4: settled in 273 ticks, 45704 units moved, 0 dried
+merge seed 1: settled in 111 ticks, 25639 units moved, 0 dried
+seek+dry  poured        673      0       0      0    255
+test sim::film_tests::film_rules_on_the_three_scenes ... ok
+merge seed 2: settled in 93 ticks, 22527 units moved, 0 dried
+merge seed 3: settled in 132 ticks, 21063 units moved, 0 dried
+merge seed 4: settled in 242 ticks, 43128 units moved, 0 dried
+dry seed 1: settled in 6439 ticks, 26823 units moved, 183 dried
+dry seed 2: settled in 1196 ticks, 23150 units moved, 95 dried
+test sim::film_tests::the_potential_falls_on_every_tick_under_every_rule_on_random_stairs has been running for over 60 seconds
+dry seed 3: settled in 1059 ticks, 21714 units moved, 71 dried
+dry seed 4: settled in 2452 ticks, 45317 units moved, 146 dried
+seek+dry seed 1: settled in 317 ticks, 26590 units moved, 20 dried
+seek+dry seed 2: settled in 591 ticks, 23272 units moved, 32 dried
+seek+dry seed 3: settled in 868 ticks, 21850 units moved, 24 dried
+seek+dry seed 4: settled in 2292 ticks, 45931 units moved, 87 dried
+test sim::film_tests::the_potential_falls_on_every_tick_under_every_rule_on_random_stairs ... ok
+
+test result: ok. 9 passed; 0 failed; 1 ignored; 0 measured; 199 filtered out; finished in 142.15s
+
