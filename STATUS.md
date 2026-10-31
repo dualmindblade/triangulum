@@ -218,6 +218,15 @@
   Replays now report the simulation and the look separately. All driven by test
   events: F9 in the real game and how the pen feels are the first things to try.
 
+- **R4** (Astra, verified by Opus, merged): the fixes from Astra's fourth
+  review. A replay file is now treated as untrusted, so a crafted one can't
+  touch a real save; a failed *Add block* can't leave a save unloadable; every
+  block a save uses has a recorded identity. A cut-off recording now says it's
+  incomplete instead of claiming it reproduced. Bad or huge PNGs are refused
+  safely, and a held key is applied at the moment it arrived, whatever the
+  frame rate. Saves record the simulation's rules, so replays made before this
+  need the build that made them.
+
 **M1 is feature-complete.** The last step is yours: play it and tell me what
 feels wrong.
 
@@ -267,10 +276,12 @@ tool, matched to his recordings in `docs/missions/2026-10-30-bug-round.md`.
 | Review 4 | M2c, M3a, hardening, M3b: 13 findings, 3 of them P1 (`docs/reviews/2026-10-31-engine-review4-astra.md`) | Astra | done, not yet re-verified |
 
 | B6 reports | Annotated bug reports for screenshots and recordings, review 4 #8 | Opus | merged |
-| R4 hardening | Review 4's other findings, the save-safety ones first | Astra | running |
+| R4 hardening | Review 4's other findings, the save-safety ones first | Astra | merged |
 | B7 powder levels | #8: an experiment, powder with levels and an angle of repose, off by default | Opus | running |
+| S1 saves | Saves off the main thread, removing the 1 s autosave hitch | Astra | running |
 
-Next: saves off the main thread, then M3c (non-full blocks).
+Next, once Andrew has weighed in: M3c (non-full blocks) needs his look
+decisions, and underground darkness needs a lighting design.
 
 ## Waiting on you
 

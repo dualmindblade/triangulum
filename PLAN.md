@@ -78,7 +78,11 @@ Bug round from Andrew's first playthrough (`docs/missions/2026-10-30-bug-round.m
 | B3 | Picking follows the true ray across cube seams and corners | Astra | done |
 | B4 | Sand and water slide off ledges, the level-1 film drains or dries; `sim_rules` 3 | Opus | done |
 | B5 | Colourised mesh view (M), the T window (map, photos, places, teleport), P photos, repros | Opus | done |
-| Review 4 | M2c, M3a, hardening, M3b: 13 findings (`docs/reviews/2026-10-31-engine-review4-astra.md`) | Astra | done, findings open |
+| Review 4 | M2c, M3a, hardening, M3b: 13 findings (`docs/reviews/2026-10-31-engine-review4-astra.md`) | Astra | done |
+| B6 | Bug reports: F9 marks a moment, the annotator, Make report, the look checked apart from the simulation (review 4 #8) | Opus | done |
+| R4 | Review 4's other twelve findings, save safety first | Astra | done |
+| B7 | #8: an experiment, powder with levels and an angle of repose | Opus | running |
+| S1 | Saves off the main thread | Astra | running |
 
 ## M4 — Things that move
 
