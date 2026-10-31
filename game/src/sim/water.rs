@@ -19,6 +19,15 @@
 //!    it levelled with, and water that nothing moves differs from every
 //!    lateral neighbour by at most 1: "resting water may lean up to 1/256".
 //!
+//! 3. **Slide** (B4, Andrew's #7). A cell that can neither fall nor spread,
+//!    with a free cell beside it whose floor is open (replaceable and not
+//!    full), moves half its level, rounded up, straight into the cell below
+//!    that free cell, as much as fits. This is what moves the level-1 cell at
+//!    a ledge, which is only 1 above the air beside it, so the spread can
+//!    never move it. Anything thicker gets there by spreading into the free
+//!    cell and falling out of it next tick. Of several ledges the lowest of
+//!    `choice` goes.
+//!
 //! Updates are applied in a deterministic order with a tick-local overlay:
 //! a cell processed later in the same tick sees the writes of earlier ones,
 //! and every write is committed in one batch at the end of the tick. A cell
@@ -51,8 +60,19 @@
 //! more (it always has: the lowest included neighbour is at least 2 below
 //! the cell). Phi is a non-negative integer, so only finitely many moves
 //! can happen: no cycle, no squirming. The tests check Phi strictly falls
-//! on every tick in which any unit moves (`water_potential`). The argument
-//! is for a closed body; the active region's boundary (below) can supply
+//! on every tick in which any unit moves (`water_potential`).
+//!
+//! A slide moves d units from layer k to layer k - 1, exactly like a fall:
+//! that they land one column over changes nothing in Phi, which sees only
+//! layers and levels. With B the level below, d <= L and B + d <= 255, so
+//! Phi changes by -A d + 2 d (B - L + d) <= -A d + 2 d * 254, the same bound,
+//! and drops by at least (1024 - 508) d > 0. So the reason water comes to
+//! rest is unchanged: every move either goes down a layer or evens out a
+//! layer. That is why a slide is one move into the lower cell and not a
+//! sideways step and then a fall: a sideways step of the last unit leaves
+//! the sum of squares as it was, and Phi would stand still on that tick.
+//!
+//! The argument is for a closed body; the active region's boundary (below) can supply
 //! and absorb water, and a river flowing in at one side and out at the
 //! other is a steady flow by design, not a failure to settle.
 //!
@@ -71,7 +91,7 @@
 //! `SimStats::water_in` / `water_out`; the tests check that the water inside
 //! changes by exactly in - out.
 
-use super::{PosKey, Sim};
+use super::{PosKey, Sim, choice, lateral};
 use crate::grid::BlockPos;
 use crate::world::edits::WATER_FULL;
 use crate::world::{BlockId, EditStore, World};
@@ -188,6 +208,9 @@ impl Sim {
         if !reg.is_replaceable(id) {
             return;
         }
+        if start == 0 && self.config.flow.slide {
+            self.wake_beside_drop(world, p);
+        }
         let flux = self.stats.water_in + self.stats.water_out;
         let mut level = start;
         if level < FULL && p.k + 1 < world.planet.height {
@@ -225,6 +248,71 @@ impl Sim {
         self.finish_cell(world, p, start, level, flux);
     }
 
+    /// An empty cell has been notified. If it has room below it may just have
+    /// become a way down for what rests beside it, which is diagonal to the
+    /// change and heard nothing: wake that water and powder for next tick.
+    fn wake_beside_drop(&mut self, world: &World, p: BlockPos) {
+        if p.k == 0 {
+            return;
+        }
+        let (bid, bl) = self.cell(world, BlockPos { k: p.k - 1, ..p });
+        if !world.registry.is_replaceable(bid) || bl >= FULL {
+            return;
+        }
+        let next = self.tick + 1;
+        for n in lateral(world, p).into_iter().flatten() {
+            let (id, level) = self.cell(world, n);
+            if level > 0 || world.registry.has_gravity(id) {
+                self.queue.insert((next, PosKey::of(n)));
+                self.dirty = true;
+            }
+        }
+    }
+
+    /// Step 3: the level left after a slide off a ledge (the module doc).
+    /// A free cell whose floor is outside the region waits for that chunk.
+    fn water_slide(&mut self, world: &World, p: BlockPos, beside: &[Option<BlockPos>; 4], level: u8) -> u8 {
+        if p.k == 0 {
+            return level;
+        }
+        let key = PosKey::of(p);
+        let reg = world.registry.clone();
+        let mut best: Option<(u64, BlockPos, u8)> = None;
+        let mut outside = [None; 4];
+        for (way, n) in beside.iter().enumerate() {
+            let Some(n) = *n else { continue };
+            if !self.is_active_block(n) {
+                continue; // `wake_new_pairs` takes this pair when the chunk joins
+            }
+            let (nid, nl) = self.cell(world, n);
+            if !reg.is_replaceable(nid) || nl >= level {
+                continue;
+            }
+            let low = BlockPos { k: n.k - 1, ..n };
+            if !self.is_active_block(low) {
+                outside[way] = Some(World::chunk_of(low).0);
+                continue;
+            }
+            let (bid, bl) = self.cell(world, low);
+            if reg.is_replaceable(bid) && bl < FULL {
+                let rank = choice(key, PosKey::of(low), self.tick);
+                if best.is_none_or(|b| rank < b.0) {
+                    best = Some((rank, low, bl));
+                }
+            }
+        }
+        let Some((_, low, bl)) = best else {
+            for c in outside.into_iter().flatten() {
+                self.wait_for(c, key);
+            }
+            return level;
+        };
+        let d = level.div_ceil(2).min(FULL - bl);
+        self.write(world, low, bl + d, Receipt::Fall);
+        self.overlay.moved += d as u64;
+        level - d
+    }
+
     /// Record a cell's own new level; a cell that exchanged water with the
     /// boundary and came out where it started (a steady throughflow: in
     /// from a reservoir, on into a drain) writes nothing but still runs
@@ -257,10 +345,9 @@ impl Sim {
         }
         let flux = self.stats.water_in + self.stats.water_out;
         let mut level = start;
-        let (i, j, k) = (p.i as i64, p.j as i64, p.k as i64);
-        let lateral: [Option<BlockPos>; 4] = [(-1, 0), (1, 0), (0, -1), (0, 1)].map(|(di, dj)| world.resolve_block(p.face, i + di, j + dj, k));
+        let beside = lateral(world, p);
         // Reservoirs beside the cell: pairwise, half the difference.
-        for n in lateral.iter().flatten() {
+        for n in beside.iter().flatten() {
             if !self.is_active_block(*n)
                 && let Boundary::Water { level: ln, .. } = self.boundary_cell(world, *n)
                 && ln >= level.saturating_add(2)
@@ -283,10 +370,11 @@ impl Sim {
                 matches!(self.boundary_cell(world, below), Boundary::Water { level: bl, drains: true } if bl < FULL)
             }
         };
+        let mut spread = false;
         if level >= 2 && !can_fall {
             // Candidates: (level, neighbour order, cell, is a boundary drain).
             let mut cands: Vec<(u8, usize, BlockPos, bool)> = Vec::with_capacity(4);
-            for (idx, n) in lateral.iter().enumerate() {
+            for (idx, n) in beside.iter().enumerate() {
                 let Some(n) = n else { continue };
                 if self.is_active_block(*n) {
                     let (nid, nl) = self.cell(world, *n);
@@ -327,7 +415,11 @@ impl Sim {
                     self.overlay.moved += d as u64;
                 }
                 level = m as u8;
+                spread = true;
             }
+        }
+        if level > 0 && !can_fall && !spread && self.config.flow.slide {
+            level = self.water_slide(world, p, &beside, level);
         }
         self.finish_cell(world, p, start, level, flux);
     }

@@ -85,6 +85,8 @@ assert water_out == 0
 state trench
 
 # ---- 4. Site B with a one-chunk region: the sea beyond the edge feeds the pit
+# B4: the same beach-sand pit as m2b-water.play: its walls stand here too.
+sim slide off
 atblock 1 1803 59003 511
 mode fly
 select 1

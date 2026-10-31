@@ -130,6 +130,10 @@ assert water_balance == 765
 state site_a
 
 # ---- 4. Site B: a pit at the shore fills from the sea; the sea stays full ----
+# B4: the walls of this pit are beach sand, and under the slide they slump into
+# it. This part is about the water, so they stand (the old rule, for this site
+# only); b4-slide.play digs the same beach under the new one.
+sim slide off
 atblock 1 1803 59003 511
 assert on_ground == true
 assert block[1,1799,59003,511] == water

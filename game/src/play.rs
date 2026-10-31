@@ -50,6 +50,7 @@
 //!                           still log, and all notify when it resumes)
 //!   sim radius M            active region radius in metres (--sim-radius)
 //!   sim period N            ticks per water step (--water-period; 1)
+//!   sim slide on|off        powder and water go over ledges (--no-slide)
 //!   select N                hotbar slot 1-9
 //!   hotbar A,B,...          what keys 1-9 hold, by block name (M3b; the
 //!                           harness otherwise keeps the default hotbar,
@@ -117,13 +118,13 @@
 //!                             crosshair_face/i/j/k crosshair_dist
 //!                             loaded inflight drawn (after a shot/bench)
 //!                             sim_enabled sim_tick falling queued frozen
-//!                             sim_active_chunks falls landings vanished
+//!                             sim_active_chunks falls slides landings vanished
 //!                             tick_ms_last tick_ms_avg tick_ms_max
 //!                             sim_hash (the world-state hash; computed on demand)
 //!                             water_moved water_writes water_in water_out
 //!                             water_placed water_removed water_displaced
 //!                             water_lost water_balance water_updates_last
-//!                             water_period sim_radius (units: 255 = a cell)
+//!                             water_period flow sim_radius (units: 255 = a cell)
 //!                             sky_seconds sky_speed (the session's sky
 //!                             clock) steps recording
 //!                             video_frames video_falling_drawn_max (after
@@ -869,7 +870,12 @@ pub fn run_play(session: Session, opts: PlayOptions) -> i32 {
                     let _ = run.session.apply(Action::WaterPeriod(n as u64));
                     run.say(format!("  water period {} tick(s)", n as u64));
                 }
-                _ => bad(&mut run, "sim on|off | sim radius M | sim period N"),
+                (Some("slide"), _) if matches!(args.get(1).copied(), Some("on" | "off")) => {
+                    let flow = crate::sim::Flow { slide: args[1] == "on", ..run.session.sim.config.flow };
+                    let _ = run.session.apply(Action::Flow(flow));
+                    run.say(format!("  {}", flow.text()));
+                }
+                _ => bad(&mut run, "sim on|off | sim radius M | sim period N | sim slide on|off"),
             },
             "speed" => match num(0) {
                 Some(v) if (1.0..=5000.0).contains(&v) => run.session.player.fly_speed = v,
