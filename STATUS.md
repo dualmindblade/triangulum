@@ -209,6 +209,15 @@
   a lake's surface steps between detail levels: the fix has a trade-off that's
   Andrew's call.
 
+- **B6** (Opus, verified by Opus, merged): bug reports. Press **F9** and the game
+  stops on that frame: draw on it (pen, arrow, box, text), say what's wrong, and
+  Enter takes you back. During an F10 recording each mark lands at that moment
+  in the recording. The T window has the marks and recordings, and *Make
+  report* gathers everything into one folder under `game/interchange/reports/`
+  with a `report.md` that says exactly which moment and which pixels he meant.
+  Replays now report the simulation and the look separately. All driven by test
+  events: F9 in the real game and how the pen feels are the first things to try.
+
 **M1 is feature-complete.** The last step is yours: play it and tell me what
 feels wrong.
 
@@ -257,17 +266,21 @@ tool, matched to his recordings in `docs/missions/2026-10-30-bug-round.md`.
 | B5 tools | #6 colourised mesh view, #11 map, screenshots and teleport | Opus | merged |
 | Review 4 | M2c, M3a, hardening, M3b: 13 findings, 3 of them P1 (`docs/reviews/2026-10-31-engine-review4-astra.md`) | Astra | done, not yet re-verified |
 
-Next, once those land: review 4's fixes, #8 (powder with an angle of repose),
-B6 (annotating screenshots and recordings), saves off the main thread.
+| B6 reports | Annotated bug reports for screenshots and recordings, review 4 #8 | Opus | merged |
+| R4 hardening | Review 4's other findings, the save-safety ones first | Astra | running |
+| B7 powder levels | #8: an experiment, powder with levels and an angle of repose, off by default | Opus | running |
+
+Next: saves off the main thread, then M3c (non-full blocks).
 
 ## Waiting on you
 
 - **Your old save won't load.** The terrain changed, so `saves/Neisor` is
   refused. It's untouched. Start a new world:
   `cargo run --release -- --save saves/neisor2`.
-- **Try the new keys in a real window.** T, P, Shift+P, M, Shift+M, Esc, the
-  mouse wheel on the map, and clicking at cube corners were all driven by
-  test events, never by real hands. Tell me if any of them misbehave.
+- **Try the new keys in a real window.** T, P, Shift+P, M, Shift+M, F9, Esc,
+  the mouse wheel on the map, the annotator's pen, and clicking at cube corners
+  were all driven by test events, never by real hands. Tell me if any of them
+  misbehave.
 - **Austin: Visual Studio needs repairing** when a restart suits you: restart,
   then tick *Desktop development with C++* in the Visual Studio Installer, then
   delete `game/.cargo/config.toml`. Until then the game builds from a linker

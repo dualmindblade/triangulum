@@ -1,0 +1,154 @@
+{
+  "checks": 4,
+  "divergence": null,
+  "end_sha": [
+    "f8133c9802e3b0dd0bf69cd2314a0f1ea7bea7867d8b005de788db9c39ff8d43",
+    "f8133c9802e3b0dd0bf69cd2314a0f1ea7bea7867d8b005de788db9c39ff8d43"
+  ],
+  "ended": true,
+  "errors": [],
+  "markers": [
+    {
+      "annotated": "out/play/b6-report\\b6-sand.markers\\marker01_step000042_annotated.png",
+      "clock": "990.9304144885082",
+      "frame_difference": {
+        "at_most": 0,
+        "of": 2073600,
+        "pixels": 0
+      },
+      "marks": [
+        {
+          "colour": "red",
+          "points": [
+            [
+              1267.2,
+              475.2
+            ],
+            [
+              1344.0,
+              453.6
+            ],
+            [
+              1420.8,
+              475.2
+            ],
+            [
+              1440.0,
+              529.2
+            ],
+            [
+              1382.4,
+              572.4
+            ],
+            [
+              1305.6,
+              572.4
+            ],
+            [
+              1248.0,
+              529.2
+            ],
+            [
+              1267.2,
+              475.2
+            ]
+          ],
+          "tool": "pen"
+        },
+        {
+          "colour": "yellow",
+          "from": [
+            556.8,
+            529.2
+          ],
+          "to": [
+            1094.4,
+            766.8
+          ],
+          "tool": "box"
+        },
+        {
+          "colour": "blue",
+          "from": [
+            1305.6,
+            183.6
+          ],
+          "to": [
+            960.0,
+            540.0
+          ],
+          "tool": "arrow"
+        },
+        {
+          "at": [
+            1152.0,
+            129.6
+          ],
+          "colour": "blue",
+          "text": "top of the stack",
+          "tool": "text"
+        }
+      ],
+      "n": 1,
+      "pose": "-41671.80593246847,80138.9104734113,-7209.088194113242,5.551115123125783e-17,-5.551115123125783e-17,6.938893903907228e-18,1.6923787409636868,-0.1492668487310418,walk,1,0,0,20.0,3",
+      "recorded_shot": "out/play/b6-report\\b6-sand.markers\\marker01_step000042.png",
+      "replay_shot": "out/replay/b6-sand/marker01_step000042.png",
+      "shot": "marker01_step000042",
+      "step": 42,
+      "text": "The sand stack came down, and its top now sits above the line of the terrace",
+      "time_s": 0.7
+    },
+    {
+      "annotated": "out/play/b6-report\\b6-sand.markers\\marker02_step000133_annotated.png",
+      "clock": "990.9304144885082",
+      "frame_difference": {
+        "at_most": 0,
+        "of": 2073600,
+        "pixels": 0
+      },
+      "marks": [
+        {
+          "colour": "blue",
+          "from": [
+            768.0,
+            324.0
+          ],
+          "to": [
+            1152.0,
+            594.0
+          ],
+          "tool": "box"
+        }
+      ],
+      "n": 2,
+      "pose": "-41673.58975586993,80139.16810740788,-7208.482050887318,-0.6193514407483758,0.060642683430701005,4.254729868956341,1.6923787409636868,-0.1492668487310418,walk,1,0,0,20.0,3",
+      "recorded_shot": "out/play/b6-report\\b6-sand.markers\\marker02_step000133.png",
+      "replay_shot": "out/replay/b6-sand/marker02_step000133.png",
+      "shot": "marker02_step000133",
+      "step": 133,
+      "text": "Second look from further along",
+      "time_s": 2.216666666666667
+    }
+  ],
+  "matched": 4,
+  "notes": [],
+  "ok": true,
+  "played": true,
+  "recorded_look_file": null,
+  "replay": "out/play/b6-report/b6-sand.replay",
+  "simulation": {
+    "checks": 4,
+    "matched": 4,
+    "reproduced": true
+  },
+  "steps": 193,
+  "visual": {
+    "changed_during_recording": [],
+    "differences": [],
+    "other_build": false,
+    "recorded_build": "d132cd89a",
+    "reproduced": "same",
+    "this_build": "d132cd89a"
+  },
+  "warnings": []
+}

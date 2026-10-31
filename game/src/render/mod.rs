@@ -688,6 +688,21 @@ impl Renderer {
         self.last_gpu_ms
     }
 
+    /// Fill a target with one dark colour: the annotator's background, in place
+    /// of the world (it draws nothing else, so it stays quick).
+    pub fn clear(&self, target: &wgpu::TextureView) {
+        let mut enc = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("clear") });
+        enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("clear"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment { view: target, depth_slice: None, resolve_target: None, ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color { r: 0.01, g: 0.01, b: 0.01, a: 1.0 }), store: wgpu::StoreOp::Store } })],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+            multiview_mask: None,
+        });
+        self.queue.submit([enc.finish()]);
+    }
+
     /// Read the offscreen colour target back as RGBA8.
     pub fn read_rgba(&self) -> Vec<u8> {
         self.read_texture(&self.color, self.width, self.height)

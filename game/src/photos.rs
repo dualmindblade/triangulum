@@ -20,6 +20,10 @@
 //! `generator_version`, `sim_rules`, `bake_sha256`, `edits` (hash, chunks,
 //! sim_tick), `build` (git, engine), `view` (width, height, fov_deg, mesh_view,
 //! hide_water, hud), `frame_ms`, `look`, `blocks`, `texture_size`, `state`.
+//! The annotator adds `annotations` (image, marks: `annotate::Mark`, in the
+//! picture's pixels) and `annotated` (the file name of `<stem>_annotated.png`,
+//! the marks flattened onto a copy; the PNG itself is never changed). A marker
+//! taken while recording adds `marker` (recording, n, step, time_s).
 //!
 //! Writing a PNG takes a few hundred milliseconds, so frames are written on a
 //! thread of their own (`ShotWriter`); only the pixels are read back on the
@@ -42,6 +46,7 @@ pub const FORMAT: &str = "triangulum-shot";
 pub const VERSION: u32 = 1;
 
 static DIR: OnceLock<PathBuf> = OnceLock::new();
+static REPLAYS: OnceLock<PathBuf> = OnceLock::new();
 
 /// Send photos somewhere else (`--interchange`; evidence runs and tests).
 pub fn set_dir(dir: PathBuf) {
@@ -51,6 +56,29 @@ pub fn set_dir(dir: PathBuf) {
 /// Where photos live: `game/interchange/`.
 pub fn dir() -> PathBuf {
     DIR.get().cloned().unwrap_or_else(|| PathBuf::from(format!("{}/interchange", env!("CARGO_MANIFEST_DIR"))))
+}
+
+/// Look for recordings somewhere else (`--replays`; evidence runs and tests).
+pub fn set_replays_dir(dir: PathBuf) {
+    let _ = REPLAYS.set(dir);
+}
+
+/// Where recordings live: `game/replays/`.
+pub fn replays_dir() -> PathBuf {
+    REPLAYS.get().cloned().unwrap_or_else(|| PathBuf::from(format!("{}/replays", env!("CARGO_MANIFEST_DIR"))))
+}
+
+/// The copy of a photo with its marks on it: `<stem>_annotated.png`.
+pub fn annotated_of(png: &Path) -> PathBuf {
+    let stem = png.file_stem().map_or(String::new(), |s| s.to_string_lossy().into_owned());
+    png.with_file_name(format!("{stem}_annotated.png"))
+}
+
+/// A PNG that appears whole or not at all.
+pub fn write_png_whole(path: &Path, width: u32, height: u32, rgba: &[u8]) -> Result<(), String> {
+    let part = path.with_extension("png.part");
+    crate::render::write_png(&part.to_string_lossy(), width, height, rgba);
+    std::fs::rename(&part, path).map_err(|e| format!("write {}: {e}", path.display()))
 }
 
 /// The name of a photo, as the old viewer named them.
@@ -203,9 +231,19 @@ pub fn write_shot(s: &Shot) -> Result<(), String> {
         std::fs::create_dir_all(dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
     }
     write_json(&s.png.with_extension("json"), &s.sidecar)?;
-    let part = s.png.with_extension("png.part");
-    crate::render::write_png(&part.to_string_lossy(), s.width, s.height, &s.rgba);
-    std::fs::rename(&part, &s.png).map_err(|e| format!("write {}: {e}", s.png.display()))
+    write_png_whole(&s.png, s.width, s.height, &s.rgba)
+}
+
+/// Write a shot with its marks: the flattened copy first, so anything that sees
+/// the shot sees all of it.
+pub fn write_marked(s: &Shot, marks: &[crate::annotate::Mark]) -> Result<(), String> {
+    if let Some(dir) = s.png.parent() {
+        std::fs::create_dir_all(dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
+    }
+    if !marks.is_empty() {
+        write_png_whole(&annotated_of(&s.png), s.width, s.height, &crate::annotate::flatten(&s.rgba, s.width, s.height, marks))?;
+    }
+    write_shot(s)
 }
 
 fn write_json(path: &Path, v: &Value) -> Result<(), String> {
@@ -235,6 +273,15 @@ impl ShotWriter {
         let tx = self.tx.clone();
         std::thread::spawn(move || {
             let _ = tx.send(write_shot(&shot).map(|()| shot.png));
+        });
+    }
+
+    /// A shot with marks, flattened on the same thread.
+    pub fn write_marked(&mut self, shot: Shot, marks: Vec<crate::annotate::Mark>) {
+        self.busy += 1;
+        let tx = self.tx.clone();
+        std::thread::spawn(move || {
+            let _ = tx.send(write_marked(&shot, &marks).map(|()| shot.png));
         });
     }
 
@@ -282,12 +329,19 @@ pub struct Photo {
     pub day_length_s: Option<f64>,
     pub local_hour: Option<f64>,
     pub live: bool,
+    /// `<stem>_annotated.png`, when it has one.
+    pub annotated: Option<PathBuf>,
 }
 
 impl Photo {
     /// The title, or failing that where it was taken.
     pub fn label(&self) -> String {
         if self.title.trim().is_empty() { format!("{:.3} {:.3}  alt {:.0} m", self.lat, self.lon, self.alt_m) } else { self.title.clone() }
+    }
+
+    /// The picture to show: the one with marks, when there is one.
+    pub fn shown(&self) -> &Path {
+        self.annotated.as_deref().unwrap_or(&self.png)
     }
 }
 
@@ -301,7 +355,8 @@ pub fn parse_name(name: &str) -> Option<(f64, f64, f64, f64, f64)> {
     Some((grab("_lat", &['_'])?, grab("_lon", &['_'])?, grab("_alt", &['k'])?, grab("_yaw", &['_'])?, grab("_pitch", &['_', '.'])?))
 }
 
-fn read_photo(png: PathBuf, name: String) -> Option<Photo> {
+/// A photo's row, from its sidecar (or failing that the pose in its name).
+pub fn read_photo(png: PathBuf, name: String) -> Option<Photo> {
     let js: Option<Value> = std::fs::read_to_string(png.with_extension("json")).ok().and_then(|t| serde_json::from_str(&t).ok());
     let from_name = parse_name(&name);
     let f = |path: &[&str]| -> Option<f64> {
@@ -329,6 +384,7 @@ fn read_photo(png: PathBuf, name: String) -> Option<Photo> {
         day_length_s: f(&["sky", "settings", "day_length_s"]),
         local_hour: f(&["sky", "local_hour"]),
         live: js.as_ref().and_then(|j| j["kind"].as_str()).is_some_and(|k| k != "settled") || name.contains("_raw"),
+        annotated: Some(annotated_of(&png)).filter(|p| p.exists()),
         png,
         name,
     })
@@ -342,7 +398,8 @@ pub fn scan(dir: &Path) -> Vec<Photo> {
         .flatten()
         .filter_map(|e| {
             let name = e.file_name().to_string_lossy().into_owned();
-            if !name.starts_with("shot_") || !name.ends_with(".png") {
+            // A flattened copy belongs to its photo; it isn't a photo.
+            if !name.starts_with("shot_") || !name.ends_with(".png") || name.ends_with("_annotated.png") {
                 return None;
             }
             let when = e.metadata().and_then(|m| m.modified()).unwrap_or(std::time::UNIX_EPOCH);
@@ -375,12 +432,14 @@ pub fn save_notes(p: &Photo) -> Result<(), String> {
     })
 }
 
-/// Everything that goes with a photo: files beside it named `stem.*`.
+/// Everything that goes with a photo: files beside it named `stem.*`, and its
+/// flattened copy.
 fn family(png: &Path) -> Vec<PathBuf> {
     let (Some(dir), Some(stem)) = (png.parent(), png.file_stem().map(|s| s.to_string_lossy().into_owned())) else { return vec![png.to_path_buf()] };
     let Ok(rd) = std::fs::read_dir(dir) else { return vec![png.to_path_buf()] };
     let prefix = format!("{stem}.");
-    let mut v: Vec<PathBuf> = rd.flatten().filter(|e| e.file_name().to_string_lossy().starts_with(&prefix)).map(|e| e.path()).collect();
+    let flat = format!("{stem}_annotated.png");
+    let mut v: Vec<PathBuf> = rd.flatten().filter(|e| e.file_name().to_string_lossy().starts_with(&prefix) || e.file_name().to_string_lossy() == flat).map(|e| e.path()).collect();
     // The picture moves first: if anything fails, it is what comes back.
     v.sort_by_key(|p| p.as_path() != png);
     v
@@ -518,11 +577,15 @@ pub fn repro(png: &Path) -> Result<Repro, String> {
     }
     let body = repro_script(&js, &stem, &command)?;
     std::fs::write(&script, body).map_err(|e| format!("write {}: {e}", script.display()))?;
+    Ok(Repro { script, command, at_command: at_command(&js) })
+}
+
+/// Stand where a sidecar stood by hand: lat, lon, altitude, look and time.
+pub fn at_command(js: &Value) -> String {
     let p = &js["pose"];
     let hour = js["sky"]["local_hour"].as_f64().unwrap_or(12.0);
     let num = |k: &str| p[k].as_f64().unwrap_or(0.0);
-    let at_command = format!("cargo run --release -- --at {:.6} {:.6} {:.2} --look {:.3} {:.3} --time {:.4} --{}", num("lat"), num("lon"), num("alt_m"), num("heading_deg"), num("pitch_deg"), hour, p["mode"].as_str().unwrap_or("fly"));
-    Ok(Repro { script, command, at_command })
+    format!("cargo run --release -- --at {:.6} {:.6} {:.2} --look {:.3} {:.3} --time {:.4} --{}", num("lat"), num("lon"), num("alt_m"), num("heading_deg"), num("pitch_deg"), hour, p["mode"].as_str().unwrap_or("fly"))
 }
 
 #[cfg(test)]
@@ -615,11 +678,16 @@ mod tests {
         std::fs::write(dir.join("bugs-found-1.txt"), b"Andrew's notes").unwrap();
         std::fs::create_dir_all(dir.join("trash")).unwrap();
         std::fs::write(dir.join("trash/shot_lat9.000_lon9.000_alt0.100km_yaw7_pitch8.png"), b"x").unwrap();
+        // A flattened copy is part of its photo, not one more on the roll.
+        std::fs::write(dir.join("shot_lat1.000_lon2.000_alt0.500km_yaw3_pitch-4_annotated.png"), b"x").unwrap();
         let roll = scan(&dir);
         assert_eq!(roll.len(), 2, "{roll:?}");
         let a = roll.iter().find(|p| p.lat == 1.0).unwrap();
         assert_eq!((a.lon, a.alt_m, a.heading_deg, a.pitch_deg), (2.0, 500.0, 3.0, -4.0));
         assert!(!a.live && a.exact.is_none());
+        assert_eq!(a.shown(), annotated_of(&a.png), "it shows with its marks");
+        let other = roll.iter().find(|p| p.lat == 5.0).unwrap();
+        assert_eq!(other.shown(), other.png);
         assert!(roll.iter().find(|p| p.lat == 5.0).unwrap().live);
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -637,6 +705,13 @@ mod tests {
         assert!(!png.exists() && !png.with_extension("json").exists() && !png.with_extension("play").exists());
         assert!(dir.join("trash/shot_a.png").exists() && dir.join("trash/shot_a.json").exists() && dir.join("trash/shot_a.play").exists());
         assert!(dir.join("bugs-found-1.txt").exists() && dir.join("shot_ab.json").exists());
+        // The flattened copy goes with its photo, another photo's stays.
+        let png = fake_shot(&dir, "shot_m", sample());
+        std::fs::write(annotated_of(&png), b"marks").unwrap();
+        std::fs::write(dir.join("shot_mm_annotated.png"), b"another's").unwrap();
+        assert_eq!(trash(&dir, &png).unwrap(), 3);
+        assert!(!annotated_of(&png).exists() && dir.join("trash/shot_m_annotated.png").exists());
+        assert!(dir.join("shot_mm_annotated.png").exists());
         // The same name again: the old one stays.
         std::fs::write(dir.join("trash/shot_a.play"), b"first").unwrap();
         let png = fake_shot(&dir, "shot_a", sample());

@@ -182,6 +182,7 @@ mode when higher; `--walk` and `--fly` force it.
 | V | vsync on / off |
 | [ / ] | slow / speed up time (0, 0.1, 1, 10, 60, 600, 3600×) |
 | F1 | the look panel (frees the mouse while open); Esc closes it too |
+| F9 | mark what's wrong: the game stops, draw on this frame and say why, Enter goes back to the game (below) |
 | F10 | start / stop recording a replay (below) |
 | Q | save and quit |
 
@@ -239,8 +240,15 @@ and the mouse, and the game carries on behind it.
   you, and each blue dot is a photo.
 - **Photos.** Click a dot or a row: the picture shows on the map, and clicking
   that shows it full size. Give it a *Title* and *Notes*; they are kept in its
-  `.json`. Tick photos and press *Delete* to move them, and everything saved
-  with them, to `interchange/trash/`. Nothing is destroyed.
+  `.json`. *Annotate* draws on it (below). Tick photos and press *Delete* to move
+  them, and everything saved with them, to `interchange/trash/`. Nothing is
+  destroyed.
+- **Recordings** sit on the other tab, each with how long it is and how many
+  moments are marked. Click one to give it a *Title* and *Description*, kept in a
+  `.json` beside it, and to see its markers; click a marker and it behaves like a
+  photo, with its picture on the map, *Annotate*, *Repro* and *Teleport*.
+- **Make report** gathers a recording, or the ticked photos, into one folder to
+  send. See below.
 - **Teleport** goes to the selected photo, the target, or what you type: `lat
   lon` lands you on the ground (or above deep water), `lat lon alt` hovers there,
   metres above sea level. *Restore photo's time of day* also puts the sun, moon
@@ -253,25 +261,57 @@ question, the selection, then the window. A teleport or a place during an F10
 recording is recorded, so the replay does the same. While you watch a replay the
 window is for looking only.
 
-## Reporting a bug: press F10 (M2c)
+## Reporting a bug
 
-For something you can see standing still, a photo is enough: press **P**, open
-**T**, select it, write what's wrong in *Notes*, and send the `.png` and the
-`.json`. For anything that moves or changes, record it:
+**See something wrong? Press F9.** The game stops on that frame and shows it to
+you with a pen. Draw on it, type what's wrong, press **Enter**, and you are back
+in the game exactly where you were, keys and all.
 
-1. Press **F10**. The window title says `REC replay`, and the stats panel
-   (H) names the file. (It saves your game first.)
-2. Do the thing again, or just keep playing until it happens.
-3. Press **F10** again to stop. Quitting with Q or closing the window
-   also stops it, and if the game crashes the file keeps everything up to
-   the last second.
-4. Send the file. It is in **`game/replays/`**, named after the world and
-   the time, for example `game/replays/Neisor-20261025-154807.replay`.
-   Attach it to a message or drop it into the shared folder with a line
-   about what went wrong and roughly when ("about 20 s in, the water
-   climbed the wall"). The file is the whole bug: it holds the world as it
-   was when you pressed F10 and every key, click and mouse move after it.
-   It does not hold your save, so you keep playing as usual.
+| In the annotator | Does |
+|---|---|
+| Drag on the picture | draw with the tool at the top: **Pen**, **Arrow** or **Box** |
+| **Text**, then click | type right on the picture; Enter finishes it |
+| The colour squares | red, yellow, green, blue, white |
+| Just type | it goes in the comment box underneath, whatever you drew last |
+| Ctrl+Z or *Undo* | takes the last mark away; your words stay |
+| Enter | saves and goes back to the game (Shift+Enter is a new line) |
+| Esc | cancels. If you drew or wrote anything it asks once more first |
+
+**If it moves or changes, record it.** Press **F10** first; the window title says
+`REC replay`. Play until it happens, press **F9** at the moment it does, as many
+times as you like, and press **F10** again to stop. Each F9 is a marker at exactly
+that moment. It doesn't change the recording: the game stops while you draw, and
+the replay plays as if you had never paused. Quitting with Q or closing the window
+also stops the recording, and if the game crashes the file keeps everything up to
+the last second.
+
+**If it stands still, a photo will do.** F9 with no recording running saves a
+marked photo. Or press **P**, open **T**, select the photo and press *Annotate*.
+Your original picture is never changed: the marks are kept as data in its `.json`,
+and `shot_..._annotated.png` beside it is a copy with the marks on it.
+
+**Then send one thing.** Open **T**. For a recording, go to *Recordings*, pick it,
+give it a title if you like, and press *Make report*. For photos, tick them and
+press *Make report*. It makes one folder in `game/interchange/reports/` with
+everything in it, and *Show folder* opens it. Send that whole folder. It holds a
+`report.md` listing everything you marked: your words, the moment, where you
+stood, and your picture with the marks. Open it and read it if you like; it's
+written for people too.
+
+### What's in a report, and how an agent uses it
+
+`report.md` is written for somebody with no other context. For each item it gives
+what was written, the step and time, the picture with the marks and where the
+marks are in pixels, the exact pose as `pose` and `clock` lines for a script, a
+`--repro` command, an `--at` command, and the build, generator and simulation rules
+it was made on.
+
+A recording's markers live beside it in `<recording>.markers/`: each one is a shot
+with a whole sidecar, and in the recording it is one line, `note marker {JSON}`, at
+its step. So when a later build refuses a recording, the report still stands: its
+pictures, words and poses need nothing else, and `--repro` rebuilds a frame from
+its sidecar alone. (The script it writes checks the world's edits and says so at
+the end when they aren't there: a repro starts from an empty save.)
 
 A replay usually takes a few kilobytes per minute plus the edited part of
 your world (a few kilobytes per chunk you changed).
@@ -295,8 +335,11 @@ Playing one back (what an agent does with your file):
 ```
 cargo run --release -- --replay game/replays/Neisor-20261025-154807.replay
 cargo run --release -- --replay FILE --shot-at 600 --shot-at end   # settled shots at steps (60 a second)
-cargo run --release -- --replay FILE --watch                       # in the window, at real time
+cargo run --release -- --replay FILE --watch                       # in the window, at real time, showing each marker's words as it passes
 ```
+
+It lists the markers in order with their step and words, and takes a settled shot
+at each one, looking where the player was looking.
 
 It plays in a scratch save, `game/saves/_replay/<name>/`, never in your
 own, checks the world, the player, the simulation and the sky against
@@ -310,7 +353,23 @@ Exact success requires a matching checkpoint at the claimed end, after any
 inputs on that step. Incomplete reports give the last verified step;
 `report.json` includes `verdict` and `verified_through`. A replay needs the same world
 settings and bake it was recorded with, and is meant for the same build
-of the game; it says so when it cannot play.
+of the game; it says so when it cannot play, and still lists its markers
+and writes its `report.json`.
+
+**"Reproduced" and "looked the same" are two answers.** The check above is the
+simulation: the same world, player and water. It says nothing about the picture,
+because a look file, a block colour or a painted texture changes every frame and
+no block. So a recording also holds every look value and the identity of every
+block and texture in use, and a replay says separately whether they match
+(`look: the same as the recording`, `look: NOT the same`, with what differs, or
+`look: UNKNOWN` for a file older than this check). For a rendering bug, the
+second answer is the one that matters. A change made while recording, in the look
+panel or to a file, is written down at its step, and the replay can't follow it.
+When the look differs the recorded one is written to `recorded.look.json` beside the
+report, ready for `--look-file`. Textures are recorded by identity, not content, so
+a replay can say one differs but can't bring it back. Each marker in `report.json`
+also says how many pixels its settled shot differs from the frame that was marked;
+that frame was live, so distant detail still loading counts.
 
 R4 adds the algorithm version and previous region radius to simulation
 hashes. Recordings from before that change can differ at their checks even
@@ -901,6 +960,10 @@ Output goes to `out/play/<script>/`: `NAME.png` settled frames with the HUD,
 you name with `--save` is never wiped unless you also pass `--reset-save`:
 `--play x.play --save saves/Neisor` plays on your real save without deleting
 it first (the script's own edits are still saved into it).
+
+`mark` is F9 and `marked` finishes it; `menu` clicks, drags and types into the
+annotator and the T window with synthetic events. `scripts/b6-report.play` makes a
+whole bug report that way.
 
 `scripts/m1-done.play` is the M1 "done when" scenario: walk, dig a trench
 and a tunnel, build a stone bridge over the trench, walk across it, save,

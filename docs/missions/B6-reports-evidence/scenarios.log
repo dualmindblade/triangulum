@@ -1,0 +1,67 @@
+--- 1. the recording, fresh process
+exit 0
+look: C:\code\triangulum\.claude\worktrees\agent-ab34c3e4396f7f5b1\game/assets/look.json
+2 markers:
+  photo marker01_step000042: out/replay/b6-sand/marker01_step000042.png (settled in 3.4 s / 1486 frames)
+  photo marker02_step000133: out/replay/b6-sand/marker02_step000133.png (settled in 0.0 s / 11 frames)
+replayed 193 steps (3.2 s), 22 events; 4 of 4 checks matched; the end state hash matches (f8133c9802e3b0dd..)
+replay OK: the session reproduced exactly
+look: the same as the recording (every look value, block and texture)
+[(1, 42, {'at_most': 0, 'of': 2073600, 'pixels': 0}), (2, 133, {'at_most': 0, 'of': 2073600, 'pixels': 0})] {'checks': 4, 'matched': 4, 'reproduced': True} same
+--- 2. another look
+exit 0
+look: out/scen/altered.look.json
+replayed 193 steps (3.2 s), 22 events; 4 of 4 checks matched; the end state hash matches (f8133c9802e3b0dd..)
+replay OK: the session reproduced exactly
+look: NOT the same as the recording, so frames can differ even though the simulation matched:
+  look light.sun_strength: 1.0 recorded, 0.6 here
+  look sky.fog_strength: 0.7 recorded, 0.2 here
+  look water.opacity: 0.62 recorded, 0.9 here
+the look it was recorded in is in out/replay/altered/recorded.look.json: add --look-file with that path to play it in that look
+[(1, 42, {'at_most': 69, 'of': 2073600, 'pixels': 1208020}), (2, 133, {'at_most': 67, 'of': 2073600, 'pixels': 1288624})] {'checks': 4, 'matched': 4, 'reproduced': True} different out/replay/altered/recorded.look.json
+--- 2b. with the recorded look put back
+exit 0
+look: out/replay/altered/recorded.look.json
+replay OK: the session reproduced exactly
+look: the same as the recording (every look value, block and texture)
+[(1, 42, {'at_most': 0, 'of': 2073600, 'pixels': 0}), (2, 133, {'at_most': 0, 'of': 2073600, 'pixels': 0})] same
+--- 3. other blocks and textures
+block file keys ['_comment', 'texture_size', 'blocks']
+exit 0
+look: C:\code\triangulum\.claude\worktrees\agent-ab34c3e4396f7f5b1\game/assets/look.json
+replay OK: the session reproduced exactly
+look: NOT the same as the recording, so frames can differ even though the simulation matched:
+  block sand: not the same
+[(1, 42, {'at_most': 94, 'of': 2073600, 'pixels': 231359}), (2, 133, {'at_most': 94, 'of': 2073600, 'pixels': 39265})] {'checks': 4, 'matched': 4, 'reproduced': True} different
+--- 3b. a file from before B6 (no build, no look in its header), still played
+exit 0
+replayed 193 steps (3.2 s), 22 events; 4 of 4 checks matched; the end state hash matches (f8133c9802e3b0dd..)
+replay OK: the session reproduced exactly
+look: UNKNOWN (this recording is older than the look check and holds no look to compare)
+--- 4. refused: a recording under other rules
+rules in the file b'3'
+exit 2
+2 markers:
+  1. step 42 (0.7 s): "The sand stack came down, and its top now sits above the line of the terrace"
+  2. step 133 (2.2 s): "Second look from further along"
+this recording can't play here, but its markers stand on their own: their shots, words and poses are in report.json, and --repro SHOT.png rebuilds a frame
+report: out/replay/refused/report.json
+error: this replay was recorded in a different world or under other rules (recorded vs here: simulation rules version 2 vs 3: it was recorded before sand and water learned to slide off ledges (this build's rules would no
+{'played': False, 'ok': False, 'simulation': {'reproduced': None}} [(1, 42, 'The sand stack came down, and its top no', True, True, 4), (2, 133, 'Second look from further along', True, True, 1)]
+--- 4b. --repro from the report folder, with no recording
+exit 0
+wrote out/refused/b6-sand.markers/marker01_step000042.play
+
+the same frame, from game/:
+  cargo run --release -- --play out/refused/b6-sand.markers/marker01_step000042.play --seed 42 --block-size 1 --height 2048 --sea-level 512 --n 131072 --roughness 1 --landform 1 --size 1920x1080 --day-length 1440 --lunar-month-days 7 --months-per-season 3 --year-days 84 --look-file out/refused/b6-sand.markers/marker01_step000042.look.json
+
+near it, by hand:
+  cargo run --release -- --at -4.563212 117.474191 45.62 --look 96.966 -8.552 --time 9.5000 --walk
+
+running: --play out/refused/b6-sand.markers/marker01_step000042.play --seed 42 --block-size 1 --height 2048 --sea-level 512 --n 131072 --roughness 1 --landform 1 --size 1920x1080 --day-length 1440 --lunar-mont
+exit 1
+> compare repro marker01_step000042
+  compare repro marker01_step000042: 356077 of 2073600 pixels differ, by at most 150
+ASSERT FAILED (line 15): edit_hash == b97b7f5b21f99c29, actual 55e0bef656a52325
+  assert ok: generator_version == 4 (actual 4)
+done in 4.3 s: 2 asserts, 1 failed, 0 errors

@@ -751,3 +751,6 @@ fn harness_pokes_are_recorded_as_poses_and_replay_exactly() {
     assert!(!report.ok(), "the world differs at the end");
     let _ = std::fs::remove_file(&summary.path);
 }
+
+#[path = "marker_tests.rs"]
+mod markers;

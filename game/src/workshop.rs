@@ -337,6 +337,12 @@ impl Workshop {
         &self.look
     }
 
+    /// The pictures as they are live, painted ones included (B6: a recording
+    /// holds their identity).
+    pub fn texture_set(&self) -> &TextureSet {
+        &self.texset
+    }
+
     /// Is the session showing a preview world (saving off)?
     pub fn previewing(&self) -> bool {
         self.home.is_some()

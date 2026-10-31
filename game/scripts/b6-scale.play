@@ -1,0 +1,31 @@
+# B6: does the annotator read at 100% and 150%, and fit? Run it at several window
+# sizes; photos go in its own out directory:
+#
+#   cargo run --release -- --play scripts/b6-scale.play --size 1920x1080 --out out/play/b6-scale --interchange out/play/b6-scale --replays out/play/b6-scale
+
+mode fly
+at -4.5654 117.4744 1500
+look -60 -35
+skytime 09:30
+settle
+mark
+assert menu_annotating == true
+mark stroke 0.30 0.62 0.33 0.66 0.37 0.68 0.42 0.69 0.47 0.67 0.50 0.63
+menu click ink-yellow
+menu click tool-box
+mark stroke 0.55 0.40 0.74 0.62
+menu click ink-white
+menu click tool-text
+menu click canvas 0.10 0.12
+menu type this ridge
+menu key enter
+menu type The snow line is a straight edge here
+menu shot at_100
+menu scale 1.5
+menu shot at_150
+menu key enter
+assert menu_annotating == false
+marked
+assert mark_saved == true
+assert mark_annotated == true
+assert mark_marks == 3

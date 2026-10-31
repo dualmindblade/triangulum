@@ -117,11 +117,15 @@ pub struct Session {
     pub last_reload: Option<save::LoadReport>,
     /// A replay being written (M2c): `apply` and `step` feed it.
     pub recorder: Option<Recorder>,
+    /// What the picture is made of (`visual.rs`), when the driver knows: the
+    /// app and the harness set it, a recording holds it, and a new value during
+    /// a recording is written down. Nothing in the simulation reads it.
+    pub visual: Option<Arc<crate::visual::Visual>>,
 }
 
 impl Session {
     pub fn new(engine: Arc<Engine>, player: Player, save: Option<SaveDir>, bake_sha256: String, sim: Sim) -> Self {
-        Self { engine, player, save, bake_sha256, last_save: None, saved_chunks: 0, sim, steps: 0, sky: Clock { seconds: 0.0, speed: 0.0 }, held: None, last_reload: None, recorder: None }
+        Self { engine, player, save, bake_sha256, last_save: None, saved_chunks: 0, sim, steps: 0, sky: Clock { seconds: 0.0, speed: 0.0 }, held: None, last_reload: None, recorder: None, visual: None }
     }
 
     pub fn planet(&self) -> &crate::grid::Planet {
