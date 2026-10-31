@@ -19,11 +19,11 @@ with their OK; record the change here with the date.
 
 ## Sizes
 
-- Block size s: 1 m during M1, with ½ m as a switch. Decided after M1 by
-  playing both.
-- World height H, in blocks, is a power of 2, set per world. The value is
-  under review (512 felt small; 2,048 m with 512 m below sea level is the
-  suggestion). The split above and below sea level is its own setting.
+- Block size s: 1 m, with ½ m as a switch. Andrew (2026-10-30): the scale
+  stays where it is for now.
+- World height H, in blocks, is a power of 2, set per world: 2,048, with 512
+  below sea level, for now (Andrew, 2026-10-30). The split above and below
+  sea level is its own setting.
 - Planet size N = k·H columns per face edge. Default N = 131,072 (k = 256).
   With equal-area blocks, R = s·N·√(6/4π) ≈ 0.691·s·N, so R ≈ 90.57 km.
 - LOD voxel sizes are 1, 2, 4 … H blocks. The coarsest LOD voxel equals the
@@ -35,12 +35,13 @@ with their OK; record the change here with the date.
 
 - planetgen keeps Earth physics at Earth's radius; the shrink happens in the
   bake.
-- Vertical scale: under review. Andrew (2026-10-24): large features
-  (mountain ranges, ocean trenches) should sit somewhere between Earth-sized
-  at a local scale (vertical scale 1) and at a planetary scale (1/70, which
-  keeps Earth's slopes), and a world height around 2,048 seems about right.
-  The middle is ≈ 1/8 (peaks ~1 km, deepest trench ~1.26 km, range flanks
-  ~8× steeper than Earth's). He'll decide from renders at 1/70, 1/20 and 1/8.
+- Vertical scale: 1/70 (`vertical_scale: null`, Earth's slopes) for now
+  (Andrew, 2026-10-30: keep things where they are). It stays a dial. Earlier
+  (2026-10-24) he said large features (mountain ranges, ocean trenches)
+  should sit somewhere between Earth-sized at a local scale (vertical scale
+  1) and at a planetary scale (1/70), with ≈ 1/8 the middle (peaks ~1 km,
+  deepest trench ~1.26 km, range flanks ~8× steeper than Earth's), so this
+  may come back.
 - Relief finer than planetgen's resolution comes from the engine's
   generator. Its roughness is a dial for Andrew.
 - Sampling is smooth everywhere: no visible raster texels or noise seams.
@@ -51,6 +52,11 @@ with their OK; record the change here with the date.
 - Time: 24-minute days (one game minute per real second), from Andrew's
   October vision. His July calendar (7-day lunar month, 3 months per season,
   84-day year, all adjustable) carries over unless he changes it: to confirm.
+
+## Blocks
+
+- Block textures are 16×16 pixels (Andrew, 2026-10-30): `texture_size` in
+  `game/assets/blocks.json`.
 
 ## Water (Andrew)
 

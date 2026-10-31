@@ -1,6 +1,6 @@
 # Status
 
-*Updated 2026-10-25 by Claude (Opus).*
+*Updated 2026-10-31 by Claude (Opus).*
 
 ## Where things stand
 
@@ -191,8 +191,20 @@ detail (still about 500 fps).
 
 ## In progress
 
-Nothing: paused for the week. The next steps are in
-`docs/handoffs/2026-10-25-week-end.md`.
+**The bug round:** Andrew's first list, 11 items plus Austin's annotation
+tool, matched to his recordings in `docs/missions/2026-10-30-bug-round.md`.
+
+| Mission | Bugs | Who | State |
+|---|---|---|---|
+| B1 water surfaces | #1 water under a solid, #10 dip at the edge, review 3 #8, hairlines | Opus | running |
+| B2 shores | #2 lakes from space, #4 ocean bands, #5 beaches | Opus | running |
+| B3 picking | #3 raycasting at cube seams and corners | Astra | running |
+| B4 flow | #7 sliding powder and water, #9 level-1 film | Opus | running |
+| B5 tools | #6 mesh view, #11 map, screenshots and teleport | Opus | running |
+| Review 4 | M2c, M3a, hardening, M3b | Astra | running |
+
+Next, once those land: #8 (powder with an angle of repose), B6 (annotating
+screenshots and recordings), saves off the main thread.
 
 ## Waiting on you
 
@@ -201,21 +213,12 @@ Nothing: paused for the week. The next steps are in
   dusk colours, water colour, grass sides. *Save look*, then commit the
   two files or send them. The panel has only been seen at this machine's
   150% display scaling; tell me if it's too small or too big on yours.
-- **Andrew: texture size** (open decision, M3b). Block textures are
-  16 x 16 pixels. One setting, `"texture_size"` near the top of
-  `game/assets/blocks.json`, makes them 32 x 32: finer, and four times the
-  painting. Pictures of the other size are resized when read, so it can
-  change later without losing anything.
-- **Try F10 once each.** Press F10, play a minute (dig, pour water, G, F,
-  `[` `]`, P, R, alt-tab), press F10 again, and send the file from
-  `game/replays/` (how: "Reporting a bug" in `game/README.md`). No agent
-  can press real keys, so the key mapping is untested. One recorded on
-  Andrew's machine and played back on Austin's tells us whether replays
-  survive a different PC.
+- **One replay across PCs.** F10 works: all five recordings from
+  2026-10-30 played back exactly on this machine. One recorded on Andrew's
+  PC and played on Austin's tells us whether replays survive a different
+  machine.
 - **Watch the M1 video:** `docs/media/m1-showcase.mp4` (85 s; stills in
   `docs/media/m1-showcase-stills/`). Things in it that are Andrew's call:
-  - **Vertical scale.** At 1/70 the highest range is a white plain with
-    contour stripes; at 1/8 it's real mountains (last shot of the video).
   - **The atmosphere is thin.** It's scaled to the 90 km planet, so the sky
     turns toward space above about 1.5 km, and 1/8 mountains reach into
     it. Whatever vertical scale he picks, the atmosphere's height should
@@ -241,16 +244,10 @@ Nothing: paused for the week. The next steps are in
   (7-day lunar month, 84-day year)? No rush.
 - **Andrew:** pick a grid by eye if he wants something other than the
   recommended smooth equal-area one (grid page linked above).
-- Block size (1 m or ½ m) gets decided after you've played M1.
 
 ## Decided
 
 See `DESIGN.md`: the smooth equal-area grid (`EqualAreaCobe`), planet
-131,072 columns per face (R ≈ 90.6 km), Andrew's 256-level water rule.
-
-## Under review
-
-- World height: 2,048 blocks suggested (512 felt small); the engine
-  benchmark measures what height costs.
-- Vertical scale: between 1/70 (Earth's slopes) and 1 (Earth's heights);
-  Andrew decides from renders at 1/70, 1/20 and 1/8, coming with M1a.
+131,072 columns per face (R ≈ 90.6 km), Andrew's 256-level water rule, and
+from 2026-10-30: textures are 16×16, and the scale stays where it is for now
+(1 m blocks, world height 2,048, vertical scale 1/70).
