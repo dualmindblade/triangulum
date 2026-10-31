@@ -13,8 +13,10 @@
 //! lattice corner (Minecraft-style, `Surface::corner`), so neighbouring
 //! cells' surfaces meet exactly; the top edge of a side face against air
 //! takes the same two corners, so falls and partial columns are watertight.
-//! A cell with water above it counts as full. Full water (the ocean, resting
-//! lakes, every coarse LOD) carries 255s and is the geometry it always was.
+//! A cell with water above it counts as full. Full water (the ocean, every
+//! coarse LOD) carries 255s and is the geometry it always was. Corners read
+//! the real cells at them, not the padded ids the terrain mesh uses, and a
+//! top face shows under a solid unless it lies in the solid's underside.
 //!
 //! Grid record: 25 offsets (vec4, xyz = corner position at the chunk's
 //! lattice floor relative to the chunk origin) then 25 unit directions
@@ -143,32 +145,46 @@ pub struct PaddedWater {
 struct Surface<'a> {
     masks: Masks,
     levels: &'a [u8],
+    /// The padded column past two sides of a face, in a chunk at a cube
+    /// corner. Three faces meet there, so the lattice has no such cell, and
+    /// the padding repeats one of the real ones (each face a different one).
+    no_cell: Option<(i32, i32)>,
 }
 
 impl<'a> Surface<'a> {
-    fn new(padded: &Masks, water: &'a PaddedWater) -> Self {
+    fn new(padded: &Masks, water: &'a PaddedWater, key: ChunkKey, planet: &Planet) -> Self {
         let mut masks = Masks { solid: padded.solid.clone(), liquid: padded.liquid.clone() };
         for &(x, y, z) in &water.skirted {
             let (c, bit) = (col(x as i32, y as i32), 1u64 << (z as i32 + 1));
             masks.solid[c] |= bit;
             masks.liquid[c] &= !bit;
         }
-        Self { masks, levels: &water.levels }
+        let last = planet.chunks_per_edge(key.lod) - 1;
+        let past = |c: u32| if c == 0 { Some(-1) } else if c == last { Some(CHUNK as i32) } else { None };
+        Self { masks, levels: &water.levels, no_cell: past(key.cx).zip(past(key.cy)) }
     }
 
     /// Height (0..=255 of a voxel) of layer `z`'s water at lattice corner
-    /// (cx, cy), cx and cy in 0..=32: the weighted mean over the four cells
+    /// (cx, cy), cx and cy in 0..=32: the weighted mean over the cells
     /// around the corner, water cells by their level (weight 10 at 0.8 and
     /// above, else 1), air cells as 0 with weight 1, solid cells left out;
-    /// a water cell with water above it makes the corner full.
+    /// a water cell with water above it makes the corner full, and so does
+    /// full water with nothing partial beside it, air or not. That is what
+    /// a chunk with no partial water draws, flat, so the two always meet
+    /// (review 3 #8); it is a pure function of the real cells at the corner,
+    /// so every chunk and every cube face that shares it gets one height.
     fn corner(&self, cx: i32, cy: i32, z: i32) -> u8 {
-        let (mut sum, mut w) = (0u32, 0u32);
+        let (mut sum, mut w, mut air, mut partial) = (0u32, 0u32, 0u32, false);
         for (x, y) in [(cx - 1, cy - 1), (cx, cy - 1), (cx - 1, cy), (cx, cy)] {
+            if Some((x, y)) == self.no_cell {
+                continue;
+            }
             if self.masks.liquid_at(x, y, z) {
                 if self.masks.liquid_at(x, y, z + 1) {
                     return 255;
                 }
                 let l = self.levels[pidx(x, y, z)] as u32;
+                partial |= l != 255;
                 if l >= 204 {
                     sum += 10 * l;
                     w += 10;
@@ -177,10 +193,14 @@ impl<'a> Surface<'a> {
                     w += 1;
                 }
             } else if !self.masks.solid_at(x, y, z) {
-                w += 1;
+                air += 1;
             }
         }
-        if w == 0 { 255 } else { ((sum + w / 2) / w) as u8 }
+        if !partial {
+            return 255;
+        }
+        w += air;
+        ((sum + w / 2) / w) as u8
     }
 
     /// The four corner heights of a face of water voxel (x, y, z), packed
@@ -262,7 +282,7 @@ pub fn mesh_chunk_levels(generated: &Generated, water_cells: Option<&PaddedWater
     if any_liquid {
         let blocking: Vec<u64> = masks.solid.iter().zip(&masks.liquid).map(|(s, l)| s | l).collect();
         let cap = |_: u32, _: u32, _: usize| sea_edge;
-        let surface = water_cells.filter(|_| key.lod == 0).map(|cells| Surface::new(&masks, cells));
+        let surface = water_cells.filter(|_| key.lod == 0).map(|cells| Surface::new(&masks, cells, key, planet));
         // A top face hides only under water, or under a solid it touches: a
         // surface flat at the voxel's top lies in the solid's underside, so
         // drawing it would z-fight with that face and tint a view from
@@ -862,6 +882,57 @@ mod tests {
             }
         }
         assert!(corners.len() > 2000, "{} corners", corners.len());
+    }
+
+    /// Review 3 #8, the first case: a partial cell elsewhere in chunk A
+    /// turned on corner averaging for all of A, while chunk B beside it,
+    /// with nothing partial in reach, drew flat. At a corner of two full
+    /// cells and two air cells A said 232 and B 255: 9 cm apart.
+    #[test]
+    fn full_water_meets_across_a_chunk_with_no_levels() {
+        let w = crate::world::tests::test_world();
+        let (a, b) = (ChunkKey::neisor(2, 0, 3000, 1500, 30), ChunkKey::neisor(2, 0, 3001, 1500, 30));
+        let cell = |key: ChunkKey, x: u32, y: u32| {
+            let (i0, j0, k0) = key.origin_blocks();
+            BlockPos { face: 2, i: i0 as u32 + x, j: j0 as u32 + y, k: k0 as u32 + 10 }
+        };
+        // One row of full water across the border, with air on either side of it.
+        for x in 29..32 {
+            assert!(w.set_water(cell(a, x, 10), w.water_id(), 255));
+        }
+        for x in 0..3 {
+            assert!(w.set_water(cell(b, x, 10), w.water_id(), 255));
+        }
+        // A partial cell in A, out of B's reach.
+        assert!(w.set_water(cell(a, 5, 20), w.water_id(), 60));
+        assert!(w.padded_levels(a, &w.generate(a)).is_some(), "A has levels");
+        assert!(w.padded_levels(b, &w.generate(b)).is_none(), "B draws flat");
+        let mut corners = std::collections::HashMap::new();
+        water_corners(&mesh_of(&w, a), &mut corners);
+        water_corners(&mesh_of(&w, b), &mut corners);
+        let (i0, j0, k0) = b.origin_blocks();
+        assert_eq!(corners[&(i0, j0 + 11, k0 + 10)].0, 255, "the shared corner of two full cells and two of air");
+    }
+
+    /// Review 3 #8, the second case: at a cube corner four padded samples
+    /// stand for three cells, and each face repeats a different one, so
+    /// levels 10, 50 and 90 gave 60 on one face and 40 on another: 8 cm.
+    #[test]
+    fn three_faces_agree_at_a_cube_corner() {
+        let w = crate::world::tests::test_world();
+        let k = 1000; // high in the air
+        let cells = [w.resolve_block(2, 0, 0, k).unwrap(), w.resolve_block(2, -1, 0, k).unwrap(), w.resolve_block(2, 0, -1, k).unwrap()];
+        assert!(cells[0].face != cells[1].face && cells[1].face != cells[2].face && cells[0].face != cells[2].face, "{cells:?}");
+        for (bp, level) in cells.iter().zip([10, 50, 90]) {
+            assert!(w.set_water(*bp, w.water_id(), level));
+        }
+        for bp in cells {
+            let (key, x, y, z) = crate::world::World::chunk_of(bp);
+            // The lattice corner of this face that is the cube's.
+            let (cu, cv) = ((bp.i != 0) as u32, (bp.j != 0) as u32);
+            let h = water_tops(&mesh_of(&w, key))[&(x as u32, y as u32, z as u32)];
+            assert_eq!((h >> (8 * (cu + 2 * cv))) & 0xFF, 50, "face {}: the mean of the three real cells ({h:#x})", bp.face);
+        }
     }
 
     /// Andrew's #1, recording 040850: stones laid over a river. The cells

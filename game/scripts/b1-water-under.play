@@ -12,6 +12,7 @@
 at -14.11420 -47.69908
 mode fly
 sim off
+sun 50
 assert block[3,127716,38665,512] == water
 assert level[3,127714,38665,512] > 0
 assert level[3,127714,38665,512] < 255
