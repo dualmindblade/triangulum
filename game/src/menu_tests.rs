@@ -31,6 +31,7 @@ impl Test {
         let session = fresh(None);
         let presets = session.engine.presets();
         let mut menu = Menu::new(dir.clone());
+        menu.replays = dir.clone();
         menu.show();
         Self { session, menu, rig: Rig::new(egui::Context::default(), scale), presets, size, can_move: true, went: None, dir }
     }
@@ -39,7 +40,7 @@ impl Test {
     fn pass(&mut self) -> egui::FullOutput {
         let raw = self.rig.input(self.size.0, self.size.1);
         let engine = self.session.engine.clone();
-        let env = MenuEnv { engine: &engine, bake_sha256: &self.session.bake_sha256, presets: &self.presets, here: Planet::lat_lon_deg(self.session.player.pos), can_move: self.can_move, day_length_s: 1440.0 };
+        let env = MenuEnv { engine: &engine, bake_sha256: &self.session.bake_sha256, presets: &self.presets, here: Planet::lat_lon_deg(self.session.player.pos), can_move: self.can_move, day_length_s: 1440.0, recording: None };
         let (menu, went) = (&mut self.menu, &mut self.went);
         self.rig.ctx.run_ui(raw, |ui| {
             if let Some(g) = menu.ui(ui.ctx(), &env) {
@@ -307,7 +308,7 @@ fn every_way_of_going_somewhere() {
     t.menu.show();
     t.settle();
     t.type_into("coords", "no such place");
-    assert_eq!(t.menu.destination(&MenuEnv { engine: &t.session.engine.clone(), bake_sha256: "", presets: &[], here: (0.0, 0.0), can_move: true, day_length_s: 1440.0 }), None);
+    assert_eq!(t.menu.destination(&MenuEnv { engine: &t.session.engine.clone(), bake_sha256: "", presets: &[], here: (0.0, 0.0), can_move: true, day_length_s: 1440.0, recording: None }), None);
     t.menu.coords.clear();
     t.passes(2);
     t.click("place-3");
@@ -455,4 +456,176 @@ fn the_window_fits_at_every_size_and_scale() {
         assert!(screen.contains_rect(t.menu.spots["coords"]), "{size:?} at {scale}");
         assert!(screen.contains_rect(t.menu.spots["teleport"]), "{size:?} at {scale}: {:?}", t.menu.spots["teleport"]);
     }
+}
+
+/// A photo with a real picture to annotate, in the roll.
+fn real_shot(t: &Test, name: &str) -> PathBuf {
+    let png = t.dir.join(format!("{name}.png"));
+    let mut s = t.session_sidecar(&png);
+    s["view"]["width"] = 64.into();
+    s["view"]["height"] = 36.into();
+    photos::write_shot(&photos::Shot { png: png.clone(), width: 64, height: 36, rgba: [80u8, 90, 100, 255].repeat(64 * 36), sidecar: s }).unwrap();
+    png
+}
+
+/// Annotate, from the roll: the picture opens with the pen, the window waits,
+/// and saving leaves the original alone, marks in the sidecar, a flattened copy
+/// beside it, and the roll showing that copy, not one more photo.
+#[test]
+fn annotate_opens_from_the_roll_and_the_original_stays() {
+    let mut t = Test::new("annotate", 1.0, (1920, 1080));
+    let png = real_shot(&t, "shot_a");
+    let original = std::fs::read(&png).unwrap();
+    t.menu.rescan();
+    t.settle();
+    t.click("photo-0");
+    t.settle();
+    t.click("annotate");
+    assert!(t.menu.annotating());
+    t.settle();
+    t.passes(2);
+    assert_eq!(t.menu.annotator().unwrap().picture_size(), (64, 36), "the picture's own size");
+    // Esc is the annotator's, T doesn't shut anything, and the map stays out.
+    assert!(t.menu.escape(false), "Esc is the annotator's");
+    assert!(t.menu.annotating());
+    let from = t.at("canvas", 0.25, 0.5);
+    let to = t.at("canvas", 0.5, 0.75);
+    t.rig.move_to(from);
+    t.passes(2);
+    t.rig.button(true);
+    t.pass();
+    t.rig.move_to(to);
+    t.pass();
+    t.rig.button(false);
+    t.passes(2);
+    t.rig.text("The ridge has a seam");
+    t.passes(2);
+    t.click("annot-save");
+    assert!(!t.menu.annotating());
+    t.settle();
+    assert_eq!(std::fs::read(&png).unwrap(), original, "the original is not touched");
+    assert!(photos::annotated_of(&png).exists());
+    let js: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(png.with_extension("json")).unwrap()).unwrap();
+    assert_eq!(annotate::marks_of(&js).len(), 1);
+    assert_eq!(js["notes"], "The ridge has a seam");
+    assert_eq!(js["format"], photos::FORMAT);
+    assert_eq!(t.menu.photos().len(), 1, "the copy isn't a new photo");
+    assert_eq!(t.menu.photos()[0].notes, "The ridge has a seam");
+    assert!(t.menu.photos()[0].annotated.is_some());
+    assert!(t.menu.status().contains("Saved the marks"), "{}", t.menu.status());
+    // Annotating again picks up where it left off.
+    t.click("annotate");
+    t.settle();
+    assert_eq!(t.menu.annotator().unwrap().marks.len(), 1);
+    assert_eq!(t.menu.annotator().unwrap().comment, "The ridge has a seam");
+    t.rig.key(egui::Key::Escape);
+    t.passes(2);
+    t.rig.key(egui::Key::Escape);
+    t.passes(2);
+    assert!(!t.menu.annotating());
+    assert_eq!(annotate::marks_of(&serde_json::from_str(&std::fs::read_to_string(png.with_extension("json")).unwrap()).unwrap()).len(), 1, "cancelled: nothing changed");
+}
+
+/// A recording made with F9, listed in the window: its title and description
+/// save beside it, its markers show, and Make report leaves one folder.
+#[test]
+fn the_recordings_tab_lists_markers_and_makes_a_report() {
+    use crate::player::{Input, STEP};
+    let mut t = Test::new("recordings", 1.0, (1920, 1080));
+    let path = t.dir.join("Neisor-1.replay");
+    t.session.start_recording(&path, "test").unwrap();
+    for _ in 0..20 {
+        t.session.step(&Input::default(), STEP);
+    }
+    let settings = Settings::default();
+    let look = crate::look::Look::defaults(&settings, t.session.engine.planet.radius);
+    let cam = t.session.player.camera();
+    let moment = Moment::grab(report::Grab { session: &t.session, cam: &cam, settings: &settings, look: &look, digests: &mut Default::default(), rgba: vec![50; 64 * 36 * 4], width: 64, height: 36, mesh_view: Default::default(), preview_world: false, frame_ms: None });
+    // F9, with the window shut: the annotator draws on its own.
+    t.menu.hide();
+    t.menu.mark_moment(moment);
+    t.passes(3);
+    assert!(t.menu.annotating() && !t.menu.open);
+    assert!(t.menu.spots.contains_key("canvas"));
+    t.rig.text("Dark line along the bank");
+    t.passes(2);
+    t.rig.key(egui::Key::Enter);
+    t.passes(2);
+    assert!(!t.menu.annotating());
+    let f = t.menu.take_finished().expect("the app's to finish");
+    let (marks, comment) = f.saved.clone().expect("saved");
+    assert_eq!(comment, "Dark line along the bank");
+    let (shot, marks) = f.moment.commit(&mut t.session, marks, comment);
+    photos::write_marked(&shot, &marks).unwrap();
+    assert!(t.menu.take_finished().is_none(), "once");
+    t.session.step(&Input::default(), STEP);
+    t.session.stop_recording().unwrap();
+
+    t.menu.show();
+    t.settle();
+    assert_eq!(t.menu.tab(), Tab::Photos);
+    assert_eq!(t.menu.recordings().len(), 1);
+    t.click("tab-recordings");
+    t.click("rec-0");
+    t.settle();
+    t.type_into("rec-title", "The bank");
+    t.type_into("rec-description", "A line that shouldn't be there");
+    t.click("rec-save");
+    assert_eq!(report::peek(&path).title, "The bank");
+    assert_eq!(report::peek(&path).description, "A line that shouldn't be there");
+    // A marker is a photo: its preview shows, and Teleport goes to it.
+    t.click("marker-0");
+    t.settle();
+    assert!(matches!(t.menu.destination(&MenuEnv { engine: &t.session.engine.clone(), bake_sha256: "", presets: &[], here: (0.0, 0.0), can_move: true, day_length_s: 1440.0, recording: None }), Some(Go::Photo(_))));
+    let t0 = std::time::Instant::now();
+    while t.menu.preview.is_none() {
+        t.pass();
+        assert!(t0.elapsed().as_secs() < 20, "the preview arrived");
+    }
+    t.passes(2);
+    t.click("make-report");
+    t.passes(3);
+    assert!(t.menu.escape(false), "Esc backs out of the dialog");
+    t.passes(2);
+    t.click("make-report");
+    t.passes(3);
+    t.click("report-go");
+    t.settle();
+    let folder = t.menu.last_report.clone().expect("a report");
+    assert!(folder.starts_with(t.dir.join("reports")), "{}", folder.display());
+    let md = std::fs::read_to_string(folder.join("report.md")).unwrap();
+    assert!(md.contains("# Bug report: The bank") && md.contains("A line that shouldn't be there") && md.contains("Dark line along the bank"), "{md}");
+    assert!(t.menu.status().contains("Report ready"), "{}", t.menu.status());
+}
+
+/// A recording still being written can't be gathered, and says why.
+#[test]
+fn make_report_waits_for_the_recording_to_stop() {
+    let mut t = Test::new("live", 1.0, (1920, 1080));
+    let path = t.dir.join("Neisor-2.replay");
+    t.session.start_recording(&path, "test").unwrap();
+    t.session.stop_recording().unwrap();
+    t.menu.rescan();
+    t.settle();
+    t.click("tab-recordings");
+    t.click("rec-0");
+    t.passes(2);
+    let raw = t.rig.input(t.size.0, t.size.1);
+    let engine = t.session.engine.clone();
+    let env = MenuEnv { engine: &engine, bake_sha256: "", presets: &[], here: (0.0, 0.0), can_move: true, day_length_s: 1440.0, recording: Some(&path) };
+    let menu = &mut t.menu;
+    let _ = t.rig.ctx.run_ui(raw, |ui| {
+        menu.ui(ui.ctx(), &env);
+    });
+    let spot = t.menu.spots["make-report"].center();
+    t.rig.move_to(spot);
+    for down in [true, false] {
+        t.rig.button(down);
+        let raw = t.rig.input(t.size.0, t.size.1);
+        let menu = &mut t.menu;
+        let _ = t.rig.ctx.run_ui(raw, |ui| {
+            menu.ui(ui.ctx(), &env);
+        });
+    }
+    assert!(t.menu.make.is_none(), "the button is off while it records");
 }

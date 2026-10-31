@@ -37,6 +37,12 @@
 //!                         the player put exactly there (harness teleports)
 //!   reload                save, then rebuild from the save
 //!   note TEXT             something the recorder could not capture
+//!   note marker {JSON}    F9: a moment marked by the player (`report::Marker`:
+//!                         its shot, text and pose), with the shot and its
+//!                         sidecar in `<stem>.markers/` beside the file. It
+//!                         changes nothing: a replay lists it and moves on
+//!   note visual {JSON}    the look, a block or a texture changed here
+//!                         (`visual.rs`; a playback does not follow it)
 //!   check K=V ...         the state after STEP steps, every second: the
 //!                         digests of the world, the simulation, the
 //!                         player and the view, the counts behind them,
@@ -648,6 +654,13 @@ pub struct Header {
     /// is self-contained).
     pub save_ref: Option<String>,
     pub files: Vec<FileEntry>,
+    /// The commit of the recording build (a file from before B6 has none).
+    #[serde(default)]
+    pub build: String,
+    /// What the picture was made of at the start (`visual.rs`). A file from
+    /// before B6 has none, and its look is unknown.
+    #[serde(default)]
+    pub visual: Option<crate::visual::Visual>,
 }
 
 fn rules_v1() -> u32 {
@@ -749,6 +762,7 @@ struct Expect {
     hide: bool,
     edit_gen: u64,
     store: usize,
+    visual: usize,
 }
 
 impl Expect {
@@ -762,6 +776,7 @@ impl Expect {
             hide: s.engine.hide_water,
             edit_gen: s.engine.edits.generation(),
             store: Arc::as_ptr(&s.engine.edits) as usize,
+            visual: s.visual.as_ref().map_or(0, |v| Arc::as_ptr(v) as usize),
         }
     }
 }
@@ -774,6 +789,8 @@ pub struct Summary {
     pub events: u64,
     pub checks: u64,
     pub notes: u64,
+    /// Moments marked with F9.
+    pub markers: u64,
     pub bytes: u64,
     pub snapshot_bytes: u64,
 }
@@ -790,6 +807,9 @@ pub struct Recorder {
     events: u64,
     checks: u64,
     notes: u64,
+    markers: u64,
+    /// The look last written down (`Session::visual`).
+    visual: Option<Arc<crate::visual::Visual>>,
     snapshot_bytes: u64,
     /// The first write error; recording stops writing after it.
     pub error: Option<String>,
@@ -863,6 +883,8 @@ impl Recorder {
             start_edits: map.len(),
             save_ref: s.save.as_ref().map(|d| format!("{} generation {}", d.path.display(), d.read_commit().ok().flatten().map_or(0, |c| c.generation))),
             files: files.iter().map(|(n, b)| FileEntry { name: n.clone(), bytes: b.len() as u64, sha256: hex(&sha256(b)) }).collect(),
+            build: crate::visual::BUILD.to_string(),
+            visual: s.visual.as_deref().cloned(),
         };
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).map_err(|e| format!("create {}: {e}", parent.display()))?;
@@ -881,7 +903,7 @@ impl Recorder {
             out.flush()
         })();
         w.map_err(|e| format!("write {}: {e}", path.display()))?;
-        Ok(Self { path: path.to_path_buf(), out: Some(out), start_steps: s.steps(), keys: None, expect: Expect::of(s), digests, prev: map, events: 0, checks: 0, notes: 0, snapshot_bytes, error: None })
+        Ok(Self { path: path.to_path_buf(), out: Some(out), start_steps: s.steps(), keys: None, expect: Expect::of(s), digests, prev: map, events: 0, checks: 0, notes: 0, markers: 0, visual: s.visual.clone(), snapshot_bytes, error: None })
     }
 
     pub fn path(&self) -> &Path {
@@ -949,7 +971,33 @@ impl Recorder {
         if now.hide != was.hide {
             self.line(step, &action_text(&Action::HideWater(now.hide)));
         }
+        if now.visual != was.visual {
+            let what = match (&self.visual, &s.visual) {
+                (Some(a), Some(b)) => crate::visual::differences(a, b),
+                _ => vec!["the look became known".to_string()],
+            };
+            self.visual = s.visual.clone();
+            if !what.is_empty() {
+                self.line(step, &format!("note visual {}", serde_json::json!({ "changed": what })));
+            }
+        }
         self.expect = now;
+    }
+
+    /// The number the next marker gets, from 1.
+    pub fn next_marker(&self) -> u64 {
+        self.markers + 1
+    }
+
+    /// Write down a moment the player marked (F9), at this step, and get it on
+    /// disk: he has just said this moment matters. It changes nothing, and it
+    /// isn't one of the `notes` (things the recorder could not capture).
+    pub fn marker(&mut self, s: &Session, m: &crate::report::Marker) {
+        self.sync(s);
+        self.markers += 1;
+        let json = serde_json::to_string(m).unwrap_or_default();
+        self.line(self.steps(s), &format!("note marker {json}"));
+        self.flush();
     }
 
     pub fn before_action(&mut self, s: &Session, a: &Action) {
@@ -1004,7 +1052,7 @@ impl Recorder {
             return Err(e);
         }
         let bytes = std::fs::metadata(&self.path).map_or(0, |m| m.len());
-        Ok(Summary { path: self.path, steps, events: self.events, checks: self.checks, notes: self.notes, bytes, snapshot_bytes: self.snapshot_bytes })
+        Ok(Summary { path: self.path, steps, events: self.events, checks: self.checks, notes: self.notes, markers: self.markers, bytes, snapshot_bytes: self.snapshot_bytes })
     }
 }
 
@@ -1043,6 +1091,16 @@ impl Replay {
     /// Steps the recording covers (to its end line, or its last event).
     pub fn steps(&self) -> u64 {
         self.lines.last().map_or(0, |l| l.step)
+    }
+
+    /// The moments marked with F9, in order.
+    pub fn markers(&self) -> Vec<crate::report::Marker> {
+        self.lines.iter().filter_map(|l| if let Event::Note(t) = &l.event { crate::report::Marker::parse(t, l.step) } else { None }).collect()
+    }
+
+    /// What changed in the look during the recording, by step.
+    pub fn visual_changes(&self) -> Vec<(u64, Vec<String>)> {
+        self.lines.iter().filter_map(|l| if let Event::Note(t) = &l.event { crate::report::visual_change(t).map(|w| (l.step, w)) } else { None }).collect()
     }
 }
 
@@ -1380,6 +1438,9 @@ impl<'r> Runner<'r> {
                     }
                 }
                 Event::Check(c) => self.verify(s, c, l),
+                // A marker or a look change is not a warning: `Replay::markers`
+                // and `Replay::visual_changes` read them.
+                Event::Note(t) if crate::report::is_ours(t) => {}
                 Event::Note(t) => self.report.notes.push(format!("step {}: {t}", l.step)),
                 Event::End { sha, .. } => {
                     let got = s.sim_hash();
