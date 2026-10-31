@@ -1,0 +1,126 @@
+> state poured
+  state poured: walk lat -3.42028 lon 136.54042 alt 1.37 m (agl 1.14) face 1 i 1990 j 59004 k 513 ground true water false crosshair "sand" edits 1 dirty 1
+> surface -2 -7 12 7 -2 6
+  powder surface over layer -2, blocks, i -2..+12 across, j +7..-7 down:
+      .     .     .  1.00  1.00  1.00  1.00  1.00  1.00  1.00  1.00  1.00  1.00  2.00  2.00
+      .     .     .     .  1.00  1.00  1.00  1.00  1.00  1.00  1.00  1.00  1.00  2.00  2.00
+      .     .     .     .  1.00  1.00  1.00  1.00  1.00  1.00  1.00  1.00  1.00  1.00  2.00
+      .     .     .     .     .  1.00  1.00  1.00  1.00  1.00  1.00  1.00  1.00  1.00  2.00
+      .     .     .     .     .  1.00  1.00  1.00  1.00  1.00  1.00  1.00  1.00  1.00  2.00
+      .  0.05  0.38  0.66  0.64  1.00  1.00  1.00  1.00  1.00  1.00  1.00  1.00  1.00  1.00
+      .  0.34  1.03  1.36  1.34  1.13  1.00  1.00  1.00  1.00  1.00  1.00  1.00  1.00  1.00
+      .  0.63  1.31  2.01  2.04  1.42  1.00  1.00  1.00  1.00  1.00  1.00  1.00  1.00  1.00
+      .  0.33  1.03  1.35  1.34  1.05  0.43  1.00  1.00  1.00  1.00  1.00  1.00  1.00  1.00
+      .  0.04  0.37  0.65  0.64  0.36  0.06  1.00  1.00  1.00  1.00  1.00  1.00  1.00  1.00
+      .     .     .     .     .     .     .     .  1.00  1.00  1.00  1.00  1.00  1.00  1.00
+      .     .     .     .     .     .     .     .  1.00  1.00  1.00  1.00  1.00  1.00  1.00
+      .     .     .     .     .     .     .     .     .  1.00  1.00  1.00  1.00  1.00  1.00
+      .     .     .     .     .     .     .     .     .     .  1.00  1.00  1.00  1.00  1.00
+      .     .     .     .     .     .     .     .     .     .  1.00  1.00  1.00  1.00  1.00
+  steepest step between powder columns: 1.000 per cell (45.0 degrees), 0.707 along a diagonal (35.3 degrees)
+> state on_the_beach
+  state on_the_beach: walk lat -3.42028 lon 136.54042 alt 1.37 m (agl 1.14) face 1 i 1990 j 59004 k 513 ground true water false crosshair "sand" edits 1 dirty 1
+> shot walk_0_the_pile_from_the_foot
+  shot walk_0_the_pile_from_the_foot: out/b7/walk/walk_0_the_pile_from_the_foot.png (settled in 4.6 s / 1126 frames; 848 draws)
+  state walk_0_the_pile_from_the_foot: walk lat -3.42028 lon 136.54042 alt 1.37 m (agl 1.14) face 1 i 1990 j 59004 k 513 ground true water false crosshair "sand" edits 1 dirty 1
+> lookaxis +i 0
+> state before_walk
+  state before_walk: walk lat -3.42028 lon 136.54042 alt 1.37 m (agl 1.14) face 1 i 1990 j 59004 k 513 ground true water false crosshair null edits 1 dirty 1
+> hold w 0.5
+> assert on_ground == true
+  assert ok: on_ground == true (actual true)
+> assert alt_agl > 1.5
+  assert ok: alt_agl > 1.5 (actual 1.6483947956294287)
+> state on_the_pile
+  state on_the_pile: walk lat -3.42033 lon 136.54170 alt 1.99 m (agl 1.65) face 1 i 1992 j 59004 k 513 ground true water false crosshair null edits 1 dirty 1
+> shot walk_1_on_top
+  shot walk_1_on_top: out/b7/walk/walk_1_on_top.png (settled in 0.0 s / 14 frames; 906 draws)
+  state walk_1_on_top: walk lat -3.42033 lon 136.54170 alt 1.99 m (agl 1.65) face 1 i 1992 j 59004 k 513 ground true water false crosshair null edits 1 dirty 1
+> hold w 0.6
+> assert on_ground == true
+  assert ok: on_ground == true (actual true)
+> assert alt_agl < 1.5
+  assert ok: alt_agl < 1.5 (actual 0.6181996397499461)
+> state going_down
+  state going_down: walk lat -3.42039 lon 136.54334 alt 1.11 m (agl 0.62) face 1 i 1994 j 59004 k 513 ground true water false crosshair null edits 1 dirty 1
+> shot walk_2_going_down
+  shot walk_2_going_down: out/b7/walk/walk_2_going_down.png (settled in 0.0 s / 13 frames; 903 draws)
+  state walk_2_going_down: walk lat -3.42039 lon 136.54334 alt 1.11 m (agl 0.62) face 1 i 1994 j 59004 k 513 ground true water false crosshair null edits 1 dirty 1
+> hold w 0.6
+> assert on_ground == true
+  assert ok: on_ground == true (actual true)
+> shot walk_3_at_the_foot
+  shot walk_3_at_the_foot: out/b7/walk/walk_3_at_the_foot.png (settled in 0.0 s / 14 frames; 907 draws)
+  state walk_3_at_the_foot: walk lat -3.42044 lon 136.54445 alt 1.00 m (agl 0.38) face 1 i 1995 j 59004 k 513 ground true water false crosshair null edits 1 dirty 1
+> hold w 1.0
+> assert on_ground == true
+  assert ok: on_ground == true (actual true)
+> state past_it
+  state past_it: walk lat -3.42044 lon 136.54445 alt 1.00 m (agl 0.38) face 1 i 1995 j 59004 k 513 ground true water false crosshair null edits 1 dirty 1
+> lookaxis -i 10
+> shot walk_4_looking_back
+  shot walk_4_looking_back: out/b7/walk/walk_4_looking_back.png (settled in 0.0 s / 10 frames; 889 draws)
+  state walk_4_looking_back: walk lat -3.42044 lon 136.54445 alt 1.00 m (agl 0.38) face 1 i 1995 j 59004 k 513 ground true water false crosshair null edits 1 dirty 1
+> hold w+shift 0.6
+> hold w,space 0.5
+> assert vanished == 0
+  assert ok: vanished == 0 (actual 0)
+> hold w 0.8
+> assert on_ground == true
+  assert ok: on_ground == true (actual true)
+> shot walk_5_back_on_it
+  shot walk_5_back_on_it: out/b7/walk/walk_5_back_on_it.png (settled in 0.0 s / 10 frames; 877 draws)
+  state walk_5_back_on_it: walk lat -3.42021 lon 136.53857 alt 0.05 m (agl -0.05) face 1 i 1988 j 59004 k 512 ground true water false crosshair null edits 1 dirty 1
+> aim 2 0 -1
+> assert crosshair == sand
+  assert ok: crosshair == sand (actual sand)
+> state before_dig
+  state before_dig: walk lat -3.42021 lon 136.53857 alt 0.05 m (agl -0.05) face 1 i 1988 j 59004 k 512 ground true water false crosshair "sand" edits 1 dirty 1
+> tap break
+  break: face 1 i 1989 j 59004 k 512
+> tick 40
+  ticked 257 -> 297: sim on  tick 297  falling 0  queued 0  frozen 0  active 353 chunks  water 0 updates, 0 moved, in 0 out 0, 0 drying, 0 dried  tick cost 0.001 ms (avg 0.076, max 14.527)  powder: levels at 35 degrees
+> assert queued == 0
+  assert ok: queued == 0 (actual 0)
+> state after_dig
+  state after_dig: walk lat -3.42021 lon 136.53850 alt 0.02 m (agl -0.08) face 1 i 1987 j 59004 k 512 ground true water false crosshair "sand" edits 1 dirty 1
+> aim 2 0 -1
+> assert crosshair != none
+  assert ok: crosshair != none (actual sand)
+> tap break
+  break: face 1 i 1988 j 59004 k 511
+> tick 40
+  ticked 297 -> 337: sim on  tick 337  falling 0  queued 0  frozen 0  active 357 chunks  water 0 updates, 0 moved, in 0 out 0, 0 drying, 0 dried  tick cost 0.001 ms (avg 0.164, max 14.527)  powder: levels at 35 degrees
+> assert queued == 0
+  assert ok: queued == 0 (actual 0)
+> shot walk_6_dug
+  shot walk_6_dug: out/b7/walk/walk_6_dug.png (settled in 0.1 s / 55 frames; 42 draws)
+  state walk_6_dug: walk lat -3.42021 lon 136.53850 alt -0.05 m (agl -0.15) face 1 i 1987 j 59004 k 511 ground true water false crosshair "sand" edits 2 dirty 2
+> assert on_ground == true
+  assert ok: on_ground == true (actual true)
+> save
+  saved 2 chunk(s)
+> reload
+  reloaded 2 chunk(s) from disk
+> assert powder_moves >= 0
+  assert ok: powder_moves >= 0 (actual 0)
+> wait 0.5
+> assert on_ground == true
+  assert ok: on_ground == true (actual true)
+> shot walk_7_reloaded
+  shot walk_7_reloaded: out/b7/walk/walk_7_reloaded.png (settled in 4.6 s / 1240 frames; 42 draws)
+  state walk_7_reloaded: walk lat -3.42021 lon 136.53850 alt -0.05 m (agl -0.15) face 1 i 1987 j 59004 k 511 ground true water false crosshair "sand" edits 2 dirty 0
+> replay stop
+  replay out/b7/walk\b7-walk.replay: 1011 steps, 56 events, 17 checks, 0 notes; 13.0 KB (1.6 KB of it the snapshot)
+> assert replay_notes == 0
+  assert ok: replay_notes == 0 (actual 0)
+> replay check b7-walk.replay
+  replayed 1011 steps (16.9 s), 56 events; 17 of 17 checks matched; the end state hash matches (63b64e82d48c03b7..)
+  replay OK: the session reproduced exactly
+  look: the same as the recording (every look value, block and texture)
+  (played in 2.1 s)
+> assert replay_ok == true
+  assert ok: replay_ok == true (actual true)
+> state final
+  state final: walk lat -3.42021 lon 136.53850 alt -0.05 m (agl -0.15) face 1 i 1987 j 59004 k 511 ground true water false crosshair "sand" edits 2 dirty 0
+done in 14.0 s: 24 asserts, 0 failed, 0 errors

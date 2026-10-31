@@ -1,0 +1,13 @@
+cargo test --release -- --ignored stress --test-threads=1 (provisional: another agent was running)
+
+test sim::film_tests::stress_flow_cost_of_the_new_rules ... round 0: rules before 4.171 ms a tick, new rules 4.562 ms a tick
+test sim::flow_tests::stress_sand_collapse ... placed 10,800 sand blocks in 4.0 ms
+test sim::powder_tests::stress_powder_levels_collapse ... 30 x 30 x 12 block with nothing round it, at 25 degrees: 825 ticks, the last visible move at tick 790, 651648 moves, first tick 106.4 ms, then average 3.85 ms, worst 7.38 ms
+the slope of one chunk: 14.73 ms, 2056 quads, 1478 cells replaced
+30 x 30 x 12 block with nothing round it, at 35 degrees: 499 ticks, the last visible move at tick 465, 298992 moves, first tick 103.7 ms, then average 3.33 ms, worst 4.83 ms
+the slope of one chunk: 14.54 ms, 1864 quads, 1454 cells replaced
+30 x 30 x 12 block with nothing round it, at 45 degrees: 317 ticks, the last visible move at tick 295, 137426 moves, first tick 102.8 ms, then average 2.93 ms, worst 4.04 ms
+the slope of one chunk: 13.57 ms, 1534 quads, 1557 cells replaced
+test sim::tests::stress_five_thousand_sand_blocks_falling_at_once ... placed 5041 sand blocks in 28.2 ms
+test sim::water_tests::water_stress_large_pour_and_dam_break ... pour of 2,000 cells: 617 ticks (616 with water moving), worst tick 5.262 ms, average moving tick 3.416 ms (rule 1.456, commit 0.700, absorb 0.901), 8754984 units moved, queued at the end 0
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 382 filtered out; finished in 83.58s

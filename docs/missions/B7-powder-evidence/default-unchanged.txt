@@ -1,0 +1,85 @@
+With the switch off: this build, main merged in, against main itself (04d1cfe).
+Every script ran on both builds, with the same result.
+
+=== scripts, this build
+m1-done: exit 0 done in 8.8 s: 94 asserts, 0 failed, 0 errors
+m2a-sand: exit 0 done in 7.2 s: 95 asserts, 0 failed, 0 errors
+b4-slide: exit 0 done in 18.0 s: 49 asserts, 0 failed, 0 errors
+m2b-water: exit 0 done in 8.2 s: 97 asserts, 0 failed, 0 errors
+m2b-boundary: exit 0 done in 4.9 s: 44 asserts, 0 failed, 0 errors
+m2b-river: exit 0 done in 3.5 s: 42 asserts, 0 failed, 0 errors
+m2c-replay: exit 0 done in 3.6 s: 29 asserts, 0 failed, 0 errors
+edge-corner-flight: exit 0 done in 16.3 s: 17 asserts, 0 failed, 0 errors
+tunnel-wall-reload: exit 0 done in 6.1 s: 18 asserts, 0 failed, 0 errors
+b4-film: exit 0 done in 7.0 s: 10 asserts, 0 failed, 0 errors
+b7-default-frames: exit 0 done in 12.8 s: 3 asserts, 0 failed, 0 errors
+
+=== scripts, main
+m1-done: exit 0 done in 8.8 s: 94 asserts, 0 failed, 0 errors
+m2a-sand: exit 0 done in 7.2 s: 95 asserts, 0 failed, 0 errors
+b4-slide: exit 0 done in 18.1 s: 49 asserts, 0 failed, 0 errors
+m2b-water: exit 0 done in 8.2 s: 97 asserts, 0 failed, 0 errors
+m2b-boundary: exit 0 done in 5.1 s: 44 asserts, 0 failed, 0 errors
+m2b-river: exit 0 done in 3.4 s: 42 asserts, 0 failed, 0 errors
+m2c-replay: exit 0 done in 3.7 s: 29 asserts, 0 failed, 0 errors
+edge-corner-flight: exit 0 done in 15.6 s: 17 asserts, 0 failed, 0 errors
+tunnel-wall-reload: exit 0 done in 6.1 s: 18 asserts, 0 failed, 0 errors
+b4-film: exit 0 done in 7.2 s: 10 asserts, 0 failed, 0 errors
+b7-default-frames: exit 0 done in 13.0 s: 3 asserts, 0 failed, 0 errors
+
+=== states, frames, replays
+b4-film: 20 state files, 1325 fields, 0 differ
+b4-slide: 27 state files, 1787 fields, 0 differ
+b7-default-frames: 9 state files, 1490 fields, 0 differ
+edge-corner-flight: 3 state files, 198 fields, 0 differ
+m1-done: 8 state files, 543 fields, 0 differ
+m2a-sand: 9 state files, 599 fields, 0 differ
+m2b-boundary: 3 state files, 202 fields, 0 differ
+m2b-river: 3 state files, 198 fields, 0 differ
+m2b-water: 8 state files, 548 fields, 0 differ
+m2c-replay: 0 state files, 0 fields, 0 differ
+tunnel-wall-reload: 4 state files, 274 fields, 0 differ
+total: 94 state files, 7164 fields, 0 differ
+7 of 7 clean 1920 x 1080 frames are the same to the pixel
+--- this build plays the recording main made
+replayed 468 steps (7.8 s), 40 events; 8 of 8 checks matched; the end state hash matches (0172bd7ad5dd7d95..)
+  recorded by build 04d1cfeb6, this is build 9d6fe6cab-dirty: the renderer itself may differ
+exit 0
+--- main plays the recording this build made
+replayed 468 steps (7.8 s), 40 events; 8 of 8 checks matched; the end state hash matches (0172bd7ad5dd7d95..)
+  recorded by build 9d6fe6cab-dirty, this is build 04d1cfeb6: the renderer itself may differ
+--- a levels recording, in this build, from the command line
+replayed 1011 steps (16.9 s), 56 events; 17 of 17 checks matched; the end state hash matches (63b64e82d48c03b7..)
+--- and in main
+error: bad flow setting "powder=levels"
+
+(The last assert of the script fails on purpose, to print the hash.)
+=== saves
+done in 0.1 s: 4 asserts, 2 failed, 0 errors
+--- a levels game pointed at it
+exit 2
+error: out/b7/save-c is not a --powder levels save, so this game will not touch it. Without --save it keeps its own, beside the real one
+the refused copy is byte for byte the save
+--- main
+> state end
+  state end: walk lat -4.56535 lon 117.47443 alt 44.00 m (agl 0.18) face 2 i 107155 j 57518 k 556 ground true water false crosshair null edits 6 dirty 0
+world hash: 619328c48312f5f1549150e3ed161ef7939a7597f89360680e4d2c94d190cbf6
+done in 0.0 s: 1 asserts, 1 failed, 0 errors
+--- this build, default
+> state end
+  state end: walk lat -4.56535 lon 117.47443 alt 44.00 m (agl 0.18) face 2 i 107155 j 57518 k 556 ground true water false crosshair null edits 6 dirty 0
+world hash: 619328c48312f5f1549150e3ed161ef7939a7597f89360680e4d2c94d190cbf6
+done in 0.0 s: 1 asserts, 1 failed, 0 errors
+--- a levels save made by this build, then opened by the default game
+done in 0.1 s: 4 asserts, 2 failed, 0 errors
+exit 2
+error: out/b7/scratch-a was played with --powder levels and holds partial powder, which this game would turn into whole blocks. It is left as it is: start with --powder levels to go on with it
+the refused levels save is byte for byte as it was
+main, on a levels save: exit 2
+error: refusing to load the simulation state of out/b7/scratch-a: bad flow setting "powder=levels"
+
+=== frame cost
+main: 24 benches, draws/tris ('813', '473428'); wall fastest 0.750 median 0.775; gpu fastest 0.330 median 0.330
+   wall 0.94 0.76 0.75 1.04 0.80 0.80 0.93 0.75 0.76 0.94 0.76 0.77 1.00 0.77 0.81 0.97 0.76 0.78 0.94 0.76 0.76 0.96 0.76 0.76
+this build: 24 benches, draws/tris ('813', '473428'); wall fastest 0.750 median 0.770; gpu fastest 0.330 median 0.330
+   wall 0.90 0.75 0.76 0.92 0.78 0.76 0.88 0.78 0.76 0.99 0.76 0.75 0.93 0.76 0.76 0.91 0.76 0.76 0.95 0.77 0.77 0.97 0.77 0.77
