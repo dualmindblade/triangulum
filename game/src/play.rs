@@ -1470,6 +1470,8 @@ pub fn run_replay(template: Session, rep: Replay, opts: ReplayOptions) -> i32 {
     let json = serde_json::json!({
         "replay": rep.path.display().to_string(),
         "ok": report.ok(),
+        "verdict": report.verdict(),
+        "verified_through": report.verified_through,
         "steps": report.steps,
         "checks": report.checks,
         "matched": report.matched,
@@ -1483,5 +1485,5 @@ pub fn run_replay(template: Session, rep: Replay, opts: ReplayOptions) -> i32 {
     let _ = std::fs::write(format!("{}/report.json", opts.out), serde_json::to_string_pretty(&json).unwrap());
     let _ = std::fs::write(format!("{}/run.log", opts.out), log);
     println!("report: {}/report.json", opts.out);
-    if report.ok() { 0 } else { 1 }
+    report.exit_code()
 }

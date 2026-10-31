@@ -527,6 +527,7 @@ fn a_save_from_before_loads_and_nothing_wakes_until_it_is_touched() {
     let _ = w.edits.take_changed();
     let old = Snapshot { tick: 5000, focus: Some(focus), config: Some(SimConfig { flow: Flow::before(), ..SimConfig::default() }), ..Default::default() };
     let mut bytes = old.to_bytes();
+    bytes.truncate(bytes.len() - 5); // v4's algorithm and absent region radius
     let text = Flow::before().text();
     let at = bytes.len() - 3 * 8 - text.len() - 4;
     bytes.drain(at..at + 4 + text.len());

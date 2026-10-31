@@ -659,6 +659,55 @@ fn edge_site(w: &World) -> (ChunkKey, (u32, u32, u32), DVec3, DVec3) {
     (ck, (i0, j0, k0), near, both)
 }
 
+#[test]
+fn r4_restoring_a_larger_radius_wakes_the_sleeping_donor() {
+    r4_radius_transition(false, false);
+}
+
+#[test]
+fn r4_snapshot_between_radius_change_and_tick_keeps_the_old_region() {
+    r4_radius_transition(true, false);
+}
+
+#[test]
+fn r4_radius_change_is_not_lost_when_loading_at_another_spawn_chunk() {
+    r4_radius_transition(false, true);
+}
+
+fn r4_radius_transition(change_before_snapshot: bool, moved: bool) {
+    let w = test_world();
+    let (ck, (i0, j0, k0), near, _) = edge_site(&w);
+    let o = BlockPos { face: ck.face, i: i0 + 27, j: j0 + 10, k: k0 + 4 };
+    build_box(&w, o, 8, 3, 2);
+    let cell = |dx, dy| BlockPos { i: o.i + dx, j: o.j + dy, k: o.k + 1, ..o };
+    let water = w.water_id();
+    w.commit_levels(&(1..=4).flat_map(|dx| (1..=3).map(move |dy| (cell(dx, dy), water, Some(FULL)))).collect::<Vec<_>>());
+    let mut sim = Sim::new(SimConfig { radius_m: 1.0, ..SimConfig::default() });
+    for _ in 0..50 { sim.step(&w, near); }
+    assert_eq!(sim.queued(), 0);
+    assert!(!sim.is_active(ChunkKey { cx: ck.cx + 1, ..ck }));
+    if change_before_snapshot { sim.set_radius(80.0); }
+    let snap = Snapshot::from_bytes(&sim.snapshot(&w).to_bytes()).unwrap();
+    let w2 = super::tests::copy_world(&w);
+    sim.set_radius(80.0);
+    let mut back = Sim::from_snapshot(sim.config, snap);
+    if change_before_snapshot {
+        assert_eq!(sim.state_hash(&w), back.state_hash(&w2));
+    }
+    let focus = if moved {
+        let p = w.planet.pos(ck.face, i0 as f64 + 40.0, j0 as f64 + 16.0, k0 as f64 + 16.0);
+        assert_ne!(World::chunk_of(w.planet.block_of_pos(p)).0, World::chunk_of(w.planet.block_of_pos(near)).0);
+        p
+    } else { near };
+    for _ in 0..100 {
+        sim.step(&w, focus);
+        back.step(&w2, focus);
+    }
+    assert!(w.water_level_at(cell(5, 2)) > 0, "live radius expansion flows");
+    assert!(w2.water_level_at(cell(5, 2)) > 0, "the restored donor must wake too");
+    assert_eq!(sim.state_hash(&w), back.state_hash(&w2), "same saved state, same future");
+}
+
 /// Review 3 #3: water at rest against the edge of the active region (air
 /// beyond it, which the rule reads as a wall) flows on when the region
 /// grows over that edge. Before, only the outside cell woke, and an empty

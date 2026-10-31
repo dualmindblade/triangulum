@@ -34,6 +34,9 @@ const LIQUID: u8 = 2;
 const GRAVITY: u8 = 4;
 const REPLACEABLE: u8 = 8;
 
+#[cfg(test)]
+thread_local! { pub(crate) static DEFS_COPIED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
+
 /// Texture size when blocks.json names none: 16 x 16 pixels.
 pub const DEFAULT_TEXTURE_SIZE: u32 = 16;
 
@@ -82,6 +85,10 @@ pub struct BlockDef {
     /// that names it by one of them still finds it.
     #[serde(default)]
     pub was: Vec<String>,
+    /// Immutable first name, pinned before the first rename. Legacy files
+    /// infer it from `was`; aliases may change without changing this identity.
+    #[serde(default)]
+    pub identity: Option<String>,
     /// The block's own `_comment` in the file.
     #[serde(default, rename = "_comment")]
     pub comment: Option<String>,
@@ -103,7 +110,7 @@ impl BlockDef {
     /// The name the block was first given: its identity in the rules
     /// digest, so a rename changes no replay or save.
     pub fn first_name(&self) -> &str {
-        self.was.first().unwrap_or(&self.name)
+        self.identity.as_deref().unwrap_or_else(|| self.was.first().unwrap_or(&self.name))
     }
     /// The name as the panel shows it ("dry_grass" is "dry grass").
     pub fn label(&self) -> String {
@@ -131,6 +138,7 @@ impl BlockDef {
             replaceable: false,
             hidden: false,
             was: Vec::new(),
+            identity: None,
             comment: None,
         }
     }
@@ -302,6 +310,11 @@ fn validate(defs: &[BlockDef]) -> Result<(), String> {
         return Err(format!("block {} is replaceable but solid; a falling block cannot take a solid cell", d.name));
     }
     for d in defs {
+        if let Some(identity) = &d.identity {
+            if !d.answers_to(identity) {
+                return Err(format!("block {}: original identity {identity:?} must remain its name or a former name in \"was\"", d.name));
+            }
+        }
         let c = d.colours();
         for (face, v) in [("color", Some(c.color)), ("top", c.top), ("side", c.side), ("bottom", c.bottom)] {
             if v.is_some_and(|v| v.iter().any(|x| !x.is_finite() || *x < 0.0)) {
@@ -414,7 +427,13 @@ impl Registry {
     }
     /// A copy of every definition, by id.
     pub fn defs(&self) -> Vec<BlockDef> {
+        #[cfg(test)]
+        DEFS_COPIED.with(|n| n.set(n.get() + self.len()));
         self.defs.read().unwrap().list.clone()
+    }
+
+    pub(crate) fn with_defs<T>(&self, read: impl FnOnce(&[BlockDef]) -> T) -> T {
+        read(&self.defs.read().unwrap().list)
     }
     /// Texture size in pixels (`texture_size` in blocks.json; 16).
     pub fn texture_size(&self) -> u32 {
@@ -533,7 +552,7 @@ impl Registry {
     /// only colours and textures differ?
     pub fn same_blocks(&self, other: &Registry) -> bool {
         let (a, b) = (self.defs(), other.defs());
-        a.len() == b.len() && a.iter().zip(&b).all(|(a, b)| a.id == b.id && a.name == b.name && a.flags() == b.flags() && a.hidden == b.hidden && a.was == b.was)
+        a.len() == b.len() && a.iter().zip(&b).all(|(a, b)| a.id == b.id && a.name == b.name && a.flags() == b.flags() && a.hidden == b.hidden && a.was == b.was && a.first_name() == b.first_name())
     }
 
     // ------------------------------------------------------- changing blocks (M3b)
@@ -544,8 +563,26 @@ impl Registry {
         self.push(def)
     }
 
+    /// Publish an editor-created id only after its complete definition is
+    /// durable. Failure leaves the live registry and the Add form unchanged.
+    pub fn add_saved(&self, path: &str, def: BlockDef) -> Result<BlockId, String> {
+        check_name(&def.name)?;
+        self.push_with(def, |defs| {
+            let proposed = Registry::from_defs(defs.to_vec())?;
+            proposed.set_colours(&self.colours());
+            proposed.set_textures(&self.textures());
+            proposed.set_hotbar_names(self.hotbar_names());
+            proposed.set_texture_size(self.texture_size());
+            save_defs(path, &proposed)
+        })
+    }
+
     /// Append a definition (its own former names included) at the next id.
-    fn push(&self, mut def: BlockDef) -> Result<BlockId, String> {
+    fn push(&self, def: BlockDef) -> Result<BlockId, String> {
+        self.push_with(def, |_| Ok(()))
+    }
+
+    fn push_with(&self, mut def: BlockDef, before_publish: impl FnOnce(&[BlockDef]) -> Result<(), String>) -> Result<BlockId, String> {
         let mut defs = self.defs.write().unwrap();
         if let Some(n) = std::iter::once(&def.name).chain(&def.was).find(|n| defs.by_name.contains_key(*n)) {
             return Err(format!("there is already a block called '{n}'"));
@@ -558,6 +595,7 @@ impl Registry {
         let mut probe = defs.list.clone();
         probe.push(def.clone());
         validate(&probe)?;
+        before_publish(&probe)?;
         // Everything an id indexes grows before the id is published (len).
         self.colours.write().unwrap().push(def.colours());
         self.textures.write().unwrap().push(def.textures());
@@ -590,6 +628,7 @@ impl Registry {
             }
         }
         let d = &mut defs.list[id as usize];
+        if d.identity.is_none() { d.identity = Some(d.first_name().to_string()); }
         let old = std::mem::replace(&mut d.name, new.to_string());
         if !d.was.contains(&old) {
             d.was.push(old);
@@ -630,6 +669,9 @@ impl Registry {
             return Err(format!("it has {} blocks and the game has {}: ids are never deleted (hide a block instead)", theirs.len(), mine.len()));
         }
         for (a, b) in mine.iter().zip(&theirs) {
+            if a.first_name() != b.first_name() {
+                return Err(format!("block {} changed its original identity from '{}' to '{}' (ids are stable: never renumber)", a.id, a.first_name(), b.first_name()));
+            }
             if a.name != b.name && !b.was.contains(&a.name) {
                 return Err(format!("block {} is '{}' in the game but '{}' in the file (ids are stable: append, never renumber; a rename keeps the old name in \"was\")", a.id, a.name, b.name));
             }
@@ -694,7 +736,7 @@ fn colour_value(c: [f32; 3]) -> String {
 }
 
 /// The keys of a block entry, in the order the file writes them.
-const ORDER: [&str; 16] = ["id", "name", "color", "top", "side", "bottom", "texture", "top_texture", "side_texture", "bottom_texture", "solid", "liquid", "gravity", "replaceable", "hidden", "was"];
+const ORDER: [&str; 17] = ["id", "name", "color", "top", "side", "bottom", "texture", "top_texture", "side_texture", "bottom_texture", "solid", "liquid", "gravity", "replaceable", "hidden", "was", "identity"];
 
 /// The blocks file's text in its own style: the top-level fields, then one
 /// line per block in id order with the ids and names in aligned columns.
@@ -886,6 +928,7 @@ pub fn defs_into_text(text: &str, registry: &Registry) -> Result<String, String>
                 set_opt(b, k, (v || b.contains_key(k)).then_some(Value::Bool(v)));
             }
             set_opt(b, "was", (!d.was.is_empty()).then(|| Value::Array(d.was.iter().cloned().map(Value::String).collect())));
+            set_opt(b, "identity", d.identity.clone().map(Value::String));
         }
         blocks.sort_by_key(|b| entry_id(b).unwrap_or(usize::MAX));
         set_opt(top, "hotbar", hotbar.map(|h| Value::Array(h.into_iter().map(Value::String).collect())));
@@ -905,8 +948,10 @@ pub fn save_defs(path: &str, registry: &Registry) -> Result<(), String> {
         return Ok(());
     }
     let tmp = format!("{path}.saving");
-    std::fs::write(&tmp, new).map_err(|e| format!("write {tmp}: {e}"))?;
-    std::fs::rename(&tmp, path).map_err(|e| format!("replace {path}: {e}"))
+    use super::save::{OsFs, SaveFs};
+    OsFs.write_synced(std::path::Path::new(&tmp), new.as_bytes()).map_err(|e| format!("write {tmp}: {e}"))?;
+    OsFs.replace_durably(std::path::Path::new(&tmp), std::path::Path::new(path)).map_err(|e| format!("replace {path}: {e}"))?;
+    OsFs.sync_dir(std::path::Path::new(path).parent().unwrap_or(std::path::Path::new("."))).map_err(|e| format!("flush {path}: {e}"))
 }
 
 #[cfg(test)]
@@ -914,6 +959,32 @@ mod tests {
     use super::*;
 
     const SHIPPED: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/assets/blocks.json");
+
+    #[test]
+    fn r4_rename_back_preserves_original_identity_across_restart() {
+        let text = std::fs::read_to_string(SHIPPED).unwrap();
+        let reg = Registry::parse(&text).unwrap();
+        let id = reg.add(BlockDef::new_solid("brick", BlockColours::flat([0.2; 3]), false)).unwrap();
+        let before = crate::sim::rules_digest(&reg);
+        reg.rename(id, "red_brick").unwrap();
+        let cfg = crate::grid::WorldConfig::load(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/world.json")).unwrap();
+        let header = crate::world::save::Header::for_world(&cfg, &reg, "test");
+        assert!(header.blocks.contains(&(id, "brick".into())), "saves record the original identity, even during a rename");
+        reg.rename(id, "brick").unwrap();
+        assert_eq!(reg.def(id).first_name(), "brick");
+        assert_eq!(crate::sim::rules_digest(&reg), before);
+        let back = Registry::parse(&defs_into_text(&text, &reg).unwrap()).unwrap();
+        assert_eq!(crate::sim::rules_digest(&back), before);
+        assert_eq!(back.id("red_brick").unwrap(), id);
+    }
+
+    #[test]
+    fn r4_an_invalid_pinned_identity_cannot_poison_a_new_header() {
+        let text = std::fs::read_to_string(SHIPPED).unwrap();
+        let mut file: Value = serde_json::from_str(&text).unwrap();
+        file["blocks"][1]["identity"] = Value::String("unrelated_block".into());
+        assert!(Registry::parse(&file.to_string()).is_err(), "a pinned identity must still name this block");
+    }
 
     #[test]
     fn loads_the_shipped_definitions() {
@@ -1121,7 +1192,7 @@ mod tests {
         assert!(before.same_blocks(&r), "{done:?}");
         assert_eq!(before.id("brick").unwrap(), brick);
         // A renumbered file and a shortened one are refused.
-        let renumbered = Registry::parse(&written.replace("\"name\": \"red_brick\", ", "\"name\": \"glass\", ").replace("\"was\": [\"brick\"]", "\"hidden\": false")).unwrap();
+        let renumbered = Registry::parse(&written.replace("\"name\": \"red_brick\", ", "\"name\": \"glass\", ").replace("\"was\": [\"brick\"]", "\"hidden\": false").replace("\"identity\": \"brick\"", "\"identity\": null")).unwrap();
         assert!(r.merge_file(&renumbered).unwrap_err().contains("never renumber"));
         assert!(r.merge_file(&Registry::parse(&text).unwrap()).unwrap_err().contains("never deleted"));
     }

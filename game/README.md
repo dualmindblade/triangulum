@@ -305,9 +305,17 @@ where it first went different, and how ("step 1260, 21 s in: player
 position 0.4 m apart; world: face 2 chunk (3349, 1797, 17) differs").
 The shots and a `report.json` go to `game/out/replay/<name>/`. The exit
 code is 0 when it reproduced, 1 when it diverged, 2 when it could not
-play (the wrong bake, a damaged file). A replay needs the same world
+play (the wrong bake, a damaged file), and 3 when the recording is incomplete.
+Exact success requires a matching checkpoint at the claimed end, after any
+inputs on that step. Incomplete reports give the last verified step;
+`report.json` includes `verdict` and `verified_through`. A replay needs the same world
 settings and bake it was recorded with, and is meant for the same build
 of the game; it says so when it cannot play.
+
+R4 adds the algorithm version and previous region radius to simulation
+hashes. Recordings from before that change can differ at their checks even
+with `sim_rules = 3`; use their recording build to play those files. Their
+saves remain readable when the world/generator checks match.
 
 ## Useful options
 
@@ -509,6 +517,14 @@ into the face's own file: a face showing an example, or a file another
 block or face also uses, gets a new file named after the block (copy on
 write). *Import PNG...* opens the Windows file dialog (the `rfd` crate) on
 a thread; a PNG dropped on the window imports too.
+
+PNG headers are checked before pixel allocation: dimensions up to 8192 on
+each side, at most 32 MiB of decoded RGBA, and files at most 32 MiB. Imports
+and substantial hot reloads use one background decoder so they do not stop
+the game or decode many large images at once. Texture arrays use at most
+2048 layers or the device's limit, whichever is smaller. Excess textures
+are reported and leave their faces flat. Unused layers are reclaimed;
+unreferenced paintings remain available to *Save look*.
 
 `TRIANGULUM_PANEL_BLOCK=stone` (with `TRIANGULUM_PANEL_SECTION=blocks` and
 `--panel`) opens a block's details for screenshots.
@@ -757,7 +773,7 @@ Only chunks that changed are saved, whatever changed them (you or the
 simulation), under `game/saves/<world>/` (gitignored):
 
 ```
-header.json      format version (3), generator version, body id, the
+header.json      format version (3), generator version, sim_rules, body id, the
                  world's identity (seed, block size, H, sea level, N,
                  vertical scale, roughness), the projection and its table's
                  SHA-256, the bake's content SHA-256, the block-id table
@@ -772,7 +788,8 @@ chunks/*.gN.chunk  one LOD-0 chunk each, in full (ids and water levels,
 sim.gN.bin       the simulation: tick, update queue, frozen updates, blocks
                  in flight, and (since M2c) the settings it ran under,
                  where its active region was computed (a reload resumes
-                 that exact region) and a digest of the block rules
+                 that exact region), its previous radius, the simulation
+                 algorithm version, and a digest of the block rules
 ```
 
 A save is one snapshot: a generation's files are written and flushed to
@@ -788,6 +805,18 @@ installed. Dirty chunks are acknowledged only once their generation is
 committed, so a failed write is retried. A save folder with a
 `commit.json` but no `header.json` is damaged, not empty: it is refused
 with a message instead of loading as an untouched world.
+
+Simulation snapshots now use layout 4 and still read layouts 1, 2 and 3.
+The algorithm version is independent of that layout and of block flags:
+`sim_rules` is 3. Rules 1 and 2 can continue safely under 3, with a notice;
+scheduled work uses the current rules and resting cells stay asleep until
+disturbed. A larger radius wakes the newly connected boundaries. Unknown
+algorithm versions are refused without writing the save. Old headers that
+omit the version still load; their snapshot layout identifies the old rules.
+Every used block ID, including blocks in flight, must have an identity in
+the saved block table. An unrecorded ID cannot be guessed from today's
+blocks.json. Newly recorded identities use the block's immutable original
+name; existing saved names and legacy `was` aliases still work.
 
 Edits are saved a couple of seconds after you stop editing (at the latest
 15 s after the first unsaved edit) and when you quit. A save whose header

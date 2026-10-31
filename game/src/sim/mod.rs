@@ -94,6 +94,20 @@ pub use water::Boundary;
 /// powder and water slide off a ledge, and what becomes of a level-1 film.
 pub const RULES_VERSION: u32 = 3;
 
+/// Rules 1 and 2 have the same stored cell/queue/entity meanings as 3.
+/// Continuing those saves is safe: scheduled work follows today's rules;
+/// resting cells stay asleep until touched (including B4's quiet load).
+pub fn check_saved_rules(version: Option<u32>) -> Result<Option<String>, String> {
+    match version {
+        Some(RULES_VERSION) => Ok(None),
+        None | Some(1 | 2) => Ok(Some(format!(
+            "save simulation rules {} continue under rules {RULES_VERSION}: pending work uses the current rules; resting cells stay at rest until disturbed",
+            version.map_or("unrecorded (legacy)".into(), |v| v.to_string())
+        ))),
+        Some(v) => Err(format!("save simulation rules {v} cannot be continued by this build (rules {RULES_VERSION}); use the build that wrote it. The save is untouched")),
+    }
+}
+
 /// Simulation rate.
 pub const TICK_HZ: u32 = 20;
 pub const TICK_S: f64 = 1.0 / TICK_HZ as f64;
@@ -325,7 +339,7 @@ impl Falling {
 }
 
 /// Everything a save needs to carry about the simulation.
-#[derive(Clone, Debug, PartialEq, Default)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Snapshot {
     pub tick: u64,
     pub queue: Vec<(u64, PosKey)>,
@@ -341,10 +355,20 @@ pub struct Snapshot {
     pub rules: Option<[u8; 32]>,
     /// Version 3 (B4): level-1 cells waiting to dry.
     pub drying: Vec<(u64, PosKey)>,
+    /// Version 4: algorithm identity and the radius that produced `focus`'s
+    /// region, which can differ from config while a radius change is pending.
+    pub sim_rules: u32,
+    pub region_radius: Option<f64>,
+}
+
+impl Default for Snapshot {
+    fn default() -> Self {
+        Self { tick: 0, queue: Vec::new(), frozen: Vec::new(), falling: Vec::new(), config: None, focus: None, rules: None, drying: Vec::new(), sim_rules: RULES_VERSION, region_radius: None }
+    }
 }
 
 const SNAPSHOT_MAGIC: &[u8; 4] = b"TRSM";
-const SNAPSHOT_VERSION: u32 = 3;
+const SNAPSHOT_VERSION: u32 = 4;
 
 /// The SHA-256 of the block definitions the simulation's rules read: each
 /// id's name and its solid, liquid, gravity and replaceable flags. Colours
@@ -354,6 +378,9 @@ pub fn rules_digest(reg: &crate::world::Registry) -> [u8; 32] {
     rules_digest_upto(reg, usize::MAX)
 }
 
+#[cfg(test)]
+thread_local! { static RULES_HASHED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
+
 /// M3b: the rules digest of the first `n` blocks. Blocks.json only ever
 /// grows (ids are append-only), and a block's identity is its first name
 /// (a renamed block keeps the old one in `was`), so the digest of a
@@ -362,20 +389,34 @@ pub fn rules_digest(reg: &crate::world::Registry) -> [u8; 32] {
 pub fn rules_digest_upto(reg: &crate::world::Registry, n: usize) -> [u8; 32] {
     let mut h = Sha256::new();
     h.update(b"triangulum-block-rules-1");
-    for d in reg.defs().iter().take(n) {
-        let name = d.first_name();
-        h.update(&d.id.to_le_bytes());
-        h.update(&(name.len() as u32).to_le_bytes());
-        h.update(name.as_bytes());
-        h.update(&[d.solid as u8 | (d.liquid as u8) << 1 | (d.gravity as u8) << 2 | (d.replaceable as u8) << 3]);
-    }
+    reg.with_defs(|defs| {
+        for d in defs.iter().take(n) { hash_block_rule(&mut h, d); }
+    });
     h.finish()
+}
+
+fn hash_block_rule(h: &mut Sha256, d: &crate::world::BlockDef) {
+    #[cfg(test)]
+    RULES_HASHED.with(|n| n.set(n.get() + 1));
+    let name = d.first_name();
+    h.update(&d.id.to_le_bytes());
+    h.update(&(name.len() as u32).to_le_bytes());
+    h.update(name.as_bytes());
+    h.update(&[d.solid as u8 | (d.liquid as u8) << 1 | (d.gravity as u8) << 2 | (d.replaceable as u8) << 3]);
 }
 
 /// M3b: were `digest`'s rules this registry's, or the rules of the blocks
 /// it began with before blocks were appended?
 pub fn rules_extend(reg: &crate::world::Registry, digest: &[u8; 32]) -> bool {
-    (1..=reg.len()).rev().any(|n| rules_digest_upto(reg, n) == *digest)
+    // One read lock, no definition clones, and each entry hashed once.
+    // Finishing a copy of the small SHA state preserves the prefix for
+    // the next candidate without re-hashing earlier definitions.
+    let mut h = Sha256::new();
+    h.update(b"triangulum-block-rules-1");
+    reg.with_defs(|defs| defs.iter().any(|d| {
+        hash_block_rule(&mut h, d);
+        h.clone().finish() == *digest
+    }))
 }
 
 impl Snapshot {
@@ -434,6 +475,11 @@ impl Snapshot {
         }
         if !self.drying.is_empty() {
             entries(&mut w, &self.drying);
+        }
+        w.extend_from_slice(&self.sim_rules.to_le_bytes());
+        w.push(self.region_radius.is_some() as u8);
+        if let Some(radius) = self.region_radius {
+            w.extend_from_slice(&radius.to_bits().to_le_bytes());
         }
         w
     }
@@ -521,10 +567,26 @@ impl Snapshot {
                 drying = r.entries()?;
             }
         }
+        // Layouts 1/2 predate B4; layout 3 was written by B4 (rules 3).
+        let sim_rules = if version >= 4 { r.u32()? } else { version };
+        check_saved_rules(Some(sim_rules))?;
+        let region_radius = if version >= 4 {
+            match r.take(1)?[0] {
+                0 => None,
+                1 => {
+                    let radius = f64::from_bits(r.u64()?);
+                    if !radius.is_finite() || radius < 0.0 { return Err("bad saved region radius".into()); }
+                    Some(radius)
+                }
+                _ => return Err("bad saved region radius flag".into()),
+            }
+        } else {
+            focus.and(config.map(|c| c.radius_m))
+        };
         if r.at != b.len() {
             return Err(format!("{} trailing bytes after simulation state", b.len() - r.at));
         }
-        Ok(Self { tick, queue, frozen, falling, config, focus, rules, drying })
+        Ok(Self { tick, queue, frozen, falling, config, focus, rules, drying, sim_rules, region_radius })
     }
 }
 
@@ -663,6 +725,7 @@ pub struct Sim {
     /// A restored focus: the next tick computes the region here first,
     /// as it was when the state was saved.
     pending_focus: Option<DVec3>,
+    region_radius: Option<f64>,
     /// `active` is a region computed since `new` or `restore`, so the next
     /// recompute can tell which chunks joined (`wake_new_pairs`).
     region_known: bool,
@@ -691,6 +754,7 @@ impl Sim {
             focus_chunk: None,
             focus_pos: None,
             pending_focus: None,
+            region_radius: None,
             region_known: false,
             ghosts: Vec::new(),
             dirty: false,
@@ -729,6 +793,7 @@ impl Sim {
         self.focus_chunk = None;
         self.focus_pos = None;
         self.pending_focus = snap.focus;
+        self.region_radius = snap.region_radius.or(snap.focus.and(snap.config.map(|c| c.radius_m)));
         self.region_known = false;
         self.ghosts.clear();
         self.overlay = Overlay::default();
@@ -768,14 +833,13 @@ impl Sim {
 
     pub fn set_radius(&mut self, radius_m: f64) {
         self.config.radius_m = radius_m;
-        self.focus_chunk = None;
-        self.pending_focus = None;
+        self.dirty = true;
     }
 
     /// Where the active region was (or, restored, will be) computed. None:
     /// it is computed on the next tick from wherever the player is then.
     pub fn focus(&self) -> Option<DVec3> {
-        self.pending_focus.or(self.focus_chunk.and(self.focus_pos))
+        self.pending_focus.or(self.focus_pos)
     }
 
     /// A cheap digest of the tick state for the replay's periodic checks
@@ -806,6 +870,7 @@ impl Sim {
             &virtual_queue
         };
         let mut h = crate::replay::Digest::new(b"sim-state");
+        h.u64(RULES_VERSION as u64);
         h.u64(self.tick);
         h.u64(self.config.radius_m.to_bits());
         h.u64(self.config.enabled as u64);
@@ -820,6 +885,7 @@ impl Sim {
             }
             None => h.u64(0),
         }
+        h.u64(self.region_radius.unwrap_or(self.config.radius_m).to_bits());
         h.u64(queue.len() as u64);
         for (due, key) in queue {
             h.u64(*due);
@@ -921,6 +987,8 @@ impl Sim {
             focus: self.focus(),
             rules: Some(rules_digest(&world.registry)),
             drying: self.drying.iter().copied().collect(),
+            sim_rules: RULES_VERSION,
+            region_radius: self.region_radius,
         }
     }
 
@@ -934,9 +1002,14 @@ impl Sim {
     /// run the same from here. Pending (unabsorbed) changes are not part of
     /// it; call it after a tick or a snapshot.
     pub fn state_hash(&self, world: &World) -> String {
+        self.state_hash_for_rules(world, RULES_VERSION)
+    }
+
+    fn state_hash_for_rules(&self, world: &World, rules_version: u32) -> String {
         let edits = &world.edits;
         let mut h = Sha256::new();
         h.update(b"triangulum-sim-state-2");
+        h.update(&rules_version.to_le_bytes());
         h.update(&self.tick.to_le_bytes());
         h.update(&self.config.radius_m.to_bits().to_le_bytes());
         h.update(&[self.config.enabled as u8]);
@@ -951,6 +1024,7 @@ impl Sim {
             }
             None => h.update(&[0]),
         }
+        h.update(&self.region_radius.unwrap_or(self.config.radius_m).to_bits().to_le_bytes());
         // M3b: the rules of the blocks this state can hold, the generator's
         // and any later block an edit or a fall holds. A block appended to
         // blocks.json and not used yet decides nothing, so adding one
@@ -1051,7 +1125,7 @@ impl Sim {
     fn refocus(&mut self, world: &World, focus: DVec3) {
         let planet = &world.planet;
         let here = World::chunk_of(planet.block_of_pos(focus)).0;
-        if self.focus_chunk == Some(here) {
+        if self.focus_chunk == Some(here) && self.region_radius == Some(self.config.radius_m) {
             return;
         }
         let t0 = Instant::now();
@@ -1059,6 +1133,7 @@ impl Sim {
         self.focus_pos = Some(focus);
         let previous = std::mem::take(&mut self.active);
         let r = self.config.radius_m;
+        self.region_radius = Some(r);
         let c = CHUNK as i64;
         let span = (r / (c as f64 * planet.block_size)).ceil() as i64 + 1;
         let per_col = planet.chunks_per_column(0) as i64;
@@ -1252,13 +1327,18 @@ impl Sim {
         self.ghosts.retain(|(_, t)| next - *t < GHOST_TICKS);
         // A restored state first gets back the region it was saved with.
         // A game starts at its spawn, not where it was saved, so the next
-        // line can jump the whole region. That is a load, not a walk: nothing
+        // line can jump the whole region. With the same radius, that is a load: nothing
         // around the player ran against a boundary that moved, so no pair
         // wakes (under the slide they could move, and a save would stir with
         // nobody touching it). Its frozen updates still run.
         if let Some(p) = self.pending_focus.take() {
+            let radius = self.config.radius_m;
+            self.config.radius_m = self.region_radius.unwrap_or(radius);
             self.refocus(world, p);
-            if self.focus_chunk != Some(World::chunk_of(world.planet.block_of_pos(focus)).0) {
+            self.config.radius_m = radius;
+            // An explicit radius change still has to wake its new boundary
+            // pairs, even when loading also moves the player to another chunk.
+            if self.region_radius == Some(radius) && self.focus_chunk != Some(World::chunk_of(world.planet.block_of_pos(focus)).0) {
                 self.region_known = false;
             }
         }

@@ -54,6 +54,88 @@ fn temp(tag: &str) -> PathBuf {
     std::env::temp_dir().join(format!("triangulum-replay-test-{tag}-{}.replay", std::process::id()))
 }
 
+#[test]
+fn r4_exact_replay_requires_a_checkpoint_at_the_claimed_end() {
+    let mut s = fresh(None);
+    s.start_recording(&temp("r4-coverage"), "coverage").unwrap();
+    for _ in 0..90 { s.step(&Input::default(), STEP); }
+    let summary = s.stop_recording().unwrap();
+    let original = read(&summary.path).unwrap();
+    assert!(play(&original, "r4-complete").0.ok());
+    for variant in 0..5 {
+        let mut rep = read(&summary.path).unwrap();
+        match variant {
+            0 => rep.lines.retain(|l| !matches!(l.event, Event::Check(_) | Event::End { .. })),
+            1 => rep.lines.retain(|l| !matches!(l.event, Event::End { .. })),
+            2 => rep.lines.retain(|l| !matches!(l.event, Event::Check(_)) || l.step < 90),
+            3 => {
+                if let Event::End { steps, .. } = &mut rep.lines.last_mut().unwrap().event { *steps += 1; }
+            }
+            _ => {
+                let end = rep.lines.pop().unwrap();
+                let mut late = end.clone();
+                late.event = Event::Act(Action::Select(1));
+                rep.lines.push(late);
+                rep.lines.push(end);
+            }
+        }
+        let report = play(&rep, &format!("r4-incomplete-{variant}")).0;
+        assert!(!report.ok(), "variant {variant}: {}", report.text());
+        assert_eq!(report.verdict(), "incomplete");
+        assert_eq!(report.exit_code(), 3);
+        assert_eq!(report.verified_through, match variant { 0 => None, 2 => Some(60), _ => Some(90) });
+        assert!(!report.text().contains("reproduced exactly"));
+    }
+    std::fs::remove_file(summary.path).unwrap();
+}
+
+#[test]
+fn r4_wall_clock_input_does_not_reach_earlier_catch_up_steps() {
+    let mut positions = Vec::new();
+    for hz in [30.0, 60.0, 144.0] {
+        let mut s = fresh(None);
+        s.player = Player::new(glam::DVec3::X * 1e7, 0.0, 0.0, Mode::Fly, 1.0);
+        s.sim.config.enabled = false;
+        let start = s.player.pos;
+        let mut c = Controls::default();
+        let events = [(0.022, true), (0.044, false)];
+        let (mut at, mut next) = (0.0_f64, 0);
+        while at < 0.1 - 1e-12 {
+            let end = (at + 1.0 / hz).min(0.1);
+            while next < events.len() && events[next].0 <= end {
+                c.at(events[next].0);
+                c.key(KeyCode::KeyW, events[next].1);
+                next += 1;
+            }
+            c.frame(&mut s, end - at);
+            at = end;
+        }
+        positions.push(s.player.pos);
+        assert!((s.player.pos.distance(start) - 20.0 / 60.0).abs() < 1e-6, "{hz} fps moved {} m; only step 2 owns the press", s.player.pos.distance(start));
+    }
+    assert_eq!(positions[0], positions[1]);
+    assert_eq!(positions[1], positions[2]);
+}
+
+#[test]
+fn r4_short_taps_and_releases_survive_catch_up_and_dropped_time() {
+    let mut s = fresh(None);
+    s.player = Player::new(glam::DVec3::X * 1e7, 0.0, 0.0, Mode::Fly, 1.0);
+    s.sim.config.enabled = false;
+    let start = s.player.pos;
+    let mut c = Controls::default();
+    c.at(0.022); c.key(KeyCode::KeyW, true);
+    c.at(0.023); c.key(KeyCode::KeyW, false);
+    c.frame_at(&mut s, 4.0 * STEP);
+    assert!((s.player.pos.distance(start) - 20.0 / 60.0).abs() < 1e-6);
+    c.at(0.1); c.key(KeyCode::KeyW, true);
+    c.at(0.9); c.key(KeyCode::KeyW, false);
+    assert_eq!(c.frame_at(&mut s, 1.0), crate::controls::MAX_STEPS_PER_FRAME);
+    let before_release = s.player.pos;
+    assert_eq!(c.frame_at(&mut s, 1.0 + STEP), 1);
+    assert_eq!(s.player.pos, before_release, "a release in dropped time is applied at the next step");
+}
+
 /// A window event, as the app hands it to `Controls`.
 #[derive(Clone, Copy, Debug)]
 enum Ev {
@@ -383,7 +465,7 @@ fn a_corrupted_replay_reports_its_first_divergence() {
     let rep = read(&p).unwrap();
     assert!(!rep.ended && rep.warnings.len() == 2, "{:?}", rep.warnings);
     let (report, _) = play(&rep, "corrupt-cut");
-    assert!(report.ok() && report.end_sha.is_none(), "{}", report.text());
+    assert!(!report.ok() && report.first.is_none() && report.end_sha.is_none(), "{}", report.text());
     let _ = std::fs::remove_file(&p);
     let _ = std::fs::remove_file(&summary.path);
 }

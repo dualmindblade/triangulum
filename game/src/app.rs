@@ -188,6 +188,7 @@ impl App {
 
     /// The window sent the player somewhere: recorded inputs at the next step.
     fn arrive(&mut self, go: Go) {
+        self.controls.at(self.started.elapsed().as_secs_f64());
         let Some(gfx) = &self.gfx else { return };
         let actions = menu::actions(&go, &self.session, &gfx.gpu.sky.settings);
         if let Go::Place(i) = go {
@@ -300,6 +301,7 @@ impl App {
         // the queued inputs go in at the next step, in order (M2c). None while
         // a photo waits for the world to settle.
         if self.photo.is_some() {
+            self.controls.pause_at((now - self.started).as_secs_f64());
         } else if let Some(w) = &mut self.replay {
             // A watched replay: its own inputs, at real time.
             w.acc += dt;
@@ -315,10 +317,10 @@ impl App {
                 w.reported = true;
                 let r = &w.runner.report;
                 println!("{}", r.text());
-                self.save_note = if r.ok() { format!("replay finished at step {}: reproduced exactly", r.steps) } else { format!("replay DIVERGED at step {} (see the console)", r.first.as_ref().map_or(0, |d| d.step)) };
+                self.save_note = format!("replay {} at step {} (see the console)", r.verdict(), r.steps);
             }
         } else {
-            self.controls.frame(&mut self.session, dt);
+            self.controls.frame_at(&mut self.session, (now - self.started).as_secs_f64());
         }
         if let Some(gfx) = &mut self.gfx {
             gfx.gpu.sky.clock = self.session.sky;
@@ -562,6 +564,7 @@ impl ApplicationHandler for App {
     }
 
     fn window_event(&mut self, el: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
+        self.controls.at(self.started.elapsed().as_secs_f64());
         if let Some(gfx) = self.gfx.as_mut() {
             let _ = gfx.egui_state.on_window_event(&gfx.window, &event);
         }
@@ -661,6 +664,7 @@ impl ApplicationHandler for App {
     }
 
     fn device_event(&mut self, _el: &ActiveEventLoop, _id: winit::event::DeviceId, event: DeviceEvent) {
+        self.controls.at(self.started.elapsed().as_secs_f64());
         if let DeviceEvent::MouseMotion { delta } = event {
             if self.captured && self.replay.is_none() {
                 self.controls.motion(delta.0, delta.1);
@@ -690,11 +694,10 @@ pub fn run_replay(session: Session, rep: crate::replay::Replay, opts: AppOptions
     // The window owns the runner until the process ends.
     let rep: &'static crate::replay::Replay = Box::leak(Box::new(rep));
     let runner = crate::replay::Runner::new(rep, &session);
-    let ok = run_with(session, opts, Some(WatchedReplay { runner, acc: 0.0, reported: false }));
-    if ok { 0 } else { 1 }
+    run_with(session, opts, Some(WatchedReplay { runner, acc: 0.0, reported: false }))
 }
 
-fn run_with(session: Session, opts: AppOptions, replay: Option<WatchedReplay>) -> bool {
+fn run_with(session: Session, opts: AppOptions, replay: Option<WatchedReplay>) -> i32 {
     let el = EventLoop::new().unwrap();
     let presets = session.engine.presets();
     let (screenshot, exit_after) = (opts.screenshot.clone(), opts.exit_after);
@@ -737,5 +740,5 @@ fn run_with(session: Session, opts: AppOptions, replay: Option<WatchedReplay>) -
         replay,
     };
     el.run_app(&mut app).unwrap();
-    app.replay.as_ref().is_none_or(|w| w.runner.report.ok())
+    app.replay.as_ref().map_or(0, |w| w.runner.report.exit_code())
 }

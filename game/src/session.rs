@@ -312,6 +312,18 @@ impl Session {
         match dir.map(|d| d.read_sim()).transpose()?.flatten() {
             Some(bytes) => {
                 let snap = Snapshot::from_bytes(&bytes).map_err(|e| format!("refusing to load the simulation state of {}: {e}", dir.unwrap().path.display()))?;
+                let header = dir.unwrap().read_header()?.ok_or("simulation save has no header.json")?;
+                crate::sim::check_saved_rules(header.sim_rules)?;
+                if let Some(note) = crate::sim::check_saved_rules(Some(snap.sim_rules))? {
+                    println!("note: {note}");
+                }
+                let names: std::collections::HashMap<_, _> = header.blocks.iter().map(|(id, name)| (*id, name)).collect();
+                for f in &snap.falling {
+                    let name = names.get(&f.id).ok_or_else(|| format!("falling block id {} has no recorded identity in header.json", f.id))?;
+                    if f.id as usize >= registry.len() || !registry.def(f.id).answers_to(name) {
+                        return Err(format!("falling block id {} does not match its saved identity {name:?}", f.id));
+                    }
+                }
                 if let Some(saved) = snap.config.filter(|c| *c != config) {
                     println!("note: the save's simulation ran with radius {} m, {}, water period {}, {}; it continues with radius {} m, {}, water period {}, {}", saved.radius_m, if saved.enabled { "on" } else { "off" }, saved.water_period, saved.flow.text(), config.radius_m, if config.enabled { "on" } else { "off" }, config.water_period, config.flow.text());
                 }
