@@ -90,7 +90,8 @@
 //!                           as NAME.png, plus NAME.json state
 //!   state NAME              NAME.json only
 //!   bench N                 render N frames at the current pose; reports
-//!                           avg / p95 / worst wall ms and the GPU time
+//!                           avg / p95 / worst wall ms, the GPU time and the
+//!                           triangles drawn (all, and of water)
 //!   log TEXT...             annotate the transcript
 //!   column DI DJ            print the blocks of a column near the feet
 //!                           (layers -4..+3 relative to the feet block)
@@ -484,10 +485,12 @@ impl Run {
         self.harness.settle(&cam, Duration::from_secs(180));
         let mut wall = Vec::with_capacity(n);
         let mut gpu = Vec::with_capacity(n);
+        let (mut tris, mut water_tris) = (0, 0);
         for _ in 0..n {
             let s = self.harness.frame(&cam);
             wall.push(s.wall_ms);
             gpu.push(s.gpu_ms);
+            (tris, water_tris) = (s.tris, s.water_tris);
         }
         self.record_stream();
         let mut sorted = wall.clone();
@@ -496,8 +499,8 @@ impl Run {
         let p95 = sorted[((n as f64 - 1.0) * 0.95).round() as usize];
         let worst = *sorted.last().unwrap_or(&0.0);
         let gavg = gpu.iter().sum::<f64>() / n.max(1) as f64;
-        self.last_bench = serde_json::json!({ "bench_frames": n, "bench_avg_ms": avg, "bench_p95_ms": p95, "bench_worst_ms": worst, "bench_gpu_avg_ms": gavg, "bench_fps": 1000.0 / avg });
-        self.say(format!("  bench {n} frames: wall avg {avg:.2} ms (p95 {p95:.2}, worst {worst:.2}) = {:.0} fps; gpu avg {gavg:.2} ms; {} draws", 1000.0 / avg, self.harness.streamer.stats.drawn));
+        self.last_bench = serde_json::json!({ "bench_frames": n, "bench_avg_ms": avg, "bench_p95_ms": p95, "bench_worst_ms": worst, "bench_gpu_avg_ms": gavg, "bench_fps": 1000.0 / avg, "bench_tris": tris, "bench_water_tris": water_tris });
+        self.say(format!("  bench {n} frames: wall avg {avg:.2} ms (p95 {p95:.2}, worst {worst:.2}) = {:.0} fps; gpu avg {gavg:.2} ms; {} draws; {tris} triangles, {water_tris} of water", 1000.0 / avg, self.harness.streamer.stats.drawn));
     }
 
     /// Evaluate `assert FIELD [OP] VALUE [TOL]`.
