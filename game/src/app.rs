@@ -313,7 +313,7 @@ impl App {
         let (lat, lon, alt) = cam.lat_lon_alt(&engine.planet);
         let ground = engine.ground(p.pos.normalize());
         let pick = self.session.pick();
-        let outline = pick.map_or(Vec::new(), |h| outline_segments(&engine.planet, cam, aspect, width, height, h.face, h.cell));
+        let outline = pick.map_or(Vec::new(), |h| outline_segments(&engine.planet, cam, aspect, width, height, h.block));
         Hud {
             fps,
             low1_fps: low1,

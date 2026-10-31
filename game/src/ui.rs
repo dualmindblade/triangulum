@@ -66,13 +66,38 @@ fn srgb(c: [f32; 3]) -> egui::Color32 {
     egui::Color32::from_rgb(f(c[0]), f(c[1]), f(c[2]))
 }
 
-/// Screen-space segments (pixels) outlining lattice cell (face, i, j, k).
+/// LOD-0 block corners, using the mesher/shader's eight-voxel curvature
+/// grid and f32 interpolation. Always evaluate in the block's own face;
+/// wrapping eight out-of-face corners independently folds a cube corner.
+pub(crate) fn outline_corners(planet: &Planet, block: BlockPos) -> [glam::DVec3; 8] {
+    let (i0, j0, k0) = (block.i / 32 * 32, block.j / 32 * 32, block.k / 32 * 32);
+    let r0 = planet.radius_at(k0 as f64);
+    let origin = planet.dir(block.face, i0 as f64, j0 as f64) * r0;
+    std::array::from_fn(|c| {
+        let i = block.i + (c & 1) as u32;
+        let j = block.j + ((c >> 1) & 1) as u32;
+        let k = block.k + ((c >> 2) & 1) as u32;
+        let gx = ((i - i0) / 8).min(3);
+        let gy = ((j - j0) / 8).min(3);
+        let fx = (i - i0 - gx * 8) as f32 / 8.0;
+        let fy = (j - j0 - gy * 8) as f32 / 8.0;
+        let grid = |dx: u32, dy: u32| {
+            let dir = planet.dir(block.face, (i0 + (gx + dx) * 8) as f64, (j0 + (gy + dy) * 8) as f64);
+            ((dir * r0 - origin).as_vec3(), dir.as_vec3())
+        };
+        let (a, b, c, d) = (grid(0, 0), grid(1, 0), grid(0, 1), grid(1, 1));
+        let off = a.0.lerp(b.0, fx).lerp(c.0.lerp(d.0, fx), fy);
+        let up = a.1.lerp(b.1, fx).lerp(c.1.lerp(d.1, fx), fy).normalize();
+        origin + (off + up * ((k - k0) as f32 * planet.block_size as f32)).as_dvec3()
+    })
+}
+
+/// Screen-space segments (pixels) outlining the canonical target block.
 /// Segments with an endpoint behind the camera are dropped.
-pub fn outline_segments(planet: &Planet, cam: &Camera, aspect: f64, width: u32, height: u32, face: u8, cell: (i64, i64, i64)) -> Vec<([f32; 2], [f32; 2])> {
+pub fn outline_segments(planet: &Planet, cam: &Camera, aspect: f64, width: u32, height: u32, block: BlockPos) -> Vec<([f32; 2], [f32; 2])> {
     let vp = cam.view_proj(aspect);
     let (w, h) = (width as f32, height as f32);
-    let corner = |dx: i64, dy: i64, dz: i64| -> Option<[f32; 2]> {
-        let p = planet.pos(face, (cell.0 + dx) as f64, (cell.1 + dy) as f64, (cell.2 + dz) as f64);
+    let corner = |p: glam::DVec3| -> Option<[f32; 2]> {
         let rel = (p - cam.pos).as_vec3();
         let c = vp * Vec4::new(rel.x, rel.y, rel.z, 1.0);
         if c.w <= 1e-6 {
@@ -80,7 +105,7 @@ pub fn outline_segments(planet: &Planet, cam: &Camera, aspect: f64, width: u32, 
         }
         Some([(c.x / c.w * 0.5 + 0.5) * w, (0.5 - c.y / c.w * 0.5) * h])
     };
-    let corners: Vec<Option<[f32; 2]>> = (0..8).map(|n| corner(n & 1, (n >> 1) & 1, (n >> 2) & 1)).collect();
+    let corners = outline_corners(planet, block).map(corner);
     const EDGES: [(usize, usize); 12] = [(0, 1), (2, 3), (4, 5), (6, 7), (0, 2), (1, 3), (4, 6), (5, 7), (0, 4), (1, 5), (2, 6), (3, 7)];
     EDGES.iter().filter_map(|&(a, b)| Some((corners[a]?, corners[b]?))).collect()
 }
