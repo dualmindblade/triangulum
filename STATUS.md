@@ -235,6 +235,16 @@
   save keeps your changes and says so. The save format is unchanged. A real
   power cut still hasn't been tried.
 
+- **B7** (Opus, verified by Opus, merged): Andrew's powder experiment, off by
+  default. `--powder levels` gives sand and gravel a level, so a pile is a
+  smooth slope at a real angle (`--powder-angle`, 35 degrees unless you say
+  otherwise) that you can walk up. It looks very good at rest and rough while
+  it moves: flat falling tiles for a second or two, and big flows cost more.
+  It plays on its own save, so nothing can touch your world, and the normal game
+  is unchanged. It's for Andrew to judge, not a replacement yet. What to try
+  is at the top of `docs/missions/B7-powder-findings.md`; start with
+  `compare-tower.jpg` in the evidence folder.
+
 **M1 is feature-complete.** The last step is yours: play it and tell me what
 feels wrong.
 
@@ -285,7 +295,7 @@ tool, matched to his recordings in `docs/missions/2026-10-30-bug-round.md`.
 
 | B6 reports | Annotated bug reports for screenshots and recordings, review 4 #8 | Opus | merged |
 | R4 hardening | Review 4's other findings, the save-safety ones first | Astra | merged |
-| B7 powder levels | #8: an experiment, powder with levels and an angle of repose, off by default | Opus | running |
+| B7 powder levels | #8: an experiment, powder with levels and an angle of repose, off by default | Opus | merged |
 | S1 saves | Saves off the main thread, removing the autosave hitch | Astra | merged |
 
 Next, once Andrew has weighed in: M3c (non-full blocks) needs his look
@@ -317,6 +327,9 @@ decisions, and underground darkness needs a lighting design.
      curb of water beside land? The patch for the curb is
      `docs/missions/B2-shores-evidence/coarse-levels-experiment.patch`.
   6. Do the mesh view's colours and the map suit him?
+  7. The powder experiment: should it replace today's rule, and at what
+     angle? `cargo run --release -- --powder levels`. The agent's advice is to
+     keep working on it but not switch yet.
 - **Andrew: the look panel is yours** (F1). Most of the art notes below
   are now dials he can turn himself: atmosphere height, night brightness,
   dusk colours, water colour, grass sides. *Save look*, then commit the

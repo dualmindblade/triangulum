@@ -81,7 +81,7 @@ Bug round from Andrew's first playthrough (`docs/missions/2026-10-30-bug-round.m
 | Review 4 | M2c, M3a, hardening, M3b: 13 findings (`docs/reviews/2026-10-31-engine-review4-astra.md`) | Astra | done |
 | B6 | Bug reports: F9 marks a moment, the annotator, Make report, the look checked apart from the simulation (review 4 #8) | Opus | done |
 | R4 | Review 4's other twelve findings, save safety first | Astra | done |
-| B7 | #8: an experiment, powder with levels and an angle of repose | Opus | running |
+| B7 | #8: an experiment, powder with levels and an angle of repose (`--powder levels`) | Opus | done, Andrew to judge |
 | S1 | Saves off the main thread | Astra | done |
 
 ## M4 — Things that move
