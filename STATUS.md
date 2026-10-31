@@ -176,6 +176,14 @@
   no window on screen: the real keys, mouse and display scaling are still to
   be tried, and that's the first thing to check.
 
+- **B1** (Opus, verified by Opus, merged): water surfaces. Water now shows
+  under a block sitting over it, the V-shaped dips along lake shores are gone
+  (they were a chunk-border mistake, not real terrain), and water surfaces
+  meet exactly at chunk and cube-corner joins. A hatched patch on shore walls
+  went too. The thin lines on the water at 041049 are a lake height step
+  between detail levels, which belongs to B2's work. Waterfall lips still lean
+  over the drop, on purpose.
+
 **M1 is feature-complete.** The last step is yours: play it and tell me what
 feels wrong.
 
@@ -217,7 +225,7 @@ tool, matched to his recordings in `docs/missions/2026-10-30-bug-round.md`.
 
 | Mission | Bugs | Who | State |
 |---|---|---|---|
-| B1 water surfaces | #1 water under a solid, #10 dip at the edge, review 3 #8, hairlines | Opus | running |
+| B1 water surfaces | #1 water under a solid, #10 dip at the edge, review 3 #8 | Opus | merged; hairlines passed to B2 |
 | B2 shores | #2 lakes from space, #4 ocean bands, #5 beaches | Opus | running |
 | B3 picking | #3 raycasting at cube seams and corners | Astra | merged |
 | B4 flow | #7 sliding powder and water, #9 level-1 film | Opus | running |
