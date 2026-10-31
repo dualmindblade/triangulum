@@ -109,6 +109,7 @@ struct BlocksUi {
     editing: Option<String>,
     /// Where an import goes (block, face) and the file dialog's answer.
     import: Option<((BlockId, usize), mpsc::Receiver<Option<PathBuf>>)>,
+    decoding: Option<((BlockId, usize), PathBuf, textures::PictureJob)>,
 }
 
 impl Default for BlocksUi {
@@ -128,6 +129,7 @@ impl Default for BlocksUi {
             editor: editor::PixelEditor::default(),
             editing: None,
             import: None,
+            decoding: None,
         }
     }
 }
@@ -365,6 +367,7 @@ impl Workshop {
     /// Apply what changed: files on disk, the panel's edits, time, terrain.
     pub fn update(&mut self, session: &mut Session, streamer: &mut Streamer, falling: &mut FallingDraws, gpu: &mut Renderer) {
         let now = Instant::now();
+        self.poll_import();
         if now.duration_since(self.last_poll) >= POLL {
             self.last_poll = now;
             self.poll_files_with(Some(session));
@@ -443,12 +446,13 @@ impl Workshop {
     /// Textures (M3b): the panel's choices into the registry, layers for
     /// any new files, pictures changed by painting or on disk to the GPU.
     pub fn apply_textures(&mut self, gpu: &mut Renderer) {
+        self.textures_dirty |= self.texset.set_limit(gpu.texture_layer_limit());
         match self.sync_textures() {
-            None => gpu.set_textures(self.texset.size, &self.texset.pictures()),
+            None => if let Err(e) = gpu.set_textures(self.texset.size, &self.texset.pictures()) { self.note(e); },
             Some(dirty) => {
                 for i in dirty {
                     if !gpu.set_texture_layer(i as u32, self.texset.picture_at(i)) {
-                        gpu.set_textures(self.texset.size, &self.texset.pictures());
+                        if let Err(e) = gpu.set_textures(self.texset.size, &self.texset.pictures()) { self.note(e); }
                         break;
                     }
                 }
@@ -465,20 +469,19 @@ impl Workshop {
             self.textures_dirty = true;
             self.bui.editing = None;
         }
-        if !self.texset.is_empty() {
+        {
             let (notes, appeared) = self.texset.poll(TEXTURE_POLL_PER_FRAME);
             for n in notes {
                 self.note(format!("Texture {n}"));
             }
             self.textures_dirty |= appeared;
         }
-        let dirty = self.texset.take_dirty();
-        if std::mem::take(&mut self.textures_dirty) || !dirty.is_empty() {
+        if std::mem::take(&mut self.textures_dirty) || self.texset.has_dirty() {
             self.registry.set_textures(&self.textures);
             self.texset.assign(&self.registry);
             self.table_dirty = true;
         }
-        let dirty: Vec<usize> = dirty.into_iter().chain(self.texset.take_dirty()).collect();
+        let dirty = self.texset.take_dirty();
         if !self.gpu_textures {
             self.gpu_textures = true;
             return None;
@@ -519,17 +522,15 @@ impl Workshop {
             match r {
                 Request::Add { name, colour, falls } => {
                     let label = name.replace('_', " ");
-                    match self.registry.add(BlockDef::new_solid(&name, BlockColours::flat(colour), falls)) {
+                    match self.registry.add_saved(&self.blocks_path.to_string_lossy(), BlockDef::new_solid(&name, BlockColours::flat(colour), falls)) {
                         Ok(id) => {
                             self.refresh_blocks();
                             self.select(Some(id));
                             self.bui.add_label.clear();
                             self.bui.add_open = false;
                             self.bui.add_error = None;
-                            match self.write_defs() {
-                                Ok(()) => self.note(format!("Added {label} (block {id}) and saved it to blocks.json. Put it on the hotbar below to place it.")),
-                                Err(e) => self.note(format!("Added {label}, but blocks.json was not written ({e}): fix that before quitting, or a save holding {label} will not load.")),
-                            }
+                            self.watches[1].mark();
+                            self.note(format!("Added {label} (block {id}) and saved it to blocks.json. Put it on the hotbar below to place it."));
                         }
                         Err(e) => self.bui.add_error = Some(e),
                     }
@@ -1315,6 +1316,43 @@ mod tests {
         Workshop::from_parts(registry.clone(), st, Terrain { roughness: 1.0, landform: 1.0, vscale: 0.0142 }, 0.0142)
     }
 
+    #[test]
+    fn r4_the_first_missing_texture_recovers() {
+        let dir = scratch("r4-first-texture");
+        let registry = Arc::new(Registry::load(&dir.join("blocks.json").to_string_lossy()).unwrap());
+        let mut w = workshop(&dir, &registry);
+        w.textures[1].all = Some("arrives_later.png".into());
+        w.textures_dirty = true;
+        w.sync_textures();
+        assert!(w.texset.picture("arrives_later.png").is_none());
+        Picture::flat(16, [0.2; 3]).save(&dir.join("textures/arrives_later.png")).unwrap();
+        for _ in 0..100 {
+            w.sync_textures();
+            if w.texset.picture("arrives_later.png").is_some() { break; }
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        assert!(w.texset.picture("arrives_later.png").is_some(), "a first missing PNG must be polled too");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn r4_import_decoding_is_deferred_off_the_game_thread() {
+        let dir = scratch("r4-import");
+        let registry = Arc::new(Registry::load(&dir.join("blocks.json").to_string_lossy()).unwrap());
+        let mut w = workshop(&dir, &registry);
+        let path = dir.join("import.png");
+        Picture::flat(256, [0.2; 3]).save(&path).unwrap();
+        w.import_file((1, 0), &path);
+        assert!(!w.textures[1].any(), "import returns before publishing decoded pixels");
+        for _ in 0..200 {
+            w.poll_import();
+            if w.textures[1].any() { break; }
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        assert!(w.textures[1].any(), "poll publishes the completed import");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
     /// Hot reload: a colour changed in blocks.json with a text editor
     /// reaches the registry's GPU colour table on the next poll, and a
     /// changed look.json reaches the look; the game's own save does not
@@ -1541,6 +1579,22 @@ mod tests {
         let mut s = Session::new(engine.clone(), Player::new(glam::DVec3::X * 1e7, 0.0, 0.0, Mode::Fly, 1.0), None, String::new(), Sim::new(SimConfig::default()));
         let mut w = workshop(&dir, &registry);
         w.hotbar = engine.hotbar.clone();
+        // R4 #2: a failed definition write must not publish an id or poison
+        // a later save. Keep the Add form available for an explicit retry.
+        let blocker = dir.join("blocks.json.saving");
+        std::fs::create_dir(&blocker).unwrap();
+        w.bui.add_label = "brick".into();
+        w.bui.add_open = true;
+        w.requests.push(Request::Add { name: "brick".into(), colour: [0.4, 0.1, 0.08], falls: false });
+        w.apply_requests(&mut s);
+        let save = crate::world::save::SaveDir::new(dir.join("save"));
+        save.flush(&s.engine.edits, &s.engine.config, &registry, "test", Some(b"state")).unwrap();
+        let disk = Registry::load(&path.to_string_lossy()).unwrap();
+        assert!(save.load_into(&s.engine.config, &disk, "test", &EditStore::new()).is_ok(), "failed Add must leave the save loadable");
+        assert!(registry.id("brick").is_err(), "no id before its definition is on disk");
+        assert!(w.bui.add_open && w.bui.add_error.is_some());
+        assert_eq!(w.bui.add_label, "brick");
+        std::fs::remove_dir(&blocker).unwrap();
         w.requests.push(Request::Add { name: "brick".into(), colour: [0.4, 0.1, 0.08], falls: false });
         w.apply_requests(&mut s);
         let brick = registry.id("brick").expect("added");

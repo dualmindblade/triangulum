@@ -40,6 +40,8 @@ fn drive_marked(s: &mut Session, events: &[(u64, Ev)], end: u64, marks: &[Inside
     let look = crate::look::Look::defaults(&settings, s.engine.planet.radius);
     let mut digests = ChunkDigests::default();
     let (mut next, mut frame, mut mark) = (0, 0, 0);
+    // The app's clock, which runs on while the annotator is open.
+    let mut now = 0.0;
     while s.steps() < end {
         while next < events.len() && events[next].0 <= s.steps() {
             deliver(&mut c, &mut gate, events[next].1);
@@ -56,14 +58,16 @@ fn drive_marked(s: &mut Session, events: &[(u64, Ev)], end: u64, marks: &[Inside
                 deliver(&mut c, &mut gate, ev);
             }
             for _ in 0..m.frames {
-                assert_eq!(gate.frame(&mut c, s, 0.1), 0, "no steps with the annotator open");
+                now += 0.1;
+                assert_eq!(gate.frame_at(&mut c, s, now), 0, "no steps with the annotator open");
             }
             assert_eq!(s.steps(), before, "the game stood still");
             gate.close();
             let marks = vec![Mark::Box { colour: Ink::Red, from: [0.0, 0.0], to: [1.0, 1.0] }];
             let _ = moment.commit(s, marks, m.text.to_string());
         }
-        gate.frame(&mut c, s, dt(frame));
+        now += dt(frame);
+        gate.frame_at(&mut c, s, now);
         frame += 1;
     }
 }
@@ -163,17 +167,21 @@ fn what_is_let_go_in_there_is_let_go() {
 fn the_time_in_there_is_not_owed_afterwards() {
     let mut s = fresh(None);
     let (mut c, mut g) = (Controls::default(), Gate::default());
+    let mut now = 0.0;
     for _ in 0..10 {
-        g.frame(&mut c, &mut s, STEP);
+        now += STEP;
+        g.frame_at(&mut c, &mut s, now);
     }
     let before = s.steps();
     g.open();
     for _ in 0..1000 {
-        assert_eq!(g.frame(&mut c, &mut s, 0.25), 0);
+        now += 0.25;
+        assert_eq!(g.frame_at(&mut c, &mut s, now), 0);
     }
     assert_eq!(s.steps(), before);
     g.close();
-    assert_eq!(g.frame(&mut c, &mut s, STEP), 1);
+    now += STEP;
+    assert_eq!(g.frame_at(&mut c, &mut s, now), 1);
     assert_eq!(s.steps(), before + 1);
 }
 
