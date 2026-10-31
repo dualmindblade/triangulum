@@ -1,5 +1,19 @@
 # B2-shores findings (#2 lakes from space, #4 ocean bands, #5 chaotic beaches)
 
+**Lead's verification, 2026-10-31, on the tree merged with B3, B5, B1 and B4.** This
+replaces "must not merge" and the unverified items below where they conflict. 246
+tests passed, `coasts_are_coherent` among them. `water_is_contained_wide`: 0 walls,
+0 perched over 49.9 million water cells. The 1/8 water gates, every play script
+including `b4-slide` and `m2b-water`, the orbit check and the "after" coast numbers
+at 1/20, 1/8 and half-metre blocks all ran; the coast's numbers barely move with
+vertical scale, because the shoreline comes from the bake. Cost: a column 2,322 ns
+against 2,267, bake load 0.71 s against 0.61 (provisional). The final frames were
+read at Andrew's five recorded poses and on foot. The refusal was run on a copy of
+the real save, which is untouched by it; the check in `b2_refuse.sh` tested nothing,
+because the frozen build resolves `saves/` to its own checkout. Two tests dug a sea
+cell on the curved shore (both fixed the same way), and `b4-slide`'s beach shaft
+moved to the new beach at (1998, 59004).
+
 **State: #2 and #4 are done, measured and gated. #5 works but isn't finished
 verifying: do not merge it yet.** The final gate run was stopped by the system
 because the machine ran critically low on memory, and I was told not to restart
