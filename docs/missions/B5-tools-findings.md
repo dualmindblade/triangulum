@@ -2,11 +2,6 @@
 
 Bug round rows #6 and #11 (`docs/missions/2026-10-30-bug-round.md`).
 
-**State of this file:** the linker disappeared from this machine part way through
-#11 (the Visual Studio C++ workload was removed along with the SDK). Sections
-marked *pending the linker* were not run on the final code. See "Verified, and
-how".
-
 ## #6, the mesh view
 
 ### What it is
@@ -67,21 +62,24 @@ in its own module, built the first time the view is switched on, and `render`
 gains one comparison. `DrawRecord.pad` now carries the chunk's word, set once at
 upload and read by no normal pipeline.
 
-`--bench --skip-flight --frames 200`, the frozen `945d544` build against the #6
-commit, at the seven poses:
+`--bench --skip-flight --frames 200`, the frozen `945d544` build against the final
+build (#6 and #11 together), at the seven poses:
 
 | Pose | PNG | GPU ms before / after | CPU ms before / after |
 |---|---|---|---|
-| stand_hills | byte-identical | 1.76 / 1.35 | 1.38 / 1.30 |
-| stand_mountains | byte-identical | 1.71 / 0.80 | 2.11 / 1.18 |
-| alt_100m | byte-identical | 1.39 / 0.76 | 1.37 / 0.95 |
-| alt_1km | byte-identical | 1.51 / 1.27 | 1.32 / 0.87 |
-| alt_10km | byte-identical | 1.60 / 1.08 | 1.05 / 0.85 |
-| alt_100km | byte-identical | 0.97 / 0.65 | 0.55 / 0.63 |
-| alt_500km | byte-identical | 0.64 / 0.87 | 0.64 / 0.75 |
+| stand_hills | byte-identical | 1.31 / 1.31 | 1.65 / 1.27 |
+| stand_mountains | byte-identical | 1.21 / 1.95 | 1.46 / 1.22 |
+| alt_100m | byte-identical | 0.53 / 1.28 | 0.84 / 1.72 |
+| alt_1km | byte-identical | 1.64 / 1.31 | 1.14 / 1.46 |
+| alt_10km | byte-identical | 1.78 / 1.46 | 1.26 / 1.01 |
+| alt_100km | byte-identical | 1.15 / 1.07 | 1.40 / 0.70 |
+| alt_500km | byte-identical | 1.41 / 2.39 | 1.39 / 0.80 |
 
-Timings are **provisional**: other agents were running, so the differences are
-noise, in both directions. The frames are the real evidence.
+Timings are **provisional**: other agents were running, and they swing both ways
+pose by pose (the same two builds on an earlier pass gave quite different
+numbers), so they show no cost and prove no absence of one. The byte-identical
+frames are the real evidence, and the same check passed on the #6 commit alone.
+A clean timing run with the machine to itself is still owed.
 
 `b5-meshview.play` also switches the view off after using it and compares: the
 same frame, pixel for pixel (`compare_same == true`).
@@ -95,14 +93,11 @@ same frame, pixel for pixel (`compare_same == true`).
 the picture. Sloped water: a trench with a cell of water let go at one end, three
 ticks on; each water quad shows in its own colour, with its side slivers.
 
-On the #6 commit: `cargo test --release` 172 passed, 0 failed, 14 ignored.
-`m1-done` 94 asserts, `m3a-look` clean, `m2c-replay` 29 asserts, 0 failed.
-
 Both backends run the script clean (RTX 2060, Vulkan and DX12; 11 asserts each).
-Frames match to within a few dozen pixels, except that Quad's colours differed
-completely: they came from the quad's place in the shared buffer, which depends
-on streaming order. Fixed (they now count from the chunk's first quad); *pending
-the linker* to confirm.
+Comparing their frames found one fault: Quad's colours came from the quad's place
+in the shared buffer, which depends on streaming order, so 2,016,736 of 2,073,600
+pixels differed by more than 8. They now count from the chunk's first quad, and
+that frame differs in 254 pixels. The others differ in 41 to 1,017, along edges.
 
 ## #11, the T window
 
@@ -169,18 +164,18 @@ proves it. Delete takes every file named after the photo. The editor is
 
 Teleports and places go through `Controls::queue` and `Session::apply` as `pose`,
 `sky` and `preset`, at a step boundary. The replay format did not change. New tests
-(`replay_tests.rs`, *pending the linker*): a teleport by coordinates, a place, a
-map point and a photo with its clock, during a recording, replay exactly with no
-notes; old replays parse and `preset` plays; P queues nothing; a session with
-photos taken along the way gives the same hash and the same file as one without.
+in `replay_tests.rs`: a teleport by coordinates, a place, a map point and a photo
+with its clock, during a recording, replay exactly with no notes; old replays parse
+and `preset` plays; P queues nothing and leaves the same file as no P; a session
+with photos taken along the way gives the same hash and the same file as one
+without.
 
-Andrew's five recordings, played headless on the last linked build (the T window
-code in, P no longer a preset): all five reproduced exactly, 49 of 49 checks and
-all five end hashes.
+Andrew's five recordings, played headless on the final build: all five reproduced
+exactly, 49 of 49 checks and all five end hashes.
 
 ### Repros, measured
 
-Fresh process, from the sidecar alone, on the last linked build:
+Fresh process, from the sidecar alone, on the final build:
 
 | Photo | Pixels different from the original | |
 |---|---|---|
@@ -195,24 +190,48 @@ byte-exact frames across paths.
 
 ### Map speed, provisional
 
-A 1,356 x 678 picture on four worker threads: 293 to 308 ms at the whole planet,
-395 ms zoomed in, on the last linked build with other agents running. The window
-keeps drawing the last picture, moved to the live view, meanwhile.
+A 1,356 x 678 picture on four worker threads: 264 to 346 ms, whole planet or
+zoomed in, with other agents running. Meanwhile the window keeps drawing the last
+picture, moved to the live view. In the test, the worst pass of the window during
+a 314 ms build was 9.9 ms, and that is one pass with no GPU work: a slow frame, not
+a hitch, and worth watching on the first open, when the rivers and the window's
+layout both land.
 
 ### Evidence
 
 `B5-tools-evidence/menu-layers.jpg`, `menu-roll.jpg`, from `scripts/b5-menu.play`,
 which drives the real window with synthetic pointer and key events: every base
 layer, zoom, pan, target, selection, lightbox, notes, repro, teleports, places, and
-the Esc layers (29 asserts, 0 failed on the last linked build).
-`scripts/b5-menu-scale.play` does sizes and scales. That run found two real faults,
-both fixed but *pending the linker*: at 150% the window kept its old position and
-hung off the screen, and on short windows Teleport scrolled out of reach (it is now
-pinned at the foot of the column).
+the Esc layers. `menu-sizes.jpg`, from `scripts/b5-menu-scale.play`: five window
+sizes at 100% and 150%. That run found two real faults, both fixed: at 150% the
+window kept its old position and hung off the screen, and on short windows Teleport
+scrolled out of reach (it is now pinned at the foot of the column). The tests found
+a third: typed longitudes came back a hair off, through wrapping arithmetic.
 
 ## Verified, and how
 
-*To be finished when the linker is back.*
+Headless on the final code, RTX 2060:
+
+| What | How | Result |
+|---|---|---|
+| Everything | `cargo test --release` | 195 passed, 0 failed, 14 ignored |
+| An open window owns all input; Esc layers | `route_key` and `Controls` with synthetic keys; `Menu::escape` | pass |
+| Map: cursor-anchored zoom, pan, no hitch, stale builds cancelled, nothing runs shut | `menu_tests.rs`, real bake, synthetic pointer | pass |
+| Photo roll, notes, lightbox, delete to trash, photos' world gate | `menu_tests.rs`, `photos.rs` tests, temp folders | pass |
+| 100% and 150%, eight sizes | `the_window_fits_at_every_size_and_scale` | pass |
+| Determinism and old replays | `replay_tests.rs`; Andrew's five recordings | pass; 49 of 49 checks |
+| The window, end to end | `b5-menu.play` | 29 asserts, 0 failed |
+| Five sizes, drawn | `b5-menu-scale.play` | 4 asserts each, 0 failed |
+| The mesh view, both backends | `b5-meshview.play` on Vulkan and DX12 | 11 asserts each, 0 failed |
+| The off case | seven bench poses against `945d544` | byte-identical |
+| Gates | `m1-done` 94, `m2c-replay` 29, `m2a-sand` 95, `m2b-water` 97, `m3b-hotbar` 11 asserts; `m3a-look` ran | 0 failed |
+
+`m3b-hotbar` needs `--blocks scripts/m3b-look/blocks.json`, as its header says.
+Nothing was ever written to `game/interchange/`: every run used its own folder
+through `--interchange`.
+
+The linker vanished part way through (the Visual Studio C++ workload went with the
+SDK) and the lead restored it on E:. All the results above are from after that.
 
 ## Not verified
 

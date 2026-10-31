@@ -555,7 +555,6 @@ fn p_no_longer_moves_the_player() {
     assert_eq!(with, without);
     assert_eq!(lines, plain);
     assert!(!lines.iter().any(|l| l.contains("preset")));
-    let _ = std::fs::remove_file(&summary.path);
 }
 
 /// Taking a photo reads the session and changes nothing: the same session with
