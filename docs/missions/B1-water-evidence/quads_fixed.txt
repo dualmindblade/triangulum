@@ -1,0 +1,14 @@
+> log === ocean, low over the deepest sea
+  bench 30 frames: wall avg 14.11 ms (p95 26.98, worst 33.99) = 71 fps; gpu avg 2.39 ms; 790 draws; 389936 triangles, 48136 of water
+> log === ocean, 1.5 km up
+  bench 30 frames: wall avg 9.45 ms (p95 20.11, worst 21.20) = 106 fps; gpu avg 3.10 ms; 555 draws; 300004 triangles, 69960 of water
+> log === sea shore
+  bench 30 frames: wall avg 4.62 ms (p95 9.73, worst 24.28) = 217 fps; gpu avg 1.06 ms; 866 draws; 469730 triangles, 98806 of water
+> log === lake shore, the dip's pose
+  bench 30 frames: wall avg 3.85 ms (p95 5.30, worst 9.99) = 260 fps; gpu avg 0.99 ms; 1119 draws; 450358 triangles, 95108 of water
+> log === lake from 300 m
+  bench 30 frames: wall avg 6.42 ms (p95 12.51, worst 13.56) = 156 fps; gpu avg 0.97 ms; 689 draws; 267356 triangles, 49660 of water
+> log === river with falls
+  bench 30 frames: wall avg 9.19 ms (p95 26.36, worst 34.36) = 109 fps; gpu avg 1.63 ms; 889 draws; 587094 triangles, 75162 of water
+> log === Andrew's river
+  bench 30 frames: wall avg 7.54 ms (p95 19.40, worst 22.40) = 133 fps; gpu avg 1.22 ms; 843 draws; 485600 triangles, 60692 of water

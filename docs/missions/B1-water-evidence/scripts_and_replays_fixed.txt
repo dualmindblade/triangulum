@@ -1,0 +1,27 @@
+=== m1-done
+done in 19.3 s: 94 asserts, 0 failed, 0 errors
+=== m2b-water
+done in 18.9 s: 97 asserts, 0 failed, 0 errors
+=== m2b-boundary
+done in 12.2 s: 44 asserts, 0 failed, 0 errors
+=== m2b-river
+done in 13.8 s: 41 asserts, 0 failed, 0 errors
+=== m3a-tunnel
+done in 24.6 s: 20 asserts, 0 failed, 0 errors
+=== water-lod-seam
+done in 1.0 s: 0 asserts, 0 failed, 0 errors
+=== water-lod-seam-high
+done in 2.0 s: 0 asserts, 0 failed, 0 errors
+=== b1-water-under
+done in 20.1 s: 10 asserts, 0 failed, 0 errors
+=== replay 040850
+replay OK: the session reproduced exactly
+=== replay 041021
+replay OK: the session reproduced exactly
+=== replay 041049
+replay OK: the session reproduced exactly
+=== replay 041200
+replay OK: the session reproduced exactly
+=== replay 041624
+replay OK: the session reproduced exactly
+=== end

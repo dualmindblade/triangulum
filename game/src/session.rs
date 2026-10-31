@@ -43,6 +43,15 @@ pub const PITCH_MAX: f64 = 1.55;
 /// the same steps whatever the frame rate (review 2 #16).
 pub const REPEAT_STEPS: u64 = 15;
 
+/// A teleport with an altitude stops this far above the ground, and this far
+/// above sea level (§15.7).
+pub const TELEPORT_MIN_AGL_M: f64 = 2.5;
+pub const TELEPORT_MAX_ALT_M: f64 = 80_000_000.0;
+/// A teleport with no altitude stands in water up to this deep; over anything
+/// deeper it hovers this far above the surface, not on the bottom.
+const TELEPORT_WADE_M: f64 = 1.5;
+const TELEPORT_ABOVE_WATER_M: f64 = 30.0;
+
 /// One input, applied at a step boundary (`Session::apply`). Toggles are
 /// turned into the state they set before they are recorded (`ToggleMode`
 /// is recorded as the `SetMode` it became), so a replay file reads as what
@@ -358,7 +367,7 @@ impl Session {
         let hit = self.pick()?;
         let cell = hit.place_cell();
         let bp = self.engine.world.resolve_block(hit.face, cell.0, cell.1, cell.2)?;
-        if self.player.mode == Mode::Walk && self.player.overlaps_cell(&self.engine.planet, hit.face, cell) {
+        if self.player.mode == Mode::Walk && self.player.overlaps_cell(&self.engine.planet, bp.face, (bp.i as i64, bp.j as i64, bp.k as i64)) {
             return None;
         }
         let id = self.selected_block();
@@ -421,6 +430,40 @@ impl Session {
                 self.player.place_on_ground(self.engine.world.as_ref(), &planet, dir, k_hint);
             }
         }
+    }
+
+    /// The player after a teleport to `dir`, with this session unchanged: the
+    /// T window hands this to `Action::Pose`, so a recording holds where it
+    /// went. With an altitude (m above sea level) it hovers there, in fly
+    /// mode, clamped above the ground; without one it stands on the ground in
+    /// walk mode, or hovers over water too deep to stand in.
+    pub fn teleport_pose(&self, dir: DVec3, alt_asl_m: Option<f64>) -> Player {
+        let planet = self.engine.planet;
+        let mut p = self.player.clone();
+        p.vel = DVec3::ZERO;
+        p.on_ground = false;
+        let hover = |p: &mut Player, alt: f64| {
+            p.mode = Mode::Fly;
+            p.pos = dir * (planet.radius + alt);
+        };
+        match alt_asl_m {
+            Some(alt) => {
+                let low = self.engine.ground(dir) + TELEPORT_MIN_AGL_M;
+                hover(&mut p, alt.max(low).min(TELEPORT_MAX_ALT_M));
+            }
+            None => {
+                let c = self.engine.generator.column(dir, planet.block_size);
+                if c.wet() && c.water_m - c.height_m as f64 > TELEPORT_WADE_M {
+                    hover(&mut p, c.water_m + TELEPORT_ABOVE_WATER_M);
+                } else {
+                    p.mode = Mode::Walk;
+                    let ground = self.engine.ground(dir);
+                    let k_hint = planet.sea_level as f64 + ground / planet.block_size + 2.0;
+                    p.place_on_ground(self.engine.world.as_ref(), &planet, dir, k_hint);
+                }
+            }
+        }
+        p
     }
 
     /// Stand on top of block (face, i, j, k); in fly mode, hover there with

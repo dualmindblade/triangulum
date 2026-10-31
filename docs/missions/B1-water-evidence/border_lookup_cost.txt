@@ -1,0 +1,2 @@
+b1cost cold: 25 chunks, 22 with levels, 17 hollowed cells; per chunk generate 6.72 ms, padded_levels 10.74 ms, mesh 2.96 ms
+b1cost warm: 25 chunks, 22 with levels, 17 hollowed cells; per chunk generate 7.29 ms, padded_levels 0.09 ms, mesh 2.95 ms

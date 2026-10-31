@@ -155,6 +155,27 @@
   real window by `game/tools/window.ps1`, a new tool that lets agents
   click and type in the game.
 
+- **B3** (Astra, verified by Opus, merged): aiming at cube edges and corners.
+  The ray from the crosshair now follows its real path through each cube
+  face, so the outline, the block you break and the block you place are all
+  where you aimed. Measured against a separate check of the true ray: 1,188
+  wrong blocks in 13,312 test rays near edges and corners before, none after.
+  Picking costs about 0.1 ms more per frame on a busy machine. Recordings made
+  at a corner before this now differ at their clicks, as they should. Walking
+  right at the corners is still approximate, and real mouse use there hasn't
+  been tried yet.
+
+- **B5** (Opus, verified by Opus, merged): Andrew's tools. **M** colours the
+  mesh by region (detail level, chunk, cube face, quad, block, biome, tectonic
+  plate, crust) and **Shift+M** adds edges or shows edges only. **T** opens the
+  map (biomes, temperature, rain, elevation, with zoom, relief, rivers and
+  lakes), the photo roll, the scenic places and teleport. **P** takes a photo
+  (settled), **Shift+P** the live frame; they land in `game/interchange/` with
+  everything needed to repeat the shot. A choice made in the T window during an
+  F10 recording plays back exactly. All of this was driven by test events with
+  no window on screen: the real keys, mouse and display scaling are still to
+  be tried, and that's the first thing to check.
+
 **M1 is feature-complete.** The last step is yours: play it and tell me what
 feels wrong.
 
@@ -198,13 +219,13 @@ tool, matched to his recordings in `docs/missions/2026-10-30-bug-round.md`.
 |---|---|---|---|
 | B1 water surfaces | #1 water under a solid, #10 dip at the edge, review 3 #8, hairlines | Opus | running |
 | B2 shores | #2 lakes from space, #4 ocean bands, #5 beaches | Opus | running |
-| B3 picking | #3 raycasting at cube seams and corners | Astra | running |
+| B3 picking | #3 raycasting at cube seams and corners | Astra | merged |
 | B4 flow | #7 sliding powder and water, #9 level-1 film | Opus | running |
-| B5 tools | #6 mesh view, #11 map, screenshots and teleport | Opus | running |
-| Review 4 | M2c, M3a, hardening, M3b | Astra | running |
+| B5 tools | #6 colourised mesh view, #11 map, screenshots and teleport | Opus | merged |
+| Review 4 | M2c, M3a, hardening, M3b: 13 findings, 3 of them P1 (`docs/reviews/2026-10-31-engine-review4-astra.md`) | Astra | done, not yet re-verified |
 
-Next, once those land: #8 (powder with an angle of repose), B6 (annotating
-screenshots and recordings), saves off the main thread.
+Next, once those land: review 4's fixes, #8 (powder with an angle of repose),
+B6 (annotating screenshots and recordings), saves off the main thread.
 
 ## Waiting on you
 

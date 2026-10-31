@@ -12,6 +12,7 @@ pub use chunk::Chunk;
 pub use edits::EditStore;
 
 use crate::grid::{BlockPos, CHUNK, ChunkKey, FastMap, Planet};
+use crate::mesh::PaddedWater;
 use crate::worldgen::{Generated, Generator, PAD_VOXELS, pidx};
 use chunk::{VOXELS, index};
 use glam::DVec3;
@@ -507,7 +508,7 @@ impl World {
     /// which it computes for the border columns too: lakes and rivers across
     /// chunk borders) are the base; an edited chunk replaces the interior,
     /// and edited neighbours the border cells they hold.
-    pub fn padded_levels(&self, key: ChunkKey, g: &Generated) -> Option<Vec<u8>> {
+    pub fn padded_levels(&self, key: ChunkKey, g: &Generated) -> Option<PaddedWater> {
         if key.lod != 0 {
             return None;
         }
@@ -558,7 +559,67 @@ impl World {
         if !levels.iter().any(|&l| l != 0 && l != edits::WATER_FULL) {
             return None;
         }
-        Some(levels)
+        Some(PaddedWater { skirted: self.skirted_cells(key, g), levels })
+    }
+
+    /// Border cells of a padded LOD-0 grid that the generator's skirt
+    /// hollowed out (`PaddedWater::skirted`): solid in the world, not in
+    /// `g.ids`. The skirt only ever lowers ground, so a solid padded cell
+    /// is really solid and is not looked up. Two kinds of cell are: any in
+    /// the two layers a surface beside the column reads (its own, and the
+    /// one above), and air beside interior water, which would get a side
+    /// face. Cells of an edited neighbour are already real (`overlay_lod0`);
+    /// the rest come from the natural cache, which the streamer's
+    /// neighbouring chunks usually filled.
+    ///
+    /// Chunks with no partial water never get here. They need not: near the
+    /// sea the skirt hollows ground into water, which has no side face, and
+    /// 8,206 full-water chunks scanned on face 2 had no hollowed air at all.
+    fn skirted_cells(&self, key: ChunkKey, g: &Generated) -> Vec<(i8, i8, i8)> {
+        let c = CHUNK as i32;
+        let (i0, j0, k0) = key.origin_blocks();
+        let (i0, j0, k0) = (i0 as i64, j0 as i64, k0 as i64);
+        let water = |x: i32, y: i32, z: i32| self.registry.is_liquid(g.ids[pidx(x, y, z)]);
+        let mut out = Vec::new();
+        for x in -1..=c {
+            for y in -1..=c {
+                if (0..c).contains(&x) && (0..c).contains(&y) {
+                    continue;
+                }
+                // Bit z + 1: layer z, as in the mesher's column masks.
+                let mut layers = 0u64;
+                for ix in (x - 1).max(0)..=(x + 1).min(c - 1) {
+                    for iy in (y - 1).max(0)..=(y + 1).min(c - 1) {
+                        for z in 0..c {
+                            if water(ix, iy, z) && !water(ix, iy, z + 1) {
+                                layers |= 0b11 << (z + 1);
+                            }
+                        }
+                    }
+                }
+                // The interior column this one shares a side with (a corner column has none).
+                if (0..c).contains(&x) || (0..c).contains(&y) {
+                    let (ax, ay) = (x.clamp(0, c - 1), y.clamp(0, c - 1));
+                    for z in 0..c {
+                        if water(ax, ay, z) && !water(x, y, z) {
+                            layers |= 1 << (z + 1);
+                        }
+                    }
+                }
+                while layers != 0 {
+                    let z = layers.trailing_zeros() as i32 - 1;
+                    layers &= layers - 1;
+                    if self.registry.is_solid(g.ids[pidx(x, y, z)]) {
+                        continue;
+                    }
+                    let Some(bp) = self.resolve_block(key.face, i0 + x as i64, j0 + y as i64, k0 + z as i64) else { continue };
+                    if self.registry.is_solid(self.block_at(bp)) {
+                        out.push((x as i8, y as i8, z as i8));
+                    }
+                }
+            }
+        }
+        out
     }
 
     /// LOD 0: an edited chunk replaces the interior wholesale; edited

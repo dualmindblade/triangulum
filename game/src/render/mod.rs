@@ -8,7 +8,10 @@ use crate::mesh::GRID_BYTES;
 use bytemuck::{Pod, Zeroable};
 use std::sync::mpsc;
 
+pub mod meshview;
+pub mod regions;
 mod sky;
+pub use meshview::{Lines, MeshView, Tint};
 pub use sky::Sky;
 pub mod reel;
 pub mod textures;
@@ -110,6 +113,9 @@ pub struct GpuMesh {
     pub opaque_count: u32,
     pub water_base: u32,
     pub water_count: u32,
+    /// The chunk's word for the mesh view (`meshview::region_word`): set once
+    /// at upload, copied into its draw records, read by no normal pipeline.
+    pub region: u32,
 }
 
 pub struct Renderer {
@@ -145,6 +151,12 @@ pub struct Renderer {
     terrain_pipeline: wgpu::RenderPipeline,
     water_pipeline: wgpu::RenderPipeline,
     sky_pipeline: wgpu::RenderPipeline,
+    /// The mesh view (M and Shift+M in the game), off by default.
+    pub mesh_view: MeshView,
+    /// Its pipelines, built the first time it is switched on.
+    mesh_pipelines: Option<meshview::Pipelines>,
+    /// The bake's region layers, waiting for those pipelines.
+    mesh_regions: Option<std::sync::Arc<regions::RegionData>>,
     query_set: wgpu::QuerySet,
     query_resolve: wgpu::Buffer,
     query_read: wgpu::Buffer,
@@ -349,6 +361,9 @@ impl Renderer {
             terrain_pipeline,
             water_pipeline,
             sky_pipeline,
+            mesh_view: MeshView::NORMAL,
+            mesh_pipelines: None,
+            mesh_regions: None,
             query_set,
             query_resolve,
             query_read,
@@ -484,7 +499,7 @@ impl Renderer {
             self.queue.write_buffer(&self.quads_buf, wb as u64 * QUAD_BYTES, bytemuck::cast_slice(&water[..nw as usize]));
         }
         self.queue.write_buffer(&self.grids_buf, slot as u64 * GRID_BYTES as u64, bytemuck::cast_slice(grid));
-        Some(GpuMesh { slot, opaque_base: ob, opaque_count: no, water_base: wb, water_count: nw })
+        Some(GpuMesh { slot, opaque_base: ob, opaque_count: no, water_base: wb, water_count: nw, region: 0 })
     }
 
     pub fn free_mesh(&mut self, m: GpuMesh) {
@@ -492,6 +507,11 @@ impl Renderer {
         self.alloc.free(m.water_base, 2 * m.water_count);
         self.slot_free.push(m.slot);
         self.slots_used -= 1;
+    }
+
+    /// The bake's region layers for the mesh view's tints.
+    pub fn set_regions(&mut self, data: std::sync::Arc<regions::RegionData>) {
+        self.mesh_regions = Some(data);
     }
 
     /// Resident mesh bytes (quads + grid records).
@@ -534,6 +554,16 @@ impl Renderer {
                 wtris += d.quad_count as u64 * 2;
             }
         }
+        let view_setting = self.mesh_view;
+        if !view_setting.is_normal() {
+            let pipes = self.mesh_pipelines.get_or_insert_with(|| meshview::Pipelines::new(&self.device, &self.bind_layout, self.format));
+            if let Some(data) = self.mesh_regions.take() {
+                pipes.set_regions(&self.device, &self.queue, &data);
+            }
+            pipes.set_view(&self.queue, view_setting);
+        }
+        let mesh = if view_setting.is_normal() { None } else { self.mesh_pipelines.as_ref() };
+        let (tinted, only) = (view_setting.tint != Tint::Off, view_setting.lines == Lines::Only);
         let view = target.unwrap_or(&self.color_view);
         let take_query = self.query_pending.is_none();
         let mut enc = self.device.create_command_encoder(&Default::default());
@@ -561,17 +591,40 @@ impl Renderer {
             });
             pass.set_bind_group(0, &self.bind_group, &[]);
             pass.set_index_buffer(self.index_buf.slice(..), wgpu::IndexFormat::Uint32);
+            if let Some(m) = mesh {
+                pass.set_bind_group(1, &m.bind, &[]);
+            }
             if !opaque.is_empty() {
-                pass.set_pipeline(&self.terrain_pipeline);
+                pass.set_pipeline(match mesh {
+                    Some(m) if only => &m.fill,
+                    Some(m) if tinted => &m.tint_terrain,
+                    _ => &self.terrain_pipeline,
+                });
                 pass.multi_draw_indexed_indirect(&self.indirect_buf, 0, opaque.len() as u32);
             }
-            // Reversed-Z infinity: fill only pixels the opaque geometry left
-            // at clear depth. Water composites over this sky afterwards.
-            pass.set_pipeline(&self.sky_pipeline);
-            pass.draw(0..3, 0..1);
-            if !water.is_empty() {
-                pass.set_pipeline(&self.water_pipeline);
-                pass.multi_draw_indexed_indirect(&self.indirect_buf, opaque.len() as u64 * 20, water.len() as u32);
+            if !only {
+                // Reversed-Z infinity: fill only pixels the opaque geometry left
+                // at clear depth. Water composites over this sky afterwards.
+                pass.set_pipeline(&self.sky_pipeline);
+                pass.draw(0..3, 0..1);
+                if !water.is_empty() {
+                    pass.set_pipeline(match mesh {
+                        Some(m) if tinted => &m.tint_water,
+                        _ => &self.water_pipeline,
+                    });
+                    pass.multi_draw_indexed_indirect(&self.indirect_buf, opaque.len() as u64 * 20, water.len() as u32);
+                }
+            }
+            // The mesh view's lines, over everything drawn above.
+            if let (Some(m), true) = (mesh, view_setting.lines != Lines::Off) {
+                if !opaque.is_empty() {
+                    pass.set_pipeline(&m.lines_terrain);
+                    pass.multi_draw_indexed_indirect(&self.indirect_buf, 0, opaque.len() as u32);
+                }
+                if !water.is_empty() {
+                    pass.set_pipeline(&m.lines_water);
+                    pass.multi_draw_indexed_indirect(&self.indirect_buf, opaque.len() as u64 * 20, water.len() as u32);
+                }
             }
         }
         if take_query {
@@ -708,6 +761,21 @@ fn write_layer(queue: &wgpu::Queue, tex: &wgpu::Texture, layer: u32, p: &Picture
             wgpu::Extent3d { width: s, height: s, depth_or_array_layers: 1 },
         );
     }
+}
+
+/// Read an 8-bit RGB or RGBA PNG: (width, height, RGBA8).
+pub fn read_png(path: &str) -> Result<(u32, u32, Vec<u8>), String> {
+    let file = std::fs::File::open(path).map_err(|e| format!("open {path}: {e}"))?;
+    let mut reader = png::Decoder::new(std::io::BufReader::new(file)).read_info().map_err(|e| format!("{path}: {e}"))?;
+    let mut buf = vec![0; reader.output_buffer_size().ok_or_else(|| format!("{path}: too large"))?];
+    let info = reader.next_frame(&mut buf).map_err(|e| format!("{path}: {e}"))?;
+    buf.truncate(info.buffer_size());
+    let rgba = match (info.color_type, info.bit_depth) {
+        (png::ColorType::Rgba, png::BitDepth::Eight) => buf,
+        (png::ColorType::Rgb, png::BitDepth::Eight) => buf.chunks_exact(3).flat_map(|p| [p[0], p[1], p[2], 255]).collect(),
+        (c, d) => return Err(format!("{path}: {c:?} {d:?}, wanted 8-bit RGB or RGBA")),
+    };
+    Ok((info.width, info.height, rgba))
 }
 
 pub fn write_png(path: &str, width: u32, height: u32, rgba: &[u8]) {

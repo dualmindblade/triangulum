@@ -27,6 +27,8 @@ everything you change shows straight away.
   top, sides and bottom. Grass is green on top and dirt on the sides and
   bottom, so a tunnel under grass has a dirt ceiling. Here you also add
   blocks, choose what keys 1 to 9 hold, and paint textures (below).
+- **Mesh view**: colour the mesh by region and add lines, as the **M** and
+  **Shift+M** keys do (see Controls).
 - **Distance detail**: how much detail far-away land keeps. Higher looks
   better and costs speed.
 - **Terrain**: roughness, landforms and how tall the mountains are
@@ -49,9 +51,10 @@ or just send them: everyone who pulls gets your look. You can also edit
 the files in a text editor; the game notices within half a second.
 
 **Screenshots.** *Screenshot* saves exactly what you see, without the
-panel, to `game/out/look/`, with a `.json` file beside it that lists every
-look value, the time of day and where you stood. Send both, and whoever
-gets them sees what you saw and can rebuild your look.
+panel, as a photo in `game/interchange/` (see "Photos, the map and teleport"),
+with a `.json` file beside it that lists every look value, the time of day and
+where you stood. Send both, and whoever gets them sees what you saw and can
+rebuild your look.
 
 ### Adding a block
 
@@ -169,14 +172,42 @@ mode when higher; `--walk` and `--fly` force it.
 | 1–9 | select a hotbar block (9 is water: the bucket) |
 | scroll | fly speed |
 | R | drop to the ground here, in walk mode |
-| P | next preset place (hills, mountains, highest peak, steep coast, orbit) |
+| P | take a photo: the world finishes loading first, and the HUD is left out |
+| Shift+P | take a photo of this very frame, HUD and all |
+| T | the map, your photos, teleport and the scenic places |
 | F | hide / show water |
+| M | mesh view: colour the mesh by region (LOD, chunk, cube face, quad, block, biome, plate, crust) or back to normal |
+| Shift+M | mesh view: lines (none, edges, edges only) |
 | H | stats panel on / off |
 | V | vsync on / off |
 | [ / ] | slow / speed up time (0, 0.1, 1, 10, 60, 600, 3600×) |
-| F1 | the look panel (frees the mouse while open) |
+| F1 | the look panel (frees the mouse while open); Esc closes it too |
 | F10 | start / stop recording a replay (below) |
 | Q | save and quit |
+
+**The mesh view** colours the real mesh, terrain and water, by the region
+each part belongs to, so you can see where one region meets the next. Press
+**M** to step through what it colours by; the top of the screen names each one
+and shows its colours:
+
+| Colour by | Shows |
+|---|---|
+| LOD level | each level of detail |
+| Chunk | every chunk, light and dark in turn so neighbours always differ |
+| Cube face | the six faces of the cube the planet is built on |
+| Quad | every greedy quad the mesher made |
+| Block | each kind of block, water included |
+| Biome | the Köppen climate class from the world bake |
+| Tectonic plate | the plates from the world bake |
+| Crust | oceanic and continental crust from the world bake |
+
+**Shift+M** adds lines, and they work with any of those: *edges* outlines every
+quad, and *edges only* draws just the lines on dark terrain under a black sky,
+so a hole in the mesh shows as black. Water has no fill there, so its quads
+lie over the bed beneath them. A heavy line is a chunk's border, and the thin
+diagonal shows how a quad is cut into two triangles. With no colour chosen, a
+line's colour is its level of detail. All of this is also in the look panel,
+and it changes nothing but the picture.
 
 The HUD shows the targeted block (with an outline around it), the hotbar,
 and in the stats panel the frame times, the streaming state, your position
@@ -185,9 +216,48 @@ and how many chunks are edited and unsaved.
 The player is a 0.6 × 1.8 m box, eyes at 1.62 m, reach 6 m, with radial
 gravity, a 1.28 m jump and simple buoyancy in water. There is no fall damage.
 
+## Photos, the map and teleport
+
+**P** takes a photo. The game holds still for a moment while the world around
+you finishes loading (the screen says so), then saves a clean picture with no
+HUD. **Shift+P** saves this very frame at once, with the HUD and whatever hasn't
+loaded yet: that is the one to use for something you only see while moving.
+Photos go in `game/interchange/` as `shot_*.png`, each with a `.json` beside it
+saying where you stood, the time, the world and the look. Git ignores that
+folder.
+
+**T** opens the window (T or Esc shuts it). While it is open it has the keyboard
+and the mouse, and the game carries on behind it.
+
+- **The map** is drawn from the world data for exactly the view you are looking
+  at. Scroll to zoom in on the pointer, drag to pan, double-click to go back to
+  the whole planet. *Base* picks what the colours show: *Biomes* (the block on
+  the ground, in its colour from the look panel), *Temp* and *Precip* (yearly
+  means), *Elevation* (with contour lines; every 4th is stronger, and the note
+  on the map says how far apart they are). *Relief*, *Rivers*, *Lakes* and
+  *Markers* turn those on and off. A click sets a red target. The green dot is
+  you, and each blue dot is a photo.
+- **Photos.** Click a dot or a row: the picture shows on the map, and clicking
+  that shows it full size. Give it a *Title* and *Notes*; they are kept in its
+  `.json`. Tick photos and press *Delete* to move them, and everything saved
+  with them, to `interchange/trash/`. Nothing is destroyed.
+- **Teleport** goes to the selected photo, the target, or what you type: `lat
+  lon` lands you on the ground (or above deep water), `lat lon alt` hovers there,
+  metres above sea level. *Restore photo's time of day* also puts the sun, moon
+  and season back as they were. A photo from another world takes you to the same
+  latitude and longitude, not the exact spot.
+- **Places** are the scenic spots that used to be on P. One click goes there.
+
+Esc backs out one thing at a time: a text box, the full picture, the delete
+question, the selection, then the window. A teleport or a place during an F10
+recording is recorded, so the replay does the same. While you watch a replay the
+window is for looking only.
+
 ## Reporting a bug: press F10 (M2c)
 
-When something looks or behaves wrong, record it:
+For something you can see standing still, a photo is enough: press **P**, open
+**T**, select it, write what's wrong in *Notes*, and send the `.png` and the
+`.json`. For anything that moves or changes, record it:
 
 1. Press **F10**. The window title says `REC replay`, and the stats panel
    (H) names the file. (It saves your game first.)
@@ -205,6 +275,20 @@ When something looks or behaves wrong, record it:
 
 A replay usually takes a few kilobytes per minute plus the edited part of
 your world (a few kilobytes per chunk you changed).
+
+Turning a photo back into the same frame (what an agent does with your photo):
+the *Repro* button in the T window does this, or from `game/`:
+
+```
+cargo run --release -- --repro interchange/shot_lat4.990_lon-29.403_alt0.047km_yaw37_pitch-29.png
+```
+
+It writes `shot_*.play` beside the photo, with the exact pose and clock, and
+prints the `--play` command with the photo's world, window size and look, plus an
+`--at` command to stand near the same place by hand. The script checks the world
+has the same edits as the photo (give it a **copy** of the save if it had any:
+`--save COPY --keep-save`) and says how many pixels differ from the original.
+Scripts can do the same with `pose`, `clock`, `photo NAME [live]` and `compare`.
 
 Playing one back (what an agent does with your file):
 
@@ -620,7 +704,19 @@ cells sharing that lattice corner (Minecraft's rule: weight 10 at 0.8 and
 above, air counts as 0, solid is left out, a cell with water above it is
 full), so neighbouring surfaces meet exactly, and a side face against air
 takes the same two top corners, so falls and partial columns are watertight.
-Full water is the geometry it always was.
+Full water is the geometry it always was: a corner with nothing partial at it
+is full, air or no air, which is what a chunk with no partial water draws
+flat. Corners read the real cells: the generator's skirt lowers a chunk's
+border columns so the terrain grows side faces that hide LOD seams, and water
+reading those columns would take the shore's ground for air: its surface would
+dip at every chunk border, and a side face there would z-fight with the
+ground's own wall (`World::padded_levels` lists the cells to correct).
+At a cube corner the three real cells count once each. A top face shows under
+a solid, so a surface runs on beneath a bridge, except when it lies flat in
+the solid's underside, where it would z-fight and tint a view from below
+twice. Coarse LODs have no levels: a surface off the voxel grid rounds to a
+different height at different LODs (a lake at +12.03 m is at 12 at LOD 2 and
+16 at LOD 3), and from above you see under the higher sheet at the boundary.
 
 ## Saves
 
@@ -747,6 +843,20 @@ and a tunnel, build a stone bridge over the trench, walk across it, save,
 reload, check every edited block, and shoot the bridge from 300 m, 550 m
 and 1 km (LOD 0, 1 and 2). It must pass.
 
+`scripts/b3-corner.play` uses the views from steps 800 and 1300 of Andrew's
+corner recording, then places and breaks blocks with cell checks. Picking
+follows the world ray across cube faces for both solid blocks and the water
+bucket; the outline uses the target block's own mesh grid. Older recordings
+near seams can diverge at their clicks after this correction. Saves, terrain,
+simulation rules and the replay file format are unchanged.
+
+The independent picking regression is `cargo test --release b3_`. Its fine
+world-ray oracle samples the exact inverse on all eight corners, all twelve
+edges and six ordinary sites, with one-metre and half-metre blocks. For a
+before measurement set `B3_BEFORE=1` and run `b3_world_ray_reference` (it is
+expected to fail against the frozen old picker). Run the provisional cost
+measurement with `cargo test --release b3_pick_cost -- --ignored --nocapture`.
+
 `scripts/tunnel-wall-reload.play` digs a shaft to a chunk boundary over a
 buried (Enclosed) chunk, saves, reloads and asserts with `cover_rel` that
 the chunk whose top the shaft exposed is drawn at LOD 0 (review 2 #7).
@@ -787,6 +897,10 @@ printed levels. `b4-oldsave-make.play`, run on an older build, and
 `b4-oldsave-load.play`, run on this one, check that an old save loads and that
 nothing in it wakes until it is touched.
 
+`scripts/b1-water-under.play` lays a stone deck across a generated river and
+shoots the surface going on under it from above, from the side and from under
+water.
+
 `scripts/m3b-hotbar.play` (run with `--blocks scripts/m3b-look/blocks.json`)
 builds a wall of the painted `clay_brick` block from the M3b session on key
 1 (the `hotbar` command), checks its blocks, and shoots it with the hotbar.
@@ -815,6 +929,7 @@ aim DI DJ DK             look at a lattice point relative to the feet cell
 hold w,shift 2           hold keys for seconds; tap break|place|jump|g|1..9
 tick N | sim on|off      N simulation ticks (20 Hz); pause or resume it
 sim radius M | period N  active region radius; ticks per water step
+cells DI0 DI1 DJ0 DJ1 DK  map of one layer near the feet, with water levels
 shot NAME                settled frame + state; bench N; state NAME
 save | reload            write edits; quit-and-restart from disk
 assert FIELD OP VALUE    position, altitude, on_ground, in_water, crosshair,
@@ -894,7 +1009,10 @@ basin resting until touched and a lake draining through a channel to its
 sill, displacement by a landing block and loss under a sealed lid, a pit at
 the shore filling from the sea with the water accounted exactly, boundary
 cells as reservoirs, drains and walls that are never written, the water
-period, and the mesher's shared corners. Replays (`src/replay_tests.rs`,
+period, and the mesher's shared corners. The mesher (`src/mesh.rs`): water
+under a solid, a resting lake flat to its shore on chunk borders, a fall's lip
+still sloped, chunks and cube faces agreeing on every shared corner, and no
+water side face against real ground. Replays (`src/replay_tests.rs`,
 driven through the app's own input code with synthetic window events):
 record then replay gives the same state, the same inputs at 144 and 30 fps
 give the same world, a damaged replay names its first divergence, a replay

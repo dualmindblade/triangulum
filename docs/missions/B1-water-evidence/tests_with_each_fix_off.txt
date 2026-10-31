@@ -1,0 +1,15 @@
+top test water_top_shows               FAILED  0 passed, 1 failed   assertion `left == right` failed: the cell under the stone has its surface, at its level
+skirt test a_resting_lake              FAILED  0 passed, 1 failed   assertion `left == right` failed: a resting lake cell at BlockPos { face: 2, i: 115442, j: 6412
+skirt test chunks_agree                FAILED  0 passed, 1 failed   assertion `left == right` failed: corner (115456, 64115, 519) is 204 in ChunkKey { body: 0, fac
+noair test a_fall_keeps                FAILED  0 passed, 1 failed   assertion `left == right` failed: the edge over the drop is pulled down: 0x98999898
+walls test no_water_side_face          FAILED  0 passed, 1 failed   a side face of ChunkKey { body: 0, face: 2, lod: 0, cx: 3607, cy: 2005, cz: 16 } lies against t
+flat test full_water_meets             FAILED  0 passed, 1 failed   assertion `left == right` failed: corner (96032, 48010, 970) is 232 in ChunkKey { body: 0, face
+cube test three_faces_agree            FAILED  0 passed, 1 failed   assertion `left == right` failed: face 2: the mean of the three real cells (0x30f193c)
+none test water_top_shows              ok      1 passed, 0 failed   
+none test a_resting_lake               ok      1 passed, 0 failed   
+none test chunks_agree                 ok      1 passed, 0 failed   
+none test a_fall_keeps                 ok      1 passed, 0 failed   
+none test no_water_side_face           ok      1 passed, 0 failed   
+none test full_water_meets             ok      1 passed, 0 failed   
+none test three_faces_agree            ok      1 passed, 0 failed   
+finished

@@ -1,0 +1,140 @@
+# Bug round #6: the mesh view, coloured by region. Frames for looking at, and
+# checks: each tint changes the picture, lines change the picture, the view
+# reads the bake's region layers, and switching it off gives back the very same
+# frame (pixel for pixel), so nothing it does outlives it.
+#
+#   cargo run --release -- --play scripts/b5-meshview.play
+
+# ---- every region from 1.5 km over the hills
+mode fly
+at -4.5654 117.4744 1500
+look -60 -35
+skytime 12:00
+meshview normal
+shot lod_normal
+meshview lod
+shot tint_lod
+meshview chunk
+shot tint_chunk
+meshview face
+shot tint_face
+meshview quad
+shot tint_quad
+meshview block
+shot tint_block
+meshview biome
+shot tint_biome
+meshview plate
+shot tint_plate
+meshview crust
+shot tint_crust
+meshview edges
+shot lines_edges
+meshview wire
+shot lines_wire
+meshview lod edges
+shot lod_edges
+meshview chunk wire
+shot chunk_wire
+meshview normal
+shot lod_normal_again
+compare lod_normal lod_normal_again
+assert compare_same == true
+compare lod_normal tint_lod
+assert compare_pixels > 100000
+compare lod_normal lines_edges
+assert compare_pixels > 100000
+compare tint_lod tint_chunk
+assert compare_pixels > 100000
+compare tint_chunk tint_quad
+assert compare_pixels > 100000
+compare tint_biome tint_plate
+assert compare_pixels > 100000
+compare lines_edges lines_wire
+assert compare_pixels > 100000
+
+# ---- a cube corner from high up: three faces meet, and the bake's regions
+#      cross them without a step (lat 35.26, lon 135 is the corner the bug
+#      round's recordings walk)
+at 35.26 135 12000
+look 0 -89
+meshview face
+shot corner_face
+meshview plate
+shot corner_plate
+meshview biome edges
+shot corner_biome_edges
+meshview normal
+
+# ---- greedy quads on the ground
+mode walk
+at -4.5654 117.4744
+look -60 -18
+meshview quad
+shot ground_quad
+meshview block edges
+shot ground_block_edges
+meshview edges
+shot ground_edges
+meshview wire
+shot ground_wire
+meshview normal
+
+# ---- the sea and a coast: water quads and their LOD steps
+mode fly
+at -3.4154 136.3992 300
+lookaxis -i -35
+meshview lod edges
+shot coast_lod_edges
+meshview wire
+shot coast_wire
+meshview normal
+
+# ---- sloped water: a trench on level ground (the flat patch of m2a-sand),
+#      with a cell of water let go at one end. Its surface leans from cell to
+#      cell, so its corners sit at different heights.
+mode walk
+atblock 2 107153 57531 2000
+assert on_ground == true
+lookaxis +i 0
+aim 1 0 -0.5
+tap break
+aim 2 0 -0.5
+tap break
+aim 3 0 -0.5
+tap break
+aim 4 0 -0.5
+tap break
+aim 5 0 -0.5
+tap break
+assert block_rel[5,0,-1] == air
+select 9
+aim 1 0 -1.5
+tap place
+assert level_rel[1,0,-1] == 255
+tick 3
+assert level_rel[1,0,-1] < 255
+mode fly
+hold space 0.2
+aim 3 0 -5
+shot slope_normal
+meshview edges
+shot slope_edges
+meshview wire
+shot slope_wire
+meshview quad edges
+shot slope_quad_edges
+meshview normal
+
+# ---- the whole planet
+at -4.5654 117.4744 500000
+look -60 -89
+meshview lod
+shot orbit_lod
+meshview plate
+shot orbit_plate
+meshview biome
+shot orbit_biome
+meshview face wire
+shot orbit_face_wire
+meshview normal

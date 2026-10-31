@@ -129,6 +129,16 @@ impl Harness {
         self.gpu.save_png(path);
     }
 
+    /// The harness's egui context.
+    pub fn egui(&self) -> &egui::Context {
+        &self.egui_ctx
+    }
+
+    /// One egui pass from synthetic input (the harness's T window).
+    pub fn ui_pass(&mut self, raw: egui::RawInput, draw: bool, build: &mut dyn FnMut(&egui::Context)) {
+        crate::ui::ui_pass(&self.egui_ctx, &mut self.egui_paint, &self.gpu, raw, draw, build);
+    }
+
     /// Paint an egui overlay over the current frame (the play harness's video HUD).
     pub fn paint_ui(&mut self, build: &dyn Fn(&egui::Context)) {
         paint_offscreen(&self.egui_ctx, &mut self.egui_paint, &self.gpu, build);
