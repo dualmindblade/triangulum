@@ -21,7 +21,7 @@
 //!   --water-period N (1; ticks per water step: how many 20 Hz ticks a cell of water takes to move one cell)
 //! Player: --walk | --fly (default: walk when starting within 50 m of the ground)
 //!   --hotbar stone,dirt,...  (blocks on keys 1-9; default: the first eight solid blocks and water)
-//! Look (M3a): F1 opens the look panel  --panel (start with it open)
+//! Look (M3a): F1 opens the look panel  --panel (start with it open)  M and Shift+M step the mesh view
 //!   --look-file FILE (default assets/look.json; the panel saves to it, and to --blocks and --world)
 //! Other options: --lod-factor F (look.json's, 5) --threads N --no-ao --no-split --skirt N
 //!   --no-vsync --size WxH --hide-water --markers --backend vulkan|dx12

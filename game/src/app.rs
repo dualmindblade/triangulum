@@ -53,6 +53,8 @@ struct App {
     last: Instant,
     /// The sky speed the window title shows.
     title_speed: f64,
+    /// A Shift key is down (Shift+M, Shift+P).
+    shift: bool,
     opaque: Vec<DrawRecord>,
     water: Vec<DrawRecord>,
     captured: bool,
@@ -298,6 +300,11 @@ impl App {
         }
     }
 
+    /// The legend of the mesh view, when it is on.
+    fn mesh_legend(&self, drawn: &[u32; 16]) -> Option<crate::render::meshview::Legend> {
+        crate::render::meshview::legend_for(self.workshop.mesh_view, drawn, &self.engine().registry, &self.workshop.regions_state)
+    }
+
     fn hud_info(&self, gpu_ms: f64, cam: &Camera, aspect: f64, width: u32, height: u32) -> Hud {
         let now = Instant::now();
         let last_1s: Vec<f64> = self.frames.iter().filter(|(t, _)| now.duration_since(*t).as_secs_f64() <= 1.0).map(|(_, ms)| *ms).collect();
@@ -350,6 +357,7 @@ impl App {
             dirty: engine.edits.dirty_count(),
             save_note: self.save_note.clone(),
             sim_line: self.session.sim.describe(),
+            mesh_legend: self.mesh_legend(&st.drawn_per_lod),
         }
     }
 }
@@ -399,7 +407,7 @@ impl ApplicationHandler for App {
         if let Some(p) = opts.record {
             self.toggle_recording_to(Some(p.into()));
         }
-        println!("app: WASD move, Space jump/up, Ctrl sneak (fly: down), Shift sprint, mouse look (click to capture, Esc releases), LMB break, RMB place, 1-9 block, G walk/fly, scroll fly speed, P preset, R to ground, V vsync, F water, H hud, [ slower time, ] faster time, F10 record a replay, Q quit");
+        println!("app: WASD move, Space jump/up, Ctrl sneak (fly: down), Shift sprint, mouse look (click to capture, Esc releases), LMB break, RMB place, 1-9 block, G walk/fly, scroll fly speed, P preset, R to ground, V vsync, F water, M mesh colours, Shift+M mesh lines, H hud, [ slower time, ] faster time, F10 record a replay, Q quit");
     }
 
     fn window_event(&mut self, el: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
@@ -438,6 +446,15 @@ impl ApplicationHandler for App {
                                 self.configure_surface();
                             }
                             KeyCode::KeyH => self.show_stats = !self.show_stats,
+                            KeyCode::KeyM => {
+                                let v = &mut self.workshop.mesh_view;
+                                if self.shift {
+                                    v.lines = v.lines.next();
+                                } else {
+                                    v.tint = v.tint.next();
+                                }
+                                self.save_note = format!("mesh view: {}", v.label());
+                            }
                             KeyCode::F10 if self.replay.is_none() => self.toggle_recording(),
                             _ => {}
                         }
@@ -463,7 +480,11 @@ impl ApplicationHandler for App {
                 };
                 self.controls.scroll(lines);
             }
-            WindowEvent::Focused(false) => self.controls.focus_lost(),
+            WindowEvent::ModifiersChanged(m) => self.shift = m.state().shift_key(),
+            WindowEvent::Focused(false) => {
+                self.shift = false;
+                self.controls.focus_lost();
+            }
             WindowEvent::Resized(_) => self.configure_surface(),
             WindowEvent::RedrawRequested => self.frame(),
             _ => {}
@@ -521,6 +542,7 @@ fn run_with(session: Session, opts: AppOptions, replay: Option<WatchedReplay>) -
         controls: Controls::default(),
         last: Instant::now(),
         title_speed,
+        shift: false,
         opaque: Vec::new(),
         water: Vec::new(),
         captured: false,

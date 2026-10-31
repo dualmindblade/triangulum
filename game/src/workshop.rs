@@ -48,8 +48,9 @@ use crate::engine::Engine;
 use crate::grid::WorldConfig;
 use crate::look::{self, FileWatch, Look, Terrain};
 use crate::player::Mode;
-use crate::render::Renderer;
 use crate::render::textures::{self, Picture, TextureSet};
+use crate::render::regions::{self, RegionData, RegionsState};
+use crate::render::{Lines, MeshView, Renderer, Tint};
 use crate::session::{Action, Session};
 use crate::sim::Sim;
 use crate::sky::Clock;
@@ -208,6 +209,13 @@ pub struct Workshop {
     shot_requested: bool,
     shot_now: bool,
     styled: bool,
+    /// The mesh view (bug round #6): M and Shift+M step it, the panel sets
+    /// it, the renderer draws it. A way of looking, so no file saves it.
+    pub mesh_view: MeshView,
+    /// The bake's region layers for its tints, read when one is first asked
+    /// for: on their way, and what came of it.
+    regions_coming: Option<mpsc::Receiver<Result<RegionData, String>>>,
+    pub regions_state: RegionsState,
     /// Evidence screenshots: `TRIANGULUM_PANEL_SECTION=blocks` opens the
     /// panel on that section alone for its first frames.
     focus: Option<(String, u32)>,
@@ -317,6 +325,9 @@ impl Workshop {
             shot_requested: false,
             shot_now: false,
             styled: false,
+            mesh_view: MeshView::NORMAL,
+            regions_coming: None,
+            regions_state: RegionsState::default(),
             focus: std::env::var("TRIANGULUM_PANEL_SECTION").ok().map(|s| (s, 5)),
         }
     }
@@ -393,8 +404,35 @@ impl Workshop {
             }
         }
         self.notes.retain(|(t, _)| now.duration_since(*t) < NOTE_LIFE);
+        gpu.mesh_view = self.mesh_view;
+        self.follow_regions(session, gpu);
         // A requested screenshot is this frame, drawn without the panel.
         self.shot_now = std::mem::take(&mut self.shot_requested);
+    }
+
+    /// The first tint that needs the bake's layers reads them, off this
+    /// thread; the view shows flat grey until they land.
+    fn follow_regions(&mut self, session: &Session, gpu: &mut Renderer) {
+        if self.mesh_view.tint.uses_bake() && self.regions_state == RegionsState::NotAsked {
+            self.regions_state = RegionsState::Loading;
+            let (tx, rx) = mpsc::channel();
+            let dir = session.engine.config.bake.clone();
+            std::thread::spawn(move || {
+                let _ = tx.send(regions::load(&dir));
+            });
+            self.regions_coming = Some(rx);
+        }
+        if let Some(Ok(result)) = self.regions_coming.as_ref().map(|rx| rx.try_recv()) {
+            self.regions_coming = None;
+            self.regions_state = match result {
+                Ok(data) => {
+                    let plates = data.plates;
+                    gpu.set_regions(Arc::new(data));
+                    RegionsState::Ready { plates }
+                }
+                Err(e) => RegionsState::Missing(e),
+            };
+        }
     }
 
     /// Textures (M3b): the panel's choices into the registry, layers for
@@ -964,6 +1002,7 @@ impl Workshop {
                 "clock_seconds": session.sky.seconds,
             },
             "world": session.engine.config.name,
+            "mesh_view": self.mesh_view.name(),
             "texture_size": self.texset.size,
             "state": session.state(),
         })
@@ -1035,6 +1074,7 @@ impl Workshop {
                 ui.separator();
                 header("Sky and light", "sky", true).show(ui, |ui| self.ui_sky(ui));
                 header("Water", "water", true).show(ui, |ui| self.ui_water(ui));
+                header("Mesh view", "mesh", true).show(ui, |ui| self.ui_mesh(ui));
                 header("Blocks", "blocks", false).show(ui, |ui| self.ui_blocks(ui));
                 header("Distance detail", "detail", false).show(ui, |ui| self.ui_detail(ui));
                 header("Terrain", "terrain", false).show(ui, |ui| self.ui_terrain(ui));
@@ -1125,6 +1165,22 @@ impl Workshop {
                 self.colours_dirty = true;
             }
         }
+    }
+
+    fn ui_mesh(&mut self, ui: &mut egui::Ui) {
+        ui.label("Colour the mesh by").on_hover_text("M steps through these.");
+        ui.horizontal_wrapped(|ui| {
+            for t in Tint::ALL {
+                ui.selectable_value(&mut self.mesh_view.tint, t, t.label()).on_hover_text(t.hint());
+            }
+        });
+        ui.label("Lines").on_hover_text("Shift+M steps through these.");
+        ui.horizontal(|ui| {
+            for l in Lines::ALL {
+                ui.selectable_value(&mut self.mesh_view.lines, l, l.label());
+            }
+        });
+        ui.label(egui::RichText::new("The game's own mesh, coloured by the region each part belongs to. A heavy line is a chunk's border, and the thin diagonal shows a quad's two triangles. The names are on screen while one of these is on.").small().weak());
     }
 
     fn ui_detail(&mut self, ui: &mut egui::Ui) {

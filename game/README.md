@@ -27,6 +27,8 @@ everything you change shows straight away.
   top, sides and bottom. Grass is green on top and dirt on the sides and
   bottom, so a tunnel under grass has a dirt ceiling. Here you also add
   blocks, choose what keys 1 to 9 hold, and paint textures (below).
+- **Mesh view**: colour the mesh by region and add lines, as the **M** and
+  **Shift+M** keys do (see Controls).
 - **Distance detail**: how much detail far-away land keeps. Higher looks
   better and costs speed.
 - **Terrain**: roughness, landforms and how tall the mountains are
@@ -171,12 +173,38 @@ mode when higher; `--walk` and `--fly` force it.
 | R | drop to the ground here, in walk mode |
 | P | next preset place (hills, mountains, highest peak, steep coast, orbit) |
 | F | hide / show water |
+| M | mesh view: colour the mesh by region (LOD, chunk, cube face, quad, block, biome, plate, crust) or back to normal |
+| Shift+M | mesh view: lines (none, edges, edges only) |
 | H | stats panel on / off |
 | V | vsync on / off |
 | [ / ] | slow / speed up time (0, 0.1, 1, 10, 60, 600, 3600×) |
 | F1 | the look panel (frees the mouse while open) |
 | F10 | start / stop recording a replay (below) |
 | Q | save and quit |
+
+**The mesh view** colours the real mesh, terrain and water, by the region
+each part belongs to, so you can see where one region meets the next. Press
+**M** to step through what it colours by; the top of the screen names each one
+and shows its colours:
+
+| Colour by | Shows |
+|---|---|
+| LOD level | each level of detail |
+| Chunk | every chunk, light and dark in turn so neighbours always differ |
+| Cube face | the six faces of the cube the planet is built on |
+| Quad | every greedy quad the mesher made |
+| Block | each kind of block, water included |
+| Biome | the Köppen climate class from the world bake |
+| Tectonic plate | the plates from the world bake |
+| Crust | oceanic and continental crust from the world bake |
+
+**Shift+M** adds lines, and they work with any of those: *edges* outlines every
+quad, and *edges only* draws just the lines on dark terrain under a black sky,
+so a hole in the mesh shows as black. Water has no fill there, so its quads
+lie over the bed beneath them. A heavy line is a chunk's border, and the thin
+diagonal shows how a quad is cut into two triangles. With no colour chosen, a
+line's colour is its level of detail. All of this is also in the look panel,
+and it changes nothing but the picture.
 
 The HUD shows the targeted block (with an outline around it), the hotbar,
 and in the stats panel the frame times, the streaming state, your position

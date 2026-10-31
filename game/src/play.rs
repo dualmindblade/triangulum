@@ -88,6 +88,14 @@
 //! ---- output and checks ---------------------------------------------
 //!   shot NAME               settled frame (streaming drained) with the HUD
 //!                           as NAME.png, plus NAME.json state
+//!   meshview [TINT] [LINES] the mesh view: TINT is normal lod chunk face quad
+//!                           block biome plate crust (the M key), LINES is
+//!                           nolines edges wire (Shift+M); "meshview edges",
+//!                           "meshview lod wire", "meshview normal"
+//!   compare A B             compare two frames already in the out directory
+//!                           (A.png, B.png); sets compare_pixels (how many
+//!                           differ), compare_max (the largest channel
+//!                           difference) and compare_same
 //!   state NAME              NAME.json only
 //!   bench N                 render N frames at the current pose; reports
 //!                           avg / p95 / worst wall ms and the GPU time
@@ -222,13 +230,16 @@ struct Run {
     /// The last `find` and `replay` results, as state fields.
     last_find: serde_json::Value,
     last_replay: serde_json::Value,
+    last_compare: serde_json::Value,
     out: String,
     video: video::Video,
+    /// The bake's region layers, once a mesh view tint has asked for them.
+    regions: crate::render::regions::RegionsState,
 }
 
 impl Run {
     fn new(session: Session, harness: Harness, out: &str) -> Self {
-        Run { session, harness, log: String::new(), failed: 0, asserts: 0, last_bench: serde_json::Value::Null, last_stream: serde_json::Value::Null, last_find: serde_json::Value::Null, last_replay: serde_json::Value::Null, out: out.to_string(), video: video::Video::default() }
+        Run { session, harness, log: String::new(), failed: 0, asserts: 0, last_bench: serde_json::Value::Null, last_stream: serde_json::Value::Null, last_find: serde_json::Value::Null, last_replay: serde_json::Value::Null, last_compare: serde_json::Value::Null, out: out.to_string(), video: video::Video::default(), regions: Default::default() }
     }
 
     /// `replay record FILE | replay stop | replay check FILE` (M2c): the
@@ -316,7 +327,7 @@ impl Run {
                     m.insert(k.clone(), val.clone());
                 }
             }
-            for extra in [&self.last_bench, &self.last_find, &self.last_replay] {
+            for extra in [&self.last_bench, &self.last_find, &self.last_replay, &self.last_compare] {
                 if let serde_json::Value::Object(b) = extra {
                     for (k, val) in b {
                         m.insert(k.clone(), val.clone());
@@ -393,12 +404,51 @@ impl Run {
             edits: engine.edits.len(),
             dirty: engine.edits.dirty_count(),
             sim_line: self.session.sim.describe(),
+            mesh_legend: crate::render::meshview::legend_for(self.harness.gpu.mesh_view, &self.harness.streamer.stats.drawn_per_lod, &engine.registry, &self.regions),
             ..Default::default()
         };
         let path = format!("{}/{name}.png", self.out);
         self.harness.save_with_ui(&path, &|ctx| draw_hud(ctx, &hud, true));
         self.say(format!("  shot {name}: {path} (settled in {secs:.1} s / {frames} frames{}; {} draws)", if ok { "" } else { " TIMEOUT" }, self.harness.streamer.stats.drawn));
         self.write_state(name);
+    }
+
+    /// `meshview ...`: set the view, reading the bake's layers first if the
+    /// tint needs them (the game reads them off its main thread).
+    fn mesh_view(&mut self, view: crate::render::MeshView) {
+        use crate::render::regions::RegionsState as R;
+        if view.tint.uses_bake() && self.regions == R::NotAsked {
+            self.regions = match crate::render::regions::load(&self.session.engine.config.bake) {
+                Ok(data) => {
+                    let plates = data.plates;
+                    self.harness.gpu.set_regions(Arc::new(data));
+                    R::Ready { plates }
+                }
+                Err(e) => {
+                    self.say(format!("  the bake's region layers: {e}"));
+                    R::Missing(e)
+                }
+            };
+        }
+        self.harness.gpu.mesh_view = view;
+    }
+
+    /// `compare A B`: how far apart two saved frames are.
+    fn compare(&mut self, a: &str, b: &str) -> Result<(), String> {
+        let load = |name: &str| crate::render::read_png(&format!("{}/{name}.png", self.out));
+        let ((wa, ha, pa), (wb, hb, pb)) = (load(a)?, load(b)?);
+        if (wa, ha) != (wb, hb) {
+            return Err(format!("{a} is {wa} x {ha}, {b} is {wb} x {hb}"));
+        }
+        let (mut pixels, mut max) = (0u64, 0u8);
+        for (x, y) in pa.chunks_exact(4).zip(pb.chunks_exact(4)) {
+            let d = (0..3).map(|c| x[c].abs_diff(y[c])).max().unwrap_or(0);
+            pixels += (d > 0) as u64;
+            max = max.max(d);
+        }
+        self.say(format!("  compare {a} {b}: {pixels} of {} pixels differ, by at most {max}", wa as u64 * ha as u64));
+        self.last_compare = serde_json::json!({ "compare_pixels": pixels, "compare_max": max, "compare_same": pixels == 0 });
+        Ok(())
     }
 
     /// Move with `input` held for `seconds`, streaming and rendering a
@@ -895,6 +945,18 @@ pub fn run_play(session: Session, opts: PlayOptions) -> i32 {
             "state" => match args.first() {
                 Some(name) => run.write_state(name),
                 None => bad(&mut run, "state NAME"),
+            },
+            "meshview" => match crate::render::MeshView::parse(args) {
+                Some(m) => run.mesh_view(m),
+                None => bad(&mut run, "meshview [normal|lod|chunk|face|quad|block|biome|plate|crust] [nolines|edges|wire]"),
+            },
+            "compare" => match (args.first(), args.get(1)) {
+                (Some(a), Some(b)) => {
+                    if let Err(e) = run.compare(a, b) {
+                        bad(&mut run, &format!("compare: {e}"));
+                    }
+                }
+                _ => bad(&mut run, "compare A B"),
             },
             "bench" => match num(0) {
                 Some(n) if n >= 1.0 => run.bench(n as usize),
