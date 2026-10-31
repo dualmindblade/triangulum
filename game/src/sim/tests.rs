@@ -5,6 +5,14 @@ use crate::world::save::SaveDir;
 use crate::world::tests::{hills_ground, test_world};
 use std::sync::Arc;
 
+/// The rule before B4: blocks fall straight down their own column and
+/// nothing slides. The tests of falling itself run under it, and so do the
+/// ones that need a block to stay where it lands (a tower, a block on a
+/// one-cell shelf): under the slide neither can stand.
+fn straight_down() -> SimConfig {
+    SimConfig { flow: Flow::before(), ..SimConfig::default() }
+}
+
 #[test]
 fn tick_is_three_player_steps() {
     assert!((STEPS_PER_TICK as f64 * crate::player::STEP - TICK_S).abs() < 1e-12);
@@ -36,19 +44,32 @@ fn snapshot_bytes_round_trip_and_reject_damage() {
         queue: vec![(78, PosKey(5)), (78, PosKey(9)), (80, PosKey(1))],
         frozen: vec![(ChunkKey::neisor(3, 0, 10, 11, 12), vec![(70, PosKey(123)), (71, PosKey(124))]), (ChunkKey::neisor(4, 0, 0, 0, 0), vec![])],
         falling: vec![Falling { id: 4, face: 2, i: 100, j: 200, z: 612.25, vel: -3.5 }, Falling { id: 5, face: 2, i: 100, j: 200, z: 615.0, vel: 0.0 }],
-        config: Some(SimConfig { radius_m: 37.5, enabled: false, water_period: 3 }),
+        config: Some(SimConfig { radius_m: 37.5, enabled: false, water_period: 3, flow: Flow { film: Film::Merge, film_reach: 3, film_dry_ticks: 77, ..Flow::before() } }),
         focus: Some(DVec3::new(1.0e6, -2.5e6, 3.25e5)),
         rules: Some([7; 32]),
+        drying: vec![(90, PosKey(11)), (91, PosKey(12))],
     };
     let bytes = snap.to_bytes();
     assert_eq!(Snapshot::from_bytes(&bytes).unwrap(), snap);
     // Version 2 adds one byte saying which parts follow.
     assert_eq!(Snapshot::default().to_bytes().len(), 4 + 4 + 8 + 8 * 3 + 1);
     // A version-1 file (no settings, focus or rules) still reads.
-    let mut v1 = Snapshot { config: None, focus: None, rules: None, ..snap.clone() }.to_bytes();
+    let mut v1 = Snapshot { config: None, focus: None, rules: None, drying: vec![], ..snap.clone() }.to_bytes();
     v1.pop();
     v1[4..8].copy_from_slice(&1u32.to_le_bytes());
-    assert_eq!(Snapshot::from_bytes(&v1).unwrap(), Snapshot { config: None, focus: None, rules: None, ..snap.clone() });
+    assert_eq!(Snapshot::from_bytes(&v1).unwrap(), Snapshot { config: None, focus: None, rules: None, drying: vec![], ..snap.clone() });
+    // A version-2 file (the build before B4): settings without flow settings.
+    // It reads, and takes this build's flow settings.
+    let no_focus = Snapshot { focus: None, rules: None, drying: vec![], ..snap.clone() };
+    let mut v2 = no_focus.to_bytes();
+    let text = no_focus.config.unwrap().flow.text();
+    let flow_at = v2.len() - text.len() - 4;
+    assert_eq!(&v2[flow_at + 4..], text.as_bytes());
+    v2.truncate(flow_at);
+    v2[4..8].copy_from_slice(&2u32.to_le_bytes());
+    let read = Snapshot::from_bytes(&v2).unwrap();
+    assert_eq!(read.config.unwrap().flow, Flow::default());
+    assert_eq!(read.config.unwrap().water_period, 3);
     assert!(Snapshot::from_bytes(&bytes[..bytes.len() - 3]).is_err(), "truncated");
     let mut extra = bytes.clone();
     extra.push(0);
@@ -125,7 +146,7 @@ fn sand_collapses_in_a_chain_and_a_column_drains_in_order() {
         w.set_block(col(k0 + dk), sand);
     }
     w.set_block(col(k0 + 6), gravel);
-    let mut sim = Sim::new(SimConfig::default());
+    let mut sim = Sim::new(straight_down());
     sim.step(&w, focus);
     assert_eq!(sim.falling().len(), 0, "a supported column does not move");
     assert_eq!(sim.queued(), 0, "every placement was processed in one tick");
@@ -173,7 +194,7 @@ fn a_block_built_into_a_falling_blocks_path_makes_it_settle_above_it() {
     let k_top = g.k + 21;
     w.set_block(col(k_top - 1), stone);
     w.set_block(col(k_top), sand);
-    let mut sim = Sim::new(SimConfig::default());
+    let mut sim = Sim::new(straight_down());
     sim.step(&w, focus);
     w.set_block(col(k_top - 1), air);
     sim.step(&w, focus);
@@ -219,7 +240,7 @@ fn updates_outside_the_active_region_wait_and_persist_and_run_when_it_arrives() 
     };
     let far = BlockPos { k: far_k, ..far };
     w.set_block(far, sand);
-    let mut sim = Sim::new(SimConfig { radius_m: 50.0, enabled: true, water_period: 1 });
+    let mut sim = Sim::new(SimConfig { radius_m: 50.0, ..straight_down() });
     sim.step(&w, focus);
     assert_eq!(sim.falling().len(), 0);
     assert_eq!(sim.queued(), 0);
@@ -245,7 +266,7 @@ fn updates_outside_the_active_region_wait_and_persist_and_run_when_it_arrives() 
     assert_eq!(w.block_at(BlockPos { k: far_k - 4, ..far }), sand, "landed on the ground four layers down");
     assert!(w.registry.is_solid(w.block_at(BlockPos { k: far_k - 5, ..far })) && !w.registry.has_gravity(w.block_at(BlockPos { k: far_k - 5, ..far })));
     // Meanwhile a block falling in a chunk that goes inactive hangs where it is.
-    let mut sim3 = Sim::new(SimConfig { radius_m: 50.0, enabled: true, water_period: 1 });
+    let mut sim3 = Sim::new(SimConfig { radius_m: 50.0, ..straight_down() });
     w.set_block(far, sand);
     sim3.step(&w, far_focus);
     sim3.step(&w, far_focus);
@@ -276,7 +297,7 @@ fn a_falling_block_waits_at_the_edge_of_the_active_region() {
     assert!(w.set_block(col(kb - 3), stone), "a shelf in the chunk below");
     let at = |k: f64| p.pos(g.face, g.i as f64 + 0.5, g.j as f64 + 0.5, k);
     let focus = at((kb + 31) as f64);
-    let mut sim = Sim::new(SimConfig { radius_m: 1.0, ..SimConfig::default() });
+    let mut sim = Sim::new(SimConfig { radius_m: 1.0, ..straight_down() });
     sim.step(&w, focus);
     assert!(sim.is_active(upper) && !sim.is_active(lower), "only the upper chunk is active");
     // A sand block at terminal speed a tenth of a layer above the edge: one
@@ -302,7 +323,7 @@ fn a_falling_block_waits_at_the_edge_of_the_active_region() {
 
     // A block in a cell something was built into settles in the first free
     // cell above, but not above the region's top.
-    let mut sim = Sim::new(SimConfig { radius_m: 1.0, ..SimConfig::default() });
+    let mut sim = Sim::new(SimConfig { radius_m: 1.0, ..straight_down() });
     let mid = at((kb + 16) as f64);
     sim.step(&w, mid);
     let above = World::chunk_of(col(kb + 32)).0;
@@ -452,27 +473,28 @@ const TICKS: u64 = 80;
 const MID: u64 = 20;
 
 /// One full run from a fresh world: the hash at the end and the hash at MID.
-fn straight_run(radius: f64) -> (String, String, u64, u64) {
+fn straight_run(radius: f64) -> (String, String, u64, u64, u64) {
     let w = test_world();
     let script = Script::new(&w);
-    let mut sim = Sim::new(SimConfig { radius_m: radius, enabled: true, water_period: 1 });
+    let mut sim = Sim::new(SimConfig { radius_m: radius, ..SimConfig::default() });
     run_ticks(&w, &mut sim, &script, 0, MID);
     let mid = sim.state_hash(&w);
     run_ticks(&w, &mut sim, &script, MID, TICKS);
     assert!(sim.falling().is_empty(), "everything has landed by the end");
-    (mid, sim.state_hash(&w), sim.stats.falls, sim.stats.landings)
+    (mid, sim.state_hash(&w), sim.stats.falls, sim.stats.slides, sim.stats.landings)
 }
 
 #[test]
 fn the_same_inputs_give_the_same_hash_twice_and_the_scenario_is_not_trivial() {
-    let (mid_a, a, falls, landings) = straight_run(112.0);
-    let (mid_b, b, _, _) = straight_run(112.0);
+    let (mid_a, a, falls, slides, landings) = straight_run(112.0);
+    let (mid_b, b, ..) = straight_run(112.0);
     assert_eq!(a, b);
     assert_eq!(mid_a, mid_b);
     assert_ne!(mid_a, a, "the state moved on after the midpoint");
-    assert!(falls >= 15 && landings >= 15, "falls {falls} landings {landings}");
+    assert!(falls + slides >= 15 && landings >= 15, "falls {falls} slides {slides} landings {landings}");
+    assert!(slides > 0, "the scenario has blocks sliding too");
     // Another input (a region wide enough to reach the far block, which then falls) hashes differently.
-    let (_, c, _, _) = straight_run(600.0);
+    let (_, c, ..) = straight_run(600.0);
     assert_ne!(a, c);
 }
 
@@ -486,7 +508,7 @@ fn the_hash_is_the_same_across_rayon_pools_of_one_and_eight_threads() {
 
 #[test]
 fn the_hash_is_the_same_across_a_save_and_a_reload_in_the_middle() {
-    let (_, straight, _, _) = straight_run(112.0);
+    let (_, straight, ..) = straight_run(112.0);
     let w = test_world();
     let script = Script::new(&w);
     let mut sim = Sim::new(SimConfig::default());
@@ -514,7 +536,7 @@ fn the_hash_is_the_same_across_a_save_and_a_reload_in_the_middle() {
 }
 
 /// A second world over a copy of `w`'s edited chunks (no pending changes).
-fn copy_world(w: &World) -> World {
+pub(super) fn copy_world(w: &World) -> World {
     let edits = Arc::new(EditStore::new());
     for d in w.edits.snapshot_full() {
         edits.insert_chunk(d.key, d.ids, d.water, false);
@@ -565,7 +587,7 @@ fn a_reload_keeps_the_active_region_it_was_computed_for() {
 }
 
 /// Review 3 #4: what decides the future is in the hash: the region's
-/// radius, whether the simulation runs, the water period.
+/// radius, whether the simulation runs, the water period, the flow settings.
 #[test]
 fn the_hash_covers_the_simulation_settings() {
     let w = test_world();
@@ -574,6 +596,10 @@ fn the_hash_covers_the_simulation_settings() {
         ("radius", SimConfig { radius_m: 50.0, ..SimConfig::default() }),
         ("enabled", SimConfig { enabled: false, ..SimConfig::default() }),
         ("water period", SimConfig { water_period: 3, ..SimConfig::default() }),
+        ("slide", straight_down()),
+        ("film rule", SimConfig { flow: Flow { film: Film::Keep, ..Flow::default() }, ..SimConfig::default() }),
+        ("film reach", SimConfig { flow: Flow { film_reach: 3, ..Flow::default() }, ..SimConfig::default() }),
+        ("film drying time", SimConfig { flow: Flow { film_dry_ticks: 7, ..Flow::default() }, ..SimConfig::default() }),
     ] {
         assert_ne!(Sim::new(cfg).state_hash(&w), base, "{what} is in the hash");
     }
@@ -612,7 +638,7 @@ fn stress_five_thousand_sand_blocks_falling_at_once() {
     for _ in 0..200 {
         sim.step(&w, focus);
         costs.push((sim.tick(), sim.stats.last_us, sim.falling().len(), sim.stats.landings));
-        if sim.stats.landings >= (side * side) as u64 - sim.stats.vanished && sim.falling().is_empty() && sim.tick() > 2 {
+        if sim.queued() == 0 && sim.falling().is_empty() && sim.tick() > 2 {
             break;
         }
     }
@@ -622,9 +648,9 @@ fn stress_five_thousand_sand_blocks_falling_at_once() {
     let worst = costs.iter().map(|c| c.1).max().unwrap();
     let steady: Vec<u32> = costs.iter().filter(|c| c.2 > 0).map(|c| c.1).collect();
     let steady_avg = steady.iter().map(|&u| u as f64).sum::<f64>() / steady.len().max(1) as f64;
-    println!("falls {} landings {} vanished {}; worst tick {:.3} ms; average tick while blocks were in flight {:.3} ms over {} ticks", sim.stats.falls, sim.stats.landings, sim.stats.vanished, worst as f64 / 1e3, steady_avg / 1e3, steady.len());
+    println!("falls {} slides {} landings {} vanished {}; worst tick {:.3} ms; average tick while blocks were in flight {:.3} ms over {} ticks", sim.stats.falls, sim.stats.slides, sim.stats.landings, sim.stats.vanished, worst as f64 / 1e3, steady_avg / 1e3, steady.len());
     assert_eq!(sim.stats.falls, (side * side) as u64);
-    assert_eq!(sim.stats.landings + sim.stats.vanished, (side * side) as u64);
+    assert_eq!(sim.stats.landings + sim.stats.vanished, sim.stats.falls + sim.stats.slides, "every fall and slide ended");
     assert!(sim.falling().is_empty());
 }
 

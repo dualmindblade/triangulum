@@ -73,4 +73,6 @@ game/saves/
 game/out/
 # replays recorded with F10 (send them; don't commit them)
 game/replays/
+# photos and notes: send them; don't commit them
+game/interchange/
 crates/*/target/

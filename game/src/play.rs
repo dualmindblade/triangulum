@@ -18,11 +18,15 @@
 //!                           there; without it, stand on the ground.
 //!   atblock FACE I J K      stand on top of lattice block (FACE, I, J, K)
 //!   look HEADING PITCH      absolute view angles, degrees (0 = north, +east)
-//!   lookaxis AXIS PITCH     face exactly along a lattice axis: +i -i +j -j
+//!   lookaxis AXIS PITCH     look along the current face's local tangent:
+//!                           +i -i +j -j (a straight world ray across seams)
 //!   aim DI DJ DK            look at the lattice point (feet cell centre +
 //!                           DI, + DJ, feet layer + DK): the way to target a
-//!                           particular block face deterministically
+//!                           particular block face deterministically; the
+//!                           target point wraps onto its own cube face
 //!   turn DH DP              relative view change, degrees
+//!   pose TEXT               the player exactly as TEXT says (a replay's pose,
+//!                           or a photo's pose.exact: a repro's first line)
 //!   mode walk|fly           like the G key
 //!   find flat|shore|river|lake|waterfall
 //!                           stand (walk mode) at the nearest such site,
@@ -50,6 +54,13 @@
 //!                           still log, and all notify when it resumes)
 //!   sim radius M            active region radius in metres (--sim-radius)
 //!   sim period N            ticks per water step (--water-period; 1)
+//!   sim slide on|off        powder and water go over ledges. Off is the rules
+//!                           before B4 (--no-slide): the film rule goes to
+//!                           keep too, and on leaves it there
+//!   sim film MODE           what becomes of level-1 water (--film): keep,
+//!                           seek, merge, dry, seek+dry
+//!   sim reach N             how far a film runs to a drop (--film-reach)
+//!   sim dry SECONDS         how long a film waits to dry (--film-dry-s)
 //!   select N                hotbar slot 1-9
 //!   hotbar A,B,...          what keys 1-9 hold, by block name (M3b; the
 //!                           harness otherwise keeps the default hotbar,
@@ -65,6 +76,12 @@
 //!                           travel_faces, travel_cpu_avg_ms / p99 / max
 //!
 //! ---- world ---------------------------------------------------------
+//!   fill DI DJ DK DI2 DJ2 DK2 BLOCK [LEVEL]
+//!                           set a box of cells relative to the feet block,
+//!                           corners inclusive, at once (LEVEL: water's, 255
+//!                           if left out). A scene-building shortcut, written
+//!                           straight into the world: not a player input, so
+//!                           a replay being recorded notes it
 //!   water on|off            show or hide water (rebuilds the generator)
 //!   save                    write unsaved chunks now
 //!   reload                  save, drop every chunk and the edit store, and
@@ -88,12 +105,32 @@
 //! ---- output and checks ---------------------------------------------
 //!   shot NAME               settled frame (streaming drained) with the HUD
 //!                           as NAME.png, plus NAME.json state
+//!   photo NAME [live]       a photo, as P takes one (Shift+P with live): a
+//!                           clean frame with no HUD, settled unless live, as
+//!                           NAME.png with its sidecar NAME.json (photos.rs)
+//!   meshview [TINT] [LINES] the mesh view: TINT is normal lod chunk face quad
+//!                           block biome plate crust (the M key), LINES is
+//!                           nolines edges wire (Shift+M); "meshview edges",
+//!                           "meshview lod wire", "meshview normal"
+//!   compare A B             compare two frames, by name in the out directory
+//!                           or beside the script (A.png, B.png); sets
+//!                           compare_pixels (how many differ), compare_max
+//!                           (the largest channel difference) and compare_same
 //!   state NAME              NAME.json only
 //!   bench N                 render N frames at the current pose; reports
-//!                           avg / p95 / worst wall ms and the GPU time
+//!                           avg / p95 / worst wall ms, the GPU time and the
+//!                           triangles drawn (all, and of water)
 //!   log TEXT...             annotate the transcript
 //!   column DI DJ            print the blocks of a column near the feet
 //!                           (layers -4..+3 relative to the feet block)
+//!   levels DI DJ DI2 DJ2 DK print the water levels of one layer as a grid
+//!   heights DI DJ DI2 DJ2 DK_LOW DK_HIGH
+//!                           print how far above DK_LOW the top sand or
+//!                           gravel of each column stands, as a grid
+//!   cells DI0 DI1 DJ0 DJ1 DK
+//!                           print a map of one layer near the feet: ###
+//!                           solid, ... air, a number is that cell's water
+//!                           level (+i to the right, +j up)
 //!   assert FIELD [OP] VALUE [TOL]
 //!                           OP: == != < <= > >= ~ (approx, TOL default
 //!                           0.01); omitted means ==. VALUE: number,
@@ -107,13 +144,14 @@
 //!                             crosshair_face/i/j/k crosshair_dist
 //!                             loaded inflight drawn (after a shot/bench)
 //!                             sim_enabled sim_tick falling queued frozen
-//!                             sim_active_chunks falls landings vanished
+//!                             sim_active_chunks falls slides landings vanished
 //!                             tick_ms_last tick_ms_avg tick_ms_max
 //!                             sim_hash (the world-state hash; computed on demand)
 //!                             water_moved water_writes water_in water_out
 //!                             water_placed water_removed water_displaced
-//!                             water_lost water_balance water_updates_last
-//!                             water_period sim_radius (units: 255 = a cell)
+//!                             water_lost water_dried drying water_balance
+//!                             water_updates_last
+//!                             water_period flow sim_radius (units: 255 = a cell)
 //!                             sky_seconds sky_speed (the session's sky
 //!                             clock) steps recording
 //!                             video_frames video_falling_drawn_max (after
@@ -124,11 +162,31 @@
 //!                              level 0..255 of a cell
 //!                           or water_rel[DI,DJ,DK,DI2,DJ2,DK2]  the total water
 //!                              (units) in that box of cells, corners inclusive
+//!                           or wet_rel[DI,DJ,DK,DI2,DJ2,DK2]  the water cells in
+//!                              that box, and film_rel[...] those at level 1
 //!                           or falling_rel[DI,DJ]  blocks in flight in that column
 //!                           or cover[F,I,J,K] / cover_rel[DI,DJ,DK]  what the
 //!                              streamer's cut shows at that block, after a
 //!                              shot: drawn:L (a drawn chunk at LOD L with a
 //!                              mesh), empty:L, gap:L, hidden:L, or none
+//!
+//! ---- the T window, driven by synthetic events (menu.rs) --------------
+//!   menu open|close         open or shut it (the T key)
+//!   menu scale F            display scale: 1 is 100%, 1.5 is 150%
+//!   menu wait               until the map, the roll and the rivers are in
+//!   menu click SPOT [FX FY] click a named thing: map, teleport, delete,
+//!                           delete-yes, save, repro, preview, coords, title,
+//!                           notes, place-N, photo-N, tick-N; FX, FY (0..1)
+//!                           say where on it (the middle by default)
+//!   menu double SPOT [FX FY]  double-click
+//!   menu drag SPOT FX FY FX2 FY2  drag across it
+//!   menu wheel SPOT FX FY LINES   the wheel, over it
+//!   menu type TEXT...       type into the focused field
+//!   menu key esc|t|w        a key, routed as the app routes it
+//!   menu shot NAME          the frame with the window over it (NAME.png)
+//!                           Sets menu_open menu_zoom menu_lat menu_lon
+//!                           menu_photos menu_selected menu_target
+//!                           menu_lightbox menu_deleting menu_build_ms
 //!
 //! ---- video (play/video.rs) ------------------------------------------
 //!   record FILE [FPS]       start writing FILE (H.264 .mp4 under the out
@@ -151,6 +209,7 @@
 //!   hud on|off              draw the game HUD (crosshair, block outline,
 //!                           hotbar; no stats) on written frames (default off)
 //!   settle                  drain streaming at the current pose (pre-warm)
+//!   clock SECONDS           the sky clock, exactly (a repro's second line)
 //!   skytime HH:MM           local solar time at the eye's longitude
 //!   sun ELEV [am|pm]        seek the clock to when the sun is ELEV degrees
 //!                           above the horizon here (pm: afternoon, default)
@@ -192,10 +251,14 @@ mod find;
 mod video;
 
 use crate::bench::Harness;
+use crate::controls::{Route, route_key};
 use crate::grid::BlockPos;
+use crate::menu::{self, Menu, MenuEnv, Rig};
+use crate::photos::{self, Shot, ShotInfo};
 use crate::player::{Input, Mode, STEP};
-use crate::replay::{self, Replay};
+use crate::replay::{self, ChunkDigests, Replay};
 use crate::session::{Action, Button, Session};
+use crate::sky::Clock;
 use crate::sim::STEPS_PER_TICK;
 use crate::ui::{Hud, draw_hud, outline_segments};
 use std::fmt::Write as _;
@@ -222,13 +285,22 @@ struct Run {
     /// The last `find` and `replay` results, as state fields.
     last_find: serde_json::Value,
     last_replay: serde_json::Value,
+    last_compare: serde_json::Value,
     out: String,
     video: video::Video,
+    /// The bake's region layers, once a mesh view tint has asked for them.
+    regions: crate::render::regions::RegionsState,
+    /// Where the script is: `compare` also looks there.
+    script_dir: std::path::PathBuf,
+    digests: ChunkDigests,
+    /// The T window, when a script has opened it.
+    menu: Option<(Menu, Rig)>,
+    last_menu: serde_json::Value,
 }
 
 impl Run {
     fn new(session: Session, harness: Harness, out: &str) -> Self {
-        Run { session, harness, log: String::new(), failed: 0, asserts: 0, last_bench: serde_json::Value::Null, last_stream: serde_json::Value::Null, last_find: serde_json::Value::Null, last_replay: serde_json::Value::Null, out: out.to_string(), video: video::Video::default() }
+        Run { session, harness, log: String::new(), failed: 0, asserts: 0, last_bench: serde_json::Value::Null, last_stream: serde_json::Value::Null, last_find: serde_json::Value::Null, last_replay: serde_json::Value::Null, last_compare: serde_json::Value::Null, out: out.to_string(), video: video::Video::default(), regions: Default::default(), script_dir: Default::default(), digests: Default::default(), menu: None, last_menu: serde_json::Value::Null }
     }
 
     /// `replay record FILE | replay stop | replay check FILE` (M2c): the
@@ -316,7 +388,7 @@ impl Run {
                     m.insert(k.clone(), val.clone());
                 }
             }
-            for extra in [&self.last_bench, &self.last_find, &self.last_replay] {
+            for extra in [&self.last_bench, &self.last_find, &self.last_replay, &self.last_compare, &self.last_menu] {
                 if let serde_json::Value::Object(b) = extra {
                     for (k, val) in b {
                         m.insert(k.clone(), val.clone());
@@ -389,16 +461,246 @@ impl Run {
             in_water: p.in_water,
             hotbar: engine.hotbar.iter().map(|&id| (engine.registry.def(id).label(), engine.registry.colour(id))).collect(),
             selected: p.selected,
-            outline: pick.map_or(Vec::new(), |hit| outline_segments(&engine.planet, &cam, aspect, w, h, hit.face, hit.cell)),
+            outline: pick.map_or(Vec::new(), |hit| outline_segments(&engine.planet, &cam, aspect, w, h, hit.block)),
             edits: engine.edits.len(),
             dirty: engine.edits.dirty_count(),
             sim_line: self.session.sim.describe(),
+            mesh_legend: crate::render::meshview::legend_for(self.harness.gpu.mesh_view, &self.harness.streamer.stats.drawn_per_lod, &engine.registry, &self.regions),
             ..Default::default()
         };
         let path = format!("{}/{name}.png", self.out);
         self.harness.save_with_ui(&path, &|ctx| draw_hud(ctx, &hud, true));
         self.say(format!("  shot {name}: {path} (settled in {secs:.1} s / {frames} frames{}; {} draws)", if ok { "" } else { " TIMEOUT" }, self.harness.streamer.stats.drawn));
         self.write_state(name);
+    }
+
+    /// `meshview ...`: set the view, reading the bake's layers first if the
+    /// tint needs them (the game reads them off its main thread).
+    fn mesh_view(&mut self, view: crate::render::MeshView) {
+        use crate::render::regions::RegionsState as R;
+        if view.tint.uses_bake() && self.regions == R::NotAsked {
+            self.regions = match crate::render::regions::load(&self.session.engine.config.bake) {
+                Ok(data) => {
+                    let plates = data.plates;
+                    self.harness.gpu.set_regions(Arc::new(data));
+                    R::Ready { plates }
+                }
+                Err(e) => {
+                    self.say(format!("  the bake's region layers: {e}"));
+                    R::Missing(e)
+                }
+            };
+        }
+        self.harness.gpu.mesh_view = view;
+    }
+
+    /// `photo NAME [live]`: what P and Shift+P write, by the same rule and in
+    /// the same format, without the window.
+    fn photo(&mut self, name: &str, live: bool) -> Result<(), String> {
+        let cam = self.session.player.camera();
+        self.sync_falling();
+        let (secs, frames, ok) = if live { (0.0, 0, false) } else { self.harness.settle(&cam, Duration::from_secs(180)) };
+        let engine = self.session.engine.clone();
+        self.harness.gpu.sky.set_observer(cam.pos, !engine.hide_water && engine.world.is_submerged(cam.pos));
+        self.harness.frame(&cam);
+        self.record_stream();
+        let (width, height) = (self.harness.gpu.width, self.harness.gpu.height);
+        let png = std::path::PathBuf::from(format!("{}/{name}.png", self.out));
+        let info = ShotInfo { kind: if live { "live" } else { "settled" }, settled: ok, settle_s: secs, settle_frames: frames as u32, width, height, hud: false, mesh_view: self.harness.gpu.mesh_view, preview_world: false, frame_ms: None };
+        let (settings, look) = (self.harness.gpu.sky.settings.clone(), self.harness.gpu.sky.look.clone());
+        let sidecar = photos::sidecar(&self.session, &cam, &settings, &look, &mut self.digests, &png, &info);
+        let rgba = self.harness.gpu.read_rgba();
+        photos::write_shot(&Shot { png: png.clone(), width, height, rgba, sidecar })?;
+        self.say(format!("  photo {name}: {} ({})", png.display(), if live { "live".to_string() } else { format!("settled in {secs:.1} s / {frames} frames") }));
+        self.write_menu_state();
+        Ok(())
+    }
+
+    /// One pass of the T window. `draw`: over the frame in the target.
+    fn menu_pass(&mut self, draw: bool) {
+        let Some((m, rig)) = self.menu.as_mut() else { return };
+        let (w, h) = (self.harness.gpu.width, self.harness.gpu.height);
+        let raw = rig.input(w, h);
+        let engine = self.session.engine.clone();
+        let presets = engine.presets();
+        let settings = self.harness.gpu.sky.settings.clone();
+        let env = MenuEnv { engine: &engine, bake_sha256: &self.session.bake_sha256, presets: &presets, here: crate::grid::Planet::lat_lon_deg(self.session.player.pos), can_move: true, day_length_s: settings.day_length_s };
+        let mut go = None;
+        self.harness.ui_pass(raw, draw, &mut |ctx| {
+            if let Some(g) = m.ui(ctx, &env) {
+                go = Some(g);
+            }
+        });
+        if let Some(go) = go {
+            let acts = menu::actions(&go, &self.session, &settings);
+            for a in acts {
+                let _ = self.session.apply(a);
+            }
+            self.say(format!("  went: {go:?}"));
+        }
+    }
+
+    fn menu_passes(&mut self, n: usize) {
+        for _ in 0..n {
+            self.menu_pass(false);
+        }
+    }
+
+    fn menu_wait(&mut self) -> Result<(), String> {
+        let t0 = Instant::now();
+        loop {
+            self.menu_pass(false);
+            if !self.menu.as_ref().is_some_and(|(m, _)| m.busy()) {
+                self.menu_passes(3);
+                if !self.menu.as_ref().is_some_and(|(m, _)| m.busy()) {
+                    return Ok(());
+                }
+            }
+            if t0.elapsed().as_secs() > 60 {
+                return Err("the window never settled".into());
+            }
+            std::thread::sleep(Duration::from_millis(3));
+        }
+    }
+
+    fn rig(&mut self) -> Result<&mut Rig, String> {
+        Ok(&mut self.menu.as_mut().ok_or("menu open first")?.1)
+    }
+
+    fn menu_spot(&self, name: &str, fx: f32, fy: f32) -> Result<egui::Pos2, String> {
+        let (m, _) = self.menu.as_ref().ok_or("menu open first")?;
+        let r = m.spots.get(name).ok_or_else(|| format!("nothing called {name} on screen"))?;
+        Ok(r.min + egui::vec2(fx * r.width(), fy * r.height()))
+    }
+
+    fn write_menu_state(&mut self) {
+        let Some((m, _)) = &self.menu else { return };
+        let v = m.view();
+        self.last_menu = serde_json::json!({
+            "menu_open": m.open, "menu_zoom": v.zoom, "menu_lat": v.lat, "menu_lon": v.lon,
+            "menu_photos": m.photos().len(), "menu_selected": m.selected(), "menu_target": m.target().is_some(),
+            "menu_lightbox": m.lightbox_open(), "menu_deleting": m.deleting(), "menu_build_ms": m.last_build_ms,
+        });
+    }
+
+    /// `menu ...`: the T window, by synthetic events (see the header).
+    fn menu_command(&mut self, args: &[&str]) -> Result<(), String> {
+        let f = |i: usize, default: f32| args.get(i).and_then(|s| s.parse::<f32>().ok()).unwrap_or(default);
+        match args.first().copied() {
+            Some("open") => {
+                let scale = self.menu.as_ref().map_or(1.0, |(_, r)| r.scale);
+                let mut m = self.menu.take().map_or_else(|| Menu::new(photos::dir()), |(m, _)| m);
+                m.show();
+                self.menu = Some((m, Rig::new(self.harness.egui().clone(), scale)));
+                self.menu_passes(2);
+            }
+            Some("close") => {
+                if let Some((m, _)) = &mut self.menu {
+                    m.hide();
+                }
+            }
+            Some("scale") => {
+                self.rig()?.scale = f(1, 1.0);
+                self.menu_passes(3);
+            }
+            Some("wait") => self.menu_wait()?,
+            Some(c @ ("click" | "double")) => {
+                let spot = args.get(1).ok_or("menu click SPOT [FX FY]")?;
+                let p = self.menu_spot(spot, f(2, 0.5), f(3, 0.5))?;
+                self.rig()?.move_to(p);
+                self.menu_passes(2);
+                for _ in 0..if c == "click" { 1 } else { 2 } {
+                    self.rig()?.button(true);
+                    self.menu_pass(false);
+                    self.rig()?.button(false);
+                    self.menu_pass(false);
+                }
+                self.menu_passes(2);
+            }
+            Some("drag") => {
+                let spot = args.get(1).ok_or("menu drag SPOT FX FY FX2 FY2")?;
+                let (a, b) = (self.menu_spot(spot, f(2, 0.5), f(3, 0.5))?, self.menu_spot(spot, f(4, 0.5), f(5, 0.5))?);
+                self.rig()?.move_to(a);
+                self.menu_passes(2);
+                self.rig()?.button(true);
+                self.menu_passes(2);
+                self.rig()?.move_to(b);
+                self.menu_passes(2);
+                self.rig()?.button(false);
+                self.menu_passes(2);
+            }
+            Some("wheel") => {
+                let spot = args.get(1).ok_or("menu wheel SPOT FX FY LINES")?;
+                let p = self.menu_spot(spot, f(2, 0.5), f(3, 0.5))?;
+                self.rig()?.move_to(p);
+                self.menu_passes(2);
+                self.rig()?.wheel(f(4, 1.0));
+                self.menu_passes(30);
+            }
+            Some("type") => {
+                let text = args[1..].join(" ");
+                self.rig()?.text(&text);
+                self.menu_passes(2);
+            }
+            Some("key") => {
+                let (code, key) = match args.get(1).copied() {
+                    Some("esc") => (winit::keyboard::KeyCode::Escape, egui::Key::Escape),
+                    Some("t") => (winit::keyboard::KeyCode::KeyT, egui::Key::T),
+                    Some("w") => (winit::keyboard::KeyCode::KeyW, egui::Key::W),
+                    _ => return Err("menu key esc|t|w".into()),
+                };
+                self.rig()?.key(key);
+                let (m, rig) = self.menu.as_mut().ok_or("menu open first")?;
+                let typing = rig.ctx.egui_wants_keyboard_input();
+                match route_key(code, true, false, m.open, typing) {
+                    Route::CloseMenu => m.hide(),
+                    Route::MenuBack => {
+                        if !m.escape(typing) {
+                            m.hide();
+                        }
+                    }
+                    _ => {}
+                }
+                self.menu_passes(2);
+            }
+            Some("shot") => {
+                let name = args.get(1).ok_or("menu shot NAME")?;
+                let cam = self.session.player.camera();
+                self.sync_falling();
+                self.harness.settle(&cam, Duration::from_secs(120));
+                self.menu_passes(3);
+                self.harness.frame(&cam);
+                self.menu_pass(true);
+                let path = format!("{}/{name}.png", self.out);
+                self.harness.gpu.save_png(&path);
+                self.say(format!("  menu shot {path}"));
+            }
+            _ => return Err("menu open|close|scale|wait|click|double|drag|wheel|type|key|shot".into()),
+        }
+        self.write_menu_state();
+        Ok(())
+    }
+
+    /// `compare A B`: how far apart two saved frames are.
+    fn compare(&mut self, a: &str, b: &str) -> Result<(), String> {
+        let load = |name: &str| {
+            let here = format!("{}/{name}.png", self.out);
+            let there = self.script_dir.join(format!("{name}.png")).to_string_lossy().into_owned();
+            crate::render::read_png(if Path::new(&here).exists() { &here } else { &there })
+        };
+        let ((wa, ha, pa), (wb, hb, pb)) = (load(a)?, load(b)?);
+        if (wa, ha) != (wb, hb) {
+            return Err(format!("{a} is {wa} x {ha}, {b} is {wb} x {hb}"));
+        }
+        let (mut pixels, mut max) = (0u64, 0u8);
+        for (x, y) in pa.chunks_exact(4).zip(pb.chunks_exact(4)) {
+            let d = (0..3).map(|c| x[c].abs_diff(y[c])).max().unwrap_or(0);
+            pixels += (d > 0) as u64;
+            max = max.max(d);
+        }
+        self.say(format!("  compare {a} {b}: {pixels} of {} pixels differ, by at most {max}", wa as u64 * ha as u64));
+        self.last_compare = serde_json::json!({ "compare_pixels": pixels, "compare_max": max, "compare_same": pixels == 0 });
+        Ok(())
     }
 
     /// Move with `input` held for `seconds`, streaming and rendering a
@@ -480,10 +782,12 @@ impl Run {
         self.harness.settle(&cam, Duration::from_secs(180));
         let mut wall = Vec::with_capacity(n);
         let mut gpu = Vec::with_capacity(n);
+        let (mut tris, mut water_tris) = (0, 0);
         for _ in 0..n {
             let s = self.harness.frame(&cam);
             wall.push(s.wall_ms);
             gpu.push(s.gpu_ms);
+            (tris, water_tris) = (s.tris, s.water_tris);
         }
         self.record_stream();
         let mut sorted = wall.clone();
@@ -492,8 +796,8 @@ impl Run {
         let p95 = sorted[((n as f64 - 1.0) * 0.95).round() as usize];
         let worst = *sorted.last().unwrap_or(&0.0);
         let gavg = gpu.iter().sum::<f64>() / n.max(1) as f64;
-        self.last_bench = serde_json::json!({ "bench_frames": n, "bench_avg_ms": avg, "bench_p95_ms": p95, "bench_worst_ms": worst, "bench_gpu_avg_ms": gavg, "bench_fps": 1000.0 / avg });
-        self.say(format!("  bench {n} frames: wall avg {avg:.2} ms (p95 {p95:.2}, worst {worst:.2}) = {:.0} fps; gpu avg {gavg:.2} ms; {} draws", 1000.0 / avg, self.harness.streamer.stats.drawn));
+        self.last_bench = serde_json::json!({ "bench_frames": n, "bench_avg_ms": avg, "bench_p95_ms": p95, "bench_worst_ms": worst, "bench_gpu_avg_ms": gavg, "bench_fps": 1000.0 / avg, "bench_tris": tris, "bench_water_tris": water_tris });
+        self.say(format!("  bench {n} frames: wall avg {avg:.2} ms (p95 {p95:.2}, worst {worst:.2}) = {:.0} fps; gpu avg {gavg:.2} ms; {} draws; {tris} triangles, {water_tris} of water", 1000.0 / avg, self.harness.streamer.stats.drawn));
     }
 
     /// Evaluate `assert FIELD [OP] VALUE [TOL]`.
@@ -531,6 +835,12 @@ impl Run {
     fn field(&mut self, field: &str) -> Option<serde_json::Value> {
         if field == "sim_hash" {
             return Some(serde_json::Value::String(self.session.sim_hash()));
+        }
+        if field == "edit_hash" {
+            return Some(serde_json::Value::String(replay::edit_state(&self.session.engine.edits, &mut self.digests).0));
+        }
+        if field == "generator_version" {
+            return Some(crate::world::save::GENERATOR_VERSION.into());
         }
         if let Some(inner) = field.strip_prefix("falling_rel[").and_then(|r| r.strip_suffix(']')) {
             let v: Vec<i64> = inner.split(',').map(|x| x.trim().parse().ok()).collect::<Option<_>>()?;
@@ -573,6 +883,16 @@ impl Run {
                 return None;
             }
             return Some(serde_json::Value::from(self.session.water_in_box_rel((v[0], v[1], v[2]), (v[3], v[4], v[5]))));
+        }
+        for (prefix, film) in [("wet_rel[", false), ("film_rel[", true)] {
+            if let Some(inner) = field.strip_prefix(prefix).and_then(|r| r.strip_suffix(']')) {
+                let v: Vec<i64> = inner.split(',').map(|x| x.trim().parse().ok()).collect::<Option<_>>()?;
+                if v.len() != 6 {
+                    return None;
+                }
+                let (wet, level_one) = self.session.wet_in_box_rel((v[0], v[1], v[2]), (v[3], v[4], v[5]));
+                return Some(serde_json::Value::from(if film { level_one } else { wet }));
+            }
         }
         if let Some(inner) = field.strip_prefix("cover[").and_then(|r| r.strip_suffix(']')) {
             let v: Vec<i64> = inner.split(',').map(|x| x.trim().parse().ok()).collect::<Option<_>>()?;
@@ -676,6 +996,7 @@ pub fn run_play(session: Session, opts: PlayOptions) -> i32 {
     let engine = session.engine.clone();
     let harness = Harness::new(engine, opts.width, opts.height, &opts.out, opts.backend.as_deref());
     let mut run = Run::new(session, harness, &opts.out);
+    run.script_dir = Path::new(&opts.script).parent().map_or_else(Default::default, |p| p.to_path_buf());
     // The harness's sky holds unless a script sets `skyspeed` (as before
     // M2c); the session advances it on its steps.
     run.session.sky.speed = 0.0;
@@ -759,12 +1080,93 @@ pub fn run_play(session: Session, opts: PlayOptions) -> i32 {
                 }
                 _ => bad(&mut run, "column DI DJ"),
             },
+            "levels" => match (num(0), num(1), num(2), num(3), num(4)) {
+                (Some(i0), Some(j0), Some(i1), Some(j1), Some(dk)) => {
+                    let (i0, j0, i1, j1, dk) = (i0 as i64, j0 as i64, i1 as i64, j1 as i64, dk as i64);
+                    run.say(format!("  water levels, layer {dk:+}, i {i0:+}..{i1:+} across, j {j1:+}..{j0:+} down:"));
+                    for dj in (j0..=j1).rev() {
+                        let row: Vec<String> = (i0..=i1).map(|di| format!("{:3}", run.session.level_rel(di, dj, dk))).collect();
+                        run.say(format!("  {}", row.join(" ")));
+                    }
+                }
+                _ => bad(&mut run, "levels DI DJ DI2 DJ2 DK"),
+            },
+            "heights" => match (num(0), num(1), num(2), num(3), num(4), num(5)) {
+                (Some(i0), Some(j0), Some(i1), Some(j1), Some(lo), Some(hi)) => {
+                    let (i0, j0, i1, j1, lo, hi) = (i0 as i64, j0 as i64, i1 as i64, j1 as i64, lo as i64, hi as i64);
+                    run.say(format!("  top of the powder above layer {lo:+}, i {i0:+}..{i1:+} across, j {j1:+}..{j0:+} down:"));
+                    for dj in (j0..=j1).rev() {
+                        let row: Vec<String> = (i0..=i1)
+                            .map(|di| {
+                                let top = (lo + 1..=hi).rev().find(|&dk| matches!(run.session.block_name_rel(di, dj, dk).as_str(), "sand" | "gravel"));
+                                top.map_or("  .".to_string(), |dk| format!("{:3}", dk - lo))
+                            })
+                            .collect();
+                        run.say(format!("  {}", row.join(" ")));
+                    }
+                }
+                _ => bad(&mut run, "heights DI DJ DI2 DJ2 DK_LOW DK_HIGH"),
+            },
+            "fill" => match (num(0), num(1), num(2), num(3), num(4), num(5), args.get(6)) {
+                (Some(a), Some(b), Some(c), Some(d), Some(e), Some(f), Some(name)) => match run.session.engine.registry.id(name) {
+                    Ok(id) => {
+                        let level = match num(7) {
+                            Some(l) => Some(l as u8),
+                            None if run.session.engine.registry.is_liquid(id) => Some(crate::sim::water::FULL),
+                            None => None,
+                        };
+                        let n = run.session.fill_rel((a as i64, b as i64, c as i64), (d as i64, e as i64, f as i64), id, level);
+                        run.say(format!("  fill: {n} cells of {name} changed"));
+                    }
+                    Err(e) => bad(&mut run, &e),
+                },
+                _ => bad(&mut run, "fill DI DJ DK DI2 DJ2 DK2 BLOCK [LEVEL]"),
+            },
+            "cells" => match (num(0), num(1), num(2), num(3), num(4)) {
+                (Some(i0), Some(i1), Some(j0), Some(j1), Some(dk)) => {
+                    let f = crate::player::Frame::at(&run.session.engine.planet, run.session.player.pos);
+                    let (fi, fj, ck) = f.feet_cell();
+                    let k = ck + dk as i64;
+                    run.say(format!("  cells face {} layer {k} (### solid, ... air, number: water level), rows j, columns i from {}", f.face, fi + i0 as i64));
+                    for dj in (j0 as i64..=j1 as i64).rev() {
+                        let row: Vec<String> = (i0 as i64..=i1 as i64)
+                            .map(|di| {
+                                let (i, j) = (fi + di, fj + dj);
+                                let level = run.session.level_at(f.face, i, j, k);
+                                if level > 0 {
+                                    format!("{level:3}")
+                                } else if run.session.block_name(f.face, i, j, k) == "air" {
+                                    "...".to_string()
+                                } else {
+                                    "###".to_string()
+                                }
+                            })
+                            .collect();
+                        run.say(format!("  j {:7} {}", fj + dj, row.join(" ")));
+                    }
+                }
+                _ => bad(&mut run, "cells DI0 DI1 DJ0 DJ1 DK"),
+            },
             "turn" => match (num(0), num(1)) {
                 (Some(h), Some(p)) => {
                     run.session.player.heading += h.to_radians();
                     run.session.player.pitch = (run.session.player.pitch + p.to_radians()).clamp(-1.55, 1.55);
                 }
                 _ => bad(&mut run, "turn DH DP"),
+            },
+            "pose" => match args.first().map(|t| replay::parse_pose(t, run.session.engine.planet.block_size)) {
+                Some(Ok(p)) => {
+                    let _ = run.session.apply(Action::Pose(Box::new(p)));
+                }
+                Some(Err(e)) => bad(&mut run, &format!("pose: {e}")),
+                None => bad(&mut run, "pose TEXT"),
+            },
+            "clock" => match num(0) {
+                Some(seconds) => {
+                    let speed = run.session.sky.speed;
+                    let _ = run.session.apply(Action::Sky(Clock { seconds, speed }));
+                }
+                None => bad(&mut run, "clock SECONDS"),
             },
             "mode" => match args.first().map(|s| s.to_lowercase()).as_deref() {
                 Some("walk") => {
@@ -805,7 +1207,28 @@ pub fn run_play(session: Session, opts: PlayOptions) -> i32 {
                     let _ = run.session.apply(Action::WaterPeriod(n as u64));
                     run.say(format!("  water period {} tick(s)", n as u64));
                 }
-                _ => bad(&mut run, "sim on|off | sim radius M | sim period N"),
+                (Some("slide"), _) if matches!(args.get(1).copied(), Some("on" | "off")) => {
+                    let now = run.session.sim.config.flow;
+                    let flow = if args[1] == "on" { crate::sim::Flow { slide: true, ..now } } else { crate::sim::Flow { slide: false, film: crate::sim::Film::Keep, ..now } };
+                    let _ = run.session.apply(Action::Flow(flow));
+                    run.say(format!("  {}", flow.text()));
+                }
+                (Some("film"), _) if args.get(1).is_some_and(|n| crate::sim::Film::parse(n).is_ok()) => {
+                    let flow = crate::sim::Flow { film: crate::sim::Film::parse(args[1]).unwrap(), ..run.session.sim.config.flow };
+                    let _ = run.session.apply(Action::Flow(flow));
+                    run.say(format!("  {}", flow.text()));
+                }
+                (Some("reach"), Some(n)) if n >= 1.0 => {
+                    let flow = crate::sim::Flow { film_reach: n as u32, ..run.session.sim.config.flow };
+                    let _ = run.session.apply(Action::Flow(flow));
+                    run.say(format!("  {}", flow.text()));
+                }
+                (Some("dry"), Some(s)) if s > 0.0 => {
+                    let flow = crate::sim::Flow { film_dry_ticks: ((s * crate::sim::TICK_HZ as f64) as u64).max(1), ..run.session.sim.config.flow };
+                    let _ = run.session.apply(Action::Flow(flow));
+                    run.say(format!("  {}", flow.text()));
+                }
+                _ => bad(&mut run, "sim on|off | sim radius M | sim period N | sim slide on|off | sim film keep|seek|merge|dry|seek+dry | sim reach N | sim dry SECONDS"),
             },
             "speed" => match num(0) {
                 Some(v) if (1.0..=5000.0).contains(&v) => run.session.player.fly_speed = v,
@@ -895,6 +1318,31 @@ pub fn run_play(session: Session, opts: PlayOptions) -> i32 {
             "state" => match args.first() {
                 Some(name) => run.write_state(name),
                 None => bad(&mut run, "state NAME"),
+            },
+            "photo" => match args.first() {
+                Some(name) => {
+                    if let Err(e) = run.photo(name, args.get(1) == Some(&"live")) {
+                        bad(&mut run, &format!("photo: {e}"));
+                    }
+                }
+                None => bad(&mut run, "photo NAME [live]"),
+            },
+            "menu" => {
+                if let Err(e) = run.menu_command(args) {
+                    bad(&mut run, &format!("menu: {e}"));
+                }
+            }
+            "meshview" => match crate::render::MeshView::parse(args) {
+                Some(m) => run.mesh_view(m),
+                None => bad(&mut run, "meshview [normal|lod|chunk|face|quad|block|biome|plate|crust] [nolines|edges|wire]"),
+            },
+            "compare" => match (args.first(), args.get(1)) {
+                (Some(a), Some(b)) => {
+                    if let Err(e) = run.compare(a, b) {
+                        bad(&mut run, &format!("compare: {e}"));
+                    }
+                }
+                _ => bad(&mut run, "compare A B"),
             },
             "bench" => match num(0) {
                 Some(n) if n >= 1.0 => run.bench(n as usize),

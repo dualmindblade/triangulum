@@ -1,0 +1,410 @@
+bake loaded and hashed in 0.77s: equal-angle world bake C:/code/triangulum/game/assets/world/seed42 (1024x1024 per face, land min -3.67 km, rough max 5.61 km, with soil and geology fields, 20504 river links and 771 lakes)
+blocks: 19 definitions from C:\code\triangulum\.claude\worktrees\agent-a65302437b6f6f6c7\game/assets/blocks.json
+save C:\code\triangulum\.claude\worktrees\agent-a65302437b6f6f6c7\game/saves/_play/b4-slide: reset
+save C:\code\triangulum\.claude\worktrees\agent-a65302437b6f6f6c7\game/saves/_play/b4-slide: 0 edited chunk(s) loaded
+look: C:\code\triangulum\.claude\worktrees\agent-a65302437b6f6f6c7\game/assets/look.json
+planet Neisor: s = 1 m, H = 2048 blocks (sea level 512), N = 131072, R = 90.569 km, vertical scale 0.01422 (1/70.3), landforms v2, roughness 1, landform 1, max LOD 9 (512 m voxels), lod factor 5, 16 rayon threads
+sky: absolute 1142.541665s, local start 12.00h, speed 1x, day 1440s, lunar month 7d, 3 months/season, year 84d; sun lat 11.020410 lon 117.474432
+simulation: 20 Hz tick, 112 m active radius; resumed at tick 0 with 0 queued, 0 frozen, 0 falling
+adapter: NVIDIA GeForce RTX 2060 (Vulkan, DiscreteGpu)
+quad buffer: 512 MB (67 M quads); grid slots 131072
+play scripts/b4-slide.play -> out/play/b4-slide-before
+> mode fly
+> sim radius 112
+  radius 112 m: sim on  tick 0  falling 0  queued 0  frozen 0  active 0 chunks  water 0 updates, 0 moved, in 0 out 0  tick cost 0.000 ms (avg 0.000, max 0.000)
+> atblock 2 107147 57531 612
+> fill -5 -12 -8 21 12 -8 stone
+  fill: 675 cells of stone changed
+> tick 2
+  ticked 0 -> 2: sim on  tick 2  falling 0  queued 0  frozen 0  active 355 chunks  water 0 updates, 0 moved, in 0 out 0  tick cost 0.001 ms (avg 0.762, max 1.523)
+> assert queued == 0
+  assert ok: queued == 0 (actual 0)
+> fill 8 0 -7 8 0 0 sand
+  fill: 8 cells of sand changed
+> assert block_rel[8,0,0] == sand
+  assert ok: block_rel[8,0,0] == sand (actual sand)
+> aim 8 0 -5
+> shot A_tower_0_standing
+  shot A_tower_0_standing: out/play/b4-slide-before/A_tower_0_standing.png (settled in 3.5 s / 1269 frames; 743 draws)
+  state A_tower_0_standing: fly lat -4.55818 lon 117.46871 alt 101.00 m (agl 58.87) face 2 i 107147 j 57531 k 613 ground false water false crosshair null edits 5 dirty 5
+> tick 2
+  ticked 2 -> 4: sim on  tick 4  falling 0  queued 0  frozen 0  active 355 chunks  water 0 updates, 0 moved, in 0 out 0  tick cost 0.001 ms (avg 0.390, max 1.523)
+> shot A_tower_1_after_2_ticks
+  shot A_tower_1_after_2_ticks: out/play/b4-slide-before/A_tower_1_after_2_ticks.png (settled in 0.0 s / 10 frames; 743 draws)
+  state A_tower_1_after_2_ticks: fly lat -4.55818 lon 117.46871 alt 101.00 m (agl 58.87) face 2 i 107147 j 57531 k 613 ground false water false crosshair null edits 5 dirty 5
+> tick 4
+  ticked 4 -> 8: sim on  tick 8  falling 0  queued 0  frozen 0  active 355 chunks  water 0 updates, 0 moved, in 0 out 0  tick cost 0.001 ms (avg 0.196, max 1.523)
+> shot A_tower_2_after_6_ticks
+  shot A_tower_2_after_6_ticks: out/play/b4-slide-before/A_tower_2_after_6_ticks.png (settled in 0.0 s / 10 frames; 743 draws)
+  state A_tower_2_after_6_ticks: fly lat -4.55818 lon 117.46871 alt 101.00 m (agl 58.87) face 2 i 107147 j 57531 k 613 ground false water false crosshair null edits 5 dirty 5
+> tick 8
+  ticked 8 -> 16: sim on  tick 16  falling 0  queued 0  frozen 0  active 355 chunks  water 0 updates, 0 moved, in 0 out 0  tick cost 0.001 ms (avg 0.099, max 1.523)
+> shot A_tower_3_after_14_ticks
+  shot A_tower_3_after_14_ticks: out/play/b4-slide-before/A_tower_3_after_14_ticks.png (settled in 0.0 s / 10 frames; 743 draws)
+  state A_tower_3_after_14_ticks: fly lat -4.55818 lon 117.46871 alt 101.00 m (agl 58.87) face 2 i 107147 j 57531 k 613 ground false water false crosshair null edits 5 dirty 5
+> tick 40
+  ticked 16 -> 56: sim on  tick 56  falling 0  queued 0  frozen 0  active 355 chunks  water 0 updates, 0 moved, in 0 out 0  tick cost 0.001 ms (avg 0.029, max 1.523)
+> assert falling == 0
+  assert ok: falling == 0 (actual 0)
+> assert queued == 0
+  assert ok: queued == 0 (actual 0)
+> assert block_rel[8,0,0] == air
+ASSERT FAILED (line 40): block_rel[8,0,0] == air, actual sand
+> assert block_rel[8,0,-7] == sand
+  assert ok: block_rel[8,0,-7] == sand (actual sand)
+> assert vanished == 0
+  assert ok: vanished == 0 (actual 0)
+> state A_settled
+  state A_settled: fly lat -4.55818 lon 117.46871 alt 101.00 m (agl 58.87) face 2 i 107147 j 57531 k 613 ground false water false crosshair null edits 5 dirty 5
+> heights 2 -6 14 6 -8 0
+  top of the powder above layer -8, i +2..+14 across, j +6..-6 down:
+    .   .   .   .   .   .   .   .   .   .   .   .   .
+    .   .   .   .   .   .   .   .   .   .   .   .   .
+    .   .   .   .   .   .   .   .   .   .   .   .   .
+    .   .   .   .   .   .   .   .   .   .   .   .   .
+    .   .   .   .   .   .   .   .   .   .   .   .   .
+    .   .   .   .   .   .   .   .   .   .   .   .   .
+    .   .   .   .   .   .   8   .   .   .   .   .   .
+    .   .   .   .   .   .   .   .   .   .   .   .   .
+    .   .   .   .   .   .   .   .   .   .   .   .   .
+    .   .   .   .   .   .   .   .   .   .   .   .   .
+    .   .   .   .   .   .   .   .   .   .   .   .   .
+    .   .   .   .   .   .   .   .   .   .   .   .   .
+    .   .   .   .   .   .   .   .   .   .   .   .   .
+> shot A_tower_4_settled
+  shot A_tower_4_settled: out/play/b4-slide-before/A_tower_4_settled.png (settled in 0.0 s / 10 frames; 743 draws)
+  state A_tower_4_settled: fly lat -4.55818 lon 117.46871 alt 101.00 m (agl 58.87) face 2 i 107147 j 57531 k 613 ground false water false crosshair null edits 5 dirty 5
+> tick 40
+  ticked 56 -> 96: sim on  tick 96  falling 0  queued 0  frozen 0  active 355 chunks  water 0 updates, 0 moved, in 0 out 0  tick cost 0.002 ms (avg 0.018, max 1.523)
+> assert queued == 0
+  assert ok: queued == 0 (actual 0)
+> atblock 2 107187 57531 612
+> fill -5 -20 -8 29 20 -8 stone
+  fill: 1435 cells of stone changed
+> tick 2
+  ticked 96 -> 98: sim on  tick 98  falling 0  queued 0  frozen 0  active 363 chunks  water 0 updates, 0 moved, in 0 out 0  tick cost 0.004 ms (avg 0.055, max 3.631)
+> assert queued == 0
+  assert ok: queued == 0 (actual 0)
+> fill 10 -2 3 14 2 7 sand
+  fill: 125 cells of sand changed
+> aim 12 0 -3
+> shot B_cube_0_in_the_air
+  shot B_cube_0_in_the_air: out/play/b4-slide-before/B_cube_0_in_the_air.png (settled in 0.3 s / 24 frames; 875 draws)
+  state B_cube_0_in_the_air: fly lat -4.55767 lon 117.49686 alt 101.00 m (agl 55.20) face 2 i 107187 j 57531 k 613 ground false water false crosshair null edits 9 dirty 9
+> tick 14
+  ticked 98 -> 112: sim on  tick 112  falling 125  queued 0  frozen 0  active 363 chunks  water 0 updates, 0 moved, in 0 out 0  tick cost 0.017 ms (avg 0.115, max 7.437)
+> shot B_cube_1_landing
+  shot B_cube_1_landing: out/play/b4-slide-before/B_cube_1_landing.png (settled in 0.0 s / 13 frames; 873 draws)
+  state B_cube_1_landing: fly lat -4.55767 lon 117.49686 alt 101.00 m (agl 55.20) face 2 i 107187 j 57531 k 613 ground false water false crosshair null edits 9 dirty 9
+> tick 12
+  ticked 112 -> 124: sim on  tick 124  falling 0  queued 0  frozen 0  active 363 chunks  water 0 updates, 0 moved, in 0 out 0  tick cost 0.001 ms (avg 0.121, max 7.437)
+> shot B_cube_2_spreading
+  shot B_cube_2_spreading: out/play/b4-slide-before/B_cube_2_spreading.png (settled in 0.1 s / 11 frames; 875 draws)
+  state B_cube_2_spreading: fly lat -4.55767 lon 117.49686 alt 101.00 m (agl 55.20) face 2 i 107187 j 57531 k 613 ground false water false crosshair null edits 9 dirty 9
+> tick 30
+  ticked 124 -> 154: sim on  tick 154  falling 0  queued 0  frozen 0  active 363 chunks  water 0 updates, 0 moved, in 0 out 0  tick cost 0.001 ms (avg 0.121, max 7.437)
+> shot B_cube_3_spreading_more
+  shot B_cube_3_spreading_more: out/play/b4-slide-before/B_cube_3_spreading_more.png (settled in 0.0 s / 10 frames; 875 draws)
+  state B_cube_3_spreading_more: fly lat -4.55767 lon 117.49686 alt 101.00 m (agl 55.20) face 2 i 107187 j 57531 k 613 ground false water false crosshair null edits 9 dirty 9
+> tick 400
+  ticked 154 -> 554: sim on  tick 554  falling 0  queued 0  frozen 0  active 363 chunks  water 0 updates, 0 moved, in 0 out 0  tick cost 0.002 ms (avg 0.001, max 7.437)
+> assert falling == 0
+  assert ok: falling == 0 (actual 0)
+> assert queued == 0
+  assert ok: queued == 0 (actual 0)
+> state B_settled
+  state B_settled: fly lat -4.55767 lon 117.49686 alt 101.00 m (agl 55.20) face 2 i 107187 j 57531 k 613 ground false water false crosshair null edits 9 dirty 9
+> heights 2 -10 22 10 -8 2
+  top of the powder above layer -8, i +2..+22 across, j +10..-10 down:
+    .   .   .   .   .   .   .   .   .   .   .   .   .   .   .   .   .   .   .   .   .
+    .   .   .   .   .   .   .   .   .   .   .   .   .   .   .   .   .   .   .   .   .
+    .   .   .   .   .   .   .   .   .   .   .   .   .   .   .   .   .   .   .   .   .
+    .   .   .   .   .   .   .   .   .   .   .   .   .   .   .   .   .   .   .   .   .
+    .   .   .   .   .   .   .   .   .   .   .   .   .   .   .   .   .   .   .   .   .
+    .   .   .   .   .   .   .   .   .   .   .   .   .   .   .   .   .   .   .   .   .
+    .   .   .   .   .   .   .   .   .   .   .   .   .   .   .   .   .   .   .   .   .
+    .   .   .   .   .   .   .   .   .   .   .   .   .   .   .   .   .   .   .   .   .
+    .   .   .   .   .   .   .   .   5   5   5   5   5   .   .   .   .   .   .   .   .
+    .   .   .   .   .   .   .   .   5   5   5   5   5   .   .   .   .   .   .   .   .
+    .   .   .   .   .   .   .   .   5   5   5   5   5   .   .   .   .   .   .   .   .
+    .   .   .   .   .   .   .   .   5   5   5   5   5   .   .   .   .   .   .   .   .
+    .   .   .   .   .   .   .   .   5   5   5   5   5   .   .   .   .   .   .   .   .
+    .   .   .   .   .   .   .   .   .   .   .   .   .   .   .   .   .   .   .   .   .
+    .   .   .   .   .   .   .   .   .   .   .   .   .   .   .   .   .   .   .   .   .
+    .   .   .   .   .   .   .   .   .   .   .   .   .   .   .   .   .   .   .   .   .
+    .   .   .   .   .   .   .   .   .   .   .   .   .   .   .   .   .   .   .   .   .
+    .   .   .   .   .   .   .   .   .   .   .   .   .   .   .   .   .   .   .   .   .
+    .   .   .   .   .   .   .   .   .   .   .   .   .   .   .   .   .   .   .   .   .
+    .   .   .   .   .   .   .   .   .   .   .   .   .   .   .   .   .   .   .   .   .
+    .   .   .   .   .   .   .   .   .   .   .   .   .   .   .   .   .   .   .   .   .
+> shot B_cube_4_settled
+  shot B_cube_4_settled: out/play/b4-slide-before/B_cube_4_settled.png (settled in 0.1 s / 10 frames; 875 draws)
+  state B_cube_4_settled: fly lat -4.55767 lon 117.49686 alt 101.00 m (agl 55.20) face 2 i 107187 j 57531 k 613 ground false water false crosshair null edits 9 dirty 9
+> tick 40
+  ticked 554 -> 594: sim on  tick 594  falling 0  queued 0  frozen 0  active 363 chunks  water 0 updates, 0 moved, in 0 out 0  tick cost 0.001 ms (avg 0.001, max 7.437)
+> assert queued == 0
+  assert ok: queued == 0 (actual 0)
+> atblock 2 107227 57531 612
+> fill -5 -20 -8 33 20 -8 stone
+  fill: 1599 cells of stone changed
+> fill 14 -7 -7 21 -7 2 stone
+  fill: 80 cells of stone changed
+> fill 14 7 -7 21 7 2 stone
+  fill: 80 cells of stone changed
+> fill 22 -7 -7 22 7 2 stone
+  fill: 150 cells of stone changed
+> fill 14 -6 -7 21 6 2 sand
+  fill: 1040 cells of sand changed
+> fill 13 -6 -7 13 6 2 stone
+  fill: 130 cells of stone changed
+> tick 3
+  ticked 594 -> 597: sim on  tick 597  falling 0  queued 0  frozen 0  active 361 chunks  water 0 updates, 0 moved, in 0 out 0  tick cost 0.002 ms (avg 0.065, max 7.437)
+> assert queued == 0
+  assert ok: queued == 0 (actual 0)
+> aim 14 0 -3
+> shot C_cliff_0_behind_its_wall
+  shot C_cliff_0_behind_its_wall: out/play/b4-slide-before/C_cliff_0_behind_its_wall.png (settled in 0.2 s / 19 frames; 908 draws)
+  state C_cliff_0_behind_its_wall: fly lat -4.55716 lon 117.52501 alt 101.00 m (agl 54.70) face 2 i 107227 j 57531 k 613 ground false water false crosshair null edits 13 dirty 13
+> fill 13 -6 -7 13 6 2 air
+  fill: 130 cells of air changed
+> tick 3
+  ticked 597 -> 600: sim on  tick 600  falling 0  queued 0  frozen 0  active 361 chunks  water 0 updates, 0 moved, in 0 out 0  tick cost 0.001 ms (avg 0.067, max 7.437)
+> aim 14 0 -3
+> shot C_cliff_1_after_3_ticks
+  shot C_cliff_1_after_3_ticks: out/play/b4-slide-before/C_cliff_1_after_3_ticks.png (settled in 0.0 s / 13 frames; 908 draws)
+  state C_cliff_1_after_3_ticks: fly lat -4.55716 lon 117.52501 alt 101.00 m (agl 54.70) face 2 i 107227 j 57531 k 613 ground false water false crosshair null edits 13 dirty 13
+> tick 3
+  ticked 600 -> 603: sim on  tick 603  falling 0  queued 0  frozen 0  active 361 chunks  water 0 updates, 0 moved, in 0 out 0  tick cost 0.001 ms (avg 0.067, max 7.437)
+> shot C_cliff_2_after_6_ticks
+  shot C_cliff_2_after_6_ticks: out/play/b4-slide-before/C_cliff_2_after_6_ticks.png (settled in 0.1 s / 10 frames; 908 draws)
+  state C_cliff_2_after_6_ticks: fly lat -4.55716 lon 117.52501 alt 101.00 m (agl 54.70) face 2 i 107227 j 57531 k 613 ground false water false crosshair null edits 13 dirty 13
+> tick 4
+  ticked 603 -> 607: sim on  tick 607  falling 0  queued 0  frozen 0  active 361 chunks  water 0 updates, 0 moved, in 0 out 0  tick cost 0.002 ms (avg 0.067, max 7.437)
+> assert falling > 0
+ASSERT FAILED (line 92): falling > 0, actual 0
+> save
+  saved 13 chunk(s)
+> assert dirty == 0
+  assert ok: dirty == 0 (actual 0)
+> reload
+  reloaded 13 chunk(s) from disk
+> assert falling > 0
+ASSERT FAILED (line 96): falling > 0, actual 0
+> assert sim_tick > 0
+  assert ok: sim_tick > 0 (actual 607)
+> shot C_cliff_3_after_10_ticks_reloaded
+  shot C_cliff_3_after_10_ticks_reloaded: out/play/b4-slide-before/C_cliff_3_after_10_ticks_reloaded.png (settled in 3.7 s / 1232 frames; 908 draws)
+  state C_cliff_3_after_10_ticks_reloaded: fly lat -4.55716 lon 117.52501 alt 101.00 m (agl 54.70) face 2 i 107227 j 57531 k 613 ground false water false crosshair null edits 13 dirty 0
+> tick 20
+  ticked 607 -> 627: sim on  tick 627  falling 0  queued 0  frozen 0  active 361 chunks  water 0 updates, 0 moved, in 0 out 0  tick cost 0.001 ms (avg 0.037, max 0.716)
+> shot C_cliff_4_after_30_ticks
+  shot C_cliff_4_after_30_ticks: out/play/b4-slide-before/C_cliff_4_after_30_ticks.png (settled in 0.0 s / 10 frames; 908 draws)
+  state C_cliff_4_after_30_ticks: fly lat -4.55716 lon 117.52501 alt 101.00 m (agl 54.70) face 2 i 107227 j 57531 k 613 ground false water false crosshair null edits 13 dirty 0
+> tick 400
+  ticked 627 -> 1027: sim on  tick 1027  falling 0  queued 0  frozen 0  active 361 chunks  water 0 updates, 0 moved, in 0 out 0  tick cost 0.001 ms (avg 0.001, max 0.716)
+> assert falling == 0
+  assert ok: falling == 0 (actual 0)
+> assert queued == 0
+  assert ok: queued == 0 (actual 0)
+> assert vanished == 0
+  assert ok: vanished == 0 (actual 0)
+> state C_settled
+  state C_settled: fly lat -4.55716 lon 117.52501 alt 101.00 m (agl 54.70) face 2 i 107227 j 57531 k 613 ground false water false crosshair null edits 13 dirty 0
+> heights 0 -8 24 8 -8 2
+  top of the powder above layer -8, i +0..+24 across, j +8..-8 down:
+    .   .   .   .   .   .   .   .   .   .   .   .   .   .   .   .   .   .   .   .   .   .   .   .   .
+    .   .   .   .   .   .   .   .   .   .   .   .   .   .   .   .   .   .   .   .   .   .   .   .   .
+    .   .   .   .   .   .   .   .   .   .   .   .   .   .  10  10  10  10  10  10  10  10   .   .   .
+    .   .   .   .   .   .   .   .   .   .   .   .   .   .  10  10  10  10  10  10  10  10   .   .   .
+    .   .   .   .   .   .   .   .   .   .   .   .   .   .  10  10  10  10  10  10  10  10   .   .   .
+    .   .   .   .   .   .   .   .   .   .   .   .   .   .  10  10  10  10  10  10  10  10   .   .   .
+    .   .   .   .   .   .   .   .   .   .   .   .   .   .  10  10  10  10  10  10  10  10   .   .   .
+    .   .   .   .   .   .   .   .   .   .   .   .   .   .  10  10  10  10  10  10  10  10   .   .   .
+    .   .   .   .   .   .   .   .   .   .   .   .   .   .  10  10  10  10  10  10  10  10   .   .   .
+    .   .   .   .   .   .   .   .   .   .   .   .   .   .  10  10  10  10  10  10  10  10   .   .   .
+    .   .   .   .   .   .   .   .   .   .   .   .   .   .  10  10  10  10  10  10  10  10   .   .   .
+    .   .   .   .   .   .   .   .   .   .   .   .   .   .  10  10  10  10  10  10  10  10   .   .   .
+    .   .   .   .   .   .   .   .   .   .   .   .   .   .  10  10  10  10  10  10  10  10   .   .   .
+    .   .   .   .   .   .   .   .   .   .   .   .   .   .  10  10  10  10  10  10  10  10   .   .   .
+    .   .   .   .   .   .   .   .   .   .   .   .   .   .  10  10  10  10  10  10  10  10   .   .   .
+    .   .   .   .   .   .   .   .   .   .   .   .   .   .   .   .   .   .   .   .   .   .   .   .   .
+    .   .   .   .   .   .   .   .   .   .   .   .   .   .   .   .   .   .   .   .   .   .   .   .   .
+> shot C_cliff_5_settled
+  shot C_cliff_5_settled: out/play/b4-slide-before/C_cliff_5_settled.png (settled in 0.0 s / 10 frames; 908 draws)
+  state C_cliff_5_settled: fly lat -4.55716 lon 117.52501 alt 101.00 m (agl 54.70) face 2 i 107227 j 57531 k 613 ground false water false crosshair null edits 13 dirty 0
+> tick 40
+  ticked 1027 -> 1067: sim on  tick 1067  falling 0  queued 0  frozen 0  active 361 chunks  water 0 updates, 0 moved, in 0 out 0  tick cost 0.001 ms (avg 0.001, max 0.716)
+> assert queued == 0
+  assert ok: queued == 0 (actual 0)
+> atblock 2 107277 57531 612
+> fill -2 -3 -8 12 3 -7 stone
+  fill: 210 cells of stone changed
+> fill -2 -3 -6 12 -3 -4 stone
+  fill: 45 cells of stone changed
+> fill -2 3 -6 12 3 -4 stone
+  fill: 45 cells of stone changed
+> fill -2 -3 -6 -2 3 -4 stone
+  fill: 15 cells of stone changed
+> fill 12 -3 -6 12 3 -4 stone
+  fill: 15 cells of stone changed
+> fill 6 -2 -7 11 2 -7 air
+  fill: 30 cells of air changed
+> tick 3
+  ticked 1067 -> 1070: sim on  tick 1070  falling 0  queued 0  frozen 0  active 354 chunks  water 0 updates, 0 moved, in 0 out 0  tick cost 0.001 ms (avg 0.012, max 1.061)
+> assert queued == 0
+  assert ok: queued == 0 (actual 0)
+> fill 5 0 -6 5 0 -6 water 1
+  fill: 1 cells of water changed
+> assert level_rel[5,0,-6] == 1
+  assert ok: level_rel[5,0,-6] == 1 (actual 1)
+> assert level_rel[6,0,-7] == 0
+  assert ok: level_rel[6,0,-7] == 0 (actual 0)
+> tick 1
+  ticked 1070 -> 1071: sim on  tick 1071  falling 0  queued 0  frozen 0  active 354 chunks  water 6 updates, 0 moved, in 0 out 0  tick cost 0.004 ms (avg 0.012, max 1.061)
+> assert level_rel[5,0,-6] == 0
+ASSERT FAILED (line 126): level_rel[5,0,-6] == 0, actual 1
+> assert level_rel[6,0,-6] == 0
+  assert ok: level_rel[6,0,-6] == 0 (actual 0)
+> assert level_rel[6,0,-7] == 1
+ASSERT FAILED (line 128): level_rel[6,0,-7] == 1, actual 0
+> assert water_rel[-1,-2,-7,11,2,-5] == 1
+  assert ok: water_rel[-1,-2,-7,11,2,-5] == 1 (actual 1)
+> tick 20
+  ticked 1071 -> 1091: sim on  tick 1091  falling 0  queued 0  frozen 0  active 354 chunks  water 0 updates, 0 moved, in 0 out 0  tick cost 0.001 ms (avg 0.012, max 1.061)
+> assert queued == 0
+  assert ok: queued == 0 (actual 0)
+> mode fly
+> select 1
+> assert block[1,1804,59003,511] == sand
+  assert ok: block[1,1804,59003,511] == sand (actual sand)
+> assert block[1,1804,59003,512] == sand
+  assert ok: block[1,1804,59003,512] == sand (actual sand)
+> atblock 1 1809 59003 516
+> lookaxis -i 0
+> aim -5 0 -5
+> shot E_beach_0_before
+  shot E_beach_0_before: out/play/b4-slide-before/E_beach_0_before.png (settled in 8.1 s / 1155 frames; 196 draws)
+  state E_beach_0_before: fly lat -3.41549 lon 136.40148 alt 5.00 m (agl 3.68) face 1 i 1809 j 59003 k 517 ground false water false crosshair null edits 15 dirty 2
+> atblock 1 1804 59003 513
+> aim 0 0 -1.5
+> assert crosshair == sand
+  assert ok: crosshair == sand (actual sand)
+> tap break
+  break: face 1 i 1804 j 59003 k 512
+> tick 10
+  ticked 1091 -> 1101: sim on  tick 1101  falling 0  queued 0  frozen 0  active 357 chunks  water 0 updates, 0 moved, in 0 out 0  tick cost 0.001 ms (avg 0.148, max 13.634)
+> aim 0 0 -2.5
+> tap break
+  break: face 1 i 1804 j 59003 k 511
+> tick 10
+  ticked 1101 -> 1111: sim on  tick 1111  falling 0  queued 0  frozen 0  active 357 chunks  water 0 updates, 0 moved, in 0 out 0  tick cost 0.001 ms (avg 0.148, max 13.634)
+> aim 0 0 -3.5
+> tap break
+  break: face 1 i 1804 j 59003 k 510
+> tick 10
+  ticked 1111 -> 1121: sim on  tick 1121  falling 0  queued 0  frozen 0  active 357 chunks  water 0 updates, 0 moved, in 0 out 0  tick cost 0.001 ms (avg 0.148, max 13.634)
+> aim 0 0 -4.5
+> tap break
+  break: face 1 i 1804 j 59003 k 509
+> tick 60
+  ticked 1121 -> 1181: sim on  tick 1181  falling 0  queued 0  frozen 0  active 357 chunks  water 0 updates, 0 moved, in 0 out 0  tick cost 0.001 ms (avg 0.137, max 13.634)
+> assert falling == 0
+  assert ok: falling == 0 (actual 0)
+> assert queued == 0
+  assert ok: queued == 0 (actual 0)
+> state E_pit
+  state E_pit: fly lat -3.41534 lon 136.39764 alt 2.00 m (agl 1.31) face 1 i 1804 j 59003 k 514 ground false water false crosshair null edits 17 dirty 4
+> log the beach around the shaft: under the old rule one column four deep, all else 5
+> heights -5 -4 5 4 -7 0
+  top of the powder above layer -7, i -5..+5 across, j +4..-4 down:
+    3   4   4   4   5   5   5   5   5   5   5
+    3   4   4   4   5   5   5   5   5   5   5
+    3   4   4   4   5   5   5   5   5   5   5
+    3   4   4   4   5   5   5   5   5   5   5
+    3   4   4   4   5   .   5   5   5   5   5
+    3   4   4   4   5   5   5   5   5   5   5
+    3   4   4   4   4   5   5   5   5   5   5
+    3   3   4   4   4   5   5   5   5   5   5
+    3   3   4   4   4   5   5   5   5   5   5
+> atblock 1 1809 59003 516
+> lookaxis -i 0
+> aim -5 0 -5
+> shot E_beach_1_after_digging_four_deep
+  shot E_beach_1_after_digging_four_deep: out/play/b4-slide-before/E_beach_1_after_digging_four_deep.png (settled in 0.1 s / 12 frames; 196 draws)
+  state E_beach_1_after_digging_four_deep: fly lat -3.41549 lon 136.40148 alt 5.00 m (agl 3.68) face 1 i 1809 j 59003 k 517 ground false water false crosshair null edits 17 dirty 4
+> mode fly
+> atblock 0 131071 131071 760
+> fill -8 -8 -8 8 8 -8 stone
+  fill: 225 cells of stone changed
+> tick 3
+  ticked 1181 -> 1184: sim on  tick 1184  falling 0  queued 0  frozen 0  active 396 chunks  water 0 updates, 0 moved, in 0 out 0  tick cost 0.001 ms (avg 0.189, max 13.634)
+> assert queued == 0
+  assert ok: queued == 0 (actual 0)
+> fill -1 -1 -7 1 1 3 sand
+  fill: 88 cells of sand changed
+> hold space 0.3
+> tick 80
+  ticked 1190 -> 1270: sim on  tick 1270  falling 0  queued 0  frozen 0  active 396 chunks  water 0 updates, 0 moved, in 0 out 0  tick cost 0.001 ms (avg 0.054, max 13.634)
+> assert falling == 0
+  assert ok: falling == 0 (actual 0)
+> assert queued == 0
+  assert ok: queued == 0 (actual 0)
+> assert vanished == 0
+  assert ok: vanished == 0 (actual 0)
+> state F_corner
+  state F_corner: fly lat 35.26422 lon 44.99964 alt 255.00 m (agl 255.00) face 0 i 131071 j 131071 k 767 ground false water false crosshair null edits 20 dirty 7
+> aim 0 0 -7
+> shot F_corner_settled
+  shot F_corner_settled: out/play/b4-slide-before/F_corner_settled.png (settled in 15.3 s / 489 frames; 207 draws)
+  state F_corner_settled: fly lat 35.26422 lon 44.99964 alt 255.00 m (agl 255.00) face 0 i 131071 j 131071 k 767 ground false water false crosshair "sand" edits 20 dirty 7
+> tick 40
+  ticked 1270 -> 1310: sim on  tick 1310  falling 0  queued 0  frozen 0  active 396 chunks  water 0 updates, 0 moved, in 0 out 0  tick cost 0.001 ms (avg 0.001, max 13.634)
+> assert queued == 0
+  assert ok: queued == 0 (actual 0)
+> sim radius 1
+  radius 1 m: sim on  tick 1310  falling 0  queued 0  frozen 0  active 396 chunks  water 0 updates, 0 moved, in 0 out 0  tick cost 0.001 ms (avg 0.001, max 13.634)
+> atblock 2 107152 57520 623
+> tick 2
+  ticked 1310 -> 1312: sim on  tick 1312  falling 0  queued 0  frozen 0  active 3 chunks  water 0 updates, 0 moved, in 0 out 0  tick cost 0.002 ms (avg 0.005, max 13.634)
+> fill 11 -2 0 15 2 0 stone
+  fill: 25 cells of stone changed
+> tick 2
+  ticked 1312 -> 1314: sim on  tick 1314  falling 0  queued 0  frozen 5  active 3 chunks  water 0 updates, 0 moved, in 0 out 0  tick cost 0.002 ms (avg 0.006, max 13.634)
+> assert queued == 0
+  assert ok: queued == 0 (actual 0)
+> fill 15 0 1 15 0 1 sand
+  fill: 1 cells of sand changed
+> tick 20
+  ticked 1314 -> 1334: sim on  tick 1334  falling 0  queued 0  frozen 6  active 3 chunks  water 0 updates, 0 moved, in 0 out 0  tick cost 0.008 ms (avg 0.006, max 13.634)
+> assert block_rel[15,0,1] == sand
+  assert ok: block_rel[15,0,1] == sand (actual sand)
+> assert falling == 0
+  assert ok: falling == 0 (actual 0)
+> assert queued == 0
+  assert ok: queued == 0 (actual 0)
+> assert frozen > 0
+  assert ok: frozen > 0 (actual 6)
+> state G_waiting
+  state G_waiting: fly lat -4.56439 lon 117.47205 alt 112.00 m (agl 68.90) face 2 i 107152 j 57520 k 624 ground false water false crosshair null edits 20 dirty 8
+> sim radius 112
+  radius 112 m: sim on  tick 1334  falling 0  queued 0  frozen 6  active 3 chunks  water 0 updates, 0 moved, in 0 out 0  tick cost 0.008 ms (avg 0.006, max 13.634)
+> tick 1
+  ticked 1334 -> 1335: sim on  tick 1335  falling 0  queued 0  frozen 0  active 354 chunks  water 6 updates, 0 moved, in 0 out 0  tick cost 7.969 ms (avg 0.086, max 13.634)
+> assert block_rel[15,0,1] == air
+ASSERT FAILED (line 206): block_rel[15,0,1] == air, actual sand
+> assert falling > 0
+ASSERT FAILED (line 207): falling > 0, actual 0
+> tick 160
+  ticked 1335 -> 1495: sim on  tick 1495  falling 0  queued 0  frozen 0  active 354 chunks  water 0 updates, 0 moved, in 0 out 0  tick cost 0.001 ms (avg 0.001, max 13.634)
+> assert falling == 0
+  assert ok: falling == 0 (actual 0)
+> assert queued == 0
+  assert ok: queued == 0 (actual 0)
+> state G_went
+  state G_went: fly lat -4.56439 lon 117.47205 alt 112.00 m (agl 68.90) face 2 i 107152 j 57520 k 624 ground false water false crosshair null edits 20 dirty 8
+> assert tick_ms_avg < 4
+  assert ok: tick_ms_avg < 4 (actual 0.00103)
+> state final
+  state final: fly lat -4.56439 lon 117.47205 alt 112.00 m (agl 68.90) face 2 i 107152 j 57520 k 624 ground false water false crosshair null edits 20 dirty 8
+saved 8 chunk(s) at exit
+done in 38.2 s: 49 asserts, 7 failed, 0 errors

@@ -21,6 +21,12 @@
 #   one tick after the support goes, the next one a tick later, and so on;
 #   a one-layer fall takes six ticks, three layers ten.
 
+# B4: this script is about blocks falling straight down: towers that stand
+# until they are undercut, and land in order. Under the slide (Andrew's #7) a
+# free-standing tower cannot stand at all, so it keeps the old rule to go on
+# testing falling itself. b4-slide.play is the new rule.
+sim slide off
+
 # ---- 1. Scene A (S = 107155, T = 107156, J = 57531): shaft, tunnel, tower ----
 atblock 2 107155 57531 2000
 assert mode == walk

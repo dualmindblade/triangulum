@@ -38,7 +38,7 @@ fn template() -> (Arc<Engine>, String) {
 }
 
 /// A fresh session standing on the hills preset, with its own edit store.
-fn fresh(save: Option<SaveDir>) -> Session {
+pub(crate) fn fresh(save: Option<SaveDir>) -> Session {
     let (t, sha) = template();
     let engine = Arc::new(t.with_edits(Arc::new(EditStore::new())));
     let pr = engine.presets()[0].clone();
@@ -126,14 +126,13 @@ fn timeline() -> Vec<(u64, Ev)> {
 /// redraws), then run the frame. `dt(n)` is frame n's length.
 fn drive(s: &mut Session, events: &[(u64, Ev)], end: u64, mut dt: impl FnMut(usize) -> f64) {
     let mut c = Controls::default();
-    let presets = s.engine.presets().len();
     let mut next = 0;
     let mut frame = 0;
     while s.steps() < end {
         while next < events.len() && events[next].0 <= s.steps() {
             match events[next].1 {
                 Ev::Key(k, down) => {
-                    c.key(k, down, presets);
+                    c.key(k, down);
                 }
                 Ev::Button(b, down) => c.button(b, down),
                 Ev::Motion(x, y) => c.motion(x, y),
@@ -223,6 +222,12 @@ fn a_replay_recorded_under_other_simulation_rules_is_refused() {
     assert_eq!(rep.header.sim_rules, 1);
     let err = compatibility(&template_session, &rep.header).unwrap_err();
     assert!(err.contains("simulation rules version 1 vs"), "{err}");
+    // B4 changed the rules again: a recording of the build before is refused
+    // with what happened and what to do, not played into a divergence.
+    rep.header.sim_rules = 2;
+    let err = compatibility(&template_session, &rep.header).unwrap_err();
+    assert!(err.contains(&format!("simulation rules version 2 vs {}", crate::sim::RULES_VERSION)), "{err}");
+    assert!(err.contains("learned to slide") && err.contains("Your world and saves are fine") && err.contains("with simulation rules 2"), "{err}");
     let _ = std::fs::remove_file(&path);
 }
 
@@ -438,6 +443,190 @@ fn a_replay_never_touches_the_real_save() {
     assert_eq!(tree(&real), before);
     let _ = std::fs::remove_dir_all(&real);
     let _ = std::fs::remove_file(&path);
+}
+
+/// Bug round #11: everything the T window does goes through recorded inputs
+/// at a step boundary. A teleport (map point, typed coordinates, a photo with
+/// its clock) and a place, chosen during a recording, land in the file as
+/// `pose`, `sky` and `preset`, and the replay ends exactly where the session
+/// did, with nothing the recorder could not capture.
+#[test]
+fn the_t_windows_teleports_and_places_replay_exactly() {
+    use crate::menu::{Go, PhotoGo, TimeGo, actions};
+    let settings = crate::sky::Settings::default();
+    let mut s = fresh(None);
+    let hills = s.player.pos.normalize();
+    let (hills_lat, hills_lon) = crate::grid::Planet::lat_lon_deg(hills);
+    let path = temp("window");
+    s.start_recording(&path, "test").unwrap();
+    let mut c = Controls::default();
+    let run = |c: &mut Controls, s: &mut Session, n: usize| {
+        for _ in 0..n {
+            c.frame(s, STEP);
+        }
+    };
+    c.key(KeyCode::KeyW, true);
+    run(&mut c, &mut s, 20);
+    // The window opens: the key lets go, and the walker stops being driven.
+    c.release_all();
+    run(&mut c, &mut s, 4);
+    let photo = pose_text(&s.player);
+    // Typed coordinates with an altitude.
+    let go = Go::Point { lat: 12.5, lon: -40.25, alt_m: Some(900.0) };
+    for a in actions(&go, &s, &settings) {
+        c.queue(a);
+    }
+    run(&mut c, &mut s, 10);
+    assert_eq!(s.player.mode, Mode::Fly);
+    // A place.
+    for a in actions(&Go::Place(1), &s, &settings) {
+        c.queue(a);
+    }
+    run(&mut c, &mut s, 10);
+    // A map point: on the ground, walking.
+    let go = Go::Point { lat: hills_lat + 0.01, lon: hills_lon, alt_m: None };
+    for a in actions(&go, &s, &settings) {
+        c.queue(a);
+    }
+    run(&mut c, &mut s, 30);
+    assert_eq!(s.player.mode, Mode::Walk);
+    assert!(s.player.on_ground, "it stands on the ground");
+    // A photo, exact, with its time of day.
+    let go = Go::Photo(PhotoGo { exact: Some(photo.clone()), lat: hills_lat, lon: hills_lon, alt_m: 50.0, heading_deg: 0.0, pitch_deg: 0.0, time: Some(TimeGo::Clock(5000.0)) });
+    for a in actions(&go, &s, &settings) {
+        c.queue(a);
+    }
+    run(&mut c, &mut s, 30);
+    let summary = s.stop_recording().unwrap();
+    assert_eq!(summary.notes, 0, "the recorder missed nothing");
+    let ev = events_of(&summary.path);
+    assert!(ev.iter().filter(|l| l.contains(" pose ")).count() >= 3, "{ev:?}");
+    assert!(ev.iter().any(|l| l.contains(" preset 1")), "{ev:?}");
+    assert!(ev.iter().any(|l| l.contains(" sky 5000.0 ")), "{ev:?}");
+    let (report, back) = play(&read(&summary.path).unwrap(), "window");
+    assert!(report.ok(), "{}", report.text());
+    assert_eq!(pose_text(&back.player), pose_text(&s.player), "the player ends exactly where it did");
+    assert_eq!(back.sky.seconds.to_bits(), s.sky.seconds.to_bits());
+    let _ = std::fs::remove_file(&summary.path);
+}
+
+/// The replay format did not change: `preset` still means what P meant, the
+/// recordings Andrew made still parse, line for line, and a replay with a
+/// `preset` in it plays. (Playing the five real ones is the `--replay` check
+/// in the findings: a later mission's rule change may refuse them.)
+#[test]
+fn old_replays_still_parse_and_preset_still_plays() {
+    let mut s = fresh(None);
+    let path = temp("old-preset");
+    s.start_recording(&path, "test").unwrap();
+    s.step(&Input::default(), STEP);
+    s.apply(Action::Preset(2)).unwrap();
+    s.step(&Input::default(), STEP);
+    let summary = s.stop_recording().unwrap();
+    let rep = read(&summary.path).unwrap();
+    assert!(rep.lines.iter().any(|l| l.text == "@1 preset 2"), "{:?}", events_of(&summary.path));
+    let (report, back) = play(&rep, "old-preset");
+    assert!(report.ok(), "{}", report.text());
+    assert_eq!(pose_text(&back.player), pose_text(&s.player));
+    let _ = std::fs::remove_file(&summary.path);
+    let dir = Path::new("C:/code/triangulum/game/replays");
+    let mut read_some = 0;
+    for e in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+        if e.path().extension().is_some_and(|x| x == "replay") {
+            let rep = read(&e.path()).unwrap_or_else(|err| panic!("{}: {err}", e.path().display()));
+            assert!(!rep.lines.is_empty());
+            read_some += 1;
+        }
+    }
+    println!("{read_some} recordings parsed");
+}
+
+/// P takes a photo now: it queues nothing, so it moves nobody and no replay
+/// sees it. The places moved to the T window.
+#[test]
+fn p_no_longer_moves_the_player() {
+    // The same ten steps with and without P: the same player, the same file.
+    let run = |events: &[(u64, Ev)], tag: &str| {
+        let mut s = fresh(None);
+        let path = temp(tag);
+        s.start_recording(&path, "test").unwrap();
+        drive(&mut s, events, 10, |_| STEP);
+        let summary = s.stop_recording().unwrap();
+        let lines = events_of(&summary.path);
+        let _ = std::fs::remove_file(&summary.path);
+        (pose_text(&s.player), lines)
+    };
+    let (with, lines) = run(&[(2, Ev::Key(KeyCode::KeyP, true)), (2, Ev::Key(KeyCode::KeyP, false))], "p-key");
+    let (without, plain) = run(&[], "no-p-key");
+    assert_eq!(with, without);
+    assert_eq!(lines, plain);
+    assert!(!lines.iter().any(|l| l.contains("preset")));
+}
+
+/// Taking a photo reads the session and changes nothing: the same session with
+/// and without photos taken along the way gives the same world, the same file
+/// of inputs and the same hash.
+#[test]
+fn a_photo_disturbs_nothing() {
+    let info = || crate::photos::ShotInfo { kind: "settled", settled: true, settle_s: 0.0, settle_frames: 0, width: 4, height: 2, hud: false, mesh_view: Default::default(), preview_world: false, frame_ms: None };
+    let (mut hashes, mut lines) = (Vec::new(), Vec::new());
+    for shoot in [false, true] {
+        let mut s = fresh(None);
+        s.start_recording(&temp(if shoot { "photo-on" } else { "photo-off" }), "test").unwrap();
+        let settings = crate::sky::Settings::default();
+        let look = crate::look::Look::defaults(&settings, s.engine.planet.radius);
+        let mut digests = ChunkDigests::default();
+        for (n, chunk) in timeline().chunk_by(|a, b| a.0 == b.0).enumerate() {
+            let end = chunk[0].0 + 1;
+            drive(&mut s, chunk, end, |_| STEP);
+            if shoot && n % 5 == 0 {
+                let cam = s.player.camera();
+                let v = crate::photos::sidecar(&s, &cam, &settings, &look, &mut digests, Path::new("shot_x.png"), &info());
+                assert_eq!(v["format"], crate::photos::FORMAT);
+                assert_eq!(v["pose"]["exact"], pose_text(&s.player));
+                assert_eq!(v["world"]["seed"], s.engine.config.seed);
+                assert_eq!(v["generator_version"], crate::world::save::GENERATOR_VERSION);
+                assert_eq!(v["edits"]["chunks"], s.engine.edits.len());
+                assert!(v["edits"]["hash"].as_str().is_some_and(|h| h.len() == 16));
+                assert!(!v["build"]["git"].as_str().unwrap_or("").is_empty());
+            }
+        }
+        let summary = s.stop_recording().unwrap();
+        hashes.push(s.sim_hash());
+        lines.push(events_of(&summary.path));
+        let _ = std::fs::remove_file(&summary.path);
+    }
+    assert_eq!(hashes[0], hashes[1]);
+    assert_eq!(lines[0], lines[1]);
+}
+
+/// Where a teleport lands (§15.7): it reads the session and leaves it as it
+/// was; an altitude hovers, clamped to the ground and the ceiling; no altitude
+/// stands on the ground, or hovers over water too deep to stand in.
+#[test]
+fn a_teleport_lands_where_it_should() {
+    use crate::session::{TELEPORT_MAX_ALT_M, TELEPORT_MIN_AGL_M};
+    let s = fresh(None);
+    let before = pose_text(&s.player);
+    let radius = s.engine.planet.radius;
+    let land = s.player.pos.normalize();
+    let ground = s.engine.ground(land);
+    let high = s.teleport_pose(land, Some(ground + 500.0));
+    assert_eq!(high.mode, Mode::Fly);
+    assert!((high.pos.length() - radius - ground - 500.0).abs() < 1e-6);
+    let low = s.teleport_pose(land, Some(ground - 900.0));
+    assert!((low.pos.length() - radius - ground - TELEPORT_MIN_AGL_M).abs() < 1e-6, "never into the ground");
+    let top = s.teleport_pose(land, Some(1e12));
+    assert!((top.pos.length() - radius - TELEPORT_MAX_ALT_M).abs() < 1e-3);
+    let stand = s.teleport_pose(land, None);
+    assert_eq!(stand.mode, Mode::Walk);
+    assert!(stand.on_ground && stand.vel == DVec3::ZERO);
+    // The deepest sea: not a walk on the bottom.
+    let sea = s.engine.places.trench.0;
+    let over = s.teleport_pose(sea, None);
+    assert_eq!(over.mode, Mode::Fly);
+    assert!(over.pos.length() > radius, "above the surface");
+    assert_eq!(pose_text(&s.player), before, "looking where to go moves nobody");
 }
 
 #[test]

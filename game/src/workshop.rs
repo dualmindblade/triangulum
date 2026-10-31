@@ -16,8 +16,8 @@
 //! style and ids kept). Terrain reaches `world.json` only through "Make
 //! this the default", which says that existing saves will not load with
 //! it. All three files are watched: an edit in a text editor (or a pull)
-//! applies within half a second. The screenshot button writes the frame
-//! without the panel, and a JSON sidecar with every look value.
+//! applies within half a second. The screenshot button takes a photo of the
+//! frame without the panel (`photos.rs`: every look value is in its sidecar).
 //!
 //! M3b, blocks and textures (the Blocks section, `workshop/blocks_panel.rs`):
 //!
@@ -48,8 +48,9 @@ use crate::engine::Engine;
 use crate::grid::WorldConfig;
 use crate::look::{self, FileWatch, Look, Terrain};
 use crate::player::Mode;
-use crate::render::Renderer;
 use crate::render::textures::{self, Picture, TextureSet};
+use crate::render::regions::{self, RegionData, RegionsState};
+use crate::render::{Lines, MeshView, Renderer, Tint};
 use crate::session::{Action, Session};
 use crate::sim::Sim;
 use crate::sky::Clock;
@@ -59,12 +60,11 @@ use crate::stream::Streamer;
 use crate::world::blocks::{self, BlockColours, BlockDef, BlockTextures};
 use crate::world::save::SaveDir;
 use crate::world::{BlockId, EditStore, Registry};
-use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::f64::consts::{PI, TAU};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::{Arc, mpsc};
-use std::time::{Duration, Instant, SystemTime};
+use std::time::{Duration, Instant};
 
 /// The blocks file as shipped with this build: "Reset" in the Blocks section.
 const SHIPPED_BLOCKS: &str = include_str!("../assets/blocks.json");
@@ -208,6 +208,13 @@ pub struct Workshop {
     shot_requested: bool,
     shot_now: bool,
     styled: bool,
+    /// The mesh view (bug round #6): M and Shift+M step it, the panel sets
+    /// it, the renderer draws it. A way of looking, so no file saves it.
+    pub mesh_view: MeshView,
+    /// The bake's region layers for its tints, read when one is first asked
+    /// for: on their way, and what came of it.
+    regions_coming: Option<mpsc::Receiver<Result<RegionData, String>>>,
+    pub regions_state: RegionsState,
     /// Evidence screenshots: `TRIANGULUM_PANEL_SECTION=blocks` opens the
     /// panel on that section alone for its first frames.
     focus: Option<(String, u32)>,
@@ -317,6 +324,9 @@ impl Workshop {
             shot_requested: false,
             shot_now: false,
             styled: false,
+            mesh_view: MeshView::NORMAL,
+            regions_coming: None,
+            regions_state: RegionsState::default(),
             focus: std::env::var("TRIANGULUM_PANEL_SECTION").ok().map(|s| (s, 5)),
         }
     }
@@ -393,8 +403,35 @@ impl Workshop {
             }
         }
         self.notes.retain(|(t, _)| now.duration_since(*t) < NOTE_LIFE);
+        gpu.mesh_view = self.mesh_view;
+        self.follow_regions(session, gpu);
         // A requested screenshot is this frame, drawn without the panel.
         self.shot_now = std::mem::take(&mut self.shot_requested);
+    }
+
+    /// The first tint that needs the bake's layers reads them, off this
+    /// thread; the view shows flat grey until they land.
+    fn follow_regions(&mut self, session: &Session, gpu: &mut Renderer) {
+        if self.mesh_view.tint.uses_bake() && self.regions_state == RegionsState::NotAsked {
+            self.regions_state = RegionsState::Loading;
+            let (tx, rx) = mpsc::channel();
+            let dir = session.engine.config.bake.clone();
+            std::thread::spawn(move || {
+                let _ = tx.send(regions::load(&dir));
+            });
+            self.regions_coming = Some(rx);
+        }
+        if let Some(Ok(result)) = self.regions_coming.as_ref().map(|rx| rx.try_recv()) {
+            self.regions_coming = None;
+            self.regions_state = match result {
+                Ok(data) => {
+                    let plates = data.plates;
+                    gpu.set_regions(Arc::new(data));
+                    RegionsState::Ready { plates }
+                }
+                Err(e) => RegionsState::Missing(e),
+            };
+        }
     }
 
     /// Textures (M3b): the panel's choices into the registry, layers for
@@ -914,72 +951,14 @@ impl Workshop {
     // ------------------------------------------------------- screenshots
 
     /// True on the frame a screenshot was asked for: the app reads the
-    /// frame back after painting and hands it to `save_frame`.
+    /// frame back after painting and writes it as a photo.
     pub fn shot_pending(&self) -> bool {
         self.shot_now
     }
 
-    /// Where the screenshot button writes: `game/out/look/look-<UTC time>.png`.
-    pub fn shot_path() -> PathBuf {
-        let secs = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).map_or(0, |d| d.as_secs());
-        let (y, mo, d) = civil_from_days((secs / 86_400) as i64);
-        let t = secs % 86_400;
-        PathBuf::from(format!("{}/out/look/look-{y:04}-{mo:02}-{d:02}-{:02}{:02}{:02}.png", env!("CARGO_MANIFEST_DIR"), t / 3600, t / 60 % 60, t % 60))
-    }
-
-    /// What a screenshot's JSON sidecar says: every look value, every
-    /// block's face colours, the terrain, the time, and where you stood.
-    pub fn sidecar(&self, session: &Session, gpu: &Renderer, png: &Path) -> Value {
-        let blocks: serde_json::Map<String, Value> = self
-            .blocks
-            .iter()
-            .zip(&self.colours)
-            .zip(&self.textures)
-            .filter(|((d, _), _)| !d.name.starts_with("unused_") && d.name != "air")
-            .map(|((d, c), tex)| {
-                let [t, s, b] = c.faces().map(|f| f.map(|x| (x as f64 * 1e4).round() / 1e4));
-                let mut v = json!({ "top": t, "side": s, "bottom": b });
-                if tex.any() {
-                    let [tt, ts, tb] = tex.faces();
-                    v["textures"] = json!({ "top": tt, "side": ts, "bottom": tb });
-                }
-                (d.name.clone(), v)
-            })
-            .collect();
-        // Through text, so f32 colours read 0.55 and not 0.550000011920929.
-        let look: Value = serde_json::to_string(&self.look.tidy()).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or(Value::Null);
-        json!({
-            "png": png.display().to_string(),
-            "look": look,
-            "blocks": blocks,
-            "terrain": {
-                "roughness": self.terrain_running.roughness,
-                "landform": self.terrain_running.landform,
-                "vertical_scale": self.terrain_running.vscale,
-                "preview_world": self.previewing(),
-            },
-            "time": {
-                "local_hour": local_hour(&gpu.sky.settings, session.sky.seconds, session.player.pos.y.atan2(session.player.pos.x)),
-                "speed": session.sky.speed,
-                "clock_seconds": session.sky.seconds,
-            },
-            "world": session.engine.config.name,
-            "texture_size": self.texset.size,
-            "state": session.state(),
-        })
-    }
-
-    /// Write a frame (RGBA8) as `png` and its sidecar beside it (`.json`).
-    pub fn save_frame(&mut self, png: &Path, rgba: &[u8], width: u32, height: u32, session: &Session, gpu: &Renderer) -> Result<(), String> {
-        if let Some(dir) = png.parent() {
-            std::fs::create_dir_all(dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
-        }
-        crate::render::write_png(&png.to_string_lossy(), width, height, rgba);
-        let side = png.with_extension("json");
-        let text = serde_json::to_string_pretty(&self.sidecar(session, gpu, png)).map_err(|e| e.to_string())?;
-        std::fs::write(&side, text).map_err(|e| format!("write {}: {e}", side.display()))?;
-        self.note(format!("Screenshot saved: {} (the look's values are in {}).", png.display(), side.file_name().map_or(String::new(), |s| s.to_string_lossy().into_owned())));
-        Ok(())
+    /// Say something in the panel (a photo was saved, or wasn't).
+    pub fn say(&mut self, text: impl Into<String>) {
+        self.note(text);
     }
 
     // ------------------------------------------------------- the panel
@@ -991,17 +970,7 @@ impl Workshop {
         }
         if !self.styled {
             self.styled = true;
-            ctx.all_styles_mut(|s| {
-                use egui::{FontId, TextStyle};
-                s.text_styles.insert(TextStyle::Body, FontId::proportional(17.0));
-                s.text_styles.insert(TextStyle::Button, FontId::proportional(17.0));
-                s.text_styles.insert(TextStyle::Heading, FontId::proportional(21.0));
-                s.text_styles.insert(TextStyle::Small, FontId::proportional(14.5));
-                s.text_styles.insert(TextStyle::Monospace, FontId::monospace(15.0));
-                s.spacing.slider_width = 230.0;
-                s.spacing.interact_size = egui::vec2(44.0, 24.0);
-                s.spacing.item_spacing = egui::vec2(10.0, 7.0);
-            });
+            crate::ui::apply_panel_style(ctx);
         }
         let height = ctx.content_rect().height() - 24.0;
         let focus = self.focus.as_mut().map(|(name, frames)| {
@@ -1035,6 +1004,7 @@ impl Workshop {
                 ui.separator();
                 header("Sky and light", "sky", true).show(ui, |ui| self.ui_sky(ui));
                 header("Water", "water", true).show(ui, |ui| self.ui_water(ui));
+                header("Mesh view", "mesh", true).show(ui, |ui| self.ui_mesh(ui));
                 header("Blocks", "blocks", false).show(ui, |ui| self.ui_blocks(ui));
                 header("Distance detail", "detail", false).show(ui, |ui| self.ui_detail(ui));
                 header("Terrain", "terrain", false).show(ui, |ui| self.ui_terrain(ui));
@@ -1127,6 +1097,22 @@ impl Workshop {
         }
     }
 
+    fn ui_mesh(&mut self, ui: &mut egui::Ui) {
+        ui.label("Colour the mesh by").on_hover_text("M steps through these.");
+        ui.horizontal_wrapped(|ui| {
+            for t in Tint::ALL {
+                ui.selectable_value(&mut self.mesh_view.tint, t, t.label()).on_hover_text(t.hint());
+            }
+        });
+        ui.label("Lines").on_hover_text("Shift+M steps through these.");
+        ui.horizontal(|ui| {
+            for l in Lines::ALL {
+                ui.selectable_value(&mut self.mesh_view.lines, l, l.label());
+            }
+        });
+        ui.label(egui::RichText::new("The game's own mesh, coloured by the region each part belongs to. A heavy line is a chunk's border, and the thin diagonal shows a quad's two triangles. The names are on screen while one of these is on.").small().weak());
+    }
+
     fn ui_detail(&mut self, ui: &mut egui::Ui) {
         egui::Grid::new("detail").num_columns(2).spacing([14.0, 8.0]).show(ui, |ui| {
             slider(ui, "Distance detail", "How far out the world keeps its fine detail. Higher shows finer far terrain and costs more frame time; 5 is the default.", &mut self.look.detail.lod_factor, 1.0..=20.0, true, "");
@@ -1211,7 +1197,7 @@ impl Workshop {
             if ui.button("Revert to saved").on_hover_text("Throw away changes since the last save.").clicked() {
                 self.revert();
             }
-            if ui.button("Screenshot").on_hover_text("Save exactly what you see (without this panel) to game/out/look/, with a note of every look value beside it.").clicked() {
+            if ui.button("Screenshot").on_hover_text("Save exactly what you see (without this panel) as a photo in game/interchange/, with every look value in its sidecar.").clicked() {
                 self.shot_requested = true;
             }
         });
@@ -1296,23 +1282,10 @@ pub fn seek_hour(settings: &Settings, seconds: f64, lon: f64, hour: f64) -> f64 
     t
 }
 
-/// (year, month, day) of a day count since 1970-01-01 (Howard Hinnant's
-/// civil_from_days), for screenshot names.
-fn civil_from_days(z: i64) -> (i64, u32, u32) {
-    let z = z + 719_468;
-    let era = z.div_euclid(146_097);
-    let doe = z.rem_euclid(146_097);
-    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = (doy - (153 * mp + 2) / 5 + 1) as u32;
-    let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
-    (yoe + era * 400 + i64::from(m <= 2), m, d)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::Path;
 
     fn scratch(tag: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("triangulum-workshop-{tag}-{}", std::process::id()));
@@ -1435,13 +1408,6 @@ mod tests {
             assert!(err.abs() < 1e-6, "{hour}: {h}");
             assert!((t - t0).abs() <= s.day_length_s / 2.0 + 1.0, "moved at most half a day");
         }
-    }
-
-    #[test]
-    fn screenshot_names() {
-        assert_eq!(civil_from_days(0), (1970, 1, 1));
-        assert_eq!(civil_from_days(20_386), (2025, 10, 25));
-        assert_eq!(civil_from_days(11_016), (2000, 2, 29));
     }
 
     /// M3b, painting without a window: an example goes on stone with one

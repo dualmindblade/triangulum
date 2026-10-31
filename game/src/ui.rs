@@ -55,6 +55,10 @@ pub struct Hud {
     pub save_note: String,
     /// The simulation's one-line status (`Sim::describe`), stats panel only.
     pub sim_line: String,
+    /// The mesh view's legend, when it is on.
+    pub mesh_legend: Option<crate::render::meshview::Legend>,
+    /// A line in the middle of the screen (a photo being taken or saved).
+    pub banner: Option<String>,
 }
 
 fn srgb(c: [f32; 3]) -> egui::Color32 {
@@ -66,13 +70,38 @@ fn srgb(c: [f32; 3]) -> egui::Color32 {
     egui::Color32::from_rgb(f(c[0]), f(c[1]), f(c[2]))
 }
 
-/// Screen-space segments (pixels) outlining lattice cell (face, i, j, k).
+/// LOD-0 block corners, using the mesher/shader's eight-voxel curvature
+/// grid and f32 interpolation. Always evaluate in the block's own face;
+/// wrapping eight out-of-face corners independently folds a cube corner.
+pub(crate) fn outline_corners(planet: &Planet, block: BlockPos) -> [glam::DVec3; 8] {
+    let (i0, j0, k0) = (block.i / 32 * 32, block.j / 32 * 32, block.k / 32 * 32);
+    let r0 = planet.radius_at(k0 as f64);
+    let origin = planet.dir(block.face, i0 as f64, j0 as f64) * r0;
+    std::array::from_fn(|c| {
+        let i = block.i + (c & 1) as u32;
+        let j = block.j + ((c >> 1) & 1) as u32;
+        let k = block.k + ((c >> 2) & 1) as u32;
+        let gx = ((i - i0) / 8).min(3);
+        let gy = ((j - j0) / 8).min(3);
+        let fx = (i - i0 - gx * 8) as f32 / 8.0;
+        let fy = (j - j0 - gy * 8) as f32 / 8.0;
+        let grid = |dx: u32, dy: u32| {
+            let dir = planet.dir(block.face, (i0 + (gx + dx) * 8) as f64, (j0 + (gy + dy) * 8) as f64);
+            ((dir * r0 - origin).as_vec3(), dir.as_vec3())
+        };
+        let (a, b, c, d) = (grid(0, 0), grid(1, 0), grid(0, 1), grid(1, 1));
+        let off = a.0.lerp(b.0, fx).lerp(c.0.lerp(d.0, fx), fy);
+        let up = a.1.lerp(b.1, fx).lerp(c.1.lerp(d.1, fx), fy).normalize();
+        origin + (off + up * ((k - k0) as f32 * planet.block_size as f32)).as_dvec3()
+    })
+}
+
+/// Screen-space segments (pixels) outlining the canonical target block.
 /// Segments with an endpoint behind the camera are dropped.
-pub fn outline_segments(planet: &Planet, cam: &Camera, aspect: f64, width: u32, height: u32, face: u8, cell: (i64, i64, i64)) -> Vec<([f32; 2], [f32; 2])> {
+pub fn outline_segments(planet: &Planet, cam: &Camera, aspect: f64, width: u32, height: u32, block: BlockPos) -> Vec<([f32; 2], [f32; 2])> {
     let vp = cam.view_proj(aspect);
     let (w, h) = (width as f32, height as f32);
-    let corner = |dx: i64, dy: i64, dz: i64| -> Option<[f32; 2]> {
-        let p = planet.pos(face, (cell.0 + dx) as f64, (cell.1 + dy) as f64, (cell.2 + dz) as f64);
+    let corner = |p: glam::DVec3| -> Option<[f32; 2]> {
         let rel = (p - cam.pos).as_vec3();
         let c = vp * Vec4::new(rel.x, rel.y, rel.z, 1.0);
         if c.w <= 1e-6 {
@@ -80,7 +109,7 @@ pub fn outline_segments(planet: &Planet, cam: &Camera, aspect: f64, width: u32, 
         }
         Some([(c.x / c.w * 0.5 + 0.5) * w, (0.5 - c.y / c.w * 0.5) * h])
     };
-    let corners: Vec<Option<[f32; 2]>> = (0..8).map(|n| corner(n & 1, (n >> 1) & 1, (n >> 2) & 1)).collect();
+    let corners = outline_corners(planet, block).map(corner);
     const EDGES: [(usize, usize); 12] = [(0, 1), (2, 3), (4, 5), (6, 7), (0, 2), (1, 3), (4, 6), (5, 7), (0, 4), (1, 5), (2, 6), (3, 7)];
     EDGES.iter().filter_map(|&(a, b)| Some((corners[a]?, corners[b]?))).collect()
 }
@@ -134,7 +163,7 @@ pub fn draw_hud(ctx: &egui::Context, h: &Hud, stats: bool) {
                     line(h.sim_line.clone());
                 }
                 line("WASD move  Space jump/up  Ctrl sneak/down  Shift sprint  G walk/fly  LMB break  RMB place  1-9 block  scroll fly speed".into());
-                line("P preset  R to ground  V vsync  F water  H hud  F1 look panel  Q quit".into());
+                line("P photo  Shift+P live photo  T map, photos, teleport  R to ground  V vsync  F water  M mesh colours  Shift+M mesh lines  H hud  F1 look panel  Q quit".into());
             });
     }
     // Under every window (the look panel covers the hotbar's corner, not
@@ -150,6 +179,21 @@ pub fn draw_hud(ctx: &egui::Context, h: &Hud, stats: bool) {
         let pb = egui::pos2(b[0] / ppp, b[1] / ppp);
         painter.line_segment([pa, pb], egui::Stroke::new(3.0, egui::Color32::from_black_alpha(160)));
         painter.line_segment([pa, pb], egui::Stroke::new(1.5, egui::Color32::from_rgba_unmultiplied(255, 255, 255, 230)));
+    }
+    if let Some(l) = &h.mesh_legend {
+        // Beside the stats panel when it is up, not under it.
+        let mut area = ctx.content_rect();
+        if stats {
+            area.min.x = (area.min.x + 790.0).min(area.max.x * 0.5);
+        }
+        draw_mesh_legend(&painter, area, l);
+    }
+    if let Some(text) = &h.banner {
+        let g = painter.layout_no_wrap(text.clone(), egui::FontId::proportional(17.0), egui::Color32::WHITE);
+        let r = ctx.content_rect();
+        let at = egui::pos2(r.center().x - g.size().x / 2.0, r.max.y - 108.0);
+        painter.rect_filled(egui::Rect::from_min_size(at, g.size()).expand(7.0), 4.0, egui::Color32::from_black_alpha(170));
+        painter.galley(at, g, egui::Color32::WHITE);
     }
     // Hotbar along the bottom.
     if !h.hotbar.is_empty() {
@@ -179,6 +223,59 @@ pub fn draw_hud(ctx: &egui::Context, h: &Hud, stats: bool) {
     }
 }
 
+/// The mesh view's legend, top centre: its name, a line on what the colours
+/// mean, and the named colours in rows no wider than most of the screen.
+fn draw_mesh_legend(painter: &egui::Painter, rect: egui::Rect, legend: &crate::render::meshview::Legend) {
+    let white = egui::Color32::from_rgb(235, 235, 235);
+    let title = painter.layout_no_wrap(legend.title.clone(), egui::FontId::proportional(16.0), white);
+    let note = (!legend.note.is_empty()).then(|| painter.layout_no_wrap(legend.note.clone(), egui::FontId::proportional(13.0), egui::Color32::from_gray(200)));
+    let font = egui::FontId::monospace(13.0);
+    let max = (rect.width() - 24.0).max(240.0);
+    let (swatch, gap) = (11.0, 12.0);
+    let mut rows: Vec<Vec<(std::sync::Arc<egui::Galley>, egui::Color32)>> = vec![Vec::new()];
+    let mut x = 0.0;
+    for (name, [r, g, b]) in &legend.items {
+        let galley = painter.layout_no_wrap(name.clone(), font.clone(), white);
+        let w = swatch + 4.0 + galley.size().x + gap;
+        if x + w > max && x > 0.0 {
+            rows.push(Vec::new());
+            x = 0.0;
+        }
+        x += w;
+        rows.last_mut().unwrap().push((galley, egui::Color32::from_rgb(*r, *g, *b)));
+    }
+    let row_w = |row: &[(std::sync::Arc<egui::Galley>, egui::Color32)]| row.iter().map(|(g, _)| swatch + 4.0 + g.size().x + gap).sum::<f32>();
+    let width = rows.iter().map(|r| row_w(r)).fold(title.size().x, f32::max).max(note.as_ref().map_or(0.0, |n| n.size().x));
+    let row_h = 17.0;
+    let n_rows = if legend.items.is_empty() { 0 } else { rows.len() };
+    let height = title.size().y + note.as_ref().map_or(0.0, |n| n.size().y + 2.0) + n_rows as f32 * row_h + if n_rows > 0 { 4.0 } else { 0.0 };
+    let top = rect.min.y + 12.0;
+    let left = rect.center().x - width / 2.0;
+    painter.rect_filled(egui::Rect::from_min_size(egui::pos2(left, top), egui::vec2(width, height)).expand(7.0), 4.0, egui::Color32::from_black_alpha(185));
+    let mut y = top;
+    let th = title.size().y;
+    painter.galley(egui::pos2(rect.center().x - title.size().x / 2.0, y), title, white);
+    y += th;
+    if let Some(n) = note {
+        let nh = n.size().y;
+        painter.galley(egui::pos2(rect.center().x - n.size().x / 2.0, y + 2.0), n, white);
+        y += nh + 2.0;
+    }
+    y += 4.0;
+    if n_rows > 0 {
+        for row in rows {
+            let mut x = rect.center().x - (row_w(&row) - gap) / 2.0;
+            for (galley, colour) in row {
+                painter.rect_filled(egui::Rect::from_min_size(egui::pos2(x, y + 2.0), egui::vec2(swatch, swatch)), 2.0, colour);
+                let w = galley.size().x;
+                painter.galley(egui::pos2(x + swatch + 4.0, y), galley, white);
+                x += swatch + 4.0 + w + gap;
+            }
+            y += row_h;
+        }
+    }
+}
+
 /// A caption band along the bottom of the frame (for saved renders).
 pub fn draw_caption(ctx: &egui::Context, text: &str) {
     egui::Window::new("caption")
@@ -190,6 +287,31 @@ pub fn draw_caption(ctx: &egui::Context, text: &str) {
             ui.set_width(ctx.content_rect().width() - 20.0);
             ui.label(egui::RichText::new(text).monospace().size(18.0).color(egui::Color32::WHITE));
         });
+}
+
+/// The text sizes and spacing of the game's windows, big enough to read at
+/// 1080p and at 150% (M3a).
+pub fn apply_panel_style(ctx: &egui::Context) {
+    ctx.all_styles_mut(|s| {
+        use egui::{FontId, TextStyle};
+        s.text_styles.insert(TextStyle::Body, FontId::proportional(17.0));
+        s.text_styles.insert(TextStyle::Button, FontId::proportional(17.0));
+        s.text_styles.insert(TextStyle::Heading, FontId::proportional(21.0));
+        s.text_styles.insert(TextStyle::Small, FontId::proportional(14.5));
+        s.text_styles.insert(TextStyle::Monospace, FontId::monospace(15.0));
+        s.spacing.slider_width = 230.0;
+        s.spacing.interact_size = egui::vec2(44.0, 24.0);
+        s.spacing.item_spacing = egui::vec2(10.0, 7.0);
+    });
+}
+
+/// One egui pass from synthetic input, over the offscreen target when `draw`
+/// (otherwise only its textures are taken: the passes that lead up to a picture
+/// don't paint over each other). The harness drives the T window with this.
+pub fn ui_pass(ctx: &egui::Context, paint: &mut EguiPaint, gpu: &crate::render::Renderer, raw: egui::RawInput, draw: bool, build: &mut dyn FnMut(&egui::Context)) {
+    let full = ctx.run_ui(raw, |ui| build(ui.ctx()));
+    let prims = if draw { ctx.tessellate(full.shapes, full.pixels_per_point) } else { Vec::new() };
+    paint.paint(&gpu.device, &gpu.queue, &gpu.color_view, (gpu.width, gpu.height), full.pixels_per_point, &prims, &full.textures_delta);
 }
 
 /// Run one egui pass without a window and paint it over the renderer's

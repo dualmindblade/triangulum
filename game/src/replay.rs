@@ -199,6 +199,13 @@ impl ChunkDigests {
     }
 }
 
+/// The hash of the world's edits and how many chunks hold them (a photo's
+/// `edits`): the digest a replay's checks use, read and nothing changed.
+pub fn edit_state(store: &Arc<EditStore>, digests: &mut ChunkDigests) -> (String, usize) {
+    let map = digests.all(store);
+    (format!("{:016x}", world_digest(&map)), map.len())
+}
+
 fn world_digest(map: &BTreeMap<ChunkKey, u64>) -> u64 {
     let mut d = Digest::new(b"world");
     d.u64(map.len() as u64);
@@ -358,6 +365,7 @@ pub fn action_text(a: &Action) -> String {
         Action::Sim(on) => format!("sim {}", if *on { "on" } else { "off" }),
         Action::SimRadius(m) => format!("simradius {}", f(*m)),
         Action::WaterPeriod(n) => format!("waterperiod {n}"),
+        Action::Flow(c) => format!("flow {}", c.text()),
         Action::Pose(p) => format!("pose {}", pose_text(p)),
         Action::Reload => "reload".into(),
     }
@@ -392,6 +400,7 @@ fn parse_action(verb: &str, args: &[&str], block_size: f64) -> Result<Action, St
         "sim" => Action::Sim(arg(0)? == "on"),
         "simradius" => Action::SimRadius(pf(arg(0)?)?),
         "waterperiod" => Action::WaterPeriod(arg(0)?.parse().map_err(|_| "bad water period".to_string())?),
+        "flow" => Action::Flow(crate::sim::Flow::parse(args)?),
         "pose" => Action::Pose(Box::new(parse_pose(arg(0)?, block_size)?)),
         "reload" => Action::Reload,
         other => return Err(format!("unknown event {other:?}")),
@@ -621,6 +630,10 @@ pub struct Header {
     pub sim_radius_m: String,
     pub sim_enabled: bool,
     pub water_period: u64,
+    /// `sim::Flow::text` at the start (a file from before B4 has none, and
+    /// is refused by its `sim_rules` anyway).
+    #[serde(default)]
+    pub flow: String,
     /// The simulation's counters (the HUD's water balance and falls).
     pub counters: BTreeMap<String, u64>,
     /// The session's step counter (the tick is every third step).
@@ -644,6 +657,7 @@ fn rules_v1() -> u32 {
 fn counters_of(s: &crate::sim::SimStats) -> BTreeMap<String, u64> {
     [
         ("falls", s.falls),
+        ("slides", s.slides),
         ("landings", s.landings),
         ("vanished", s.vanished),
         ("processed", s.processed),
@@ -655,6 +669,7 @@ fn counters_of(s: &crate::sim::SimStats) -> BTreeMap<String, u64> {
         ("water_removed", s.water_removed),
         ("water_displaced", s.water_displaced),
         ("water_lost", s.water_lost),
+        ("water_dried", s.water_dried),
     ]
     .into_iter()
     .map(|(k, v)| (k.to_string(), v))
@@ -664,6 +679,7 @@ fn counters_of(s: &crate::sim::SimStats) -> BTreeMap<String, u64> {
 fn restore_counters(s: &mut crate::sim::SimStats, c: &BTreeMap<String, u64>) {
     let get = |k: &str| c.get(k).copied().unwrap_or(0);
     s.falls = get("falls");
+    s.slides = get("slides");
     s.landings = get("landings");
     s.vanished = get("vanished");
     s.processed = get("processed");
@@ -675,6 +691,7 @@ fn restore_counters(s: &mut crate::sim::SimStats, c: &BTreeMap<String, u64>) {
     s.water_removed = get("water_removed");
     s.water_displaced = get("water_displaced");
     s.water_lost = get("water_lost");
+    s.water_dried = get("water_dried");
 }
 
 fn sky_settings_map() -> BTreeMap<String, String> {
@@ -727,6 +744,7 @@ impl Header {
 struct Expect {
     pose: u64,
     sim: (u64, bool, u64),
+    flow: crate::sim::Flow,
     sky: (u64, u64),
     hide: bool,
     edit_gen: u64,
@@ -739,6 +757,7 @@ impl Expect {
         Self {
             pose: pose_digest(&s.player),
             sim: (c.radius_m.to_bits(), c.enabled, c.water_period),
+            flow: c.flow,
             sky: (s.sky.seconds.to_bits(), s.sky.speed.to_bits()),
             hide: s.engine.hide_water,
             edit_gen: s.engine.edits.generation(),
@@ -781,6 +800,12 @@ pub fn default_path(world_name: &str) -> PathBuf {
     let name: String = world_name.chars().map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '_' }).collect();
     let (date, time) = utc_now();
     PathBuf::from(format!("{}/replays/{name}-{date}-{time}.replay", env!("CARGO_MANIFEST_DIR")))
+}
+
+/// UTC now as "YYYYMMDD-HHMMSS".
+pub fn utc_stamp() -> String {
+    let (date, time) = utc_now();
+    format!("{date}-{time}")
 }
 
 /// UTC now as ("YYYYMMDD", "HHMMSS").
@@ -829,6 +854,7 @@ impl Recorder {
             sim_radius_m: f(s.sim.config.radius_m),
             sim_enabled: s.sim.config.enabled,
             water_period: s.sim.config.water_period,
+            flow: s.sim.config.flow.text(),
             counters: counters_of(&s.sim.stats),
             steps: s.steps(),
             held: s.held().map(|(b, since)| (button_text(b).to_string(), since)),
@@ -916,6 +942,9 @@ impl Recorder {
         }
         if now.sim.2 != was.sim.2 {
             self.line(step, &action_text(&Action::WaterPeriod(now.sim.2)));
+        }
+        if now.flow != was.flow {
+            self.line(step, &action_text(&Action::Flow(now.flow)));
         }
         if now.hide != was.hide {
             self.line(step, &action_text(&Action::HideWater(now.hide)));
@@ -1179,7 +1208,13 @@ pub fn compatibility(template: &Session, h: &Header) -> Result<(), String> {
         bad.push(format!("generator version {} vs {} (the terrain has changed since it was recorded; play it with the build that recorded it)", h.generator_version, save::GENERATOR_VERSION));
     }
     if h.sim_rules != crate::sim::RULES_VERSION {
-        bad.push(format!("simulation rules version {} vs {} (a build with other water and falling rules would not reproduce it; play it with the build that recorded it)", h.sim_rules, crate::sim::RULES_VERSION));
+        bad.push(format!(
+            "simulation rules version {} vs {}: {} (this build's rules would not reproduce it, so it will not play here. Your world and saves are fine; to watch this recording, use a build of the game with simulation rules {})",
+            h.sim_rules,
+            crate::sim::RULES_VERSION,
+            if h.sim_rules < crate::sim::RULES_VERSION { "it was recorded before sand and water learned to slide off ledges" } else { "it was recorded by a newer build" },
+            h.sim_rules
+        ));
     }
     if h.bake_sha256 != template.bake_sha256 {
         bad.push(format!("bake {}.. vs {}.. (copy the bake it was recorded with, or re-bake)", &h.bake_sha256[..h.bake_sha256.len().min(12)], &template.bake_sha256[..template.bake_sha256.len().min(12)]));
@@ -1214,7 +1249,8 @@ pub fn session_from(template: &Session, rep: &Replay, scratch: &Path) -> Result<
     e.hide_water = h.hide_water;
     e.hotbar = h.hotbar.iter().map(|n| engine.registry.id(n)).collect::<Result<Vec<_>, _>>().map_err(|err| format!("the replay's hotbar: {err}"))?;
     let engine = Arc::new(e);
-    let cfg = SimConfig { radius_m: pf(&h.sim_radius_m)?, enabled: h.sim_enabled, water_period: h.water_period.max(1) };
+    let flow = crate::sim::Flow::parse(&h.flow.split_whitespace().collect::<Vec<_>>())?;
+    let cfg = SimConfig { radius_m: pf(&h.sim_radius_m)?, enabled: h.sim_enabled, water_period: h.water_period.max(1), flow };
     let mut sim = Session::load_sim(Some(&dir), cfg, &engine.registry)?;
     restore_counters(&mut sim.stats, &h.counters);
     let player = parse_pose(&h.player, engine.planet.block_size)?;
@@ -1396,4 +1432,4 @@ impl<'r> Runner<'r> {
 
 #[cfg(test)]
 #[path = "replay_tests.rs"]
-mod tests;
+pub(crate) mod tests;

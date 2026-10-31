@@ -19,9 +19,13 @@
 //!   a directory given with --save unless --reset-save is also given
 //! Simulation: --sim-radius M (112; LOD-0 chunks within it tick, the rest is frozen)  --no-sim
 //!   --water-period N (1; ticks per water step: how many 20 Hz ticks a cell of water takes to move one cell)
+//!   --no-slide (the rules before B4: straight down only, and the film stays; a later --film overrides that part)
+//!   --film keep|seek|merge|dry|seek+dry (what becomes of level-1 water, Andrew's #9; seek+dry)
+//!   --film-reach N (8; how many cells a film runs along a dry line to a drop)
+//!   --film-dry-s S (10; a film dries between S and 3 S seconds after it comes to rest)
 //! Player: --walk | --fly (default: walk when starting within 50 m of the ground)
 //!   --hotbar stone,dirt,...  (blocks on keys 1-9; default: the first eight solid blocks and water)
-//! Look (M3a): F1 opens the look panel  --panel (start with it open)
+//! Look (M3a): F1 opens the look panel  --panel (start with it open)  M and Shift+M step the mesh view
 //!   --look-file FILE (default assets/look.json; the panel saves to it, and to --blocks and --world)
 //! Other options: --lod-factor F (look.json's, 5) --threads N --no-ao --no-split --skirt N
 //!   --no-vsync --size WxH --hide-water --markers --backend vulkan|dx12
@@ -33,6 +37,9 @@
 //!   year-days must equal 4 * months-per-season * lunar-month-days
 //!   [ slows time, ] speeds time (0, 0.1, 1, 10, 60, 600, 3600x)
 //!   --sky-reel --out DIR  (settled 1080p sky comparison, four poses/four times)
+//! Photos: P takes one to game/interchange/ (settled), Shift+P the live frame, T opens the map
+//!   and the roll  --interchange DIR (somewhere else)
+//!   --repro SHOT.png   write SHOT.play beside a photo: an exact repro from its sidecar
 //! Replays (M2c): F10 in the game records one to game/replays/
 //!   --replay FILE         play it headless, check it, report the first divergence
 //!   --shot-at STEP        (with --replay, repeatable; STEP or "end") a settled shot there
@@ -47,7 +54,10 @@ pub mod engine;
 pub mod grid;
 pub mod landform_shots;
 pub mod look;
+pub mod map;
+pub mod menu;
 pub mod mesh;
+pub mod photos;
 pub mod play;
 pub mod player;
 pub mod render;
@@ -114,6 +124,7 @@ struct Args {
     sim_radius: f64,
     no_sim: bool,
     water_period: u64,
+    flow: sim::Flow,
     walk: Option<bool>,
     hotbar: Option<String>,
     frames: usize,
@@ -140,6 +151,8 @@ struct Args {
     shot_at: Vec<String>,
     watch: bool,
     record_replay: Option<String>,
+    interchange: Option<String>,
+    repro: Option<String>,
 }
 
 fn parse_args() -> Args {
@@ -182,6 +195,7 @@ fn parse_args() -> Args {
         sim_radius: sim::SimConfig::default().radius_m,
         no_sim: false,
         water_period: sim::SimConfig::default().water_period,
+        flow: sim::Flow::default(),
         walk: None,
         hotbar: None,
         frames: 120,
@@ -208,6 +222,8 @@ fn parse_args() -> Args {
         shot_at: Vec::new(),
         watch: false,
         record_replay: None,
+        interchange: None,
+        repro: None,
     };
     let mut it = std::env::args().skip(1);
     while let Some(k) = it.next() {
@@ -259,6 +275,10 @@ fn parse_args() -> Args {
             "--sim-radius" => a.sim_radius = val().parse().unwrap(),
             "--no-sim" => a.no_sim = true,
             "--water-period" => a.water_period = val().parse().unwrap(),
+            "--no-slide" => a.flow = sim::Flow { slide: false, film: sim::Film::Keep, ..a.flow },
+            "--film" => a.flow.film = sim::Film::parse(&val()).unwrap_or_else(|e| fail(&e)),
+            "--film-reach" => a.flow.film_reach = val().parse().unwrap(),
+            "--film-dry-s" => a.flow.film_dry_ticks = ((val().parse::<f64>().unwrap() * sim::TICK_HZ as f64) as u64).max(1),
             "--walk" => a.walk = Some(true),
             "--fly" => a.walk = Some(false),
             "--hotbar" => a.hotbar = Some(val()),
@@ -290,6 +310,8 @@ fn parse_args() -> Args {
             "--shot-at" => a.shot_at.push(val()),
             "--watch" => a.watch = true,
             "--record-replay" => a.record_replay = Some(val()),
+            "--interchange" => a.interchange = Some(val()),
+            "--repro" => a.repro = Some(val()),
             "--help" | "-h" => {
                 println!("{}", include_str!("main.rs").lines().take_while(|l| l.starts_with("//!")).map(|l| l.trim_start_matches("//!").trim_start_matches(' ')).collect::<Vec<_>>().join("\n"));
                 std::process::exit(0);
@@ -308,6 +330,20 @@ fn fail(msg: &str) -> ! {
 fn main() {
     let args = parse_args();
     let root = env!("CARGO_MANIFEST_DIR");
+    if let Some(d) = &args.interchange {
+        photos::set_dir(d.into());
+    }
+    if let Some(p) = &args.repro {
+        let r = photos::repro(Path::new(p)).unwrap_or_else(|e| fail(&e));
+        println!("wrote {}
+
+the same frame, from game/:
+  {}
+
+near it, by hand:
+  {}", r.script.display(), r.command, r.at_command);
+        return;
+    }
     if args.threads > 0 {
         rayon::ThreadPoolBuilder::new().num_threads(args.threads).build_global().unwrap();
     }
@@ -562,7 +598,7 @@ fn main() {
     if args.water_period == 0 {
         fail("--water-period must be at least 1 tick");
     }
-    let sim = Session::load_sim(save_dir.as_ref(), sim::SimConfig { radius_m: args.sim_radius, enabled: !args.no_sim, water_period: args.water_period }, &registry).unwrap_or_else(|e| fail(&e));
+    let sim = Session::load_sim(save_dir.as_ref(), sim::SimConfig { radius_m: args.sim_radius, enabled: !args.no_sim, water_period: args.water_period, flow: args.flow }, &registry).unwrap_or_else(|e| fail(&e));
     println!("simulation: {} Hz tick, {} m active radius{}; resumed at tick {} with {} queued, {} frozen, {} falling", sim::TICK_HZ, args.sim_radius, if args.no_sim { " (off)" } else { "" }, sim.tick(), sim.queued(), sim.frozen_count(), sim.falling().len());
     let mut session = Session::new(engine.clone(), Player::new(dir * (p.radius + alt_asl.unwrap_or(ground + 2.0)), heading, pitch, if walk { Mode::Walk } else { Mode::Fly }, p.block_size), save_dir, bake_sha, sim);
     session.sky = clock;

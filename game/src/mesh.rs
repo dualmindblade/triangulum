@@ -13,8 +13,10 @@
 //! lattice corner (Minecraft-style, `Surface::corner`), so neighbouring
 //! cells' surfaces meet exactly; the top edge of a side face against air
 //! takes the same two corners, so falls and partial columns are watertight.
-//! A cell with water above it counts as full. Full water (the ocean, resting
-//! lakes, every coarse LOD) carries 255s and is the geometry it always was.
+//! A cell with water above it counts as full. Full water (the ocean, every
+//! coarse LOD) carries 255s and is the geometry it always was. Corners read
+//! the real cells at them, not the padded ids the terrain mesh uses, and a
+//! top face shows under a solid unless it lies in the solid's underside.
 //!
 //! Grid record: 25 offsets (vec4, xyz = corner position at the chunk's
 //! lattice floor relative to the chunk origin) then 25 unit directions
@@ -122,26 +124,67 @@ impl Masks {
     }
 }
 
-/// The water surface of a padded LOD-0 grid with per-cell levels.
-struct Surface<'a> {
-    masks: &'a Masks,
-    levels: &'a [u8],
+/// What the water mesher needs to know about a padded LOD-0 grid beyond its
+/// ids (`World::padded_levels`).
+pub struct PaddedWater {
+    /// Water level of every padded cell, index by `pidx`.
+    pub levels: Vec<u8>,
+    /// Border cells (x, y, z) that are solid in the world although the
+    /// padded ids say otherwise. The generator lowers a chunk's border
+    /// columns by its skirt, so the terrain mesh grows side faces that hide
+    /// LOD seams; those columns' ground then reads as air or water. Only
+    /// the cells a water face or surface can reach are listed.
+    pub skirted: Vec<(i8, i8, i8)>,
 }
 
-impl Surface<'_> {
+/// The water surface of a padded LOD-0 grid with per-cell levels. Its masks
+/// are the real cells, the skirt undone: two chunks see each other's
+/// columns lowered, so through the padded ids they would disagree about a
+/// shared corner, and a shore's ground would read as air and pull the
+/// surface down (Andrew's #10).
+struct Surface<'a> {
+    masks: Masks,
+    levels: &'a [u8],
+    /// The padded column past two sides of a face, in a chunk at a cube
+    /// corner. Three faces meet there, so the lattice has no such cell, and
+    /// the padding repeats one of the real ones (each face a different one).
+    no_cell: Option<(i32, i32)>,
+}
+
+impl<'a> Surface<'a> {
+    fn new(padded: &Masks, water: &'a PaddedWater, key: ChunkKey, planet: &Planet) -> Self {
+        let mut masks = Masks { solid: padded.solid.clone(), liquid: padded.liquid.clone() };
+        for &(x, y, z) in &water.skirted {
+            let (c, bit) = (col(x as i32, y as i32), 1u64 << (z as i32 + 1));
+            masks.solid[c] |= bit;
+            masks.liquid[c] &= !bit;
+        }
+        let last = planet.chunks_per_edge(key.lod) - 1;
+        let past = |c: u32| if c == 0 { Some(-1) } else if c == last { Some(CHUNK as i32) } else { None };
+        Self { masks, levels: &water.levels, no_cell: past(key.cx).zip(past(key.cy)) }
+    }
+
     /// Height (0..=255 of a voxel) of layer `z`'s water at lattice corner
-    /// (cx, cy), cx and cy in 0..=32: the weighted mean over the four cells
+    /// (cx, cy), cx and cy in 0..=32: the weighted mean over the cells
     /// around the corner, water cells by their level (weight 10 at 0.8 and
     /// above, else 1), air cells as 0 with weight 1, solid cells left out;
-    /// a water cell with water above it makes the corner full.
+    /// a water cell with water above it makes the corner full, and so does
+    /// full water with nothing partial beside it, air or not. That is what
+    /// a chunk with no partial water draws, flat, so the two always meet
+    /// (review 3 #8); it is a pure function of the real cells at the corner,
+    /// so every chunk and every cube face that shares it gets one height.
     fn corner(&self, cx: i32, cy: i32, z: i32) -> u8 {
-        let (mut sum, mut w) = (0u32, 0u32);
+        let (mut sum, mut w, mut air, mut partial) = (0u32, 0u32, 0u32, false);
         for (x, y) in [(cx - 1, cy - 1), (cx, cy - 1), (cx - 1, cy), (cx, cy)] {
+            if Some((x, y)) == self.no_cell {
+                continue;
+            }
             if self.masks.liquid_at(x, y, z) {
                 if self.masks.liquid_at(x, y, z + 1) {
                     return 255;
                 }
                 let l = self.levels[pidx(x, y, z)] as u32;
+                partial |= l != 255;
                 if l >= 204 {
                     sum += 10 * l;
                     w += 10;
@@ -150,10 +193,14 @@ impl Surface<'_> {
                     w += 1;
                 }
             } else if !self.masks.solid_at(x, y, z) {
-                w += 1;
+                air += 1;
             }
         }
-        if w == 0 { 255 } else { ((sum + w / 2) / w) as u8 }
+        if !partial {
+            return 255;
+        }
+        w += air;
+        ((sum + w / 2) / w) as u8
     }
 
     /// The four corner heights of a face of water voxel (x, y, z), packed
@@ -182,9 +229,9 @@ pub fn mesh_chunk(generated: &Generated, registry: &Registry, planet: &Planet, o
     mesh_chunk_levels(generated, None, registry, planet, opt)
 }
 
-/// Mesh a generated chunk; `levels` (padded, `World::padded_levels`) gives
+/// Mesh a generated chunk; `water_cells` (`World::padded_levels`) gives
 /// LOD-0 water its sloped surfaces.
-pub fn mesh_chunk_levels(generated: &Generated, levels: Option<&[u8]>, registry: &Registry, planet: &Planet, opt: MeshOptions) -> MeshData {
+pub fn mesh_chunk_levels(generated: &Generated, water_cells: Option<&PaddedWater>, registry: &Registry, planet: &Planet, opt: MeshOptions) -> MeshData {
     let t0 = Instant::now();
     let key = generated.key;
     let ids = &generated.ids;
@@ -230,12 +277,36 @@ pub fn mesh_chunk_levels(generated: &Generated, levels: Option<&[u8]>, registry:
             }
             id | (ao_bits(&masks, axis, sign, x, y, z) << 16)
         };
-        mesh_set(&masks.solid, &blocking, opt, &cap, &face_key, &mut |lo, k| opaque.push([lo, k]));
+        mesh_set(&masks.solid, &blocking, &blocking, opt, &cap, &face_key, &mut |lo, k| opaque.push([lo, k]));
     }
     if any_liquid {
-        let blocking: Vec<u64> = masks.solid.iter().zip(&masks.liquid).map(|(s, l)| s | l).collect();
         let cap = |_: u32, _: u32, _: usize| sea_edge;
-        let surface = levels.filter(|_| key.lod == 0).map(|levels| Surface { masks: &masks, levels });
+        let surface = water_cells.filter(|_| key.lod == 0).map(|cells| Surface::new(&masks, cells, key, planet));
+        // Water reads the real cells for its faces too: a side face against
+        // ground the skirt hollowed out would lie in that ground's own wall
+        // and z-fight with it.
+        let real = surface.as_ref().map_or(&masks, |s| &s.masks);
+        let blocking: Vec<u64> = real.solid.iter().zip(&real.liquid).map(|(s, l)| s | l).collect();
+        // A top face hides only under water, or under a solid it touches: a
+        // surface flat at the voxel's top lies in the solid's underside, so
+        // drawing it would z-fight with that face and tint a view from
+        // below twice. One lower than that has air over it, and shows.
+        let top_blocking: Vec<u64> = (0..PAD * PAD)
+            .map(|c| {
+                let mut b = masks.liquid[c];
+                let mut covered = masks.liquid[c] & (masks.solid[c] >> 1) & INNER;
+                while covered != 0 {
+                    let bit = covered.trailing_zeros() as i32; // the cell is z = bit - 1
+                    covered &= covered - 1;
+                    let (x, y) = (((c / PAD) as i32) - 1, ((c % PAD) as i32) - 1);
+                    let interior = (0..CHUNK as i32).contains(&x) && (0..CHUNK as i32).contains(&y);
+                    if !interior || surface.as_ref().is_none_or(|s| s.heights(2, 1, x, y, bit - 1) == WATER_FLAT) {
+                        b |= 1 << (bit + 1);
+                    }
+                }
+                b
+            })
+            .collect();
         // Merge key: block id and the four corner heights (full water merges as before).
         let face_key = |axis: u32, sign: u32, u: usize, v: usize, slice: usize| -> (u32, u32) {
             let (x, y, z) = voxel_of(axis, slice, u, v);
@@ -243,7 +314,7 @@ pub fn mesh_chunk_levels(generated: &Generated, levels: Option<&[u8]>, registry:
             let heights = surface.as_ref().map_or(WATER_FLAT, |s| s.heights(axis, sign, x, y, z));
             (id, heights)
         };
-        mesh_set(&masks.liquid, &blocking, MeshOptions { split: opt.split, ao: false }, &cap, &face_key, &mut |lo, k: (u32, u32)| water.push([lo, k.0, k.1, 0]));
+        mesh_set(&masks.liquid, &blocking, &top_blocking, MeshOptions { split: opt.split, ao: false }, &cap, &face_key, &mut |lo, k: (u32, u32)| water.push([lo, k.0, k.1, 0]));
     }
 
     // Curvature grid record relative to the chunk's lattice corner.
@@ -281,11 +352,12 @@ pub fn sea_edge_voxels(planet: &Planet, lod: u8) -> usize {
 }
 
 /// Emit greedy quads for every face of `occ` voxels that borders a
-/// non-`blocking` voxel. `cap(axis, sign, slice)` is the longest tangent
-/// edge, in voxels, of the quads in that face plane; `face_key(axis, sign,
-/// u, v, slice)` is what a face must share to merge (its id and shading);
-/// `emit(lo, key)` receives each quad.
-fn mesh_set<K: Copy + PartialEq>(occ: &[u64], blocking: &[u64], opt: MeshOptions, cap: &dyn Fn(u32, u32, usize) -> usize, face_key: &dyn Fn(u32, u32, usize, usize, usize) -> K, emit: &mut dyn FnMut(u32, K)) {
+/// non-`blocking` voxel (`top_blocking` for +z faces). `cap(axis, sign,
+/// slice)` is the longest tangent edge, in voxels, of the quads in that face
+/// plane; `face_key(axis, sign, u, v, slice)` is what a face must share to
+/// merge (its id and shading); `emit(lo, key)` receives each quad.
+#[allow(clippy::too_many_arguments)]
+fn mesh_set<K: Copy + PartialEq>(occ: &[u64], blocking: &[u64], top_blocking: &[u64], opt: MeshOptions, cap: &dyn Fn(u32, u32, usize) -> usize, face_key: &dyn Fn(u32, u32, usize, usize, usize) -> K, emit: &mut dyn FnMut(u32, K)) {
     // Transposed masks: xcol[y][z] bits over x+1; ycol[x][z] bits over y+1.
     let mut xocc = vec![0u64; PAD * PAD];
     let mut yocc = vec![0u64; PAD * PAD];
@@ -312,7 +384,7 @@ fn mesh_set<K: Copy + PartialEq>(occ: &[u64], blocking: &[u64], opt: MeshOptions
         for y in 0..CHUNK {
             let c = col(x as i32, y as i32);
             let (o, b) = (occ[c], blocking[c]);
-            let mut up = o & !(b >> 1) & INNER;
+            let mut up = o & !(top_blocking[c] >> 1) & INNER;
             while up != 0 {
                 let z = up.trailing_zeros() as usize - 1;
                 up &= up - 1;
@@ -454,6 +526,7 @@ fn ao_bits(masks: &Masks, axis: u32, sign: u32, x: i32, y: i32, z: i32) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::grid::BlockPos;
     use crate::worldgen::Generator;
 
     fn generator() -> (Generator, Registry) {
@@ -685,5 +758,282 @@ mod tests {
         assert!(worst_radial < 0.7, "no chord sags more than one LOD-9 voxel's: {worst_radial:.3} m");
         // The cap in voxels per LOD: 1 at LOD 9 and 8, doubling down to the grid cell at LOD 5, the whole chunk at LOD 2 and below.
         assert_eq!([9u8, 8, 7, 6, 5, 4, 3, 2, 0].map(|l| sea_edge_voxels(&planet, l)), [1, 1, 2, 4, 8, 16, 32, 32, 32]);
+    }
+
+    /// Every water top face of a mesh, by cell: (x, y, slice) -> the packed
+    /// corner heights. Greedy quads merge only equal heights, so each cell
+    /// of a quad has the quad's.
+    fn water_tops(m: &MeshData) -> std::collections::HashMap<(u32, u32, u32), u32> {
+        let mut out = std::collections::HashMap::new();
+        for q in &m.water {
+            let (axis, sign, slice, u0, v0, w, h) = unpack(&[q[0], q[1]]);
+            if axis == 2 && sign == 1 {
+                for x in u0..u0 + w {
+                    for y in v0..v0 + h {
+                        assert!(out.insert((x, y, slice), q[2]).is_none(), "two top faces at {x} {y} {slice}");
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    fn mesh_of(w: &crate::world::World, key: ChunkKey) -> MeshData {
+        let made = w.generate(key);
+        let levels = w.padded_levels(key, &made);
+        mesh_chunk_levels(&made, levels.as_ref(), &w.registry, &w.planet, MeshOptions::default())
+    }
+
+    /// Every lattice corner of a mesh's water faces at its surface, in world
+    /// lattice coordinates: (i, j, layer) -> height. A side face gives its
+    /// two top corners. Panics if one chunk contradicts itself.
+    fn water_corners(m: &MeshData, out: &mut std::collections::HashMap<(u64, u64, u64), (u8, ChunkKey)>) {
+        let (i0, j0, k0) = m.key.origin_blocks();
+        let mut note = |x: u32, y: u32, z: u32, h: u8| {
+            let at = (i0 + x as u64, j0 + y as u64, k0 + z as u64);
+            if let Some((prev, from)) = out.insert(at, (h, m.key)) {
+                assert_eq!(prev, h, "corner {at:?} is {prev} in {from:?} but {h} in {:?}", m.key);
+            }
+        };
+        for q in &m.water {
+            let (axis, sign, slice, u0, v0, w, h) = unpack(&[q[0], q[1]]);
+            let byte = |c: u32| ((q[2] >> (8 * c)) & 0xFF) as u8;
+            match axis {
+                2 if sign == 1 => {
+                    for x in u0..u0 + w {
+                        for y in v0..v0 + h {
+                            for cu in 0..2 {
+                                for cv in 0..2 {
+                                    note(x + cu, y + cv, slice, byte(cu + 2 * cv));
+                                }
+                            }
+                        }
+                    }
+                }
+                2 => {}
+                _ if h != 1 => {} // a merged column of side faces is full water all the way up
+                _ => {
+                    for along in 0..w {
+                        for cu in 0..2 {
+                            let (x, y) = if axis == 0 { (slice + sign, u0 + along + cu) } else { (u0 + along + cu, slice + sign) };
+                            note(x, y, v0, byte(2 + cu));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Andrew's #10, at the `find lake` site. Lake water at rest is flat,
+    /// and none of it may dip where it meets the shore. Every dip here was
+    /// on a chunk border: the generator's skirt lowers border columns, so
+    /// the neighbour's sand read as air, and air counts as height 0.
+    #[test]
+    fn a_resting_lake_does_not_dip_at_chunk_borders() {
+        let w = crate::world::tests::test_world();
+        let (mut tops, mut shore_tops) = (0, 0);
+        for cx in 3607..=3611 {
+            for cy in 2001..=2005 {
+                let key = ChunkKey::neisor(2, 0, cx, cy, 16);
+                let (i0, j0, k0) = key.origin_blocks();
+                for ((x, y, z), h) in water_tops(&mesh_of(&w, key)) {
+                    let bp = BlockPos { face: 2, i: i0 as u32 + x, j: j0 as u32 + y, k: k0 as u32 + z };
+                    let level = w.water_level_at(bp) as u32;
+                    if level == 204 {
+                        assert_eq!(h, 204 * 0x0101_0101, "a resting lake cell at {bp:?} is flat at its level");
+                        tops += 1;
+                        // Beside the shore: some lateral neighbour is sand.
+                        let sand = |di: i32, dj: i32| w.registry.is_solid(w.block_at(BlockPos { i: (bp.i as i32 + di) as u32, j: (bp.j as i32 + dj) as u32, ..bp }));
+                        shore_tops += (sand(1, 0) || sand(-1, 0) || sand(0, 1) || sand(0, -1)) as u32;
+                    }
+                }
+            }
+        }
+        assert!(tops > 500 && shore_tops > 20, "{tops} lake cells, {shore_tops} on the shore");
+    }
+
+    /// The same fix must not flatten real flow: at the lip of a fall the
+    /// neighbouring air is real, with nothing under it, and the surface
+    /// still leans out over the drop (M2b). Andrew's river, level 152.
+    #[test]
+    fn a_fall_keeps_its_lip() {
+        let w = crate::world::tests::test_world();
+        let key = ChunkKey::neisor(2, 0, 3430, 1715, 16);
+        let (i0, j0, k0) = key.origin_blocks();
+        let (x, y, z) = (109774 - i0 as u32, 54904 - j0 as u32, 521 - k0 as u32);
+        let at = BlockPos { face: 2, i: 109774, j: 54904, k: 521 };
+        assert_eq!(w.water_level_at(at), 152);
+        assert_eq!(w.block_at(BlockPos { i: at.i + 1, ..at }), w.generator.blocks.air, "the cell over the drop");
+        let h = water_tops(&mesh_of(&w, key))[&(x, y, z)];
+        let (near, far) = (h & 0xFF, (h >> 8) & 0xFF);
+        assert!((150..=154).contains(&near), "the upstream edge stays near the cell's level: {h:#x}");
+        assert_eq!(far, 76, "the edge over the drop is pulled down: {h:#x}");
+    }
+
+    /// Neighbouring chunks agree on every corner they share, on real shores:
+    /// the lake above and a river with falls. Each chunk saw the other's
+    /// border columns lowered by the skirt, so they did not.
+    #[test]
+    fn chunks_agree_on_every_shared_water_corner() {
+        let w = crate::world::tests::test_world();
+        let sites = [(3607..=3611, 2001..=2005), (3427..=3431, 1713..=1717)];
+        let mut corners = std::collections::HashMap::new();
+        for (xs, ys) in sites {
+            for cx in xs {
+                for cy in ys.clone() {
+                    water_corners(&mesh_of(&w, ChunkKey::neisor(2, 0, cx, cy, 16)), &mut corners);
+                }
+            }
+        }
+        assert!(corners.len() > 2000, "{} corners", corners.len());
+    }
+
+    /// A water side face lies against something that is not solid. Against
+    /// ground the skirt hollowed out it would lie in that ground's own wall,
+    /// and z-fight with it in a hatched patch at a lake's or a river's shore
+    /// on a chunk border.
+    #[test]
+    fn no_water_side_face_lies_against_real_ground() {
+        let w = crate::world::tests::test_world();
+        let sites = [(3607..=3611, 2001..=2005), (3427..=3431, 1713..=1717)];
+        let mut faces = 0;
+        for (xs, ys) in sites {
+            for cx in xs {
+                for cy in ys.clone() {
+                    let key = ChunkKey::neisor(2, 0, cx, cy, 16);
+                    let (i0, j0, k0) = key.origin_blocks();
+                    let m = mesh_of(&w, key);
+                    for q in &m.water {
+                        let (axis, sign, slice, u0, v0, qw, qh) = unpack(&[q[0], q[1]]);
+                        if axis == 2 {
+                            continue;
+                        }
+                        for a in 0..qw {
+                            for b in 0..qh {
+                                let (x, y) = if axis == 0 { (slice as i64, (u0 + a) as i64) } else { ((u0 + a) as i64, slice as i64) };
+                                let s = if sign == 1 { 1 } else { -1 };
+                                let (nx, ny) = if axis == 0 { (x + s, y) } else { (x, y + s) };
+                                let bp = BlockPos { face: 2, i: (i0 as i64 + nx) as u32, j: (j0 as i64 + ny) as u32, k: k0 as u32 + v0 + b };
+                                assert!(!w.registry.is_solid(w.block_at(bp)), "a side face of {key:?} lies against the ground at {bp:?}");
+                                faces += 1;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        assert!(faces > 100, "{faces} side faces");
+    }
+
+    /// Review 3 #8, the first case: a partial cell elsewhere in chunk A
+    /// turned on corner averaging for all of A, while chunk B beside it,
+    /// with nothing partial in reach, drew flat. At a corner of two full
+    /// cells and two air cells A said 232 and B 255: 9 cm apart.
+    #[test]
+    fn full_water_meets_across_a_chunk_with_no_levels() {
+        let w = crate::world::tests::test_world();
+        let (a, b) = (ChunkKey::neisor(2, 0, 3000, 1500, 30), ChunkKey::neisor(2, 0, 3001, 1500, 30));
+        let cell = |key: ChunkKey, x: u32, y: u32| {
+            let (i0, j0, k0) = key.origin_blocks();
+            BlockPos { face: 2, i: i0 as u32 + x, j: j0 as u32 + y, k: k0 as u32 + 10 }
+        };
+        // One row of full water across the border, with air on either side of it.
+        for x in 29..32 {
+            assert!(w.set_water(cell(a, x, 10), w.water_id(), 255));
+        }
+        for x in 0..3 {
+            assert!(w.set_water(cell(b, x, 10), w.water_id(), 255));
+        }
+        // A partial cell in A, out of B's reach.
+        assert!(w.set_water(cell(a, 5, 20), w.water_id(), 60));
+        assert!(w.padded_levels(a, &w.generate(a)).is_some(), "A has levels");
+        assert!(w.padded_levels(b, &w.generate(b)).is_none(), "B draws flat");
+        let mut corners = std::collections::HashMap::new();
+        water_corners(&mesh_of(&w, a), &mut corners);
+        water_corners(&mesh_of(&w, b), &mut corners);
+        let (i0, j0, k0) = b.origin_blocks();
+        assert_eq!(corners[&(i0, j0 + 11, k0 + 10)].0, 255, "the shared corner of two full cells and two of air");
+    }
+
+    /// Review 3 #8, the second case: at a cube corner four padded samples
+    /// stand for three cells, and each face repeats a different one, so
+    /// levels 10, 50 and 90 gave 60 on one face and 40 on another: 8 cm.
+    #[test]
+    fn three_faces_agree_at_a_cube_corner() {
+        let w = crate::world::tests::test_world();
+        let k = 1000; // high in the air
+        let cells = [w.resolve_block(2, 0, 0, k).unwrap(), w.resolve_block(2, -1, 0, k).unwrap(), w.resolve_block(2, 0, -1, k).unwrap()];
+        assert!(cells[0].face != cells[1].face && cells[1].face != cells[2].face && cells[0].face != cells[2].face, "{cells:?}");
+        for (bp, level) in cells.iter().zip([10, 50, 90]) {
+            assert!(w.set_water(*bp, w.water_id(), level));
+        }
+        for bp in cells {
+            let (key, x, y, z) = crate::world::World::chunk_of(bp);
+            // The lattice corner of this face that is the cube's.
+            let (cu, cv) = ((bp.i != 0) as u32, (bp.j != 0) as u32);
+            let h = water_tops(&mesh_of(&w, key))[&(x as u32, y as u32, z as u32)];
+            assert_eq!((h >> (8 * (cu + 2 * cv))) & 0xFF, 50, "face {}: the mean of the three real cells ({h:#x})", bp.face);
+        }
+    }
+
+    /// Andrew's #1, recording 040850: stones laid over a river. The cells
+    /// under them hold level 115, half a block below the stone, and their
+    /// top faces were culled because the cell above was solid, so the
+    /// surface had a hole you looked straight through. A top face hides
+    /// under a solid only when it lies in the solid's underside: there it
+    /// is invisible from above and would z-fight from below.
+    #[test]
+    fn water_top_shows_under_a_solid_unless_it_touches_it() {
+        let w = crate::world::tests::test_world();
+        let stone = w.registry.id("stone").unwrap();
+        let water = w.water_id();
+        // High in the air, so nothing but these cells is in the chunk.
+        let key = ChunkKey::neisor(2, 0, 3000, 1500, 30);
+        let (i0, j0, k0) = key.origin_blocks();
+        let at = |x: u32, y: u32, z: u32| BlockPos { face: 2, i: i0 as u32 + x, j: j0 as u32 + y, k: k0 as u32 + z };
+        // A stone basin 3 x 3 cells inside, one deep, and a second pool so the chunk always has partial water.
+        for x in 7..=11 {
+            for y in 7..=11 {
+                w.set_block(at(x, y, 9), stone);
+                if x == 7 || x == 11 || y == 7 || y == 11 {
+                    w.set_block(at(x, y, 10), stone);
+                }
+            }
+        }
+        for (x, y) in [(20, 20), (20, 21), (21, 20), (21, 21)] {
+            w.set_block(at(x, y, 9), stone);
+            w.set_water(at(x, y, 10), water, 60);
+        }
+        let fill = |level: u8| {
+            for x in 8..=10 {
+                for y in 8..=10 {
+                    w.set_water(at(x, y, 10), water, level);
+                }
+            }
+        };
+        w.set_block(at(9, 9, 11), stone); // the one stone over the middle cell
+
+        // Level 115: half a block of air under the stone, so the surface goes on under it.
+        fill(115);
+        let tops = water_tops(&mesh_of(&w, key));
+        assert_eq!(tops.get(&(9, 9, 10)), Some(&0x7373_7373), "the cell under the stone has its surface, at its level");
+        assert_eq!(tops.get(&(8, 8, 10)), Some(&0x7373_7373));
+
+        // Full, with the same stone: the top would lie in the stone's underside.
+        fill(255);
+        let tops = water_tops(&mesh_of(&w, key));
+        assert_eq!(tops.get(&(9, 9, 10)), None, "a full cell's top is coplanar with the solid on it: not drawn");
+        assert_eq!(tops.get(&(8, 9, 10)), Some(&WATER_FLAT), "its uncovered neighbours keep theirs");
+
+        // Full under the stone beside lower water: its corners are pulled down, so there is air
+        // over them, and a top face has to close the gap.
+        w.set_water(at(9, 8, 10), water, 100);
+        let tops = water_tops(&mesh_of(&w, key));
+        let h = *tops.get(&(9, 9, 10)).expect("a sloped surface under a solid shows");
+        assert_ne!(h, WATER_FLAT);
+        assert_eq!(h >> 16 & 0xFFFF, 0xFFFF, "and it still meets the stone on the far side");
+
+        // A coarse LOD has no levels: its water is full, as it always was.
+        assert!(mesh_chunk(&w.generate(key), &w.registry, &w.planet, MeshOptions::default()).water.iter().all(|q| q[2] == WATER_FLAT));
     }
 }

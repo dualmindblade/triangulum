@@ -43,6 +43,15 @@ pub const PITCH_MAX: f64 = 1.55;
 /// the same steps whatever the frame rate (review 2 #16).
 pub const REPEAT_STEPS: u64 = 15;
 
+/// A teleport with an altitude stops this far above the ground, and this far
+/// above sea level (§15.7).
+pub const TELEPORT_MIN_AGL_M: f64 = 2.5;
+pub const TELEPORT_MAX_ALT_M: f64 = 80_000_000.0;
+/// A teleport with no altitude stands in water up to this deep; over anything
+/// deeper it hovers this far above the surface, not on the bottom.
+const TELEPORT_WADE_M: f64 = 1.5;
+const TELEPORT_ABOVE_WATER_M: f64 = 30.0;
+
 /// One input, applied at a step boundary (`Session::apply`). Toggles are
 /// turned into the state they set before they are recorded (`ToggleMode`
 /// is recorded as the `SetMode` it became), so a replay file reads as what
@@ -79,6 +88,8 @@ pub enum Action {
     Sim(bool),
     SimRadius(f64),
     WaterPeriod(u64),
+    /// How powder and water move beyond straight down.
+    Flow(crate::sim::Flow),
     /// Put the player exactly in this state (the harness's teleports and
     /// look commands, as the recorder sees them).
     Pose(Box<Player>),
@@ -213,6 +224,7 @@ impl Session {
             Action::Sim(on) => self.sim.config.enabled = on,
             Action::SimRadius(m) => self.sim.set_radius(m),
             Action::WaterPeriod(n) => self.sim.config.water_period = n.max(1),
+            Action::Flow(f) => self.sim.config.flow = f,
             Action::Pose(p) => self.player = *p,
             Action::Reload => match self.reload() {
                 Ok((_, report)) => self.last_reload = Some(report),
@@ -301,7 +313,7 @@ impl Session {
             Some(bytes) => {
                 let snap = Snapshot::from_bytes(&bytes).map_err(|e| format!("refusing to load the simulation state of {}: {e}", dir.unwrap().path.display()))?;
                 if let Some(saved) = snap.config.filter(|c| *c != config) {
-                    println!("note: the save's simulation ran with radius {} m, {}, water period {}; it continues with radius {} m, {}, water period {}", saved.radius_m, if saved.enabled { "on" } else { "off" }, saved.water_period, config.radius_m, if config.enabled { "on" } else { "off" }, config.water_period);
+                    println!("note: the save's simulation ran with radius {} m, {}, water period {}, {}; it continues with radius {} m, {}, water period {}, {}", saved.radius_m, if saved.enabled { "on" } else { "off" }, saved.water_period, saved.flow.text(), config.radius_m, if config.enabled { "on" } else { "off" }, config.water_period, config.flow.text());
                 }
                 if snap.rules.is_some_and(|r| !crate::sim::rules_extend(registry, &r)) {
                     println!("note: the save was made under other block rules (blocks.json's solid, liquid, gravity or replaceable flags changed); it continues under the current ones");
@@ -355,7 +367,7 @@ impl Session {
         let hit = self.pick()?;
         let cell = hit.place_cell();
         let bp = self.engine.world.resolve_block(hit.face, cell.0, cell.1, cell.2)?;
-        if self.player.mode == Mode::Walk && self.player.overlaps_cell(&self.engine.planet, hit.face, cell) {
+        if self.player.mode == Mode::Walk && self.player.overlaps_cell(&self.engine.planet, bp.face, (bp.i as i64, bp.j as i64, bp.k as i64)) {
             return None;
         }
         let id = self.selected_block();
@@ -418,6 +430,40 @@ impl Session {
                 self.player.place_on_ground(self.engine.world.as_ref(), &planet, dir, k_hint);
             }
         }
+    }
+
+    /// The player after a teleport to `dir`, with this session unchanged: the
+    /// T window hands this to `Action::Pose`, so a recording holds where it
+    /// went. With an altitude (m above sea level) it hovers there, in fly
+    /// mode, clamped above the ground; without one it stands on the ground in
+    /// walk mode, or hovers over water too deep to stand in.
+    pub fn teleport_pose(&self, dir: DVec3, alt_asl_m: Option<f64>) -> Player {
+        let planet = self.engine.planet;
+        let mut p = self.player.clone();
+        p.vel = DVec3::ZERO;
+        p.on_ground = false;
+        let hover = |p: &mut Player, alt: f64| {
+            p.mode = Mode::Fly;
+            p.pos = dir * (planet.radius + alt);
+        };
+        match alt_asl_m {
+            Some(alt) => {
+                let low = self.engine.ground(dir) + TELEPORT_MIN_AGL_M;
+                hover(&mut p, alt.max(low).min(TELEPORT_MAX_ALT_M));
+            }
+            None => {
+                let c = self.engine.generator.column(dir, planet.block_size);
+                if c.wet() && c.water_m - c.height_m as f64 > TELEPORT_WADE_M {
+                    hover(&mut p, c.water_m + TELEPORT_ABOVE_WATER_M);
+                } else {
+                    p.mode = Mode::Walk;
+                    let ground = self.engine.ground(dir);
+                    let k_hint = planet.sea_level as f64 + ground / planet.block_size + 2.0;
+                    p.place_on_ground(self.engine.world.as_ref(), &planet, dir, k_hint);
+                }
+            }
+        }
+        p
     }
 
     /// Stand on top of block (face, i, j, k); in fly mode, hover there with
@@ -526,7 +572,7 @@ impl Session {
             "queued": self.sim.queued(),
             "frozen": self.sim.frozen_count(),
             "sim_active_chunks": self.sim.active_chunks(),
-            "falls": self.sim.stats.falls, "landings": self.sim.stats.landings, "vanished": self.sim.stats.vanished,
+            "falls": self.sim.stats.falls, "slides": self.sim.stats.slides, "landings": self.sim.stats.landings, "vanished": self.sim.stats.vanished,
             "tick_ms_last": self.sim.stats.last_us as f64 / 1e3,
             "tick_ms_avg": self.sim.stats.avg_us() / 1e3,
             "tick_ms_max": self.sim.stats.max_us as f64 / 1e3,
@@ -539,9 +585,11 @@ impl Session {
             "water_in": ws.water_in, "water_out": ws.water_out,
             "water_placed": ws.water_placed, "water_removed": ws.water_removed,
             "water_displaced": ws.water_displaced, "water_lost": ws.water_lost,
+            "water_dried": ws.water_dried, "drying": self.sim.drying_count(),
             "water_balance": ws.water_balance(),
             "water_updates_last": ws.water_updates_last,
             "water_period": self.sim.config.water_period,
+            "flow": self.sim.config.flow.text(),
             "sim_radius": self.sim.config.radius_m,
             // The sky clock (M2c: the session advances it on its steps).
             "sky_seconds": self.sky.seconds, "sky_speed": self.sky.speed,
@@ -602,6 +650,44 @@ impl Session {
             }
         }
         sum
+    }
+
+    /// Wet cells and level-1 cells in a box of cells relative to the feet
+    /// block, corners inclusive (for `wet_rel[...]` and `film_rel[...]`).
+    pub fn wet_in_box_rel(&self, a: (i64, i64, i64), b: (i64, i64, i64)) -> (u64, u64) {
+        let f = Frame::at(&self.engine.planet, self.player.pos);
+        let (ci, cj, ck) = f.feet_cell();
+        let (mut wet, mut film) = (0, 0);
+        for di in a.0.min(b.0)..=a.0.max(b.0) {
+            for dj in a.1.min(b.1)..=a.1.max(b.1) {
+                for dk in a.2.min(b.2)..=a.2.max(b.2) {
+                    let l = self.level_at(f.face, ci + di, cj + dj, ck + dk);
+                    wet += (l > 0) as u64;
+                    film += (l == 1) as u64;
+                }
+            }
+        }
+        (wet, film)
+    }
+
+    /// Set a box of cells relative to the feet block, corners inclusive (the
+    /// harness's `fill`: building a scene without a click per cell). Returns
+    /// the cells that changed.
+    pub fn fill_rel(&self, a: (i64, i64, i64), b: (i64, i64, i64), id: BlockId, level: Option<u8>) -> usize {
+        let f = Frame::at(&self.engine.planet, self.player.pos);
+        let (ci, cj, ck) = f.feet_cell();
+        let world = &self.engine.world;
+        let mut writes = Vec::new();
+        for di in a.0.min(b.0)..=a.0.max(b.0) {
+            for dj in a.1.min(b.1)..=a.1.max(b.1) {
+                for dk in a.2.min(b.2)..=a.2.max(b.2) {
+                    if let Some(bp) = world.resolve_block(f.face, ci + di, cj + dj, ck + dk) {
+                        writes.push((bp, id, level));
+                    }
+                }
+            }
+        }
+        world.commit_levels(&writes)
     }
 
     /// Blocks in flight in the column DI, DJ from the feet (for `falling_rel[DI,DJ]` asserts).

@@ -1,0 +1,27 @@
+### the scripts, default rules
+== m2a-sand: exit 0: done in 13.7 s: 95 asserts, 0 failed, 0 errors
+== m2b-water: exit 0: done in 18.5 s: 97 asserts, 0 failed, 0 errors
+== m2b-boundary: exit 0: done in 9.7 s: 44 asserts, 0 failed, 0 errors
+== m2b-river: exit 0: done in 6.1 s: 42 asserts, 0 failed, 0 errors
+== m2c-replay: exit 0: done in 5.1 s: 29 asserts, 0 failed, 0 errors
+== m1-done: exit 0: done in 23.2 s: 94 asserts, 0 failed, 0 errors
+== edge-corner-flight: exit 0: done in 24.4 s: 17 asserts, 0 failed, 0 errors
+== tunnel-wall-reload: exit 0: done in 7.8 s: 18 asserts, 0 failed, 0 errors
+== b4-slide: exit 0: done in 49.0 s: 49 asserts, 0 failed, 0 errors
+== b4-film: exit 0: done in 26.5 s: 10 asserts, 0 failed, 0 errors
+### b4-film under each rule
+== b4-film-keep: exit 0: done in 21.5 s: 10 asserts, 0 failed, 0 errors
+== b4-film-seek: exit 0: done in 22.6 s: 10 asserts, 0 failed, 0 errors
+== b4-film-merge: exit 0: done in 24.6 s: 10 asserts, 0 failed, 0 errors
+== b4-film-dry: exit 0: done in 38.2 s: 10 asserts, 0 failed, 0 errors
+### the save the build before made
+exit 0: done in 0.2 s: 16 asserts, 0 failed, 0 errors
+### a copy of the real save
+exit 0: done in 0.1 s: 0 asserts, 0 failed, 0 errors
+loaded {'sim_tick': 99053, 'queued': 0, 'frozen': 437, 'falling': 0, 'drying': 0, 'slides': 0, 'falls': 0, 'water_moved': 0, 'water_dried': 0, 'edits': 35}
+after_200_ticks {'sim_tick': 99253, 'queued': 0, 'frozen': 437, 'falling': 0, 'drying': 0, 'slides': 0, 'falls': 0, 'water_moved': 0, 'water_dried': 0, 'edits': 35}
+### a real recording from before
+exit 2
+simulation: 20 Hz tick, 112 m active radius; resumed at tick 0 with 0 queued, 0 frozen, 0 falling
+replay C:/code/triangulum/game/replays/Neisor-20261031-040850.replay: recorded 20261031-040850 UTC by triangulum 0.1.0 (recorded in the app (F10)); 209 steps (3.5 s), 11 events, 35 snapshot files (1065.8 KB), 32 edited chunks at the start
+error: this replay was recorded in a different world or under other rules (recorded vs here: simulation rules version 2 vs 3: it was recorded before sand and water learned to slide off ledges (this build's rules would not reproduce it, so it will not play here. Your world and saves are fine; to watch this recording, use a build of the game with simulation rules 2))
