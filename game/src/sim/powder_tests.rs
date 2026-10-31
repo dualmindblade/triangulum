@@ -744,12 +744,16 @@ fn stress_powder_levels_collapse() {
         }
         w.commit(&writes);
         let mut sim = Sim::new(levels(deg));
-        let (mut worst, mut sum, mut ticks, mut quiet) = (0u32, 0u64, 0u64, 0u64);
+        let (mut first, mut worst, mut sum, mut ticks, mut quiet) = (0u32, 0u32, 0u64, 0u64, 0u64);
         let mut last = 0;
         while sim.queued() > 0 || sim.tick() == 0 || !sim.falling().is_empty() {
             sim.step(&w, focus);
-            worst = worst.max(sim.stats.last_us);
-            sum += sim.stats.last_us as u64;
+            if ticks == 0 {
+                first = sim.stats.last_us;
+            } else {
+                worst = worst.max(sim.stats.last_us);
+                sum += sim.stats.last_us as u64;
+            }
             ticks += 1;
             // The tick after which nothing moved more than a few units.
             if sim.stats.powder_moved - last > 64 {
@@ -759,7 +763,7 @@ fn stress_powder_levels_collapse() {
             assert!(ticks < 12000, "never settled");
         }
         assert_eq!(powder_total(&w.edits, &w.registry), 30 * 30 * 12 * 255);
-        println!("30 x 30 x 12 block with nothing round it, at {deg} degrees: {ticks} ticks, the last visible move at tick {quiet}, {} moves, average tick {:.2} ms, worst {:.2} ms", sim.stats.powder_moves, sum as f64 / ticks as f64 / 1e3, worst as f64 / 1e3);
+        println!("30 x 30 x 12 block with nothing round it, at {deg} degrees: {ticks} ticks, the last visible move at tick {quiet}, {} moves, first tick {:.1} ms, then average {:.2} ms, worst {:.2} ms", sim.stats.powder_moves, first as f64 / 1e3, sum as f64 / ticks as f64 / 1e3, worst as f64 / 1e3);
         let key = World::chunk_of(BlockPos { k: c.k + 4, ..c }).0;
         let made = w.generate(key);
         let t = std::time::Instant::now();

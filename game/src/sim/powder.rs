@@ -418,7 +418,14 @@ impl Sim {
                 continue;
             }
             let (tid, tl) = c.get(way.to);
-            let room = if reg.is_replaceable(tid) { WHOLE } else { WHOLE - u32::from(tl) };
+            // A cell filled by a move before this one is whole, which reads 0.
+            let room = if reg.is_replaceable(tid) {
+                WHOLE
+            } else if tl == 0 {
+                0
+            } else {
+                WHOLE - u32::from(tl)
+            };
             let d = share.min(wanted(excess)).min(left).min(room);
             if d == 0 || (d < LEAST_SPREAD && way.to.k == p.k && reg.is_replaceable(tid)) {
                 continue;

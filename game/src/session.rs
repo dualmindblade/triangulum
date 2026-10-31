@@ -464,6 +464,9 @@ impl Session {
         if reg.has_gravity(cur) && level != 0 && self.engine.edits.slopes_on() {
             bp = world.resolve_block(bp.face, bp.i as i64, bp.j as i64, bp.k as i64 + 1)?;
             (cur, level) = world.block_and_level_at(bp);
+            if self.player.mode == Mode::Walk && self.player.overlaps_cell(&self.engine.planet, bp.face, (bp.i as i64, bp.j as i64, bp.k as i64)) {
+                return None;
+            }
         }
         if reg.is_solid(cur) {
             return None;

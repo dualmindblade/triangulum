@@ -1071,7 +1071,9 @@ and pool under whichever powder rule the command line says, so `--powder-angle
 25`, `35` and `45` and no switch at all give frames to lay side by side (the
 script's header has the commands). `scripts/b7-walk.play` is the rule by hand: a
 player pours a pile on real ground, walks over it, digs in it, reloads, and the
-whole thing is checked as a replay.
+whole thing is checked as a replay. `scripts/b7-close.play` looks at a slope from
+the angles that would show a hole. `b7-default-frames.play` and `b7-bench.play`
+are for laying two builds side by side.
 
 `scripts/b1-water-under.play` lays a stone deck across a generated river and
 shoots the surface going on under it from above, from the side and from under
