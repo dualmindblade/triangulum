@@ -321,7 +321,9 @@ mod tests {
             })
             .collect();
         let refs: Vec<&[f32]> = mask.iter().map(|v| v.as_slice()).collect();
-        let field = distance_field(&refs, res, true);
+        let on = |threads: usize| rayon::ThreadPoolBuilder::new().num_threads(threads).build().unwrap().install(|| distance_field(&refs, res, true));
+        let field = on(1);
+        assert_eq!(field, on(8), "the field is a pure function of the mask, however many threads build it");
         let texel = std::f64::consts::FRAC_PI_2 / m;
         let row = 32 * res;
         for dx in [-3i64, -2, -1, 1, 2, 3] {

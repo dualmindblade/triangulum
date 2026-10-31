@@ -27,7 +27,6 @@ fn world() -> Generator {
 
 /// One field of a plan-view grid: h, W, kind, mask.
 struct Plan {
-    px: usize,
     spacing: f64,
     base: Vec<f32>,
     ocean: Vec<f32>,
@@ -62,7 +61,7 @@ fn plan(g: &Generator, centre: DVec3, px: usize, spacing: f64, voxel_m: f64) -> 
                 .collect()
         })
         .collect();
-    let mut p = Plan { px, spacing, base: vec![], ocean: vec![], h: vec![], w: vec![], kind: vec![] };
+    let mut p = Plan { spacing, base: vec![], ocean: vec![], h: vec![], w: vec![], kind: vec![] };
     for row in rows {
         for (b, o, h, w, k) in row {
             p.base.push(b);
@@ -761,6 +760,64 @@ fn coast_places(g: &Generator) -> Vec<(String, DVec3)> {
     let mut v: Vec<(String, DVec3)> = RECORDED[..2].iter().map(|(n, lat, lon)| (n.to_string(), Planet::dir_of_lat_lon_deg(*lat + if *n == "041021" { 0.07 } else { 0.0 }, *lon))).collect();
     v.extend(other_coasts(g));
     v
+}
+
+/// Bug round #5: a coast is one coherent line at every vertical scale and at
+/// half-metre blocks, on foot and from altitude: no piece of land or sea too
+/// small for the planet to know about, hardly a sliver, and no more closed
+/// pieces than the bake's own coastline has. Before: 18-22 blobs and slivers
+/// per km on most coasts, and ten or more times the bake's pieces.
+#[test]
+fn coasts_are_coherent() {
+    let worlds = [("1/70", super::tests::test_generator()), ("1/8", super::tests::generator_pub(Some(0.125), 4096, 1536)), ("half-metre blocks", super::tests::half_metre_generator())];
+    let mut measured = 0.0;
+    for (world, g) in &worlds {
+        let coarse = 32.0 * g.planet.block_size;
+        for (name, d) in coast_places(g) {
+            for (view, px, spacing, voxel) in [("LOD 0", 750usize, 2.0, g.planet.block_size), ("LOD 5", 250, coarse, coarse)] {
+                let (_, s) = window(g, d, px, spacing, voxel);
+                println!("{world} {name} {view}: {:.1} km of coast, {} blobs, {} slivers, {} closed pieces (bake {})", s.coast_km, s.land_blobs + s.sea_blobs, s.land_slivers + s.sea_slivers, s.pieces, s.bake_pieces);
+                measured += s.coast_km;
+                let at = format!("{world} {name} {view}");
+                assert_eq!(s.land_blobs + s.sea_blobs, 0, "{at}: pieces smaller than a bake texel: {s:?}");
+                assert!(s.per_km() < 1.0, "{at}: {:.2} slivers per km of coast: {s:?}", s.per_km());
+                assert!(s.pieces <= s.bake_pieces + 1, "{at}: more pieces than the planet has: {s:?}");
+            }
+        }
+    }
+    assert!(measured > 100.0, "the windows found almost no coast ({measured:.1} km)");
+}
+
+/// The coast crosses cube edges without a step: the raster on each side
+/// holds the same distance along the edge. Every side of every face.
+#[test]
+fn the_coast_meets_itself_across_cube_edges() {
+    let g = world_gen();
+    let p = &g.planet;
+    let n = p.n as f64;
+    let (mut crossed, mut worst) = (0u32, 0.0f64);
+    for face in 0..6u8 {
+        for side in 0..4u8 {
+            for k in 0..2048 {
+                let t = (k as f64 + 0.5) * n / 2048.0;
+                let (a, b) = match side {
+                    0 => ((0.5, t), (-0.5, t)),
+                    1 => ((n - 0.5, t), (n + 0.5, t)),
+                    2 => ((t, 0.5), (t, -0.5)),
+                    _ => ((t, n - 0.5), (t, n + 0.5)),
+                };
+                let (sa, sb) = (g.bake.sample(p.dir(face, a.0, a.1)), g.bake.sample(p.dir(face, b.0, b.1)));
+                let (ca, cb) = (sa.coast * p.radius, sb.coast * p.radius);
+                if ca.abs().min(cb.abs()) < coast::BAND_M {
+                    crossed += 1;
+                    worst = worst.max((ca - cb).abs());
+                }
+            }
+        }
+    }
+    println!("{crossed} samples of cube edge near a coast: largest step in the distance {worst:.2} m");
+    assert!(crossed > 20, "only {crossed} samples near a coast");
+    assert!(worst < 3.0, "the distance from the coast steps {worst:.2} m across a cube edge");
 }
 
 /// Not a check: slivers and blobs per km of coast at seven coasts, at LOD 0
