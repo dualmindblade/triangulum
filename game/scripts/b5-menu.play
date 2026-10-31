@@ -1,0 +1,126 @@
+# Bug round #11: the T window, driven by synthetic pointer and key events
+# through the real window code, with no window on the desktop. Photos go in the
+# script's own out directory, never game/interchange:
+#
+#   cargo run --release -- --play scripts/b5-menu.play --out out/play/b5-menu --interchange out/play/b5-menu
+#   (and with --size 1280x720, and "menu scale 1.5" set by adding SCALE below)
+
+# ---- photos to look at: settled, live, and one with the mesh view on
+mode fly
+at -4.5654 117.4744 1500
+look -60 -35
+skytime 09:30
+photo shot_hills_morning
+at -3.4154 136.3992 300
+lookaxis -i -35
+skytime 17:00
+photo shot_coast_evening
+meshview lod edges
+photo shot_coast_mesh live
+meshview normal
+
+# ---- the window, whole planet, each base layer
+menu open
+menu wait
+assert menu_open == true
+assert menu_photos == 3
+assert menu_zoom == 1
+assert menu_build_ms > 0
+menu shot m01_biomes
+menu click base-1
+menu wait
+assert menu_build_ms > 0
+menu shot m02_temp
+menu click base-2
+menu wait
+assert menu_build_ms > 0
+menu shot m03_precip
+menu click base-3
+menu wait
+assert menu_build_ms > 0
+menu shot m04_elevation
+
+# ---- zoom in, cursor anchored; contours tighten, rivers appear
+menu wheel map 0.82 0.56 30
+menu wait
+assert menu_zoom > 3
+assert menu_build_ms > 0
+menu shot m05_zoomed_elevation
+menu click base-0
+menu wait
+menu shot m06_zoomed_biomes
+menu click relief
+menu wait
+menu shot m07_zoomed_no_relief
+menu click relief
+menu drag map 0.5 0.5 0.3 0.6
+menu wait
+menu shot m08_panned
+
+# ---- back out; a free target; a photo marker; the preview; the lightbox
+menu double map 0.02 0.02
+menu wait
+assert menu_zoom == 1
+menu click map 0.25 0.3
+assert menu_target == true
+menu shot m09_target
+menu key esc
+assert menu_target == false
+assert menu_open == true
+menu click photo-0
+assert menu_selected == 0
+menu wait
+menu shot m10_selected
+menu click preview
+menu wait
+assert menu_lightbox == true
+menu shot m11_lightbox
+menu key esc
+assert menu_lightbox == false
+assert menu_selected == 0
+
+# ---- title and notes reach the sidecar; Repro writes a script
+menu click title
+menu type The coast at evening
+menu click notes
+menu type Shallow sea, check the LOD steps
+menu click save
+menu click repro
+menu shot m12_notes
+
+# ---- teleport to the map point and to typed coordinates, and to a place
+menu key esc
+menu key esc
+assert menu_open == false
+menu open
+menu wait
+menu click map 0.57 0.447
+menu click teleport
+assert menu_open == false
+assert mode == walk
+log landed on the ground by map click
+state went_map_point
+menu open
+menu wait
+menu click coords
+menu type 12.5 -40.25 900
+menu click teleport
+assert lat ~ 12.5 0.0001
+assert lon ~ -40.25 0.0001
+assert alt ~ 900 1
+assert mode == fly
+menu open
+menu wait
+menu click place-3
+assert menu_open == false
+assert mode == fly
+menu open
+menu wait
+menu click tick-1
+menu click delete
+menu shot m13_delete
+menu key esc
+assert menu_deleting == false
+assert menu_open == true
+menu key t
+assert menu_open == false
