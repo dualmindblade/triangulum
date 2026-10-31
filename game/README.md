@@ -578,9 +578,10 @@ takes the same two top corners, so falls and partial columns are watertight.
 Full water is the geometry it always was: a corner with nothing partial at it
 is full, air or no air, which is what a chunk with no partial water draws
 flat. Corners read the real cells: the generator's skirt lowers a chunk's
-border columns so the terrain grows side faces that hide LOD seams, and a
-surface reading those columns would take the shore's ground for air and dip
-at every chunk border (`World::padded_levels` lists the cells to correct).
+border columns so the terrain grows side faces that hide LOD seams, and water
+reading those columns would take the shore's ground for air: its surface would
+dip at every chunk border, and a side face there would z-fight with the
+ground's own wall (`World::padded_levels` lists the cells to correct).
 At a cube corner the three real cells count once each. A top face shows under
 a solid, so a surface runs on beneath a bridge, except when it lies flat in
 the solid's underside, where it would z-fight and tint a view from below

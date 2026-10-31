@@ -565,11 +565,16 @@ impl World {
     /// Border cells of a padded LOD-0 grid that the generator's skirt
     /// hollowed out (`PaddedWater::skirted`): solid in the world, not in
     /// `g.ids`. The skirt only ever lowers ground, so a solid padded cell
-    /// is really solid and is not looked up, and only the two layers a
-    /// surface beside the column reads are: its own, and the one above.
-    /// Cells of an edited neighbour are already real (`overlay_lod0`); the
-    /// rest come from the natural cache, which the streamer's neighbouring
-    /// chunks usually filled.
+    /// is really solid and is not looked up. Two kinds of cell are: any in
+    /// the two layers a surface beside the column reads (its own, and the
+    /// one above), and air beside interior water, which would get a side
+    /// face. Cells of an edited neighbour are already real (`overlay_lod0`);
+    /// the rest come from the natural cache, which the streamer's
+    /// neighbouring chunks usually filled.
+    ///
+    /// Chunks with no partial water never get here. They need not: near the
+    /// sea the skirt hollows ground into water, which has no side face, and
+    /// 8,206 full-water chunks scanned on face 2 had no hollowed air at all.
     fn skirted_cells(&self, key: ChunkKey, g: &Generated) -> Vec<(i8, i8, i8)> {
         let c = CHUNK as i32;
         let (i0, j0, k0) = key.origin_blocks();
@@ -589,6 +594,15 @@ impl World {
                             if water(ix, iy, z) && !water(ix, iy, z + 1) {
                                 layers |= 0b11 << (z + 1);
                             }
+                        }
+                    }
+                }
+                // The interior column this one shares a side with (a corner column has none).
+                if (0..c).contains(&x) || (0..c).contains(&y) {
+                    let (ax, ay) = (x.clamp(0, c - 1), y.clamp(0, c - 1));
+                    for z in 0..c {
+                        if water(ax, ay, z) && !water(x, y, z) {
+                            layers |= 1 << (z + 1);
                         }
                     }
                 }

@@ -133,7 +133,7 @@ pub struct PaddedWater {
     /// padded ids say otherwise. The generator lowers a chunk's border
     /// columns by its skirt, so the terrain mesh grows side faces that hide
     /// LOD seams; those columns' ground then reads as air or water. Only
-    /// the cells a water surface can reach are listed.
+    /// the cells a water face or surface can reach are listed.
     pub skirted: Vec<(i8, i8, i8)>,
 }
 
@@ -280,9 +280,13 @@ pub fn mesh_chunk_levels(generated: &Generated, water_cells: Option<&PaddedWater
         mesh_set(&masks.solid, &blocking, &blocking, opt, &cap, &face_key, &mut |lo, k| opaque.push([lo, k]));
     }
     if any_liquid {
-        let blocking: Vec<u64> = masks.solid.iter().zip(&masks.liquid).map(|(s, l)| s | l).collect();
         let cap = |_: u32, _: u32, _: usize| sea_edge;
         let surface = water_cells.filter(|_| key.lod == 0).map(|cells| Surface::new(&masks, cells, key, planet));
+        // Water reads the real cells for its faces too: a side face against
+        // ground the skirt hollowed out would lie in that ground's own wall
+        // and z-fight with it.
+        let real = surface.as_ref().map_or(&masks, |s| &s.masks);
+        let blocking: Vec<u64> = real.solid.iter().zip(&real.liquid).map(|(s, l)| s | l).collect();
         // A top face hides only under water, or under a solid it touches: a
         // surface flat at the voxel's top lies in the solid's underside, so
         // drawing it would z-fight with that face and tint a view from
@@ -882,6 +886,43 @@ mod tests {
             }
         }
         assert!(corners.len() > 2000, "{} corners", corners.len());
+    }
+
+    /// A water side face lies against something that is not solid. Against
+    /// ground the skirt hollowed out it would lie in that ground's own wall,
+    /// and z-fight with it in a hatched patch at a lake's or a river's shore
+    /// on a chunk border.
+    #[test]
+    fn no_water_side_face_lies_against_real_ground() {
+        let w = crate::world::tests::test_world();
+        let sites = [(3607..=3611, 2001..=2005), (3427..=3431, 1713..=1717)];
+        let mut faces = 0;
+        for (xs, ys) in sites {
+            for cx in xs {
+                for cy in ys.clone() {
+                    let key = ChunkKey::neisor(2, 0, cx, cy, 16);
+                    let (i0, j0, k0) = key.origin_blocks();
+                    let m = mesh_of(&w, key);
+                    for q in &m.water {
+                        let (axis, sign, slice, u0, v0, qw, qh) = unpack(&[q[0], q[1]]);
+                        if axis == 2 {
+                            continue;
+                        }
+                        for a in 0..qw {
+                            for b in 0..qh {
+                                let (x, y) = if axis == 0 { (slice as i64, (u0 + a) as i64) } else { ((u0 + a) as i64, slice as i64) };
+                                let s = if sign == 1 { 1 } else { -1 };
+                                let (nx, ny) = if axis == 0 { (x + s, y) } else { (x, y + s) };
+                                let bp = BlockPos { face: 2, i: (i0 as i64 + nx) as u32, j: (j0 as i64 + ny) as u32, k: k0 as u32 + v0 + b };
+                                assert!(!w.registry.is_solid(w.block_at(bp)), "a side face of {key:?} lies against the ground at {bp:?}");
+                                faces += 1;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        assert!(faces > 100, "{faces} side faces");
     }
 
     /// Review 3 #8, the first case: a partial cell elsewhere in chunk A
