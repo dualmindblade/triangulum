@@ -94,6 +94,10 @@
 //!   log TEXT...             annotate the transcript
 //!   column DI DJ            print the blocks of a column near the feet
 //!                           (layers -4..+3 relative to the feet block)
+//!   cells DI0 DI1 DJ0 DJ1 DK
+//!                           print a map of one layer near the feet: ###
+//!                           solid, ... air, a number is that cell's water
+//!                           level (+i to the right, +j up)
 //!   assert FIELD [OP] VALUE [TOL]
 //!                           OP: == != < <= > >= ~ (approx, TOL default
 //!                           0.01); omitted means ==. VALUE: number,
@@ -758,6 +762,31 @@ pub fn run_play(session: Session, opts: PlayOptions) -> i32 {
                     run.say(format!("  column face {} i {} j {} (feet layer {}): {}", f.face, ci, cj, ck, names.join(" ")));
                 }
                 _ => bad(&mut run, "column DI DJ"),
+            },
+            "cells" => match (num(0), num(1), num(2), num(3), num(4)) {
+                (Some(i0), Some(i1), Some(j0), Some(j1), Some(dk)) => {
+                    let f = crate::player::Frame::at(&run.session.engine.planet, run.session.player.pos);
+                    let (fi, fj, ck) = f.feet_cell();
+                    let k = ck + dk as i64;
+                    run.say(format!("  cells face {} layer {k} (### solid, ... air, number: water level), rows j, columns i from {}", f.face, fi + i0 as i64));
+                    for dj in (j0 as i64..=j1 as i64).rev() {
+                        let row: Vec<String> = (i0 as i64..=i1 as i64)
+                            .map(|di| {
+                                let (i, j) = (fi + di, fj + dj);
+                                let level = run.session.level_at(f.face, i, j, k);
+                                if level > 0 {
+                                    format!("{level:3}")
+                                } else if run.session.block_name(f.face, i, j, k) == "air" {
+                                    "...".to_string()
+                                } else {
+                                    "###".to_string()
+                                }
+                            })
+                            .collect();
+                        run.say(format!("  j {:7} {}", fj + dj, row.join(" ")));
+                    }
+                }
+                _ => bad(&mut run, "cells DI0 DI1 DJ0 DJ1 DK"),
             },
             "turn" => match (num(0), num(1)) {
                 (Some(h), Some(p)) => {
