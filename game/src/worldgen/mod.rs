@@ -708,13 +708,19 @@ impl Generator {
         let kz = (z_lo / self.planet.block_size).round() as i64;
         let w_r = (w / voxel_m).round() * voxel_m;
         // The water surface survives every LOD: in a wet column the voxel
-        // holding it is water, however much of it lies below the ground.
+        // whose top is the snapped surface is water, however much of it lies
+        // below the ground, and even if the ground stands above that snapped
+        // surface (the surface rounded down, and a lake or river is only a
+        // metre or three deep: asking for ground below the snapped surface
+        // here lost most lakes from space, the sea alone being on the grid).
+        // Ground below W rounds no higher than W does, so this never stands
+        // water above the column's own dry neighbours.
         if wet && !(lod == 0 && k_lo == 0.0) {
             let (top, level) = if lod == 0 {
                 let (l, top) = lod0(kz);
                 (top, l)
             } else {
-                ((z_hi - w_r).abs() < 1e-6 * voxel_m && h < w_r, 255)
+                ((z_hi - w_r).abs() < 1e-6 * voxel_m, 255)
             };
             if top {
                 if cold {
@@ -1028,3 +1034,6 @@ mod tests;
 
 #[cfg(test)]
 mod hydro_tests;
+
+#[cfg(test)]
+mod shore_tests;

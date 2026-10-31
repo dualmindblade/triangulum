@@ -1,0 +1,120 @@
+# Bug round B2 (#2 lakes from space, #4 ocean bands, #5 chaotic beaches): the
+# same poses before and after, on the frozen build and on this one, so the
+# frames pair up by name. Not a gate; nothing is asserted.
+#
+#   <exe> --bake DIR --no-save --play scripts/b2-shores.play --out OUT
+#
+# rec_*: the recorded cameras. Then, straight down over one spot, a ladder of
+# heights: each height is drawn at a coarser LOD (the stats panel says which).
+# foot_*: standing at the water line, looking along the shore.
+mode fly
+
+# --- 041049: lakes from space, and the lake he flew over at the end
+at 6.93149 129.60380 8427
+skytime 12:00
+look 16.89 -76.20
+shot rec_041049_start
+at 7.90080 129.90078 1548
+skytime 12:00
+look 16.89 -76.20
+shot rec_041049_end
+at 8.1879 129.9892 6000
+skytime 12:00
+look 0 -89.9
+shot lake_6000
+at 8.1879 129.9892 2500
+look 0 -89.9
+shot lake_2500
+at 8.1879 129.9892 1000
+look 0 -89.9
+shot lake_1000
+at 8.1879 129.9892 400
+look 0 -89.9
+shot lake_0400
+at 8.1879 129.9892 120
+look 0 -89.9
+shot lake_0120
+
+# --- 041021: the torn coast, and the sea beside it
+at -32.01018 118.83288 633
+skytime 12:00
+look 31.13 -39.77
+shot rec_041021_start
+at -38.12582 113.83341 31920
+skytime 12:00
+look 35.04 -75.45
+shot rec_041021_end
+at -31.5959 119.1264 6000
+skytime 12:00
+look 0 -89.9
+shot coast_6000
+at -31.5959 119.1264 2500
+look 0 -89.9
+shot coast_2500
+at -31.5959 119.1264 1000
+look 0 -89.9
+shot coast_1000
+at -31.5959 119.1264 400
+look 0 -89.9
+shot coast_0400
+at -31.5959 119.1264 120
+look 0 -89.9
+shot coast_0120
+
+# --- 041200: the inland sea
+at 3.04994 -15.16073 11005
+skytime 12:00
+look -62.77 -74.69
+shot rec_041200
+at 3.9247 -16.8674 6000
+skytime 12:00
+look 0 -89.9
+shot sea_6000
+at 3.9247 -16.8674 2500
+look 0 -89.9
+shot sea_2500
+at 3.9247 -16.8674 1000
+look 0 -89.9
+shot sea_1000
+at 3.9247 -16.8674 400
+look 0 -89.9
+shot sea_0400
+at 3.9247 -16.8674 120
+look 0 -89.9
+shot sea_0120
+
+# --- From orbit: Andrew's sea over the shelf and the coast
+at -31.6 119.1 40000
+skytime 12:00
+look 0 -60
+shot orbit_040km
+at -31.6 119.1 150000
+skytime 12:00
+look 0 -89.9
+shot orbit_150km
+
+# --- At the water line
+at -31.5959 119.1264 40
+find shore
+skytime 12:00
+shot foot_041021
+mode fly
+at 3.9247 -16.8674 40
+find shore
+skytime 12:00
+shot foot_041200
+mode fly
+at 13.267 140.424 40
+find shore
+skytime 12:00
+shot foot_q10
+mode fly
+at 60.923 106.325 40
+find shore
+skytime 12:00
+shot foot_q50
+mode fly
+at 24.057 77.275 40
+find shore
+skytime 12:00
+shot foot_q90

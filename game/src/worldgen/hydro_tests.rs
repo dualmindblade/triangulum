@@ -16,7 +16,7 @@ use crate::grid::FastMap;
 use rayon::prelude::*;
 use std::sync::OnceLock;
 
-fn world_gen() -> &'static Generator {
+pub(super) fn world_gen() -> &'static Generator {
     static G: OnceLock<Generator> = OnceLock::new();
     G.get_or_init(|| {
         // HYDRO_VSCALE=0.125 runs the water tests at 1/8 (H 4096, sea 1536).
@@ -29,28 +29,28 @@ fn world_gen() -> &'static Generator {
     })
 }
 
-fn hydro() -> &'static Hydro {
+pub(super) fn hydro() -> &'static Hydro {
     world_gen().hydro.as_deref().unwrap()
 }
 
-fn registry() -> &'static Registry {
+pub(super) fn registry() -> &'static Registry {
     static R: OnceLock<Registry> = OnceLock::new();
     R.get_or_init(|| Registry::load(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/blocks.json")).unwrap())
 }
 
-type Col = (u8, u32, u32);
+pub(super) type Col = (u8, u32, u32);
 
 /// Generated chunks at one LOD around a set of columns (voxel columns of
 /// that LOD), with lookups across chunk borders and face edges.
-struct Region {
-    lod: u8,
-    chunks: FastMap<ChunkKey, Chunk>,
+pub(super) struct Region {
+    pub(super) lod: u8,
+    pub(super) chunks: FastMap<ChunkKey, Chunk>,
 }
 
 impl Region {
     /// Generate every chunk the columns (plus a one-voxel margin) need,
     /// over the heights their ground and water span (sampled), padded.
-    fn build(g: &Generator, lod: u8, cols: &[Col]) -> Region {
+    pub(super) fn build(g: &Generator, lod: u8, cols: &[Col]) -> Region {
         let p = &g.planet;
         let vb = 1u64 << lod;
         let voxel_m = p.voxel_m(lod);
@@ -102,7 +102,7 @@ impl Region {
 
     /// (block id, water level) of voxel (i, j, k) of face `f` at this LOD
     /// (i, j may step one past a face edge); None if not generated.
-    fn cell(&self, p: &Planet, f: u8, i: i64, j: i64, k: i64) -> Option<(BlockId, u8)> {
+    pub(super) fn cell(&self, p: &Planet, f: u8, i: i64, j: i64, k: i64) -> Option<(BlockId, u8)> {
         if k < 0 {
             return Some((BlockId::MAX, 0)); // below the world: treat as solid
         }
@@ -116,7 +116,7 @@ impl Region {
     }
 
     /// Voxel layer range generated for a column.
-    fn k_range(&self, p: &Planet, f: u8, i: u32, j: u32) -> Option<(i64, i64)> {
+    pub(super) fn k_range(&self, p: &Planet, f: u8, i: u32, j: u32) -> Option<(i64, i64)> {
         let per = CHUNK as u32;
         let (cx, cy) = (i / per, j / per);
         let (mut lo, mut hi) = (u32::MAX, 0u32);
@@ -275,7 +275,7 @@ fn square(p: &Planet, dir: DVec3, r: i64, out: &mut FastMap<Col, ()>) {
 
 /// A point on lake `k`'s shore (field = zone) between one of its cells and
 /// the nearest field cell outside it, if any.
-fn shore_point(k: i32, nth: usize) -> Option<DVec3> {
+pub(super) fn shore_point(k: i32, nth: usize) -> Option<DVec3> {
     let h = hydro();
     let inside: Vec<DVec3> = h.field.iter().filter(|c| c.lake == k).map(|c| c.pos).collect();
     if inside.is_empty() {
@@ -306,7 +306,7 @@ fn shore_point(k: i32, nth: usize) -> Option<DVec3> {
 
 /// Columns along `links` river links: everything within the channel, its
 /// banks and a margin of the course.
-fn along(links: &[u32], out: &mut FastMap<Col, ()>) {
+pub(super) fn along(links: &[u32], out: &mut FastMap<Col, ()>) {
     let g = world_gen();
     let h = hydro();
     let p = &g.planet;
@@ -325,7 +325,7 @@ fn along(links: &[u32], out: &mut FastMap<Col, ()>) {
 }
 
 /// A river path: `n` links downstream from link `k`.
-fn path(k: u32, n: usize) -> Vec<u32> {
+pub(super) fn path(k: u32, n: usize) -> Vec<u32> {
     let h = hydro();
     let mut v = vec![k];
     let mut cur = k;
