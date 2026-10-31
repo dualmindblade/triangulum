@@ -14,6 +14,10 @@ use crate::grid::{BlockPos, Planet};
 use crate::world::{BlockId, Voxels};
 use glam::{DMat3, DVec3, IVec3};
 
+#[cfg(test)]
+#[path = "picking_tests.rs"]
+mod picking_tests;
+
 /// Fixed simulation step (the harness and the app both use it).
 pub const STEP: f64 = 1.0 / 60.0;
 pub const WIDTH_M: f64 = 0.6;
@@ -128,76 +132,24 @@ pub struct Hit {
     /// The block, resolved onto its own face.
     pub block: BlockPos,
     pub id: BlockId,
-    /// The cell in the frame's lattice (may lie past the face edge).
+    /// The hit's own face and canonical cell, never the eye's extrapolated lattice.
     pub face: u8,
     pub cell: (i64, i64, i64),
-    /// Lattice-axis normal of the entered face (points out of the block).
+    /// Lattice-axis normal in the hit's face (points out of the block).
     pub normal: IVec3,
     /// Distance along the ray (m).
     pub t: f64,
 }
 
 impl Hit {
-    /// The cell a placed block would go into (frame lattice).
+    /// The neighbour in the hit's lattice; wrap this one cell across an edge if needed.
     pub fn place_cell(&self) -> (i64, i64, i64) {
         (self.cell.0 + self.normal.x as i64, self.cell.1 + self.normal.y as i64, self.cell.2 + self.normal.z as i64)
     }
 }
 
-/// March a ray through the lattice (Amanatides-Woo) for `reach_m` metres,
-/// returning the first solid cell, or with `liquids` the first solid or
-/// liquid cell past the eye's own (holding water: the bucket, M2b). Linear
-/// in lattice space: over a few metres the lattice is straight to well under
-/// a millimetre.
-pub fn pick(vox: &dyn Voxels, planet: &Planet, eye: DVec3, dir: DVec3, reach_m: f64, liquids: bool) -> Option<Hit> {
-    let frame = Frame::at(planet, eye);
-    let o = DVec3::new(frame.i, frame.j, frame.k);
-    let d = frame.to_lattice(dir.normalize()); // lattice units per metre
-    let mut cell = [o.x.floor() as i64, o.y.floor() as i64, o.z.floor() as i64];
-    let mut step = [0i64; 3];
-    let mut t_max = [f64::INFINITY; 3];
-    let mut t_delta = [f64::INFINITY; 3];
-    for a in 0..3 {
-        if d[a] > 0.0 {
-            step[a] = 1;
-            t_max[a] = ((cell[a] + 1) as f64 - o[a]) / d[a];
-            t_delta[a] = 1.0 / d[a];
-        } else if d[a] < 0.0 {
-            step[a] = -1;
-            t_max[a] = (cell[a] as f64 - o[a]) / d[a];
-            t_delta[a] = -1.0 / d[a];
-        }
-    }
-    let mut t = 0.0;
-    let mut normal = IVec3::ZERO;
-    for step_n in 0..512 {
-        let id = vox.block(frame.face, cell[0], cell[1], cell[2]);
-        if vox.is_solid(id) || (liquids && step_n > 0 && vox.is_liquid(id)) {
-            // The cell may lie past this face's edge (`vox.block` resolved it
-            // onto the neighbour), so the block it names is that same cell
-            // on its own face, never this face's clamped boundary column
-            // (review 2 #6: the hit said the neighbour's material and
-            // breaking changed the wrong block). Below layer 0 the lookup
-            // returns the virtual bedrock floor: nothing to hit there.
-            if cell[2] < 0 || cell[2] >= planet.height as i64 {
-                return None;
-            }
-            let (bf, bi, bj) = planet.wrap_cell(frame.face, cell[0], cell[1]);
-            let bp = BlockPos { face: bf, i: bi, j: bj, k: cell[2] as u32 };
-            return Some(Hit { block: bp, id, face: frame.face, cell: (cell[0], cell[1], cell[2]), normal, t });
-        }
-        let a = if t_max[0] < t_max[1] { if t_max[0] < t_max[2] { 0 } else { 2 } } else if t_max[1] < t_max[2] { 1 } else { 2 };
-        t = t_max[a];
-        if t > reach_m {
-            return None;
-        }
-        cell[a] += step[a];
-        t_max[a] += t_delta[a];
-        normal = IVec3::ZERO;
-        normal[a] = -step[a] as i32;
-    }
-    None
-}
+mod picking;
+pub use picking::pick;
 
 #[derive(Clone, Debug)]
 pub struct Player {
@@ -235,26 +187,46 @@ impl Player {
         self.camera().vectors().0
     }
 
-    /// Does the player's box overlap any solid cell? (Used to refuse placing a block into oneself.)
+    /// Does the player's box overlap a cell? Used to refuse placing into oneself.
     pub fn overlaps_cell(&self, planet: &Planet, face: u8, cell: (i64, i64, i64)) -> bool {
         let f = Frame::at(planet, self.pos);
-        if f.face != face {
-            // Resolve the cell onto this frame by comparing world positions of the cell centre.
-            let centre = planet.dir(face, cell.0 as f64 + 0.5, cell.1 as f64 + 0.5) * planet.radius_at(cell.2 as f64 + 0.5);
-            let fc = Frame::at(planet, centre);
-            if fc.face != f.face {
-                return false;
+        let (face, i, j) = planet.wrap_cell(face, cell.0, cell.1);
+        // Test the actual neighbour's corners in the body's frame. A cell
+        // centre on another face says nothing about whether its side cuts
+        // into the body at an edge or a three-face corner.
+        let corners: [DVec3; 8] = std::array::from_fn(|c| {
+            let p = planet.pos(face, i as f64 + (c & 1) as f64,
+                j as f64 + ((c >> 1) & 1) as f64, (cell.2 + ((c >> 2) & 1) as i64) as f64);
+            f.to_lattice(p - self.pos)
+        });
+        let half = DVec3::new(WIDTH_M * 0.5 / f.mi, WIDTH_M * 0.5 / f.mj, HEIGHT_M * 0.5 / f.mk);
+        let centre = DVec3::new(0.0, 0.0, half.z);
+        let separated = |axis: DVec3| {
+            if axis.length_squared() < 1e-20 { return false; }
+            let axis = axis.normalize();
+            let extent = (half - DVec3::splat(EPS)).dot(axis.abs());
+            let lo = corners.iter().map(|v| (*v - centre).dot(axis)).fold(f64::INFINITY, f64::min);
+            let hi = corners.iter().map(|v| (*v - centre).dot(axis)).fold(f64::NEG_INFINITY, f64::max);
+            lo >= extent || hi <= -extent
+        };
+        let axes = [DVec3::X, DVec3::Y, DVec3::Z];
+        if axes.iter().any(|&axis| separated(axis)) { return false; }
+        // Separating-axis test: box axes, cell triangle normals, and edge
+        // crosses. Triangulate the slightly non-planar radial prism sides.
+        for [a, b, c, d] in [[0, 1, 3, 2], [4, 5, 7, 6], [0, 1, 5, 4],
+            [2, 3, 7, 6], [0, 2, 6, 4], [1, 3, 7, 5]] {
+            for [x, y, z] in [[a, b, c], [a, c, d]] {
+                if separated((corners[y] - corners[x]).cross(corners[z] - corners[x])) { return false; }
+                for (u, v) in [(x, y), (y, z), (z, x)] {
+                    for axis in axes {
+                        if separated((corners[v] - corners[u]).cross(axis)) { return false; }
+                    }
+                }
             }
-            return self.box_overlaps(&f, (fc.i.floor() as i64, fc.j.floor() as i64, fc.k.floor() as i64));
         }
-        self.box_overlaps(&f, cell)
+        true
     }
 
-    fn box_overlaps(&self, f: &Frame, cell: (i64, i64, i64)) -> bool {
-        let (bmin, bmax) = self.lattice_box(f);
-        let (c0, c1) = (DVec3::new(cell.0 as f64, cell.1 as f64, cell.2 as f64), DVec3::new(cell.0 as f64 + 1.0, cell.1 as f64 + 1.0, cell.2 as f64 + 1.0));
-        (0..3).all(|a| bmin[a] < c1[a] - EPS && bmax[a] > c0[a] + EPS)
-    }
 
     fn lattice_box(&self, f: &Frame) -> (DVec3, DVec3) {
         let hi = 0.5 * WIDTH_M / f.mi;
@@ -1098,9 +1070,13 @@ mod tests {
         assert_eq!(target.face, 2, "face 0's +i side meets face 2");
         w.cells.insert(target, STONE);
         let pl = standing(&p, 0, n as f64 - 1.5, 40000.5, 600);
-        let hit = pick(&w, &p, pl.eye(), pl.look_dir(), REACH_M, false).expect("hit across the edge");
+        // Aim at the neighbour's actual centre. Continuing the eye's +i
+        // tangent does not follow this wrapped index row (B3).
+        let centre = p.pos(target.face, target.i as f64 + 0.5, target.j as f64 + 0.5, target.k as f64 + 0.5);
+        let hit = pick(&w, &p, pl.eye(), centre - pl.eye(), REACH_M, false).expect("hit across the edge");
         assert_eq!(hit.id, STONE);
-        assert_eq!(hit.cell, (n + 1, 40000, 601), "the frame cell lies past the edge");
+        assert_eq!(hit.face, target.face);
+        assert_eq!(hit.cell, (target.i as i64, target.j as i64, target.k as i64), "the hit is in its own face lattice");
         assert_eq!(hit.block, target, "the block is the face-2 block the ray hit, not {:?}", BlockPos { face: 0, i: p.n - 1, j: 40000, k: 601 });
         // The old clamped column must not be what breaking would change.
         assert_ne!(hit.block.face, 0);

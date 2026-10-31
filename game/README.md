@@ -714,6 +714,20 @@ and a tunnel, build a stone bridge over the trench, walk across it, save,
 reload, check every edited block, and shoot the bridge from 300 m, 550 m
 and 1 km (LOD 0, 1 and 2). It must pass.
 
+`scripts/b3-corner.play` uses the views from steps 800 and 1300 of Andrew's
+corner recording, then places and breaks blocks with cell checks. Picking
+follows the world ray across cube faces for both solid blocks and the water
+bucket; the outline uses the target block's own mesh grid. Older recordings
+near seams can diverge at their clicks after this correction. Saves, terrain,
+simulation rules and the replay file format are unchanged.
+
+The independent picking regression is `cargo test --release b3_`. Its fine
+world-ray oracle samples the exact inverse on all eight corners, all twelve
+edges and six ordinary sites, with one-metre and half-metre blocks. For a
+before measurement set `B3_BEFORE=1` and run `b3_world_ray_reference` (it is
+expected to fail against the frozen old picker). Run the provisional cost
+measurement with `cargo test --release b3_pick_cost -- --ignored --nocapture`.
+
 `scripts/tunnel-wall-reload.play` digs a shaft to a chunk boundary over a
 buried (Enclosed) chunk, saves, reloads and asserts with `cover_rel` that
 the chunk whose top the shaft exposed is drawn at LOD 0 (review 2 #7).

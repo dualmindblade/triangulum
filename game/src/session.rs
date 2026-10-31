@@ -355,7 +355,7 @@ impl Session {
         let hit = self.pick()?;
         let cell = hit.place_cell();
         let bp = self.engine.world.resolve_block(hit.face, cell.0, cell.1, cell.2)?;
-        if self.player.mode == Mode::Walk && self.player.overlaps_cell(&self.engine.planet, hit.face, cell) {
+        if self.player.mode == Mode::Walk && self.player.overlaps_cell(&self.engine.planet, bp.face, (bp.i as i64, bp.j as i64, bp.k as i64)) {
             return None;
         }
         let id = self.selected_block();
