@@ -727,7 +727,7 @@ fn with_the_slide_off_nothing_slides() {
     assert!(w.set_water(ledge, w.water_id(), 1));
     let edge = BlockPos { j: o.j + 3, ..ledge };
     let _ = (edge, sand);
-    let mut sim = Sim::new(SimConfig { flow: Flow { slide: false }, ..SimConfig::default() });
+    let mut sim = Sim::new(SimConfig { flow: Flow::before(), ..SimConfig::default() });
     run_until_still(&w, &mut sim, focus, 20);
     assert_eq!(w.water_level_at(ledge), 1, "stuck, as it was");
     assert_eq!(sim.stats.water_moved, 0);

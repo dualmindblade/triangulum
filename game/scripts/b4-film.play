@@ -1,0 +1,119 @@
+# B4, Andrew's #9: "When the water level drops in an area, water voxels of
+# level 1 will stick around on top of the entire surface."
+#
+# Three scenes, built in the air over the flat patch of m2a-sand.play so that
+# no terrain decides anything:
+#   A. a terraced bowl, full, drained through a plug in its floor: a lake
+#      whose level has dropped;
+#   B. a film on a wide table with no edge in reach: nowhere to go;
+#   C. one block of water poured on a table: the 4 mm sheet.
+#
+# It prints what is left (`levels`, and the counts in the transcript) and
+# asserts only what holds under every rule: the accounting, and that nothing
+# moves forever. What each film rule leaves is read from the sidecars
+# (A_settled.json and so on): run it with --film MODE and compare. It also
+# runs on the build before the mission, which is the "before" evidence.
+
+mode fly
+sim radius 112
+
+# ---- A. the terraced bowl ------------------------------------------------
+# Terraces from a 5 x 5 pool up to a 17 x 17 rim, a 13 x 13 x 8 sump under it.
+atblock 2 107155 57531 620
+assert mode == fly
+fill -10 -10 -23 10 10 -14 stone
+fill -6 -6 -22 6 6 -15 air
+fill -10 -10 -13 10 10 -10 stone
+fill -2 -2 -13 2 2 -13 water
+fill -4 -4 -12 4 4 -12 water
+fill -6 -6 -11 6 6 -11 water
+fill -8 -8 -10 8 8 -10 water
+tick 3
+assert queued == 0
+assert water_moved == 0
+assert water_rel[-8,-8,-13,8,8,-10] == 143820
+aim 0 0 -10
+shot A_full
+# The plug: one cell of the floor under the pool.
+fill 0 0 -14 0 0 -14 air
+tick 60
+aim 0 0 -10
+shot A_draining_3s
+tick 540
+shot A_draining_30s
+tick 1800
+shot A_draining_2min
+tick 1600
+state A_settled
+log terrace rings after the drain (layers -10, -11, -12, -13 from the rim down)
+levels -8 -8 8 8 -10
+levels -6 -6 6 6 -11
+levels -4 -4 4 4 -12
+levels -2 -2 2 2 -13
+assert water_rel[-8,-8,-22,8,8,-10] == 143820
+assert wet_rel[-8,-8,-13,8,8,-10] >= 0
+aim 2 2 -11
+shot A_terraces_200s
+tick 2400
+log the same terraces five minutes after the plug was pulled
+state A_settled_late
+levels -8 -8 8 8 -10
+aim 2 2 -11
+shot A_terraces_320s
+
+# ---- B. a film with nowhere to go -----------------------------------------
+# A 41 x 41 table, its edges 18 cells beyond a 5 x 5 film at level 1.
+atblock 2 107215 57531 620
+fill -20 -20 -6 20 20 -6 stone
+tick 2
+fill -2 -2 -5 2 2 -5 water 1
+tick 40
+assert water_rel[-20,-20,-5,20,20,-5] <= 25
+state B_early
+aim 3 0 -5
+shot B_early
+tick 400
+state B_settled
+levels -4 -4 4 4 -5
+aim 3 0 -5
+shot B_settled
+tick 1000
+state B_late
+aim 3 0 -5
+shot B_late
+
+# ---- C. one poured block: the 4 mm sheet -----------------------------------
+atblock 2 107275 57531 625
+fill -24 -24 -8 24 24 -8 stone
+tick 2
+# from three blocks up (reach is 6 m), then back up to look
+atblock 2 107275 57531 620
+select 9
+aim 0 0 -2.5
+tap place
+assert level_rel[0,0,-2] == 255
+atblock 2 107275 57531 625
+tick 20
+aim 8 0 -7
+shot C_spreading_1s
+tick 180
+state C_10s
+levels -12 -12 12 12 -7
+aim 8 0 -7
+shot C_10s
+tick 1000
+state C_60s
+levels -12 -12 12 12 -7
+aim 8 0 -7
+shot C_60s
+tick 2400
+state C_180s
+levels -12 -12 12 12 -7
+aim 8 0 -7
+shot C_180s
+
+# ---- the accounting holds, and nothing is left running -----------------------
+assert queued == 0
+assert falling == 0
+assert water_lost == 0
+state final

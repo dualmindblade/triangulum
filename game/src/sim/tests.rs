@@ -10,7 +10,7 @@ use std::sync::Arc;
 /// ones that need a block to stay where it lands (a tower, a block on a
 /// one-cell shelf): under the slide neither can stand.
 fn straight_down() -> SimConfig {
-    SimConfig { flow: Flow { slide: false }, ..SimConfig::default() }
+    SimConfig { flow: Flow::before(), ..SimConfig::default() }
 }
 
 #[test]
@@ -44,22 +44,23 @@ fn snapshot_bytes_round_trip_and_reject_damage() {
         queue: vec![(78, PosKey(5)), (78, PosKey(9)), (80, PosKey(1))],
         frozen: vec![(ChunkKey::neisor(3, 0, 10, 11, 12), vec![(70, PosKey(123)), (71, PosKey(124))]), (ChunkKey::neisor(4, 0, 0, 0, 0), vec![])],
         falling: vec![Falling { id: 4, face: 2, i: 100, j: 200, z: 612.25, vel: -3.5 }, Falling { id: 5, face: 2, i: 100, j: 200, z: 615.0, vel: 0.0 }],
-        config: Some(SimConfig { radius_m: 37.5, enabled: false, water_period: 3, flow: Flow { slide: false } }),
+        config: Some(SimConfig { radius_m: 37.5, enabled: false, water_period: 3, flow: Flow { film: Film::Merge, film_reach: 3, film_dry_ticks: 77, ..Flow::before() } }),
         focus: Some(DVec3::new(1.0e6, -2.5e6, 3.25e5)),
         rules: Some([7; 32]),
+        drying: vec![(90, PosKey(11)), (91, PosKey(12))],
     };
     let bytes = snap.to_bytes();
     assert_eq!(Snapshot::from_bytes(&bytes).unwrap(), snap);
     // Version 2 adds one byte saying which parts follow.
     assert_eq!(Snapshot::default().to_bytes().len(), 4 + 4 + 8 + 8 * 3 + 1);
     // A version-1 file (no settings, focus or rules) still reads.
-    let mut v1 = Snapshot { config: None, focus: None, rules: None, ..snap.clone() }.to_bytes();
+    let mut v1 = Snapshot { config: None, focus: None, rules: None, drying: vec![], ..snap.clone() }.to_bytes();
     v1.pop();
     v1[4..8].copy_from_slice(&1u32.to_le_bytes());
-    assert_eq!(Snapshot::from_bytes(&v1).unwrap(), Snapshot { config: None, focus: None, rules: None, ..snap.clone() });
+    assert_eq!(Snapshot::from_bytes(&v1).unwrap(), Snapshot { config: None, focus: None, rules: None, drying: vec![], ..snap.clone() });
     // A version-2 file (the build before B4): settings without flow settings.
     // It reads, and takes this build's flow settings.
-    let no_focus = Snapshot { focus: None, rules: None, ..snap.clone() };
+    let no_focus = Snapshot { focus: None, rules: None, drying: vec![], ..snap.clone() };
     let mut v2 = no_focus.to_bytes();
     let text = no_focus.config.unwrap().flow.text();
     let flow_at = v2.len() - text.len() - 4;
@@ -596,6 +597,9 @@ fn the_hash_covers_the_simulation_settings() {
         ("enabled", SimConfig { enabled: false, ..SimConfig::default() }),
         ("water period", SimConfig { water_period: 3, ..SimConfig::default() }),
         ("slide", straight_down()),
+        ("film rule", SimConfig { flow: Flow { film: Film::Keep, ..Flow::default() }, ..SimConfig::default() }),
+        ("film reach", SimConfig { flow: Flow { film_reach: 3, ..Flow::default() }, ..SimConfig::default() }),
+        ("film drying time", SimConfig { flow: Flow { film_dry_ticks: 7, ..Flow::default() }, ..SimConfig::default() }),
     ] {
         assert_ne!(Sim::new(cfg).state_hash(&w), base, "{what} is in the hash");
     }

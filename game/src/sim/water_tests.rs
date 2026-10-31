@@ -426,7 +426,7 @@ fn a_pit_dug_at_the_shore_fills_from_the_sea_and_the_sea_stays_full() {
     // The pit's walls are beach sand. Under the slide they slump into the
     // pit, which is `a_pit_dug_in_a_beach_slumps_and_the_water_still_adds_up`;
     // this test is about the water, so the walls stand.
-    let mut sim = Sim::new(SimConfig { flow: Flow { slide: false }, ..SimConfig::default() });
+    let mut sim = Sim::new(SimConfig { flow: Flow::before(), ..SimConfig::default() });
     // An untouched sea costs nothing.
     for _ in 0..5 {
         sim.step(&w, focus);
@@ -514,7 +514,7 @@ fn a_pit_dug_in_a_beach_slumps_and_the_water_still_adds_up() {
     println!("beach pit: settled in {t} ticks, {} slides, {} landings, {} units moved, {} displaced, {} lost, in {} out {}", sim.stats.slides, sim.stats.landings, sim.stats.water_moved, sim.stats.water_displaced, sim.stats.water_lost, sim.stats.water_in, sim.stats.water_out);
     assert!(t < 3000, "settled");
     assert!(sim.stats.slides > 0, "the walls slumped");
-    assert_eq!(water_delta(&w), sim.stats.water_in as i64 - sim.stats.water_out as i64 - sim.stats.water_lost as i64);
+    assert_eq!(water_delta(&w), sim.stats.water_in as i64 - sim.stats.water_out as i64 - sim.stats.water_lost as i64 - sim.stats.water_dried as i64);
     assert_at_rest(&w, &sim);
 }
 

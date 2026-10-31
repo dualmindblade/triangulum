@@ -109,6 +109,52 @@ const GHOST_TICKS: u64 = 5;
 /// Ticks kept for the average cost.
 const COST_WINDOW: usize = 100;
 
+/// What becomes of level-1 water, which the 2-level rule cannot move
+/// (Andrew's #9; `--film`, `sim film`). water.rs has the rules and the
+/// findings say how each behaves: Andrew chooses by playing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Film {
+    /// Nothing more than the slide: the film stays.
+    Keep,
+    /// A level-1 cell runs to the nearest drop within `Flow::film_reach`.
+    Seek,
+    /// Thin water pulls together: no cell is wetted with less than 2, and a
+    /// level-1 cell gives its unit to its wettest neighbour.
+    Merge,
+    /// A level-1 cell dries after `Flow::film_dry_ticks`.
+    Dry,
+    /// Seek, and what has nowhere to go dries.
+    SeekDry,
+}
+
+impl Film {
+    pub const ALL: [Film; 5] = [Film::Keep, Film::Seek, Film::Merge, Film::Dry, Film::SeekDry];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Film::Keep => "keep",
+            Film::Seek => "seek",
+            Film::Merge => "merge",
+            Film::Dry => "dry",
+            Film::SeekDry => "seek+dry",
+        }
+    }
+
+    pub fn parse(name: &str) -> Result<Self, String> {
+        Self::ALL.into_iter().find(|f| f.name() == name).ok_or_else(|| format!("bad film rule {name:?}: keep, seek, merge, dry or seek+dry"))
+    }
+
+    pub fn seeks(self) -> bool {
+        matches!(self, Film::Seek | Film::SeekDry)
+    }
+    pub fn dries(self) -> bool {
+        matches!(self, Film::Dry | Film::SeekDry)
+    }
+    pub fn merges(self) -> bool {
+        self == Film::Merge
+    }
+}
+
 /// How powder and water move beyond straight down (B4). Part of `SimConfig`,
 /// so it is saved, hashed and replayed with the other settings.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -117,18 +163,31 @@ pub struct Flow {
     /// space directly beside them. Off (`--no-slide`, `sim slide off`) is
     /// the rule before: straight down only.
     pub slide: bool,
+    /// Andrew's #9.
+    pub film: Film,
+    /// How many cells away along a straight dry line a level-1 cell finds a
+    /// drop under `Film::Seek` (`--film-reach`). 1 is the plain slide.
+    pub film_reach: u32,
+    /// How long a level-1 cell waits to dry under `Film::Dry`: between this
+    /// and three times this many ticks (`--film-dry-s`, in seconds).
+    pub film_dry_ticks: u64,
 }
 
 impl Default for Flow {
     fn default() -> Self {
-        Self { slide: true }
+        Self { slide: true, film: Film::SeekDry, film_reach: 8, film_dry_ticks: 200 }
     }
 }
 
 impl Flow {
+    /// The rules before B4: straight down, and the film stays.
+    pub fn before() -> Self {
+        Self { slide: false, film: Film::Keep, ..Self::default() }
+    }
+
     /// `key=value` words: how a save and a replay write these settings.
     pub fn text(&self) -> String {
-        format!("slide={}", if self.slide { "on" } else { "off" })
+        format!("slide={} film={} reach={} dry={}", if self.slide { "on" } else { "off" }, self.film.name(), self.film_reach, self.film_dry_ticks)
     }
 
     /// `text` back; a setting left out keeps its default.
@@ -138,6 +197,9 @@ impl Flow {
             match w.split_once('=') {
                 Some(("slide", "on")) => f.slide = true,
                 Some(("slide", "off")) => f.slide = false,
+                Some(("film", name)) => f.film = Film::parse(name)?,
+                Some(("reach", n)) => f.film_reach = n.parse().map_err(|_| format!("bad film reach {n:?}"))?,
+                Some(("dry", n)) => f.film_dry_ticks = n.parse().ok().filter(|t| *t > 0).ok_or_else(|| format!("bad film drying time {n:?}"))?,
                 _ => return Err(format!("bad flow setting {w:?}")),
             }
         }
@@ -277,6 +339,8 @@ pub struct Snapshot {
     pub config: Option<SimConfig>,
     pub focus: Option<DVec3>,
     pub rules: Option<[u8; 32]>,
+    /// Version 3 (B4): level-1 cells waiting to dry.
+    pub drying: Vec<(u64, PosKey)>,
 }
 
 const SNAPSHOT_MAGIC: &[u8; 4] = b"TRSM";
@@ -316,7 +380,7 @@ pub fn rules_extend(reg: &crate::world::Registry, digest: &[u8; 32]) -> bool {
 
 impl Snapshot {
     pub fn is_empty(&self) -> bool {
-        self.queue.is_empty() && self.frozen.is_empty() && self.falling.is_empty()
+        self.queue.is_empty() && self.frozen.is_empty() && self.falling.is_empty() && self.drying.is_empty()
     }
 
     pub fn to_bytes(&self) -> Vec<u8> {
@@ -350,7 +414,7 @@ impl Snapshot {
             w.extend_from_slice(&f.vel.to_bits().to_le_bytes());
         }
         // Version 2: a presence byte, then each part present.
-        w.push(self.config.is_some() as u8 | (self.focus.is_some() as u8) << 1 | (self.rules.is_some() as u8) << 2);
+        w.push(self.config.is_some() as u8 | (self.focus.is_some() as u8) << 1 | (self.rules.is_some() as u8) << 2 | (!self.drying.is_empty() as u8) << 3);
         if let Some(c) = &self.config {
             w.extend_from_slice(&c.radius_m.to_bits().to_le_bytes());
             w.push(c.enabled as u8);
@@ -367,6 +431,9 @@ impl Snapshot {
         }
         if let Some(r) = &self.rules {
             w.extend_from_slice(r);
+        }
+        if !self.drying.is_empty() {
+            entries(&mut w, &self.drying);
         }
         w
     }
@@ -411,9 +478,10 @@ impl Snapshot {
             falling.push(Falling { id, face, i, j, z, vel });
         }
         let (mut config, mut focus, mut rules) = (None, None, None);
+        let mut drying = Vec::new();
         if version >= 2 {
             let parts = r.take(1)?[0];
-            if parts & !7 != 0 {
+            if parts & !15 != 0 {
                 return Err(format!("bad simulation state parts {parts:#x}"));
             }
             if parts & 1 != 0 {
@@ -449,11 +517,14 @@ impl Snapshot {
             if parts & 4 != 0 {
                 rules = Some(r.take(32)?.try_into().unwrap());
             }
+            if parts & 8 != 0 {
+                drying = r.entries()?;
+            }
         }
         if r.at != b.len() {
             return Err(format!("{} trailing bytes after simulation state", b.len() - r.at));
         }
-        Ok(Self { tick, queue, frozen, falling, config, focus, rules })
+        Ok(Self { tick, queue, frozen, falling, config, focus, rules, drying })
     }
 }
 
@@ -529,6 +600,8 @@ pub struct SimStats {
     /// no room above (lost under a solid ceiling).
     pub water_displaced: u64,
     pub water_lost: u64,
+    /// Units of film that dried (B4, `Film::Dry`): water that left the world.
+    pub water_dried: u64,
     /// Water cell updates run last tick.
     pub water_updates_last: u32,
     /// Last tick's cost by phase (microseconds): the water rule's two
@@ -544,7 +617,7 @@ impl SimStats {
     /// inside the active region changed by, in units, if the rule itself
     /// conserved it (the tests check it did).
     pub fn water_balance(&self) -> i64 {
-        self.water_in as i64 - self.water_out as i64 + self.water_placed as i64 - self.water_removed as i64 - self.water_lost as i64
+        self.water_in as i64 - self.water_out as i64 + self.water_placed as i64 - self.water_removed as i64 - self.water_lost as i64 - self.water_dried as i64
     }
 }
 
@@ -578,6 +651,9 @@ pub struct Sim {
     frozen: BTreeMap<ChunkKey, BTreeMap<PosKey, u64>>,
     /// Sorted by (column, height) after every tick.
     falling: Vec<Falling>,
+    /// Level-1 cells waiting to dry: (due tick, position), apart from the
+    /// queue because a film waiting is settled water, not work to do.
+    drying: BTreeSet<(u64, PosKey)>,
     active: FastSet<ChunkKey>,
     focus_chunk: Option<ChunkKey>,
     /// The exact position the active region was last computed for: the
@@ -610,6 +686,7 @@ impl Sim {
             queue: BTreeSet::new(),
             frozen: BTreeMap::new(),
             falling: Vec::new(),
+            drying: BTreeSet::new(),
             active: FastSet::default(),
             focus_chunk: None,
             focus_pos: None,
@@ -647,6 +724,7 @@ impl Sim {
         }
         self.falling = snap.falling;
         self.falling.sort_by_key(Falling::sort_key);
+        self.drying = snap.drying.into_iter().collect();
         self.active.clear();
         self.focus_chunk = None;
         self.focus_pos = None;
@@ -666,6 +744,10 @@ impl Sim {
     pub fn queued(&self) -> usize {
         self.queue.len()
     }
+    /// Level-1 cells waiting to dry.
+    pub fn drying_count(&self) -> usize {
+        self.drying.len()
+    }
     pub fn frozen_count(&self) -> usize {
         self.frozen.values().map(|s| s.len()).sum()
     }
@@ -681,7 +763,7 @@ impl Sim {
         self.dirty
     }
     pub fn has_state(&self) -> bool {
-        !(self.queue.is_empty() && self.frozen.is_empty() && self.falling.is_empty())
+        !(self.queue.is_empty() && self.frozen.is_empty() && self.falling.is_empty() && self.drying.is_empty())
     }
 
     pub fn set_radius(&mut self, radius_m: f64) {
@@ -766,6 +848,11 @@ impl Sim {
             h.u64(f.z.to_bits());
             h.u64(f.vel.to_bits());
         }
+        h.u64(self.drying.len() as u64);
+        for (due, key) in &self.drying {
+            h.u64(*due);
+            h.u64(key.0);
+        }
         (h.finish(), queue.len())
     }
 
@@ -780,7 +867,7 @@ impl Sim {
     /// One line for the HUD and the harness transcript.
     pub fn describe(&self) -> String {
         format!(
-            "sim {}  tick {}  falling {}  queued {}  frozen {}  active {} chunks  water {} updates, {} moved, in {} out {}  tick cost {:.3} ms (avg {:.3}, max {:.3})",
+            "sim {}  tick {}  falling {}  queued {}  frozen {}  active {} chunks  water {} updates, {} moved, in {} out {}, {} drying, {} dried  tick cost {:.3} ms (avg {:.3}, max {:.3})",
             if self.config.enabled { "on" } else { "off" },
             self.tick,
             self.falling.len(),
@@ -791,6 +878,8 @@ impl Sim {
             self.stats.water_moved,
             self.stats.water_in,
             self.stats.water_out,
+            self.drying.len(),
+            self.stats.water_dried,
             self.stats.last_us as f64 / 1e3,
             self.stats.avg_us() / 1e3,
             self.stats.max_us as f64 / 1e3
@@ -831,6 +920,7 @@ impl Sim {
             config: Some(self.config),
             focus: self.focus(),
             rules: Some(rules_digest(&world.registry)),
+            drying: self.drying.iter().copied().collect(),
         }
     }
 
@@ -899,6 +989,7 @@ impl Sim {
             h.update(&f.z.to_bits().to_le_bytes());
             h.update(&f.vel.to_bits().to_le_bytes());
         }
+        entries(&mut h, &self.drying);
         // Only chunks whose content differs from the generator's: an edited
         // chunk equal to its natural one is the same world. Whether it is
         // is kept per chunk until the chunk changes (the comparison
@@ -1205,13 +1296,18 @@ impl Sim {
         self.stats.water_updates_last = 0;
         self.stats.water_rule_us = 0;
         self.stats.water_commit_us = 0;
-        if !water.is_empty() {
-            let period = self.config.water_period.max(1);
+        let period = self.config.water_period.max(1);
+        let dries = self.tick % period == 0 && self.drying.first().is_some_and(|e| e.0 <= self.tick);
+        if !water.is_empty() || dries {
             if self.tick % period == 0 {
-                // Pass 1, bottom-up: falls. Pass 2, alternating direction
-                // every water step: spreads (water.rs).
+                // First what has waited long enough dries. Pass 1, bottom-up:
+                // falls. Pass 2, alternating direction every water step:
+                // spreads (water.rs).
                 let t1 = Instant::now();
                 self.stats.water_updates_last = water.len() as u32;
+                if dries {
+                    self.dry_films(world);
+                }
                 for &(_, key) in &water {
                     self.water_fall(world, key.pos());
                 }
@@ -1475,6 +1571,8 @@ impl Sim {
     }
 }
 
+#[cfg(test)]
+mod film_tests;
 #[cfg(test)]
 mod flow_tests;
 #[cfg(test)]

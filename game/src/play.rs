@@ -51,6 +51,10 @@
 //!   sim radius M            active region radius in metres (--sim-radius)
 //!   sim period N            ticks per water step (--water-period; 1)
 //!   sim slide on|off        powder and water go over ledges (--no-slide)
+//!   sim film MODE           what becomes of level-1 water (--film): keep,
+//!                           seek, merge, dry, seek+dry
+//!   sim reach N             how far a film runs to a drop (--film-reach)
+//!   sim dry SECONDS         how long a film waits to dry (--film-dry-s)
 //!   select N                hotbar slot 1-9
 //!   hotbar A,B,...          what keys 1-9 hold, by block name (M3b; the
 //!                           harness otherwise keeps the default hotbar,
@@ -123,7 +127,8 @@
 //!                             sim_hash (the world-state hash; computed on demand)
 //!                             water_moved water_writes water_in water_out
 //!                             water_placed water_removed water_displaced
-//!                             water_lost water_balance water_updates_last
+//!                             water_lost water_dried drying water_balance
+//!                             water_updates_last
 //!                             water_period flow sim_radius (units: 255 = a cell)
 //!                             sky_seconds sky_speed (the session's sky
 //!                             clock) steps recording
@@ -875,7 +880,22 @@ pub fn run_play(session: Session, opts: PlayOptions) -> i32 {
                     let _ = run.session.apply(Action::Flow(flow));
                     run.say(format!("  {}", flow.text()));
                 }
-                _ => bad(&mut run, "sim on|off | sim radius M | sim period N | sim slide on|off"),
+                (Some("film"), _) if args.get(1).is_some_and(|n| crate::sim::Film::parse(n).is_ok()) => {
+                    let flow = crate::sim::Flow { film: crate::sim::Film::parse(args[1]).unwrap(), ..run.session.sim.config.flow };
+                    let _ = run.session.apply(Action::Flow(flow));
+                    run.say(format!("  {}", flow.text()));
+                }
+                (Some("reach"), Some(n)) if n >= 1.0 => {
+                    let flow = crate::sim::Flow { film_reach: n as u32, ..run.session.sim.config.flow };
+                    let _ = run.session.apply(Action::Flow(flow));
+                    run.say(format!("  {}", flow.text()));
+                }
+                (Some("dry"), Some(s)) if s > 0.0 => {
+                    let flow = crate::sim::Flow { film_dry_ticks: ((s * crate::sim::TICK_HZ as f64) as u64).max(1), ..run.session.sim.config.flow };
+                    let _ = run.session.apply(Action::Flow(flow));
+                    run.say(format!("  {}", flow.text()));
+                }
+                _ => bad(&mut run, "sim on|off | sim radius M | sim period N | sim slide on|off | sim film keep|seek|merge|dry|seek+dry | sim reach N | sim dry SECONDS"),
             },
             "speed" => match num(0) {
                 Some(v) if (1.0..=5000.0).contains(&v) => run.session.player.fly_speed = v,

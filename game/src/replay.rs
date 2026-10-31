@@ -662,6 +662,7 @@ fn counters_of(s: &crate::sim::SimStats) -> BTreeMap<String, u64> {
         ("water_removed", s.water_removed),
         ("water_displaced", s.water_displaced),
         ("water_lost", s.water_lost),
+        ("water_dried", s.water_dried),
     ]
     .into_iter()
     .map(|(k, v)| (k.to_string(), v))
@@ -683,6 +684,7 @@ fn restore_counters(s: &mut crate::sim::SimStats, c: &BTreeMap<String, u64>) {
     s.water_removed = get("water_removed");
     s.water_displaced = get("water_displaced");
     s.water_lost = get("water_lost");
+    s.water_dried = get("water_dried");
 }
 
 fn sky_settings_map() -> BTreeMap<String, String> {

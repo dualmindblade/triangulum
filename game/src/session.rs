@@ -542,6 +542,7 @@ impl Session {
             "water_in": ws.water_in, "water_out": ws.water_out,
             "water_placed": ws.water_placed, "water_removed": ws.water_removed,
             "water_displaced": ws.water_displaced, "water_lost": ws.water_lost,
+            "water_dried": ws.water_dried, "drying": self.sim.drying_count(),
             "water_balance": ws.water_balance(),
             "water_updates_last": ws.water_updates_last,
             "water_period": self.sim.config.water_period,
