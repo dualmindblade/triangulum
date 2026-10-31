@@ -114,6 +114,14 @@ fn marks_land_on_the_right_pixels_at_every_scale() {
         for spot in ["canvas", "comment", "annot-save", "annot-cancel", "undo", "tool-pen", "ink-red"] {
             assert!(screen.contains_rect(t.a.spots[spot]), "{scale} {size:?}: {spot} {:?} on {screen:?}", t.a.spots[spot]);
         }
+        // Nothing sits on anything else: on a small window at 150% the line about
+        // the moment once ran over the colours and Undo.
+        let spots: Vec<(&String, &Rect)> = t.a.spots.iter().filter(|(k, _)| k.as_str() != "draft").collect();
+        for (i, (a, ra)) in spots.iter().enumerate() {
+            for (b, rb) in &spots[i + 1..] {
+                assert!(!ra.intersects(**rb), "{scale} {size:?}: {a} {ra:?} overlaps {b} {rb:?}");
+            }
+        }
         let k = t.a.spots["canvas"].width() / t.a.spots["canvas"].height();
         assert!((k - picture.0 as f32 / picture.1 as f32).abs() < 0.01, "the picture keeps its shape");
         // Off the edge: on the last pixel, not outside the picture.
@@ -282,27 +290,32 @@ fn enter_saves_and_esc_asks_before_it_loses_anything() {
     assert_eq!(t.out, Some(Outcome::Cancel));
 }
 
-/// A marker pen keeps up: the panel's cost with a lot on the picture, an egui
-/// pass and its tessellation, against 16 ms. Generous, since other work shares
-/// the machine; the figure is printed for the findings.
+/// A marker pen keeps up: the panel's cost, an egui pass and its tessellation,
+/// with a busy picture (20 long strokes) against a 60 Hz frame, and with a
+/// silly one (200) as the far end. Generous, since other work shares the
+/// machine; the figures are printed for the findings.
 #[test]
 fn a_pass_stays_quick_with_a_lot_drawn() {
     let mut t = T::new(1.0, (1920, 1080), (1920, 1080));
-    for s in 0..200 {
-        let points = (0..300).map(|i| [100.0 + i as f64 * 5.0, 100.0 + s as f64 * 4.0 + ((i as f64) * 0.1).sin() * 20.0]).collect();
-        t.a.marks.push(Mark::Pen { colour: Ink::Red, points });
-    }
-    t.passes(2);
-    let mut worst = 0.0f64;
-    let mut sum = 0.0;
-    for _ in 0..20 {
-        let raw = t.rig.input(1920, 1080);
-        let ms = pass_ms(&mut t.a, &t.rig.ctx, raw);
-        worst = worst.max(ms);
-        sum += ms;
-    }
-    println!("annotator with 200 strokes of 300 points (60,000 points): {:.2} ms a pass on average, {worst:.2} ms at worst", sum / 20.0);
-    assert!(worst < 50.0, "{worst:.1} ms");
+    let mut measure = |t: &mut T, strokes: usize, limit: f64| {
+        t.a.marks.clear();
+        for s in 0..strokes {
+            let points = (0..300).map(|i| [100.0 + i as f64 * 5.0, 100.0 + s as f64 * 4.0 + ((i as f64) * 0.1).sin() * 20.0]).collect();
+            t.a.marks.push(Mark::Pen { colour: Ink::Red, points });
+        }
+        t.passes(2);
+        let (mut worst, mut sum) = (0.0f64, 0.0);
+        for _ in 0..20 {
+            let raw = t.rig.input(1920, 1080);
+            let ms = pass_ms(&mut t.a, &t.rig.ctx, raw);
+            worst = worst.max(ms);
+            sum += ms;
+        }
+        println!("annotator with {strokes} strokes of 300 points: {:.2} ms a pass on average, {worst:.2} ms at worst", sum / 20.0);
+        assert!(worst < limit, "{strokes} strokes: {worst:.1} ms");
+    };
+    measure(&mut t, 20, 16.0);
+    measure(&mut t, 200, 100.0);
     // Flattening runs off the main thread: this is how long the save takes there.
     let f = std::time::Instant::now();
     let flat = flatten(&grey(1920, 1080), 1920, 1080, &t.a.marks);

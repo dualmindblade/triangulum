@@ -624,10 +624,10 @@ impl Annotator {
             if r.clicked() {
                 self.undo();
             }
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.label(egui::RichText::new(&self.context).strong());
-            });
         });
+        // A row of its own: beside the tools it runs into them on a small window.
+        let r = ui.label(egui::RichText::new(&self.context).small());
+        self.spots.insert("context".into(), r.rect);
     }
 
     fn ui_foot(&mut self, ui: &mut egui::Ui, out: &mut Option<Outcome>) {

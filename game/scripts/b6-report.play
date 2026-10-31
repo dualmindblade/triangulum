@@ -53,13 +53,13 @@ menu click tool-box
 mark stroke 0.29 0.49 0.57 0.71
 menu click ink-blue
 menu click tool-arrow
-mark stroke 0.90 0.20 0.585 0.56
+mark stroke 0.68 0.17 0.50 0.50
 menu type The sand stack came down, and its top now sits above the line of the terrace
 menu shot a02_drawn
 menu key ctrl+z
 menu shot a03_undone
 menu click ink-blue
-mark stroke 0.90 0.20 0.585 0.56
+mark stroke 0.68 0.17 0.50 0.50
 menu click tool-text
 menu click canvas 0.60 0.12
 menu type top of the stack

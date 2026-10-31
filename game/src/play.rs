@@ -648,11 +648,15 @@ impl Run {
                 let rgba = self.harness.gpu.read_rgba();
                 let (settings, look) = (self.harness.gpu.sky.settings.clone(), self.harness.gpu.sky.look.clone());
                 let moment = Moment::grab(Grab { session: &self.session, cam: &cam, settings: &settings, look: &look, digests: &mut self.digests, rgba, width, height, mesh_view: self.harness.gpu.mesh_view, preview_world: false, frame_ms: None });
-                self.say(format!("  marking step {} ({}), grabbed in {:.1} ms", moment.step, moment.png.display(), t0.elapsed().as_secs_f64() * 1e3));
+                let grabbed = t0.elapsed().as_secs_f64() * 1e3;
+                let (step, png) = (moment.step, moment.png.clone());
                 self.ensure_menu();
                 let (m, _) = self.menu.as_mut().unwrap();
                 m.mark_moment(moment);
-                self.menu_passes(3);
+                self.menu_pass(true);
+                let shown = t0.elapsed().as_secs_f64() * 1e3;
+                self.say(format!("  marking step {step} ({}): frame grabbed in {grabbed:.1} ms, on screen with its picture in {shown:.1} ms", png.display()));
+                self.menu_passes(2);
                 Ok(())
             }
             Some("stroke") => {
