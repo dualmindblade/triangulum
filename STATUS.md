@@ -12,10 +12,9 @@
   diverting a river keeps the area wet. **F10 records a bug as a replay
   file** that plays back exactly. Astra's third review found edge cases;
   all but two minor ones are fixed.
-- **The one number** (RTX 2060, 1080p, 60 s test flight): **920 fps
-  average, 425 fps for the worst 1% of frames, worst frame 8.2 ms**
-  (everything through the bug round, 2026-10-31). That's provisional: Plex
-  was transcoding during the run. The last idle number, through M3b, was
+- **The one number** (RTX 2060, 1080p, 60 s test flight, idle machine):
+  **1,188 fps average, 574 fps for the worst 1% of frames, worst frame
+  5.0 ms** (everything through the bug round, 2026-10-31). Through M3b it was
   1,134 / 611 / 6.0. The target is 60 fps (16.7 ms).
 - **M3, Andrew's workshop: half done.** Press F1: the look panel (sky,
   light, fog, water, block colours, terrain dials) and the block and
