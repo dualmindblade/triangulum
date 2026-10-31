@@ -84,6 +84,16 @@ Bug round from Andrew's first playthrough (`docs/missions/2026-10-30-bug-round.m
 | B7 | #8: an experiment, powder with levels and an angle of repose (`--powder levels`) | Opus | done, Andrew to judge |
 | S1 | Saves off the main thread | Astra | done |
 
+Round 2, from Andrew's second list (`docs/missions/2026-10-31-round2.md`):
+
+| Task | What | Who | State |
+|---|---|---|---|
+| C1 | The crashes (minimising, powder launch), an unfocused test window, unbound fly speed, great-circle movement | Opus | running |
+| C2 | Powder that slides, no double copies, water that spreads without flicker, no film Z-fighting | Fable | running |
+| T1 | Sea level in the middle, coarsest voxel H/2, planet size in half-heights, a slider up to an Earth analogue | Astra | running |
+| T2 | Real mountains, the split between local and global features, rivers and lakes carved down into the land | Fable | running |
+| T3 | Boundaries rough at every scale: lakes, biomes, snow, polar ice | Opus | running |
+
 ## M4 — Things that move
 
 Falling trees and Create-style contraptions that snap back into the grid.

@@ -1,0 +1,24 @@
+-The game has a lack of mountains and peaks. Continents, rivers, biomes and mountain ranges are scaled realistically for a planetary scale, but terrain roughness and individual mountain peaks need to be scaled more realistically on a local scale for the terrain to be interesting and varied enough.
+
+-On this note, the deliniation between locally-scaled and globally scaled-features should be made clear and we should work on having an arbitrarily scaled Neisor, perhaps with a slider between it's current size and the size of a full-scale Earth analog withing world height units.
+
+-Speaking of the world height units, the largest LOD level should really be half of the world height, so that the bottom voxel can be water and the top voxel can be air, with the ocean level being placed exactly in the middle. Planet size should thus be in these half-world height units.
+
+-Several features of terrain noise need a slight rework. The main issue seems to be that there is a discontinuity in the distribution of noise octaves. For example, in the lake picture, the entire lake appears as a round blob and only up close is their variation in the outline. There seem to be 2 independent issues with biome noise. First, the noise between biome types suffers from the same issue. Biome boundaries appear very rounded from afar and up close they appear more varied and scattered. Second, the boundary between areas with and without snow seem way too chaotic and scattered. The same issue affects the polar ice caps, which mostly look like smooth noise with a bias towards land in the middle and a bias towards sea on the outside, creating a chaotic and smooth look that isn't very realistic. In all of these cases, the overall shape of the landforms should be affected by uniformly decreasing octaves of noise to give them a rougher look, but these noise octaves should not have so much of an effect that they consistently break up and scatter boundaries. Finally, on the very smallest level of noise, biome boundaries look like smooth noise. The rough but non-scattered look should extend all the way down.
+
+-Powder voxels should slide horizontally in a similar way to how they fall down afterwards. Currently, powder voxels teleport to the new location and fall down, and there is a bug where 2 copies of a powder voxel can be seen at once.
+
+-The terrain directly around rivers is high enough to contain the water, but the way this was implemented seems to be having the ground slope upwards towards a riverbed, when it should be exactly the opposite. A simple fix would be to account for the difference in height between the floor of the riverbed and the terrain height in a given generation region, and to have the difference be carved downwards out of the terrain during generation.
+
+-Not necesarrily a bug, but we'd like to know why the game gets to 238/239 in the building stage instantaneously and then takes around 30 seconds to finish the last step.
+
+-When clicking out of the game tab, the game consistently crashes. The game also crashes when attempting to launch with powder levels.
+
+-Some water voxels seem to behave chaotically when spreading out, appearing and then disappearing in rapid succession for a moment before finally settling. Also there was an issue with a lone water voxel Z-fighting with the ground, presumably at level 0, which shouldn't exist?
+
+-Unbound the speed of the camera when using the scroll wheel. Also, switch to using great circles for the WASD movement. The current system causes some extremely weird behavior near and around the poles.
+
+Decision points:
+-Water should evaporate.
+-Don't implement powder levels into the terrain generation yet.
+-Everything else as is for now.

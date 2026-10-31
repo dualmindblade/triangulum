@@ -280,8 +280,15 @@ detail (still about 500 fps).
 
 ## In progress
 
-**The bug round:** Andrew's first list, 11 items plus Austin's annotation
-tool, matched to his recordings in `docs/missions/2026-10-30-bug-round.md`.
+**Round 2:** Andrew's second list, matched to his photos and recordings in
+`docs/missions/2026-10-31-round2.md`: the crashes, great-circle movement,
+sliding powder, water flicker, and the terrain work (real mountains, rivers
+carved into the land, boundaries rough at every scale, sea level in the middle
+and a planet-size slider). Tasks are in `PLAN.md`.
+
+**The first bug round, all merged:** Andrew's first list, 11 items plus
+Austin's annotation tool, matched to his recordings in
+`docs/missions/2026-10-30-bug-round.md`.
 
 | Mission | Bugs | Who | State |
 |---|---|---|---|
@@ -313,22 +320,9 @@ decisions, and underground darkness needs a lighting design.
   then tick *Desktop development with C++* in the Visual Studio Installer, then
   delete `game/.cargo/config.toml`. Until then the game builds from a linker
   on `E:/triangulum-build/`.
-- **Andrew, from the bug round** (each is yours to judge by playing):
-  1. Poured water now dries up on flat ground in about three minutes. It's
-     the first time water leaves the world by itself. `--film seek` keeps it.
-  2. Sand rests at one block per block, pits in sand fill themselves in, and
-     river beds slump into a trench dug beside them. Is that the feel?
-  3. The beach is about 70 m wide, down from 300-400 m. All the dials are in
-     `game/src/worldgen/coast.rs`.
-  4. The sea floor past the shallows is one grey gravel at every detail
-     level: consistent now, but it's still the "single grey block".
-  5. Thin lines where a lake's surface steps between detail levels, or a low
-     curb of water beside land? The patch for the curb is
-     `docs/missions/B2-shores-evidence/coarse-levels-experiment.patch`.
-  6. Do the mesh view's colours and the map suit him?
-  7. The powder experiment: should it replace today's rule, and at what
-     angle? `cargo run --release -- --powder levels`. The agent's advice is to
-     keep working on it but not switch yet.
+- **Andrew's answers to the bug round's list (2026-10-31):** water evaporates;
+  powder levels stay out of terrain generation for now; everything else stays
+  as it is. `DESIGN.md` has them.
 - **Andrew: the look panel is yours** (F1). Most of the art notes below
   are now dials he can turn himself: atmosphere height, night brightness,
   dusk colours, water colour, grass sides. *Save look*, then commit the

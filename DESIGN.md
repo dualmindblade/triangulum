@@ -21,14 +21,17 @@ with their OK; record the change here with the date.
 
 - Block size s: 1 m, with ½ m as a switch. Andrew (2026-10-30): the scale
   stays where it is for now.
-- World height H, in blocks, is a power of 2, set per world: 2,048, with 512
-  below sea level, for now (Andrew, 2026-10-30). The split above and below
-  sea level is its own setting.
-- Planet size N = k·H columns per face edge. Default N = 131,072 (k = 256).
-  With equal-area blocks, R = s·N·√(6/4π) ≈ 0.691·s·N, so R ≈ 90.57 km.
-- LOD voxel sizes are 1, 2, 4 … H blocks. The coarsest LOD voxel equals the
-  world height. Chunks are 32³ voxels. Because N is a multiple of H, LOD
-  voxels tile every face exactly.
+- World height H, in blocks, is a power of 2, set per world: 2,048. Sea level
+  is exactly in the middle, H/2, so the bottom half-height can be water and
+  the top one air (Andrew, 2026-10-31; it was 512 below sea level).
+- Planet size is counted in half-heights: N = u·(H/2) columns per face edge.
+  Default u = 128, N = 131,072. It is meant to be a slider, from today's size
+  up to an Earth analogue (Andrew, 2026-10-31; see
+  `docs/missions/2026-10-31-round2.md`). With equal-area blocks,
+  R = s·N·√(6/4π) ≈ 0.691·s·N, so R ≈ 90.57 km today.
+- LOD voxel sizes are 1, 2, 4 … H/2 blocks. The coarsest LOD voxel is half the
+  world height (Andrew, 2026-10-31). Chunks are 32³ voxels. Because N is a
+  multiple of the coarsest chunk edge, LOD voxels tile every face exactly.
 - Other bodies (the moon) follow the same rules with their own N.
 
 ## Terrain
@@ -69,8 +72,8 @@ with their OK; record the change here with the date.
   goes into it whatever its level, the last level included (Andrew's request,
   2026-10-30).
 - Level-1 water with nowhere to go dries, unless it is the edge of a large
-  body or of water fed from beyond the loaded area (2026-10-31, `--film`;
-  Andrew asked for an experiment, this default is his to confirm).
+  body or of water fed from beyond the loaded area (2026-10-31, `--film`).
+  Water evaporates (Andrew confirmed it, 2026-10-31).
 - Generated lakes, rivers and oceans start at rest. Simulation runs only
   where something changed.
 - At the edge of the loaded area, cells take their values from the
@@ -83,7 +86,9 @@ with their OK; record the change here with the date.
    collapses). A block at rest with a free cell beside it and a free cell
    below that one moves into that column and falls (Andrew's request,
    2026-10-30), so powder rests with neighbouring columns at most one block
-   apart. Columns keep their shape, so nothing needs converting.
+   apart. Columns keep their shape, so nothing needs converting. Powder with
+   levels (`--powder levels`) stays an experiment and stays out of terrain
+   generation for now (Andrew, 2026-10-31).
 2. **Local contraptions** (doors, drawbridges, elevators, felled trees) keep
    the warped shape of where they were built and snap back when they come to
    rest nearby.
