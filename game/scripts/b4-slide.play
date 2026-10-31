@@ -133,15 +133,15 @@ assert queued == 0
 # ---- E. a pit in a real beach: its walls slump ------------------------------
 mode fly
 select 1
-assert block[1,1804,59003,511] == sand
-assert block[1,1804,59003,512] == sand
-atblock 1 1809 59003 516
+assert block[1,1998,59004,511] == sand
+assert block[1,1998,59004,512] == sand
+atblock 1 2003 59004 516
 lookaxis -i 0
 aim -5 0 -5
 shot E_beach_0_before
 # a shaft four deep, dug from straight above: a slanted ray would take the
 # neighbouring column's top instead
-atblock 1 1804 59003 513
+atblock 1 1998 59004 513
 aim 0 0 -1.5
 assert crosshair == sand
 tap break
@@ -160,7 +160,7 @@ assert queued == 0
 state E_pit
 log the beach around the shaft: under the old rule one column four deep, all else 5
 heights -5 -4 5 4 -7 0
-atblock 1 1809 59003 516
+atblock 1 2003 59004 516
 lookaxis -i 0
 aim -5 0 -5
 shot E_beach_1_after_digging_four_deep

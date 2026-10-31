@@ -9,8 +9,9 @@
 # every check is about what the edits and the water did. Site A is the flat
 # patch of m2a-sand.play (row J = 57531, columns 107153..107159, level
 # ground). Site B is the shore the water tests found on face 1: the sea's
-# surface cell at (1799, 59003, 511), sand from i 1800 (top block at k 511
-# for i 1800..1802, at k 512 from i 1803), air above (probe-shore.play).
+# surface cell at (1985, 59004, 511), sand from i 1986 with its top block at
+# k 511, air above, and the shore straight across rows 59003..59005
+# (probe-shore.play).
 #
 #   tick N: N simulation ticks (20 Hz) with no input. A full cell beside one
 #   empty trench cell splits 127 / 128 in one tick (the remainder goes to
@@ -138,17 +139,19 @@ state site_a
 # it. This part is about the water, so they stand (the old rule, for this site
 # only); b4-slide.play digs the same beach under the new one.
 sim slide off
-atblock 1 1803 59003 511
+atblock 1 1989 59004 511
 assert on_ground == true
-assert block[1,1799,59003,511] == water
-assert level[1,1799,59003,511] == 255
-assert block[1,1800,59003,511] == sand
-assert block[1,1800,59003,510] == sand
-assert block[1,1800,59003,512] == air
+assert block[1,1985,59004,511] == water
+assert level[1,1985,59004,511] == 255
+assert block[1,1986,59004,511] == sand
+assert block[1,1986,59004,510] == sand
+assert block[1,1986,59004,512] == air
 mode fly
 select 1
+# Hover a layer up: the beach is level here, and a ray from the ground grazes it.
+atblock 1 1989 59004 512
 lookaxis -i 0
-# the 3 x 3 x 2 pit: i 1800..1802, j 59002..59004, k 511 then 510
+# the 3 x 3 x 2 pit: i 1986..1988, j 59003..59005, k 511 then 510
 aim -3 0 -1.5
 assert crosshair == sand
 tap break
@@ -170,7 +173,7 @@ aim -1 1 -1.5
 tap break
 # the lower layer from inside the pit (a steep ray from the shore would clip
 # the player's own ground block): hover in the pit's middle upper cell
-atblock 1 1801 59003 510
+atblock 1 1987 59004 510
 aim 0 0 -0.5
 assert crosshair == sand
 tap break
@@ -190,29 +193,29 @@ aim 1 -1 -0.5
 tap break
 aim 1 1 -0.5
 tap break
-atblock 1 1803 59003 512
+atblock 1 1989 59004 512
 lookaxis -i 0
-assert block[1,1800,59003,511] == air
-assert block[1,1800,59003,510] == air
-assert block[1,1802,59004,510] == air
-assert block[1,1802,59002,510] == air
-assert block[1,1800,59003,509] != air
-assert level[1,1800,59003,511] == 0
+assert block[1,1986,59004,511] == air
+assert block[1,1986,59004,510] == air
+assert block[1,1988,59005,510] == air
+assert block[1,1988,59003,510] == air
+assert block[1,1986,59004,509] != air
+assert level[1,1986,59004,511] == 0
 tick 1
-assert level[1,1800,59003,511] > 0
+assert level[1,1986,59004,511] > 0
 tick 2
-assert level[1,1800,59003,510] > 0
+assert level[1,1986,59004,510] > 0
 aim -2 0 -2.0
 shot 04_shore_pit_filling
 tick 200
 assert queued == 0
-assert level[1,1800,59003,510] == 255
-assert level[1,1801,59003,510] == 255
-assert level[1,1802,59004,510] == 255
-assert level[1,1801,59003,511] >= 200
-assert level[1,1799,59003,511] >= 230
-assert level[1,1779,59003,511] == 255
-assert level[1,1760,59003,511] == 255
+assert level[1,1986,59004,510] == 255
+assert level[1,1987,59004,510] == 255
+assert level[1,1988,59005,510] == 255
+assert level[1,1987,59004,511] >= 200
+assert level[1,1985,59004,511] >= 230
+assert level[1,1965,59004,511] == 255
+assert level[1,1946,59004,511] == 255
 assert water_in == 0
 assert water_out == 0
 assert water_lost == 0
@@ -221,35 +224,31 @@ shot 05_shore_pit_full
 
 # ---- 5. a channel inland from the pit, dug under the feet: it floods, the
 #         sea stays full
-aim 0 0 -0.5
+aim 0 0 -1.5
 assert crosshair == sand
 tap break
-aim 0 0 -1.5
-tap break
 aim 0 0 -2.5
-tap break
-aim 1 0 -0.5
 tap break
 aim 1 0 -1.5
 tap break
 aim 1 0 -2.5
 tap break
-assert block[1,1803,59003,512] == air
-assert block[1,1803,59003,510] == air
-assert block[1,1804,59003,510] == air
-assert block[1,1804,59003,509] != air
+assert block[1,1989,59004,512] == air
+assert block[1,1989,59004,510] == air
+assert block[1,1990,59004,510] == air
+assert block[1,1990,59004,509] != air
 tick 3
-assert level[1,1803,59003,510] > 0
+assert level[1,1989,59004,510] > 0
 tick 200
 assert queued == 0
-assert level[1,1803,59003,510] == 255
-assert level[1,1804,59003,510] == 255
-assert level[1,1804,59003,511] >= 150
-assert level[1,1779,59003,511] >= 250
-assert level[1,1760,59003,511] == 255
+assert level[1,1989,59004,510] == 255
+assert level[1,1990,59004,510] == 255
+assert level[1,1990,59004,511] >= 150
+assert level[1,1965,59004,511] >= 250
+assert level[1,1946,59004,511] == 255
 assert water_in == 0
 assert water_out == 0
-atblock 1 1807 59003 511
+atblock 1 1993 59004 511
 mode fly
 hold space 0.1
 aim -4 0 -2.0

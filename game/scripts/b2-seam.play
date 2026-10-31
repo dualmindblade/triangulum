@@ -1,0 +1,61 @@
+# B2: holes in a lake's surface at LOD boundaries (B1's hairlines). Each pose
+# is shot with water and without; a pixel the water leaves alone, in a thin
+# gap inside drawn water, is a hole. Run at 4K so it compares with B1's count:
+#
+#   <exe> --bake DIR --size 3840x2160 --play scripts/b2-seam.play --out OUT
+#   python ../docs/missions/B2-shores-evidence/seam_holes.py OUT
+#
+# 041049's end (a lake at 12.03 m, B1's pose) and five lakes at other heights.
+mode fly
+
+at 7.90080 129.90078 1548
+skytime 12:00
+look 16.89 -76.20
+shot w_a_w12
+at 10.22168 -43.73762 1500
+skytime 12:00
+look 17 -76
+shot w_b_w6
+at 1.61 -43.68 1500
+skytime 12:00
+look 17 -76
+shot w_c_w18
+at -1.77539 -41.67587 1500
+skytime 12:00
+look 17 -76
+shot w_d_w16
+at -8.75586 -39.94107 1500
+skytime 12:00
+look 17 -76
+shot w_e_w4
+at 16.29995 -7.41140 1500
+skytime 12:00
+look 17 -76
+shot w_f_w1
+
+water off
+
+at 7.90080 129.90078 1548
+skytime 12:00
+look 16.89 -76.20
+shot n_a_w12
+at 10.22168 -43.73762 1500
+skytime 12:00
+look 17 -76
+shot n_b_w6
+at 1.61 -43.68 1500
+skytime 12:00
+look 17 -76
+shot n_c_w18
+at -1.77539 -41.67587 1500
+skytime 12:00
+look 17 -76
+shot n_d_w16
+at -8.75586 -39.94107 1500
+skytime 12:00
+look 17 -76
+shot n_e_w4
+at 16.29995 -7.41140 1500
+skytime 12:00
+look 17 -76
+shot n_f_w1

@@ -27,6 +27,10 @@ pub struct BakeSample {
     pub rough_km: f64,
     /// Ocean fraction 0..1 (smooth in the new bake; koppen 255 in the old).
     pub ocean: f64,
+    /// Signed angle (radians) from the coastline, the ocean fraction's 0.5
+    /// contour: positive at sea. Holds a constant a few texels past the coast
+    /// (`coast::distance_field`, worked out when the bake loads).
+    pub coast: f64,
     /// Soil/sediment depth in km (0 in the old bake).
     pub soil_km: f64,
     /// Geology hints 0..1 (0 in the old bake).
@@ -186,6 +190,8 @@ struct Face {
     uplift: Vec<f32>,
     flow_log10: Vec<f32>,
     lake: Vec<f32>,
+    /// Signed distance from the coastline, radians (`coast::distance_field`).
+    coast: Vec<f32>,
     /// Min/max mip pyramids; level 0 is res x res.
     pyr_min: Vec<Vec<f32>>,
     pyr_max: Vec<Vec<f32>>,
@@ -341,6 +347,7 @@ impl RasterBake {
                 uplift: Vec::new(),
                 flow_log10: Vec::new(),
                 lake: Vec::new(),
+                coast: Vec::new(),
                 pyr_min,
                 pyr_max,
                 pyr_rough,
@@ -353,7 +360,12 @@ impl RasterBake {
         Ok(bake)
     }
 
-    fn finish(res: usize, faces: Vec<Face>, equiangular: bool, has_geology: bool, dir: &str) -> Self {
+    fn finish(res: usize, mut faces: Vec<Face>, equiangular: bool, has_geology: bool, dir: &str) -> Self {
+        let masks: Vec<&[f32]> = faces.iter().map(|f| f.ocean.as_slice()).collect();
+        let coast = super::coast::distance_field(&masks, res, equiangular);
+        for (f, c) in faces.iter_mut().zip(coast) {
+            f.coast = c;
+        }
         let mut land_min = f32::MAX;
         let mut rough_max = 0f32;
         for f in &faces {
@@ -487,7 +499,7 @@ impl Bake for RasterBake {
         let (bx, by) = (bspline_weights(fx), bspline_weights(fy));
         let (bdx, bdy) = (bspline_dweights(fx), bspline_dweights(fy));
         let (bddx, bddy) = (bspline_ddweights(fx), bspline_ddweights(fy));
-        let (mut elev, mut temp, mut precip) = (0.0, 0.0, 0.0);
+        let (mut elev, mut temp, mut precip, mut coast) = (0.0, 0.0, 0.0, 0.0);
         let (mut ex, mut ey) = (0.0, 0.0);
         // B-spline derivatives: x, y, xx, yy, xy.
         let (mut sx, mut sy, mut sxx, mut syy, mut sxy) = (0.0, 0.0, 0.0, 0.0, 0.0);
@@ -496,7 +508,7 @@ impl Bake for RasterBake {
         let (mut f0, mut fx_, mut fy_, mut fxx, mut fyy, mut fxy) = (0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
         for dy in -1..=2 {
             let yy = (iy + dy).clamp(0, res - 1) as usize * self.res;
-            let (mut re, mut rex, mut rt, mut rp) = (0.0, 0.0, 0.0, 0.0);
+            let (mut re, mut rex, mut rt, mut rp, mut rc) = (0.0, 0.0, 0.0, 0.0, 0.0);
             let (mut b0, mut b1, mut b2) = (0.0, 0.0, 0.0);
             let (mut c0, mut c1, mut c2) = (0.0, 0.0, 0.0);
             for dx in -1..=2 {
@@ -508,6 +520,7 @@ impl Bake for RasterBake {
                 rex += dwx[t] * e;
                 rt += w * face.temp_c[yy + xx] as f64;
                 rp += w * face.precip[yy + xx] as f64;
+                rc += w * face.coast[yy + xx] as f64;
                 b0 += bx[t] * e;
                 b1 += bdx[t] * e;
                 b2 += bddx[t] * e;
@@ -525,6 +538,7 @@ impl Bake for RasterBake {
             ey += dwy[t] * re;
             temp += w * rt;
             precip += w * rp;
+            coast += w * rc;
             sx += by[t] * b1;
             sy += bdy[t] * b0;
             sxx += by[t] * b2;
@@ -574,6 +588,7 @@ impl Bake for RasterBake {
             precip_mm: precip,
             rough_km: bil(&face.rough_km),
             ocean: bil(&face.ocean),
+            coast,
             soil_km: bil(&face.soil_km),
             continental: bil(&face.continental),
             volcanic: bil(&face.volcanic),

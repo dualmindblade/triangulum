@@ -1205,7 +1205,7 @@ pub fn compatibility(template: &Session, h: &Header) -> Result<(), String> {
         bad.push(format!("landform {} vs {}", have.landform, want.landform));
     }
     if h.generator_version != save::GENERATOR_VERSION {
-        bad.push(format!("generator version {} vs {}", h.generator_version, save::GENERATOR_VERSION));
+        bad.push(format!("generator version {} vs {} (the terrain has changed since it was recorded; play it with the build that recorded it)", h.generator_version, save::GENERATOR_VERSION));
     }
     if h.sim_rules != crate::sim::RULES_VERSION {
         bad.push(format!(

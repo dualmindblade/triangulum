@@ -437,7 +437,12 @@ fn a_pit_dug_at_the_shore_fills_from_the_sea_and_the_sea_stays_full() {
     for di in 0..3 {
         for dj in -1..=1i64 {
             for dk in 0..2 {
-                writes.push((BlockPos { i: land.i + di, j: (land.j as i64 + dj) as u32, k: land.k - dk, ..land }, air));
+                // A curved shore can put sea in the pit's corner: leave it, or
+                // the dig deletes water and the accounting below is out by a cell.
+                let cell = BlockPos { i: land.i + di, j: (land.j as i64 + dj) as u32, k: land.k - dk, ..land };
+                if w.block_at(cell) != w.water_id() {
+                    writes.push((cell, air));
+                }
             }
         }
     }
@@ -498,7 +503,11 @@ fn a_pit_dug_in_a_beach_slumps_and_the_water_still_adds_up() {
     for di in 0..3 {
         for dj in -1..=1i64 {
             for dk in 0..2 {
-                writes.push((BlockPos { i: land.i + di, j: (land.j as i64 + dj) as u32, k: land.k - dk, ..land }, air));
+                // As in the pit above: leave sea the shore's curve puts in the corner.
+                let cell = BlockPos { i: land.i + di, j: (land.j as i64 + dj) as u32, k: land.k - dk, ..land };
+                if w.block_at(cell) != w.water_id() {
+                    writes.push((cell, air));
+                }
             }
         }
     }

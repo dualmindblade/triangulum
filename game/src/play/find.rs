@@ -291,13 +291,11 @@ fn seeds(s: &Session, kind: &str, here: DVec3) -> Result<Vec<(u8, i64, i64)>, St
         "shore" => {
             // The coastline in the bake: the first sample, ring by ring at a
             // 16-block stride, where land meets the sea mask.
-            let km = 1000.0 * s.engine.vscale();
             let (face, hi, hj) = to_lattice(here);
-            // Sea in the bake: the ocean mask, below sea level.
+            // Sea in the bake: the sea's side of the coastline.
             let sea = |i: i64, j: i64| -> bool {
                 let (f, wi, wj) = planet.wrap_cell(face, i, j);
-                let b = s.engine.bake.sample(planet.dir(f, wi as f64 + 0.5, wj as f64 + 0.5));
-                b.ocean > 0.0 && b.elev_km * km < 0.0
+                s.engine.bake.sample(planet.dir(f, wi as f64 + 0.5, wj as f64 + 0.5)).coast > 0.0
             };
             let stride = 16;
             let mut out = Vec::new();

@@ -20,6 +20,6 @@
     { "id": 15, "name": "bedrock",      "color": [0.030, 0.028, 0.028], "solid": true,  "liquid": false },
     { "id": 16, "name": "marker_red",   "color": [1.000, 0.010, 0.010], "solid": true,  "liquid": false },
     { "id": 17, "name": "marker_white", "color": [1.000, 1.000, 1.000], "solid": true,  "liquid": false },
-    { "id": 18, "name": "deep_ocean",   "color": [0.117, 0.157, 0.254], "solid": true,  "liquid": false, "_comment": "Generator only, coarsest LOD: opaque sea where nothing lies under the water voxel. Colour = water at alpha 0.62 over mean strata rock (the next finer LOD's ocean seen from above)." }
+    { "id": 18, "name": "deep_ocean",   "color": [0.104, 0.145, 0.243], "solid": true,  "liquid": false, "_comment": "Generator only, coarsest LOD: opaque sea where nothing lies under the water voxel. Colour = water at alpha 0.62 over gravel (the next finer LOD's ocean seen from above)." }
   ]
 }

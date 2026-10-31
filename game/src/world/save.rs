@@ -66,7 +66,7 @@ pub const FORMAT_VERSION: u32 = 3;
 /// because saves, not generation, care about it). A save made with another
 /// generator version is refused: its edits sit in terrain that no longer
 /// exists around them.
-pub const GENERATOR_VERSION: u32 = 3; // 2: landforms v2 (ridges, gullies, valleys, mesas); 3: lakes and rivers (hydro.bin)
+pub const GENERATOR_VERSION: u32 = 4; // 2: landforms v2 (ridges, gullies, valleys, mesas); 3: lakes and rivers (hydro.bin); 4: coasts (shoreline from the bake's coast, beaches, sea and lake floors)
 
 const CHUNK_MAGIC: &[u8; 4] = b"TRC2";
 
@@ -191,7 +191,8 @@ impl Header {
         if have.landform != want.landform {
             bad.push(format!("landform {} vs {}", have.landform, want.landform));
         }
-        if self.generator_version != GENERATOR_VERSION {
+        let old_terrain = self.generator_version != GENERATOR_VERSION;
+        if old_terrain {
             bad.push(format!("generator version {} vs {}", self.generator_version, GENERATOR_VERSION));
         }
         if self.projection != "EqualAreaCobe" || self.projection_table_sha256 != projection_table_sha256() {
@@ -213,6 +214,13 @@ impl Header {
             }
         }
         if !bad.is_empty() {
+            // No setting brings an old generator back: say so, and that the save is safe.
+            if old_terrain {
+                return Err(format!(
+                    "this save was made with an older version of the terrain ({}), so this build can't continue it: its edited chunks wouldn't fit the land around them. The save is untouched, and the build that made it still plays it. To play this build, start a new world by adding --save saves/another-name",
+                    bad.join("; ")
+                ));
+            }
             return Err(format!("the save was made for a different world ({}); start with the saved settings or point --save at another directory", bad.join("; ")));
         }
         let mut warnings = Vec::new();
@@ -959,7 +967,10 @@ mod tests {
         // Another generator version or projection table is refused.
         let mut h = header.clone();
         h.generator_version += 1;
-        assert!(h.check(&cfg, &reg, BAKE).unwrap_err().contains("generator version"));
+        let err = h.check(&cfg, &reg, BAKE).unwrap_err();
+        assert!(err.contains("generator version"), "{err}");
+        // No setting brings old terrain back, so the message says what does.
+        assert!(err.contains("--save saves/another-name") && err.contains("untouched") && !err.contains("saved settings"), "{err}");
         let mut h = header.clone();
         h.projection_table_sha256 = "deadbeef".repeat(8);
         assert!(h.check(&cfg, &reg, BAKE).unwrap_err().contains("projection"));

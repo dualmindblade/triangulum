@@ -29,6 +29,12 @@ pub fn test_generator() -> Generator {
     generator_with(None, 2048, 512)
 }
 
+/// The half-metre world of the README: the same planet in blocks of 0.5 m,
+/// at vertical scale 1/20.
+pub fn half_metre_generator() -> Generator {
+    Generator::new(Planet::new(0.5, 4096, 1024, 262_144), shared_bake(), 42, 0.05, 1.0, 1.0, &registry()).unwrap()
+}
+
 fn key_at(g: &Generator, dir: DVec3, lod: u8, height_m: f64) -> ChunkKey {
     let p = &g.planet;
     let (f, i, j) = p.lattice_of_dir(dir);

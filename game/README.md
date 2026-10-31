@@ -601,6 +601,39 @@ Evidence shots of a lake shore, a river reach, a waterfall, a river mouth
 and a river crossing a cube edge, from the ground and from 300 m:
 `python scripts/hydro_shots.py` (frames in `out/play/<site>/`).
 
+## Coasts (B2)
+
+The shoreline is a curve of its own and the ground follows it
+(`src/worldgen/coast.rs`), so noise never decides where the sea ends:
+
+- **The curve** is the bake's coast (the 0.5 contour of `ocean_frac`). The
+  bake loads and works out each texel's signed distance from it on the
+  sphere; nothing new is stored, so no re-bake. Catmull-Rom sampling keeps it
+  smooth, and it meets itself across cube edges.
+- **The wiggle** adds bounded detail to that distance. Its slope stays under
+  1, so it moves the shoreline but cannot make an island, a pond or a fold:
+  every piece of land and sea is one the planet has.
+- **The ground** near the curve is a function of the distance in metres, the
+  same at every vertical scale and block size: the land rises at a beach's
+  slope, the sea floor falls at the same slope to at least 2 m deep, and the
+  natural relief comes back within 140 m.
+- **Sand** follows the curve: a beach about 70 m wide (at least 1.5 voxels,
+  so a coarse LOD doesn't step over it, and never above 4 m), running under
+  the shallows; past them the sea floor is gravel.
+
+Andrew's dials are the constants at the top of `coast.rs`: `BEACH_SLOPE`,
+`BEACH_TOP_M`, `SEA_DEPTH_M`, `BEACH_WIDTH_M`, `SHALLOWS_SHARE`, `WIGGLE_AMP`.
+They change the terrain, so they need a generator version bump.
+
+Coarse LODs agree with LOD 0 about water: a wet column holds water at every
+LOD, and what shows through it is the column's own floor block. The gates are
+`cargo test --release coasts_are_coherent`,
+`lakes_and_rivers_keep_their_water_at_every_lod` and
+`water_shows_the_same_floor_at_every_lod`. The measuring tools are the ignored
+`shore_*` tests in `src/worldgen/shore_tests.rs` (`shore_water_by_lod`,
+`shore_floor_by_lod`, `shore_coast_stats`, `shore_lod0_digest`), and
+`scripts/b2-shores.play` shoots matching poses on two builds.
+
 ## Water (M2b)
 
 Andrew's rule (`DESIGN.md`, "Water"; the code and the settling argument are
@@ -759,8 +792,10 @@ with a message instead of loading as an untouched world.
 Edits are saved a couple of seconds after you stop editing (at the latest
 15 s after the first unsaved edit) and when you quit. A save whose header
 does not match the running world is refused at startup with the reasons;
-start with the saved settings or point `--save` somewhere else. Saves from
-before M2a (format 2) are refused the same way. Edited chunks are
+start with the saved settings or point `--save` somewhere else. A save from
+an older generator version can't be continued by any setting: the message
+says so, the save is left as it is, and the build that made it still plays
+it. Saves from before M2a (format 2) are refused the same way. Edited chunks are
 authoritative: they are never regenerated, so changing the generator around
 them only changes the terrain around them. Hiding water (F) is a view
 setting and never reaches generation, so an edit made with water hidden

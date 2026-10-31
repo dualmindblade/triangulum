@@ -1,0 +1,63 @@
+diff --git a/game/src/mesh.rs b/game/src/mesh.rs
+index 1db98df..52d741f 100644
+--- a/game/src/mesh.rs
++++ b/game/src/mesh.rs
+@@ -235,7 +235,7 @@ pub fn mesh_chunk_levels(generated: &Generated, levels: Option<&[u8]>, registry:
+     if any_liquid {
+         let blocking: Vec<u64> = masks.solid.iter().zip(&masks.liquid).map(|(s, l)| s | l).collect();
+         let cap = |_: u32, _: u32, _: usize| sea_edge;
+-        let surface = levels.filter(|_| key.lod == 0).map(|levels| Surface { masks: &masks, levels });
++        let surface = levels.map(|levels| Surface { masks: &masks, levels });
+         // Merge key: block id and the four corner heights (full water merges as before).
+         let face_key = |axis: u32, sign: u32, u: usize, v: usize, slice: usize| -> (u32, u32) {
+             let (x, y, z) = voxel_of(axis, slice, u, v);
+diff --git a/game/src/world/mod.rs b/game/src/world/mod.rs
+index afcfcf7..75874fb 100644
+--- a/game/src/world/mod.rs
++++ b/game/src/world/mod.rs
+@@ -509,7 +509,7 @@ impl World {
+     /// and edited neighbours the border cells they hold.
+     pub fn padded_levels(&self, key: ChunkKey, g: &Generated) -> Option<Vec<u8>> {
+         if key.lod != 0 {
+-            return None;
++            return g.levels.clone();
+         }
+         let edited_interior: Option<Option<Vec<u8>>> = self.edits.with_edited(key, |e| e.water.clone());
+         let near: Vec<ChunkKey> = self.edited_near(key).into_iter().filter(|e| *e != key).collect();
+diff --git a/game/src/worldgen/mod.rs b/game/src/worldgen/mod.rs
+index b84d128..e79ddf2 100644
+--- a/game/src/worldgen/mod.rs
++++ b/game/src/worldgen/mod.rs
+@@ -730,7 +730,8 @@ impl Generator {
+             (l, l >= 1 && t - 255 * (kz + 1) <= 0)
+         };
+         let kz = (z_lo / self.planet.block_size).round() as i64;
+-        let w_r = (w / voxel_m).round() * voxel_m;
++        // The top of the voxel holding W (W itself when it is on the grid).
++        let w_r = (w / voxel_m).ceil() * voxel_m;
+         // The water surface survives every LOD: in a wet column the voxel
+         // whose top is the snapped surface is water, however much of it lies
+         // below the ground, and even if the ground stands above that snapped
+@@ -744,7 +745,8 @@ impl Generator {
+                 let (l, top) = lod0(kz);
+                 (top, l)
+             } else {
+-                ((z_hi - w_r).abs() < 1e-6 * voxel_m, 255)
++                // The true surface inside its voxel, as LOD 0 draws it.
++                ((z_hi - w_r).abs() < 1e-6 * voxel_m, ((w - z_lo) / voxel_m * 255.0).round().clamp(1.0, 255.0) as u8)
+             };
+             if top {
+                 if cold {
+@@ -933,10 +935,8 @@ impl Generator {
+                         if id == self.blocks.water {
+                             // Border water (the deep ocean's skirt) is full.
+                             let level = level.max(1);
+-                            if lod == 0 {
+-                                levels.get_or_insert_with(|| vec![0u8; PAD_VOXELS])[pidx(x, y, z)] = level;
+-                                partial |= level != 255;
+-                            }
++                            levels.get_or_insert_with(|| vec![0u8; PAD_VOXELS])[pidx(x, y, z)] = level;
++                            partial |= level != 255;
+                             if (0..CHUNK as i32).contains(&x) && (0..CHUNK as i32).contains(&y) && (0..CHUNK as i32).contains(&z) {
+                                 water.get_or_insert_with(|| vec![0u8; VOXELS])[crate::world::chunk::index(x as usize, y as usize, z as usize)] = level;
+                             }
