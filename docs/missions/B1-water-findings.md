@@ -43,17 +43,19 @@ top-face corner below its own cell's level, and what pulled it down:
 | m2b-river site | 72 | 64 | 8 |
 
 - At the lake, all 22 dipped cells are on chunk borders.
-- Every real-air cell found is over air (16, 33 and 16 cells): the lip of a
-  waterfall. That is M2b's deliberate slope, so real air still counts.
+- Every real-air cell in all three river samples is over air, none over water
+  or ground: the lip of a waterfall. That is M2b's deliberate slope, so real air
+  still counts.
 - The sea shores sampled have no dips, because a chunk with no partial water
   draws flat.
 
 `10_dip_before.png` is the bug: a V pulled down at a chunk corner, 47 levels
 (18 cm), with tan slivers along the shore.
 
-Recording 040850's "dark wedges" were not confirmed as this bug. I never
-isolated them: the dips there are on chunk borders, but I did not tie them to
-the wedges in that frame.
+**Recording 040850 does not show this bug.** Its "dark wedges" have the same
+shapes with the water hidden (`10_wedges_040850_with_water.png`,
+`10_wedges_040850_water_hidden.png`): they are riverbed steps seen through the
+water. The `find lake` site above is the real reproduction.
 
 **Why it went away on update.** The simulation does not fill that air: those
 cells are sand, asserted before and after. `overlay_lod0` copies an edited
@@ -133,7 +135,7 @@ LODs (#2), the same step will appear at more boundaries.
 
 Nothing below has been done.
 
-- [ ] `cargo test --release`, including the seven new tests in `mesh.rs`
+- [ ] `cargo test --release`, including the six new tests in `mesh.rs`
 - [ ] Each new test failing with its fix off
 - [ ] After frames, same poses: `b1-water-under.play`, the lake corner, 040850
 - [ ] Scripts: `m1-done`, `m2b-water`, `m2b-boundary`, `m2b-river`, `m3a-tunnel`,
@@ -164,5 +166,7 @@ the unfixed build matched the recording: replay 040850 reproduced exactly.
 ## For Andrew
 
 Nothing to decide yet. One look change to judge once this runs: full water beside
-air no longer slopes at its edge. That lasted one tick in the simulation, and an
-untouched chunk already drew it this way.
+air no longer slopes at its edge. A chunk with no partial water already drew it
+this way. Simulated water normally spreads out of that state within a tick, but
+frozen water can hold it, as the placed column at i 109775 in his 040850 save
+does.
