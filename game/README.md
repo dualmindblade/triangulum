@@ -772,6 +772,7 @@ aim DI DJ DK             look at a lattice point relative to the feet cell
 hold w,shift 2           hold keys for seconds; tap break|place|jump|g|1..9
 tick N | sim on|off      N simulation ticks (20 Hz); pause or resume it
 sim radius M | period N  active region radius; ticks per water step
+cells DI0 DI1 DJ0 DJ1 DK  map of one layer near the feet, with water levels
 shot NAME                settled frame + state; bench N; state NAME
 save | reload            write edits; quit-and-restart from disk
 assert FIELD OP VALUE    position, altitude, on_ground, in_water, crosshair,
@@ -851,7 +852,10 @@ basin resting until touched and a lake draining through a channel to its
 sill, displacement by a landing block and loss under a sealed lid, a pit at
 the shore filling from the sea with the water accounted exactly, boundary
 cells as reservoirs, drains and walls that are never written, the water
-period, and the mesher's shared corners. Replays (`src/replay_tests.rs`,
+period, and the mesher's shared corners. The mesher (`src/mesh.rs`): water
+under a solid, a resting lake flat to its shore on chunk borders, a fall's lip
+still sloped, chunks and cube faces agreeing on every shared corner, and no
+water side face against real ground. Replays (`src/replay_tests.rs`,
 driven through the app's own input code with synthetic window events):
 record then replay gives the same state, the same inputs at 144 and 30 fps
 give the same world, a damaged replay names its first divergence, a replay
