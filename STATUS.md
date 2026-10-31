@@ -184,6 +184,18 @@
   between detail levels, which belongs to B2's work. Waterfall lips still lean
   over the drop, on purpose.
 
+- **B4** (Opus, verified by Opus, merged): sand and water move like Andrew
+  asked. Sand and gravel slide off ledges and settle one block per block, so a
+  sand tower becomes a heap and a pit in a beach fills itself in. The last
+  thin level of water now goes over an edge instead of sticking, and film left
+  behind runs towards a drop or dries up after a while. That is the first time
+  water leaves the world on its own, so poured water on flat ground dries in
+  about three minutes. `--film` compares the other rules, `--no-slide` is the
+  old game; the list of what to try is at the top of
+  `docs/missions/B4-flow-findings.md`. Replays recorded before this are
+  refused, with a message saying why. Saves load and stay still. Nobody has
+  played it yet, so the feel is Andrew's to judge.
+
 **M1 is feature-complete.** The last step is yours: play it and tell me what
 feels wrong.
 
@@ -228,7 +240,7 @@ tool, matched to his recordings in `docs/missions/2026-10-30-bug-round.md`.
 | B1 water surfaces | #1 water under a solid, #10 dip at the edge, review 3 #8 | Opus | merged; hairlines passed to B2 |
 | B2 shores | #2 lakes from space, #4 ocean bands, #5 beaches | Opus | running |
 | B3 picking | #3 raycasting at cube seams and corners | Astra | merged |
-| B4 flow | #7 sliding powder and water, #9 level-1 film | Opus | running |
+| B4 flow | #7 sliding powder and water, #9 level-1 film | Opus | merged |
 | B5 tools | #6 colourised mesh view, #11 map, screenshots and teleport | Opus | merged |
 | Review 4 | M2c, M3a, hardening, M3b: 13 findings, 3 of them P1 (`docs/reviews/2026-10-31-engine-review4-astra.md`) | Astra | done, not yet re-verified |
 

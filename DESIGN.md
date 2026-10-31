@@ -61,8 +61,14 @@ with their OK; record the change here with the date.
 ## Water (Andrew)
 
 - One byte of water level per block: 256 levels.
-- Water moves only downhill, and only when neighbours differ by at least 2
-  levels, so it always comes to rest. Resting water may lean up to 1/256.
+- Water moves only downhill. Sideways it moves when neighbours differ by at
+  least 2 levels, so it always comes to rest, and resting water may lean up
+  to 1/256. The one exception is a ledge: water beside a lower open space
+  goes into it whatever its level, the last level included (Andrew's request,
+  2026-10-30).
+- Level-1 water with nowhere to go dries, unless it is the edge of a large
+  body or of water fed from beyond the loaded area (2026-10-31, `--film`;
+  Andrew asked for an experiment, this default is his to confirm).
 - Generated lakes, rivers and oceans start at rest. Simulation runs only
   where something changed.
 - At the edge of the loaded area, cells take their values from the
@@ -72,7 +78,10 @@ with their OK; record the change here with the date.
 ## Things that move
 
 1. **Falling blocks** fall straight down their own column (sand, gravel,
-   collapses). Columns keep their shape, so nothing needs converting.
+   collapses). A block at rest with a free cell beside it and a free cell
+   below that one moves into that column and falls (Andrew's request,
+   2026-10-30), so powder rests with neighbouring columns at most one block
+   apart. Columns keep their shape, so nothing needs converting.
 2. **Local contraptions** (doors, drawbridges, elevators, felled trees) keep
    the warped shape of where they were built and snap back when they come to
    rest nearby.
