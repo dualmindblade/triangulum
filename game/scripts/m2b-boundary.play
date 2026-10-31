@@ -85,9 +85,11 @@ assert water_out == 0
 state trench
 
 # ---- 4. Site B with a one-chunk region: the sea beyond the edge feeds the pit
-atblock 1 1803 59003 511
+atblock 1 1989 59004 511
 mode fly
 select 1
+# Hover a layer up: the beach is level here, and a ray from the ground grazes it.
+atblock 1 1989 59004 512
 lookaxis -i 0
 aim -3 0 -1.5
 tap break
@@ -109,7 +111,7 @@ aim -1 1 -1.5
 tap break
 # the lower layer from inside the pit (a steep ray from the shore would clip
 # the player's own ground block): hover in the pit's middle upper cell
-atblock 1 1801 59003 510
+atblock 1 1987 59004 510
 aim 0 0 -0.5
 assert crosshair == sand
 tap break
@@ -129,21 +131,21 @@ aim 1 -1 -0.5
 tap break
 aim 1 1 -0.5
 tap break
-atblock 1 1803 59003 512
+atblock 1 1989 59004 512
 lookaxis -i 0
-assert block[1,1800,59003,510] == air
+assert block[1,1986,59004,510] == air
 tick 1
 assert sim_active_chunks < 10
 tick 250
 assert queued == 0
-assert level[1,1800,59003,510] == 255
-assert level[1,1802,59004,510] == 255
-assert level[1,1801,59003,511] >= 200
+assert level[1,1986,59004,510] == 255
+assert level[1,1988,59005,510] == 255
+assert level[1,1987,59004,511] >= 200
 # the chunk's -i side is i 1792: beyond it the sea is the generator's, frozen
 # and full, and the cell just inside leans on it
-assert level[1,1791,59003,511] == 255
-assert level[1,1790,59003,511] == 255
-assert level[1,1792,59003,511] >= 250
+assert level[1,1977,59004,511] == 255
+assert level[1,1976,59004,511] == 255
+assert level[1,1978,59004,511] >= 250
 assert water_in > 0
 assert water_out == 0
 assert water_lost == 0

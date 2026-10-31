@@ -117,10 +117,12 @@ pub fn shore_at(coast_m: f64, p: DVec3, voxel_m: f64, seed: u64) -> Shore {
     let d = coast_m + wiggle(p, voxel_m, seed ^ 0xC0A5);
     let sea = d > 0.0;
     // Wider along some stretches of coast than others, with a soft inland
-    // edge, and never so narrow that a coarse voxel steps over it.
+    // edge. The dry sand is never so narrow that a coarse voxel steps over it;
+    // the sand under the water keeps its true width, so a coarse LOD doesn't
+    // show a shelf of sand that LOD 0 doesn't have.
     let n = gradient_noise(p / 700.0, seed ^ 0xBEAC) + 0.35 * gradient_noise(p / 130.0, seed ^ 0xBEAD) + 0.15 * gradient_noise(p / 24.0, seed ^ 0xBEAE);
-    let width = (BEACH_WIDTH_M * (1.0 + BEACH_VARY * n)).max(1.5 * voxel_m);
-    let beach = if sea { d < SHALLOWS_SHARE * width } else { -d < width };
+    let width = BEACH_WIDTH_M * (1.0 + BEACH_VARY * n);
+    let beach = if sea { d < SHALLOWS_SHARE * width } else { -d < width.max(1.5 * voxel_m) };
     Shore { d, sea, beach }
 }
 

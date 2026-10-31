@@ -777,7 +777,8 @@ fn coasts_are_coherent() {
     for (world, g) in &worlds {
         let coarse = 32.0 * g.planet.block_size;
         for (name, d) in coast_places(g) {
-            for (view, px, spacing, voxel) in [("LOD 0", 750usize, 2.0, g.planet.block_size), ("LOD 5", 250, coarse, coarse)] {
+            // Windows long enough that one feature doesn't decide a rate.
+            for (view, px, spacing, voxel) in [("LOD 0", 1500usize, 2.0, g.planet.block_size), ("LOD 5", 250, coarse, coarse)] {
                 let (_, s) = window(g, d, px, spacing, voxel);
                 println!("{world} {name} {view}: {:.1} km of coast, {} blobs, {} slivers, {} closed pieces (bake {})", s.coast_km, s.land_blobs + s.sea_blobs, s.land_slivers + s.sea_slivers, s.pieces, s.bake_pieces);
                 measured += s.coast_km;

@@ -1238,8 +1238,8 @@ impl Hydro {
             }
             let p = r.prof;
             let wb = self.w_water(r.seg, &p, r.s_near);
-            if wb <= 0.0 {
-                continue; // at sea level the sea and the coast hold it
+            if wb <= 0.0 && sea {
+                continue; // at sea level, on the sea's side, the sea holds it
             }
             let hw = self.half_width(s, voxel);
             if r.d < hw {
