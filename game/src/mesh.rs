@@ -122,13 +122,40 @@ impl Masks {
     }
 }
 
-/// The water surface of a padded LOD-0 grid with per-cell levels.
+/// What the water mesher needs to know about a padded LOD-0 grid beyond its
+/// ids (`World::padded_levels`).
+pub struct PaddedWater {
+    /// Water level of every padded cell, index by `pidx`.
+    pub levels: Vec<u8>,
+    /// Border cells (x, y, z) that are solid in the world although the
+    /// padded ids say otherwise. The generator lowers a chunk's border
+    /// columns by its skirt, so the terrain mesh grows side faces that hide
+    /// LOD seams; those columns' ground then reads as air or water. Only
+    /// the cells a water surface can reach are listed.
+    pub skirted: Vec<(i8, i8, i8)>,
+}
+
+/// The water surface of a padded LOD-0 grid with per-cell levels. Its masks
+/// are the real cells, the skirt undone: two chunks see each other's
+/// columns lowered, so through the padded ids they would disagree about a
+/// shared corner, and a shore's ground would read as air and pull the
+/// surface down (Andrew's #10).
 struct Surface<'a> {
-    masks: &'a Masks,
+    masks: Masks,
     levels: &'a [u8],
 }
 
-impl Surface<'_> {
+impl<'a> Surface<'a> {
+    fn new(padded: &Masks, water: &'a PaddedWater) -> Self {
+        let mut masks = Masks { solid: padded.solid.clone(), liquid: padded.liquid.clone() };
+        for &(x, y, z) in &water.skirted {
+            let (c, bit) = (col(x as i32, y as i32), 1u64 << (z as i32 + 1));
+            masks.solid[c] |= bit;
+            masks.liquid[c] &= !bit;
+        }
+        Self { masks, levels: &water.levels }
+    }
+
     /// Height (0..=255 of a voxel) of layer `z`'s water at lattice corner
     /// (cx, cy), cx and cy in 0..=32: the weighted mean over the four cells
     /// around the corner, water cells by their level (weight 10 at 0.8 and
@@ -182,9 +209,9 @@ pub fn mesh_chunk(generated: &Generated, registry: &Registry, planet: &Planet, o
     mesh_chunk_levels(generated, None, registry, planet, opt)
 }
 
-/// Mesh a generated chunk; `levels` (padded, `World::padded_levels`) gives
+/// Mesh a generated chunk; `water_cells` (`World::padded_levels`) gives
 /// LOD-0 water its sloped surfaces.
-pub fn mesh_chunk_levels(generated: &Generated, levels: Option<&[u8]>, registry: &Registry, planet: &Planet, opt: MeshOptions) -> MeshData {
+pub fn mesh_chunk_levels(generated: &Generated, water_cells: Option<&PaddedWater>, registry: &Registry, planet: &Planet, opt: MeshOptions) -> MeshData {
     let t0 = Instant::now();
     let key = generated.key;
     let ids = &generated.ids;
@@ -235,7 +262,7 @@ pub fn mesh_chunk_levels(generated: &Generated, levels: Option<&[u8]>, registry:
     if any_liquid {
         let blocking: Vec<u64> = masks.solid.iter().zip(&masks.liquid).map(|(s, l)| s | l).collect();
         let cap = |_: u32, _: u32, _: usize| sea_edge;
-        let surface = levels.filter(|_| key.lod == 0).map(|levels| Surface { masks: &masks, levels });
+        let surface = water_cells.filter(|_| key.lod == 0).map(|cells| Surface::new(&masks, cells));
         // A top face hides only under water, or under a solid it touches: a
         // surface flat at the voxel's top lies in the solid's underside, so
         // drawing it would z-fight with that face and tint a view from
@@ -730,7 +757,111 @@ mod tests {
     fn mesh_of(w: &crate::world::World, key: ChunkKey) -> MeshData {
         let made = w.generate(key);
         let levels = w.padded_levels(key, &made);
-        mesh_chunk_levels(&made, levels.as_deref(), &w.registry, &w.planet, MeshOptions::default())
+        mesh_chunk_levels(&made, levels.as_ref(), &w.registry, &w.planet, MeshOptions::default())
+    }
+
+    /// Every lattice corner of a mesh's water faces at its surface, in world
+    /// lattice coordinates: (i, j, layer) -> height. A side face gives its
+    /// two top corners. Panics if one chunk contradicts itself.
+    fn water_corners(m: &MeshData, out: &mut std::collections::HashMap<(u64, u64, u64), (u8, ChunkKey)>) {
+        let (i0, j0, k0) = m.key.origin_blocks();
+        let mut note = |x: u32, y: u32, z: u32, h: u8| {
+            let at = (i0 + x as u64, j0 + y as u64, k0 + z as u64);
+            if let Some((prev, from)) = out.insert(at, (h, m.key)) {
+                assert_eq!(prev, h, "corner {at:?} is {prev} in {from:?} but {h} in {:?}", m.key);
+            }
+        };
+        for q in &m.water {
+            let (axis, sign, slice, u0, v0, w, h) = unpack(&[q[0], q[1]]);
+            let byte = |c: u32| ((q[2] >> (8 * c)) & 0xFF) as u8;
+            match axis {
+                2 if sign == 1 => {
+                    for x in u0..u0 + w {
+                        for y in v0..v0 + h {
+                            for cu in 0..2 {
+                                for cv in 0..2 {
+                                    note(x + cu, y + cv, slice, byte(cu + 2 * cv));
+                                }
+                            }
+                        }
+                    }
+                }
+                2 => {}
+                _ if h != 1 => {} // a merged column of side faces is full water all the way up
+                _ => {
+                    for along in 0..w {
+                        for cu in 0..2 {
+                            let (x, y) = if axis == 0 { (slice + sign, u0 + along + cu) } else { (u0 + along + cu, slice + sign) };
+                            note(x, y, v0, byte(2 + cu));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Andrew's #10, at the `find lake` site. Lake water at rest is flat,
+    /// and none of it may dip where it meets the shore. Every dip here was
+    /// on a chunk border: the generator's skirt lowers border columns, so
+    /// the neighbour's sand read as air, and air counts as height 0.
+    #[test]
+    fn a_resting_lake_does_not_dip_at_chunk_borders() {
+        let w = crate::world::tests::test_world();
+        let (mut tops, mut shore_tops) = (0, 0);
+        for cx in 3607..=3611 {
+            for cy in 2001..=2005 {
+                let key = ChunkKey::neisor(2, 0, cx, cy, 16);
+                let (i0, j0, k0) = key.origin_blocks();
+                for ((x, y, z), h) in water_tops(&mesh_of(&w, key)) {
+                    let bp = BlockPos { face: 2, i: i0 as u32 + x, j: j0 as u32 + y, k: k0 as u32 + z };
+                    let level = w.water_level_at(bp) as u32;
+                    if level == 204 {
+                        assert_eq!(h, 204 * 0x0101_0101, "a resting lake cell at {bp:?} is flat at its level");
+                        tops += 1;
+                        // Beside the shore: some lateral neighbour is sand.
+                        let sand = |di: i32, dj: i32| w.registry.is_solid(w.block_at(BlockPos { i: (bp.i as i32 + di) as u32, j: (bp.j as i32 + dj) as u32, ..bp }));
+                        shore_tops += (sand(1, 0) || sand(-1, 0) || sand(0, 1) || sand(0, -1)) as u32;
+                    }
+                }
+            }
+        }
+        assert!(tops > 500 && shore_tops > 20, "{tops} lake cells, {shore_tops} on the shore");
+    }
+
+    /// The same fix must not flatten real flow: at the lip of a fall the
+    /// neighbouring air is real, with nothing under it, and the surface
+    /// still leans out over the drop (M2b). Andrew's river, level 152.
+    #[test]
+    fn a_fall_keeps_its_lip() {
+        let w = crate::world::tests::test_world();
+        let key = ChunkKey::neisor(2, 0, 3430, 1715, 16);
+        let (i0, j0, k0) = key.origin_blocks();
+        let (x, y, z) = (109774 - i0 as u32, 54904 - j0 as u32, 521 - k0 as u32);
+        let at = BlockPos { face: 2, i: 109774, j: 54904, k: 521 };
+        assert_eq!(w.water_level_at(at), 152);
+        assert_eq!(w.block_at(BlockPos { i: at.i + 1, ..at }), w.generator.blocks.air, "the cell over the drop");
+        let h = water_tops(&mesh_of(&w, key))[&(x, y, z)];
+        let (near, far) = (h & 0xFF, (h >> 8) & 0xFF);
+        assert!((150..=154).contains(&near), "the upstream edge stays near the cell's level: {h:#x}");
+        assert_eq!(far, 76, "the edge over the drop is pulled down: {h:#x}");
+    }
+
+    /// Neighbouring chunks agree on every corner they share, on real shores:
+    /// the lake above and a river with falls. Each chunk saw the other's
+    /// border columns lowered by the skirt, so they did not.
+    #[test]
+    fn chunks_agree_on_every_shared_water_corner() {
+        let w = crate::world::tests::test_world();
+        let sites = [(3607..=3611, 2001..=2005), (3427..=3431, 1713..=1717)];
+        let mut corners = std::collections::HashMap::new();
+        for (xs, ys) in sites {
+            for cx in xs {
+                for cy in ys.clone() {
+                    water_corners(&mesh_of(&w, ChunkKey::neisor(2, 0, cx, cy, 16)), &mut corners);
+                }
+            }
+        }
+        assert!(corners.len() > 2000, "{} corners", corners.len());
     }
 
     /// Andrew's #1, recording 040850: stones laid over a river. The cells

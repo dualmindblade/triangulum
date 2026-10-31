@@ -1214,7 +1214,7 @@ impl Streamer {
         rayon::spawn(move || {
             let g = world.generate(w.key);
             let levels = world.padded_levels(w.key, &g);
-            let mesh = mesh_chunk_levels(&g, levels.as_deref(), &registry, &world.planet, opts);
+            let mesh = mesh_chunk_levels(&g, levels.as_ref(), &registry, &world.planet, opts);
             let _ = tx.send(JobResult { mesh, gen_us: g.gen_us, slot: w.slot, epoch: w.epoch, rev: w.rev });
         });
     }
