@@ -1,0 +1,83 @@
+# Water under a solid (Andrew's #1, recording 040850): stones laid across a
+# generated river, whose top cells are partial. The surface must go on under
+# them, seen from above, from the side under the overhang and from under
+# water.
+#
+#   cargo run --release -- --play scripts/b1-water-under.play --no-save
+#
+# Site: the m2b-river reach (Opus's probe). Face 3, the river runs along j
+# over i 127712..127716: gravel bed at k 510, water at k 511, a partial top
+# cell at k 512. The +i bank is grass with its top block at k 512.
+
+at -14.11420 -47.69908
+mode fly
+sim off
+assert block[3,127716,38665,512] == water
+assert level[3,127714,38665,512] > 0
+assert level[3,127714,38665,512] < 255
+assert block[3,127717,38665,512] == grass
+select 1
+assert selected_block == stone
+
+# ---- 1. two rows of stone at k 513, from the bank across the river ---------
+# The first stone of a row goes on the bank; each next on the side of the one
+# before it, from a hover whose eye is level with the deck.
+atblock 3 127718 38665 512
+aim -1 0 0
+tap place
+atblock 3 127718 38666 512
+aim -1 0 0
+tap place
+atblock 3 127714 38665 511
+lookaxis +i 0
+tap place
+atblock 3 127714 38666 511
+lookaxis +i 0
+tap place
+atblock 3 127713 38665 511
+lookaxis +i 0
+tap place
+atblock 3 127713 38666 511
+lookaxis +i 0
+tap place
+atblock 3 127712 38665 511
+lookaxis +i 0
+tap place
+atblock 3 127712 38666 511
+lookaxis +i 0
+tap place
+atblock 3 127711 38665 511
+lookaxis +i 0
+tap place
+atblock 3 127711 38666 511
+lookaxis +i 0
+tap place
+atblock 3 127710 38665 511
+lookaxis +i 0
+tap place
+atblock 3 127710 38666 511
+lookaxis +i 0
+tap place
+assert block[3,127716,38665,513] == stone
+assert block[3,127714,38666,513] == stone
+assert block[3,127712,38665,513] == stone
+assert block[3,127712,38666,513] == stone
+log the river under the deck: layer 512, then the deck, layer 513
+atblock 3 127714 38665 511
+cells -4 4 -4 4 0
+cells -4 4 -4 4 1
+
+# ---- 2. the three views ----------------------------------------------------
+# From above and upstream: the water runs in under the deck's edge.
+atblock 3 127714 38656 515
+aim 0 9 -2
+shot 01_from_above
+# From the side, under the overhang: the eye between the water and the deck.
+atblock 3 127714 38661 510
+lookaxis +j 4
+shot 02_from_the_side
+# From under water, looking up at the surface under the deck.
+atblock 3 127714 38662 509
+lookaxis +j 35
+shot 03_from_underwater
+assert sim_tick == 0
