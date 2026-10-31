@@ -1,0 +1,205 @@
+# B7, Andrew's #8: the same scenes under whichever powder rule the command line
+# says. Run it four times and put the frames side by side:
+#   triangulum --play scripts/b7-compare.play --out out/b7/blocks
+#   triangulum --play scripts/b7-compare.play --out out/b7/25 --powder-angle 25
+#   triangulum --play scripts/b7-compare.play --out out/b7/35 --powder-angle 35
+#   triangulum --play scripts/b7-compare.play --out out/b7/45 --powder-angle 45
+#
+#   A. a tower 32 high;
+#   B. a 7 x 7 x 7 cube dropped on a table;
+#   C. a pit dug in a bed of sand, its sides free to come down;
+#   D. a cliff of sand, the wall holding it taken away;
+#   E. a pit in a real beach, which stands until disturbed;
+#   F. sand dumped in a pool.
+#
+# Every scene but E is built in the air with `fill`, so no terrain decides
+# anything, and each ends with its powder all there and nothing moving: those
+# asserts hold under every rule. The frames are clean photos from the same
+# poses in every run.
+
+mode fly
+sim radius 112
+sun 35
+speed 20
+
+# ---- A. a tower ---------------------------------------------------------------
+atblock 2 107147 57531 612
+fill -5 -20 -8 33 20 -8 stone
+tick 2
+assert queued == 0
+fill 14 0 -7 14 0 24 sand
+assert powder_rel[14,0,-7,14,0,24] == 8160
+aim 14 0 -2
+photo A_tower_0_standing
+tick 6
+photo A_tower_1_after_6_ticks
+tick 14
+photo A_tower_2_after_20_ticks
+tick 600
+assert falling == 0
+assert queued == 0
+assert vanished == 0
+assert powder_rel[-4,-19,-7,32,19,24] == 8160
+state A_settled
+surface 2 -8 26 8 -8 8
+aim 14 0 -6
+photo A_tower_3_settled
+atblock 2 107152 57531 607
+aim 9 0 -1
+photo A_tower_4_settled_low
+atblock 2 107161 57521 610
+aim 0 10 -6
+photo A_tower_5_settled_above
+tick 40
+assert queued == 0
+
+# ---- B. a cube dropped ----------------------------------------------------------
+atblock 2 107207 57531 612
+fill -5 -20 -8 33 20 -8 stone
+tick 2
+assert queued == 0
+fill 11 -3 3 17 3 9 sand
+aim 14 0 -3
+photo B_cube_0_in_the_air
+assert powder_rel[11,-3,3,17,3,9] == 87465
+tick 14
+photo B_cube_1_landing
+tick 30
+photo B_cube_2_spreading
+tick 800
+assert falling == 0
+assert queued == 0
+assert vanished == 0
+assert powder_rel[-4,-19,-7,32,19,12] == 87465
+state B_settled
+surface 0 -12 28 12 -8 4
+aim 14 0 -6
+photo B_cube_3_settled
+atblock 2 107212 57531 607
+aim 9 0 0
+photo B_cube_4_settled_low
+atblock 2 107221 57517 612
+aim 0 14 -7
+photo B_cube_5_settled_above
+tick 40
+assert queued == 0
+
+# ---- C. a pit in a bed of sand ----------------------------------------------------
+atblock 2 107267 57531 612
+fill -5 -20 -8 33 20 -8 stone
+fill 1 -15 -7 27 15 -2 stone
+fill 2 -14 -7 26 14 -2 sand
+tick 2
+assert queued == 0
+fill 11 -3 -6 17 3 -2 air
+tick 1
+aim 14 0 -3
+photo C_pit_0_dug
+tick 4
+photo C_pit_1_after_5_ticks
+tick 700
+assert falling == 0
+assert queued == 0
+assert vanished == 0
+state C_settled
+surface 2 -13 26 13 -8 0
+aim 14 0 -4
+photo C_pit_2_settled
+atblock 2 107273 57531 613
+aim 8 0 -5
+photo C_pit_3_settled_edge
+tick 40
+assert queued == 0
+
+# ---- D. a cliff, its wall removed, a save in the middle ---------------------------
+atblock 2 107327 57531 612
+fill -5 -20 -8 33 20 -8 stone
+fill 14 -7 -7 21 -7 2 stone
+fill 14 7 -7 21 7 2 stone
+fill 22 -7 -7 22 7 2 stone
+fill 14 -6 -7 21 6 2 sand
+fill 13 -6 -7 13 6 2 stone
+tick 3
+assert queued == 0
+aim 14 0 -3
+photo D_cliff_0_behind_its_wall
+fill 13 -6 -7 13 6 2 air
+tick 6
+photo D_cliff_1_after_6_ticks
+tick 4
+save
+reload
+assert sim_tick > 0
+tick 20
+photo D_cliff_2_after_30_ticks
+tick 1600
+assert falling == 0
+assert queued == 0
+assert vanished == 0
+state D_settled
+surface -2 -8 24 8 -8 3
+photo D_cliff_3_settled
+atblock 2 107334 57520 610
+aim 6 11 -5
+photo D_cliff_4_settled_above
+tick 40
+assert queued == 0
+
+# ---- E. a pit in a real beach ------------------------------------------------------
+mode fly
+assert block[1,1998,59004,511] == sand
+assert block[1,1998,59004,512] == sand
+atblock 1 2003 59004 516
+lookaxis -i 0
+aim -5 0 -5
+photo E_beach_0_before
+atblock 1 1998 59004 513
+aim 0 0 -1.5
+assert crosshair == sand
+tap break
+tick 10
+aim 0 0 -2.5
+tap break
+tick 10
+aim 0 0 -3.5
+tap break
+tick 10
+aim 0 0 -4.5
+tap break
+tick 120
+assert falling == 0
+assert queued == 0
+state E_pit
+atblock 1 2003 59004 516
+lookaxis -i 0
+aim -5 0 -5
+photo E_beach_1_after_digging_four_deep
+
+# ---- F. sand dumped in a pool --------------------------------------------------------
+atblock 2 107387 57531 612
+fill -5 -20 -8 33 20 -8 stone
+fill 4 -9 -7 24 -9 -4 stone
+fill 4 9 -7 24 9 -4 stone
+fill 4 -9 -7 4 9 -4 stone
+fill 24 -9 -7 24 9 -4 stone
+fill 5 -8 -7 23 8 -5 water
+tick 2
+fill 14 0 -3 16 2 6 sand
+aim 14 0 -6
+photo F_pool_0_before
+tick 8
+photo F_pool_1_after_8_ticks
+tick 700
+assert falling == 0
+assert queued < 40
+assert vanished == 0
+assert water_lost == 0
+state F_settled
+surface 5 -8 23 8 -7 4
+aim 14 0 -7
+photo F_pool_2_settled
+atblock 2 107395 57525 608
+aim 7 6 -2
+photo F_pool_3_settled_low
+
+state final

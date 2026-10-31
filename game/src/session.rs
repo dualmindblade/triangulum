@@ -125,6 +125,7 @@ pub struct Session {
 
 impl Session {
     pub fn new(engine: Arc<Engine>, player: Player, save: Option<SaveDir>, bake_sha256: String, sim: Sim) -> Self {
+        engine.edits.set_slopes(sim.config.flow.powder != crate::sim::Powder::Blocks);
         Self { engine, player, save, bake_sha256, last_save: None, saved_chunks: 0, sim, steps: 0, sky: Clock { seconds: 0.0, speed: 0.0 }, held: None, last_reload: None, recorder: None, visual: None }
     }
 
@@ -228,7 +229,14 @@ impl Session {
             Action::Sim(on) => self.sim.config.enabled = on,
             Action::SimRadius(m) => self.sim.set_radius(m),
             Action::WaterPeriod(n) => self.sim.config.water_period = n.max(1),
-            Action::Flow(f) => self.sim.config.flow = f,
+            Action::Flow(f) => {
+                self.sim.config.flow = f;
+                // Partial powder stays what it is if the rule goes back: only
+                // the switch on says so, and a script's next scene is its own.
+                if f.powder != crate::sim::Powder::Blocks {
+                    self.engine.edits.set_slopes(true);
+                }
+            }
             Action::Pose(p) => self.player = *p,
             Action::Reload => match self.reload() {
                 Ok((_, report)) => self.last_reload = Some(report),
@@ -312,10 +320,31 @@ impl Session {
     /// The settings are `config` (the command line's, or the running
     /// session's on a reload); a save made under other settings or other
     /// block rules says so.
+    ///
+    /// Partial powder (B7) lives in a save of its own: a save and a game
+    /// that disagree about `--powder levels` refuse each other, either way,
+    /// and neither is touched. To the normal game partial powder would be whole
+    /// blocks, and sand would multiply.
     pub fn load_sim(dir: Option<&SaveDir>, config: crate::sim::SimConfig, registry: &crate::world::Registry) -> Result<Sim, String> {
-        match dir.map(|d| d.read_sim()).transpose()?.flatten() {
+        use crate::sim::Powder;
+        let levels = config.flow.powder != Powder::Blocks;
+        let bytes = dir.map(|d| d.read_sim()).transpose()?.flatten();
+        if let (true, None, Some(d)) = (levels, &bytes, dir)
+            && d.exists()
+        {
+            return Err(format!("{} is not a --powder levels save, so this game will not touch it. Without --save it keeps its own, beside the real one", d.path.display()));
+        }
+        match bytes {
             Some(bytes) => {
                 let snap = Snapshot::from_bytes(&bytes).map_err(|e| format!("refusing to load the simulation state of {}: {e}", dir.unwrap().path.display()))?;
+                if snap.config.is_some_and(|c| c.flow.powder != Powder::Blocks) != levels {
+                    let d = dir.unwrap().path.display();
+                    return Err(if levels {
+                        format!("{d} is not a --powder levels save, so this game will not touch it. Without --save it keeps its own, beside the real one")
+                    } else {
+                        format!("{d} was played with --powder levels and holds partial powder, which this game would turn into whole blocks. It is left as it is: start with --powder levels to go on with it")
+                    });
+                }
                 if let Some(saved) = snap.config.filter(|c| *c != config) {
                     println!("note: the save's simulation ran with radius {} m, {}, water period {}, {}; it continues with radius {} m, {}, water period {}, {}", saved.radius_m, if saved.enabled { "on" } else { "off" }, saved.water_period, saved.flow.text(), config.radius_m, if config.enabled { "on" } else { "off" }, config.water_period, config.flow.text());
                 }
@@ -377,7 +406,14 @@ impl Session {
         let id = self.selected_block();
         let world = self.engine.world.as_ref();
         let reg = &self.engine.registry;
-        let (cur, level) = world.block_and_level_at(bp);
+        let (mut bp, (mut cur, mut level)) = (bp, world.block_and_level_at(bp));
+        // A ray that crossed a partial cell above its slope (B7) points at
+        // the cube behind it, and the cell in front of that is the partial one:
+        // what goes there goes on top of it.
+        if reg.has_gravity(cur) && level != 0 && self.engine.edits.slopes_on() {
+            bp = world.resolve_block(bp.face, bp.i as i64, bp.j as i64, bp.k as i64 + 1)?;
+            (cur, level) = world.block_and_level_at(bp);
+        }
         if reg.is_solid(cur) {
             return None;
         }
@@ -522,6 +558,7 @@ impl Session {
             Some(dir) => dir.load_into(&self.engine.config, &self.engine.registry, &self.bake_sha256, &edits)?,
             None => save::LoadReport { chunks: 0, warnings: Vec::new(), generation: 0 },
         };
+        edits.set_slopes(self.engine.edits.slopes_on());
         let engine = Arc::new(self.engine.with_edits(edits));
         self.engine = engine.clone();
         self.sim = Self::load_sim(self.save.as_ref(), self.sim.config, &self.engine.registry)?;
@@ -593,6 +630,7 @@ impl Session {
             "water_balance": ws.water_balance(),
             "water_updates_last": ws.water_updates_last,
             "water_period": self.sim.config.water_period,
+            "powder_moves": ws.powder_moves, "powder_moved": ws.powder_moved,
             "flow": self.sim.config.flow.text(),
             "sim_radius": self.sim.config.radius_m,
             // The sky clock (M2c: the session advances it on its steps).
@@ -672,6 +710,41 @@ impl Session {
             }
         }
         (wet, film)
+    }
+
+    /// The powder (units: 255 is a whole block) in a box of cells relative
+    /// to the feet block, corners inclusive (for `powder_rel[...]`).
+    pub fn powder_in_box_rel(&self, a: (i64, i64, i64), b: (i64, i64, i64)) -> u64 {
+        let f = Frame::at(&self.engine.planet, self.player.pos);
+        let (ci, cj, ck) = f.feet_cell();
+        let world = &self.engine.world;
+        let mut sum = 0u64;
+        for di in a.0.min(b.0)..=a.0.max(b.0) {
+            for dj in a.1.min(b.1)..=a.1.max(b.1) {
+                for dk in a.2.min(b.2)..=a.2.max(b.2) {
+                    let Some(bp) = world.resolve_block(f.face, ci + di, cj + dj, ck + dk) else { continue };
+                    let (id, level) = world.block_and_level_at(bp);
+                    if self.engine.registry.has_gravity(id) {
+                        sum += crate::sim::powder::units(level) as u64;
+                    }
+                }
+            }
+        }
+        sum
+    }
+
+    /// How high the powder in column DI, DJ stands, in blocks over the top of
+    /// layer DK_LOW (the feet block's layers), looking down from DK_HIGH: for
+    /// the harness's `surface` and for measuring an angle.
+    pub fn surface_rel(&self, di: i64, dj: i64, low: i64, high: i64) -> Option<f64> {
+        let f = Frame::at(&self.engine.planet, self.player.pos);
+        let (ci, cj, ck) = f.feet_cell();
+        let world = &self.engine.world;
+        let bp = world.resolve_block(f.face, ci + di, cj + dj, ck)?;
+        (low + 1..=high).rev().find_map(|dk| {
+            let (id, level) = world.block_and_level_at(BlockPos { k: (ck + dk) as u32, ..bp });
+            self.engine.registry.has_gravity(id).then(|| (dk - low - 1) as f64 + crate::sim::powder::units(level) as f64 / 255.0)
+        })
     }
 
     /// Set a box of cells relative to the feet block, corners inclusive (the

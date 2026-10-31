@@ -13,6 +13,7 @@ struct Ray<'a> {
     eye: DVec3,
     dir: DVec3,
     liquids: bool,
+    slopes: bool,
     initial: (u8, [i64; 3]),
     previous: (u8, [i64; 3]),
 }
@@ -102,9 +103,30 @@ impl Ray<'_> {
         for ts in crossings.windows(2) {
             if ts[1] - ts[0] < 1e-9 { continue; }
             let point = if crossings.len() == 2 { pm } else { self.lattice(face, (ts[0] + ts[1]) * 0.5) };
+            if self.slopes && self.over_slope(face, point, ts[0], ts[1]) {
+                let n = self.planet.n as i64;
+                self.previous = (face, [(point.x.floor() as i64).clamp(0, n - 1), (point.y.floor() as i64).clamp(0, n - 1), point.z.floor() as i64]);
+                continue;
+            }
             if let Some(hit) = self.visit(face, point, ts[0]) { return Some(hit); }
         }
         None
+    }
+
+    /// `--powder levels` (B7): does the ray cross this cell above the sloped
+    /// surface drawn through it? Then it has not hit what the eye sees, whatever
+    /// the cell's cube says. Eight points along the crossing are near enough for
+    /// a surface that is flat across a cell.
+    fn over_slope(&self, face: u8, point: DVec3, a: f64, b: f64) -> bool {
+        let (ci, cj, ck) = (point.x.floor() as i64, point.y.floor() as i64, point.z.floor() as i64);
+        if !self.vox.is_powder(self.vox.block(face, ci, cj, ck)) {
+            return false;
+        }
+        let Some(s) = self.vox.slope(face, ci, cj, ck).filter(|s| ck <= s.top) else { return false };
+        (0..=8).all(|n| {
+            let p = self.lattice(face, a + (b - a) * n as f64 / 8.0);
+            p.z >= s.height_at((p.x - ci as f64).clamp(0.0, 1.0), (p.y - cj as f64).clamp(0.0, 1.0))
+        })
     }
 }
 
@@ -115,7 +137,7 @@ pub fn pick(vox: &dyn Voxels, planet: &Planet, eye: DVec3, dir: DVec3, reach_m: 
     let (f, i, j, k) = planet.lattice_of_pos(eye);
     let n = planet.n as i64;
     let initial = (f, [(i.floor() as i64).clamp(0, n - 1), (j.floor() as i64).clamp(0, n - 1), k.floor() as i64]);
-    let mut ray = Ray { vox, planet, eye, dir, liquids, initial, previous: initial };
+    let mut ray = Ray { vox, planet, eye, dir, liquids, slopes: vox.has_slopes(), initial, previous: initial };
     if let Some(hit) = ray.visit(f, DVec3::new(i, j, k), 0.0) { return Some(hit); }
     // A face is selected by the largest absolute world coordinate. Its
     // boundaries are x=+/-y, x=+/-z, y=+/-z: intersect those planes exactly.

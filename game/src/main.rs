@@ -23,6 +23,9 @@
 //!   --film keep|seek|merge|dry|seek+dry (what becomes of level-1 water, Andrew's #9; seek+dry)
 //!   --film-reach N (8; how many cells a film runs along a dry line to a drop)
 //!   --film-dry-s S (10; a film dries between S and 3 S seconds after it comes to rest)
+//!   --powder levels (an experiment, B7: sand and gravel hold a level and rest at an angle; plays on
+//!     its own save, saves/<world name>-powder, and never touches the real one)
+//!   --powder-angle DEG (35, 1 to 70; implies --powder levels)
 //! Player: --walk | --fly (default: walk when starting within 50 m of the ground)
 //!   --hotbar stone,dirt,...  (blocks on keys 1-9; default: the first eight solid blocks and water)
 //! Look (M3a): F1 opens the look panel  --panel (start with it open)  M and Shift+M step the mesh view
@@ -290,6 +293,16 @@ fn parse_args() -> Args {
             "--film" => a.flow.film = sim::Film::parse(&val()).unwrap_or_else(|e| fail(&e)),
             "--film-reach" => a.flow.film_reach = val().parse().unwrap(),
             "--film-dry-s" => a.flow.film_dry_ticks = ((val().parse::<f64>().unwrap() * sim::TICK_HZ as f64) as u64).max(1),
+            "--powder" => match val().as_str() {
+                "blocks" => a.flow.powder = sim::Powder::Blocks,
+                "levels" => {
+                    if a.flow.powder == sim::Powder::Blocks {
+                        a.flow.powder = sim::Powder::Levels(sim::Repose::default());
+                    }
+                }
+                other => fail(&format!("bad --powder {other:?}: blocks or levels")),
+            },
+            "--powder-angle" => a.flow.powder = sim::Powder::Levels(sim::Repose::of_degrees(val().parse().unwrap_or(-1.0)).unwrap_or_else(|e| fail(&e))),
             "--walk" => a.walk = Some(true),
             "--fly" => a.walk = Some(false),
             "--hotbar" => a.hotbar = Some(val()),
@@ -436,7 +449,9 @@ near it, by hand:
         }
         Some(SaveDir::new(dir))
     } else {
-        Some(SaveDir::new(args.save.clone().unwrap_or_else(|| format!("{root}/saves/{}", config.name))))
+        // Partial powder never goes in the real save (`Session::load_sim`).
+        let scratch = if args.flow.powder == sim::Powder::Blocks { "" } else { "-powder" };
+        Some(SaveDir::new(args.save.clone().unwrap_or_else(|| format!("{root}/saves/{}{scratch}", config.name))))
     };
     if let Some(dir) = &save_dir {
         match dir.load_into(&config, &registry, &bake_sha, &edits) {
@@ -616,6 +631,9 @@ near it, by hand:
     }
     let sim = Session::load_sim(save_dir.as_ref(), sim::SimConfig { radius_m: args.sim_radius, enabled: !args.no_sim, water_period: args.water_period, flow: args.flow }, &registry).unwrap_or_else(|e| fail(&e));
     println!("simulation: {} Hz tick, {} m active radius{}; resumed at tick {} with {} queued, {} frozen, {} falling", sim::TICK_HZ, args.sim_radius, if args.no_sim { " (off)" } else { "" }, sim.tick(), sim.queued(), sim.frozen_count(), sim.falling().len());
+    if let sim::Powder::Levels(r) = args.flow.powder {
+        println!("powder: levels, resting at {} degrees (an experiment: this game keeps its own save)", r.degrees());
+    }
     let mut session = Session::new(engine.clone(), Player::new(dir * (p.radius + alt_asl.unwrap_or(ground + 2.0)), heading, pitch, if walk { Mode::Walk } else { Mode::Fly }, p.block_size), save_dir, bake_sha, sim);
     session.sky = clock;
     if walk {

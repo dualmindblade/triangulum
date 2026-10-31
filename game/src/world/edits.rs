@@ -25,7 +25,7 @@ use super::BlockId;
 use super::chunk::{VOXELS, index};
 use crate::grid::{BlockPos, ChunkKey, FastMap, FastSet};
 use std::sync::RwLock;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Instant;
 
 /// Ancestors indexed per edited chunk: LODs 1..=INDEX_LODS (a chunk at LOD
@@ -302,6 +302,10 @@ impl Inner {
 #[derive(Default)]
 pub struct EditStore {
     inner: RwLock<Inner>,
+    /// `--powder levels` (B7): cells may hold partial powder, so the mesher
+    /// and the player read the slope (`world/slope.rs`). Off, everything that
+    /// asks costs one atomic load.
+    slopes: AtomicBool,
 }
 
 /// Save dirty chunks when the player has paused this long…
@@ -316,6 +320,16 @@ impl EditStore {
 
     pub fn is_empty(&self) -> bool {
         self.inner.read().unwrap().chunks.is_empty()
+    }
+
+    /// May cells hold partial powder (`--powder levels`)?
+    #[inline]
+    pub fn slopes_on(&self) -> bool {
+        self.slopes.load(Ordering::Relaxed)
+    }
+
+    pub fn set_slopes(&self, on: bool) {
+        self.slopes.store(on, Ordering::Relaxed);
     }
 
     pub fn len(&self) -> usize {

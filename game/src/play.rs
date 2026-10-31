@@ -61,6 +61,9 @@
 //!                           seek, merge, dry, seek+dry
 //!   sim reach N             how far a film runs to a drop (--film-reach)
 //!   sim dry SECONDS         how long a film waits to dry (--film-dry-s)
+//!   sim powder blocks       the game's powder: whole blocks that slide
+//!   sim powder levels [DEG] powder that holds a level and rests at DEG (35)
+//!                           degrees (--powder levels, --powder-angle)
 //!   select N                hotbar slot 1-9
 //!   hotbar A,B,...          what keys 1-9 hold, by block name (M3b; the
 //!                           harness otherwise keeps the default hotbar,
@@ -129,6 +132,10 @@
 //!   heights DI DJ DI2 DJ2 DK_LOW DK_HIGH
 //!                           print how far above DK_LOW the top sand or
 //!                           gravel of each column stands, as a grid
+//!   surface DI DJ DI2 DJ2 DK_LOW DK_HIGH
+//!                           the same to two decimals, levels included, and the
+//!                           steepest slope along an axis and a diagonal in
+//!                           degrees (--powder levels)
 //!   cells DI0 DI1 DJ0 DJ1 DK
 //!                           print a map of one layer near the feet: ###
 //!                           solid, ... air, a number is that cell's water
@@ -164,6 +171,8 @@
 //!                              level 0..255 of a cell
 //!                           or water_rel[DI,DJ,DK,DI2,DJ2,DK2]  the total water
 //!                              (units) in that box of cells, corners inclusive
+//!                           or powder_rel[DI,DJ,DK,DI2,DJ2,DK2]  the total powder
+//!                              (units, 255 = a block) in that box of cells
 //!                           or wet_rel[DI,DJ,DK,DI2,DJ2,DK2]  the water cells in
 //!                              that box, and film_rel[...] those at level 1
 //!                           or falling_rel[DI,DJ]  blocks in flight in that column
@@ -1007,6 +1016,13 @@ impl Run {
             }
             return Some(serde_json::Value::from(self.session.water_in_box_rel((v[0], v[1], v[2]), (v[3], v[4], v[5]))));
         }
+        if let Some(inner) = field.strip_prefix("powder_rel[").and_then(|r| r.strip_suffix(']')) {
+            let v: Vec<i64> = inner.split(',').map(|x| x.trim().parse().ok()).collect::<Option<_>>()?;
+            if v.len() != 6 {
+                return None;
+            }
+            return Some(serde_json::Value::from(self.session.powder_in_box_rel((v[0], v[1], v[2]), (v[3], v[4], v[5]))));
+        }
         for (prefix, film) in [("wet_rel[", false), ("film_rel[", true)] {
             if let Some(inner) = field.strip_prefix(prefix).and_then(|r| r.strip_suffix(']')) {
                 let v: Vec<i64> = inner.split(',').map(|x| x.trim().parse().ok()).collect::<Option<_>>()?;
@@ -1230,6 +1246,36 @@ pub fn run_play(session: Session, opts: PlayOptions) -> i32 {
                 }
                 _ => bad(&mut run, "heights DI DJ DI2 DJ2 DK_LOW DK_HIGH"),
             },
+            "surface" => match (num(0), num(1), num(2), num(3), num(4), num(5)) {
+                (Some(i0), Some(j0), Some(i1), Some(j1), Some(lo), Some(hi)) => {
+                    let (i0, j0, i1, j1, lo, hi) = (i0 as i64, j0 as i64, i1 as i64, j1 as i64, lo as i64, hi as i64);
+                    let at = |di: i64, dj: i64| run.session.surface_rel(di, dj, lo, hi);
+                    let mut lines = vec![format!("  powder surface over layer {lo:+}, blocks, i {i0:+}..{i1:+} across, j {j1:+}..{j0:+} down:")];
+                    let (mut straight, mut diagonal) = (0f64, 0f64);
+                    for dj in (j0..=j1).rev() {
+                        let row: Vec<String> = (i0..=i1).map(|di| at(di, dj).map_or("    .".to_string(), |h| format!("{h:5.2}"))).collect();
+                        lines.push(format!("  {}", row.join(" ")));
+                        for di in i0..=i1 {
+                            let Some(h) = at(di, dj) else { continue };
+                            for (a, b) in [(1, 0), (0, 1)] {
+                                if let Some(n) = at(di + a, dj + b) {
+                                    straight = straight.max((h - n).abs());
+                                }
+                            }
+                            for (a, b) in [(1, 1), (1, -1)] {
+                                if let Some(n) = at(di + a, dj + b) {
+                                    diagonal = diagonal.max((h - n).abs() / std::f64::consts::SQRT_2);
+                                }
+                            }
+                        }
+                    }
+                    lines.push(format!("  steepest step between powder columns: {straight:.3} per cell ({:.1} degrees), {diagonal:.3} along a diagonal ({:.1} degrees)", straight.atan().to_degrees(), diagonal.atan().to_degrees()));
+                    for l in lines {
+                        run.say(l);
+                    }
+                }
+                _ => bad(&mut run, "surface DI DJ DI2 DJ2 DK_LOW DK_HIGH"),
+            },
             "fill" => match (num(0), num(1), num(2), num(3), num(4), num(5), args.get(6)) {
                 (Some(a), Some(b), Some(c), Some(d), Some(e), Some(f), Some(name)) => match run.session.engine.registry.id(name) {
                     Ok(id) => {
@@ -1351,7 +1397,22 @@ pub fn run_play(session: Session, opts: PlayOptions) -> i32 {
                     let _ = run.session.apply(Action::Flow(flow));
                     run.say(format!("  {}", flow.text()));
                 }
-                _ => bad(&mut run, "sim on|off | sim radius M | sim period N | sim slide on|off | sim film keep|seek|merge|dry|seek+dry | sim reach N | sim dry SECONDS"),
+                (Some("powder"), _) if matches!(args.get(1).copied(), Some("blocks" | "levels")) => {
+                    let powder = if args[1] == "blocks" {
+                        Ok(crate::sim::Powder::Blocks)
+                    } else {
+                        crate::sim::Repose::of_degrees(num(2).unwrap_or(crate::sim::Repose::DEFAULT_DEG)).map(crate::sim::Powder::Levels)
+                    };
+                    match powder {
+                        Ok(powder) => {
+                            let flow = crate::sim::Flow { powder, ..run.session.sim.config.flow };
+                            let _ = run.session.apply(Action::Flow(flow));
+                            run.say(format!("  {}", flow.text()));
+                        }
+                        Err(e) => bad(&mut run, &e),
+                    }
+                }
+                _ => bad(&mut run, "sim on|off | sim radius M | sim period N | sim slide on|off | sim film keep|seek|merge|dry|seek+dry | sim reach N | sim dry SECONDS | sim powder blocks | sim powder levels [ANGLE]"),
             },
             "speed" => match num(0) {
                 Some(v) if (1.0..=5000.0).contains(&v) => run.session.player.fly_speed = v,

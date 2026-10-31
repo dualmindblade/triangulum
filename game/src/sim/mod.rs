@@ -75,12 +75,14 @@
 //! later without four more neighbours on every change.
 
 pub mod draw;
+pub mod powder;
 pub mod water;
 
 use crate::grid::{BlockPos, CHUNK, ChunkKey, FastMap, FastSet};
 use crate::sha256::{Sha256, hex};
 use crate::world::{BlockId, World};
 use glam::DVec3;
+pub use powder::{Powder, Repose};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::time::Instant;
 pub use water::Boundary;
@@ -171,11 +173,14 @@ pub struct Flow {
     /// How long a level-1 cell waits to dry under `Film::Dry`: between this
     /// and three times this many ticks (`--film-dry-s`, in seconds).
     pub film_dry_ticks: u64,
+    /// Andrew's #8: `--powder levels`, an experiment (powder.rs). Blocks, the
+    /// default, is the slide above, and leaves `text` as it was.
+    pub powder: Powder,
 }
 
 impl Default for Flow {
     fn default() -> Self {
-        Self { slide: true, film: Film::SeekDry, film_reach: 8, film_dry_ticks: 200 }
+        Self { slide: true, film: Film::SeekDry, film_reach: 8, film_dry_ticks: 200, powder: Powder::Blocks }
     }
 }
 
@@ -187,7 +192,11 @@ impl Flow {
 
     /// `key=value` words: how a save and a replay write these settings.
     pub fn text(&self) -> String {
-        format!("slide={} film={} reach={} dry={}", if self.slide { "on" } else { "off" }, self.film.name(), self.film_reach, self.film_dry_ticks)
+        let text = format!("slide={} film={} reach={} dry={}", if self.slide { "on" } else { "off" }, self.film.name(), self.film_reach, self.film_dry_ticks);
+        match self.powder {
+            Powder::Blocks => text,
+            Powder::Levels(r) => format!("{text} powder=levels angle={}", r.degrees()),
+        }
     }
 
     /// `text` back; a setting left out keeps its default.
@@ -200,6 +209,9 @@ impl Flow {
                 Some(("film", name)) => f.film = Film::parse(name)?,
                 Some(("reach", n)) => f.film_reach = n.parse().map_err(|_| format!("bad film reach {n:?}"))?,
                 Some(("dry", n)) => f.film_dry_ticks = n.parse().ok().filter(|t| *t > 0).ok_or_else(|| format!("bad film drying time {n:?}"))?,
+                Some(("powder", "blocks")) => f.powder = Powder::Blocks,
+                Some(("powder", "levels")) => f.powder = Powder::Levels(Repose::default()),
+                Some(("angle", n)) => f.powder = Powder::Levels(Repose::of_degrees(n.parse().map_err(|_| format!("bad powder angle {n:?}"))?)?),
                 _ => return Err(format!("bad flow setting {w:?}")),
             }
         }
@@ -602,6 +614,10 @@ pub struct SimStats {
     pub water_lost: u64,
     /// Units of film that dried (B4, `Film::Dry`): water that left the world.
     pub water_dried: u64,
+    /// `--powder levels` (B7): moves down a slope, and units moved by them
+    /// and by falls by levels. Always 0 under the default rule.
+    pub powder_moves: u64,
+    pub powder_moved: u64,
     /// Water cell updates run last tick.
     pub water_updates_last: u32,
     /// Last tick's cost by phase (microseconds): the water rule's two
@@ -866,7 +882,7 @@ impl Sim {
 
     /// One line for the HUD and the harness transcript.
     pub fn describe(&self) -> String {
-        format!(
+        let line = format!(
             "sim {}  tick {}  falling {}  queued {}  frozen {}  active {} chunks  water {} updates, {} moved, in {} out {}, {} drying, {} dried  tick cost {:.3} ms (avg {:.3}, max {:.3})",
             if self.config.enabled { "on" } else { "off" },
             self.tick,
@@ -883,7 +899,11 @@ impl Sim {
             self.stats.last_us as f64 / 1e3,
             self.stats.avg_us() / 1e3,
             self.stats.max_us as f64 / 1e3
-        )
+        );
+        match self.config.flow.powder {
+            Powder::Blocks => line,
+            Powder::Levels(r) => format!("{line}  powder: levels at {} degrees", r.degrees()),
+        }
     }
 
     /// Schedule an update for a block.
@@ -1295,11 +1315,15 @@ impl Sim {
                 water.push((d, key));
             }
         }
-        for &bp in &gravity {
-            self.fall_rule(world, bp);
-        }
-        if self.config.flow.slide {
-            self.powder_slides(world, &gravity);
+        if let Powder::Levels(rule) = self.config.flow.powder {
+            self.powder_levels(world, &gravity, &water, rule);
+        } else {
+            for &bp in &gravity {
+                self.fall_rule(world, bp);
+            }
+            if self.config.flow.slide {
+                self.powder_slides(world, &gravity);
+            }
         }
         self.stats.water_updates_last = 0;
         self.stats.water_rule_us = 0;
@@ -1583,6 +1607,8 @@ impl Sim {
 mod film_tests;
 #[cfg(test)]
 mod flow_tests;
+#[cfg(test)]
+mod powder_tests;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]

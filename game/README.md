@@ -382,6 +382,8 @@ that frame was live, so distant detail still loading counts.
 --film MODE           what becomes of level-1 water: keep, seek, merge, dry, seek+dry (the default)
 --film-reach N        how many cells a film runs along a dry line to a drop (8)
 --film-dry-s S        a film dries S to 3 S seconds after it comes to rest (10)
+--powder levels       an experiment: sand and gravel hold a level and rest at an angle, on a save of their own (saves/<world name>-powder)
+--powder-angle DEG    the angle they rest at, 1 to 70 degrees (35); implies --powder levels
 --hotbar a,b,c        blocks on keys 1-9 by name (default: the first eight solid blocks and water)
 --walk | --fly        starting mode
 --hide-water          start with water hidden
@@ -614,6 +616,21 @@ chunk outside the active region waits where it is, with its update saved,
 until the region arrives. Natural sand and gravel do not move until a change
 reaches them: a generated beach steeper than the slope stands until touched.
 `--no-slide` is the old rule, unit for unit.
+
+**Powder that holds a level (B7, an experiment).** `--powder levels` is another
+rule for sand and gravel, off by default, for Andrew to judge by playing:
+`docs/missions/B7-powder-findings.md`. A cell holds a level, as water's does,
+and powder moves downhill only where neighbouring columns differ by more than
+the slope of `--powder-angle` allows, so a pile comes to rest at that angle.
+`sim/powder.rs` has the rule and why it always comes to rest. The surface is
+drawn as a height field over the columns (`world/slope.rs`), the same one the
+player stands on and the crosshair stops at; far away, at coarser detail, a
+partial cell is a whole block. Generated sand stays whole until disturbed, and
+a generated slope holds at one block per block whatever the angle, so a dig
+does not set a whole beach flowing. This game keeps its own save,
+`saves/<world name>-powder`, and it and a normal game refuse each other's
+saves. Partial powder is a wall and a floor to water, and two powders do not
+mix.
 
 Only LOD-0 chunks within `--sim-radius` metres of you (112 by default) are
 simulated; elsewhere the world is frozen. An update due in a frozen chunk
@@ -994,6 +1011,13 @@ every rule, so run it with `--film MODE` and compare the frames and the
 printed levels. `b4-oldsave-make.play`, run on an older build, and
 `b4-oldsave-load.play`, run on this one, check that an old save loads and that
 nothing in it wakes until it is touched.
+
+`scripts/b7-compare.play` runs the same tower, dropped cube, pit, cliff, beach
+and pool under whichever powder rule the command line says, so `--powder-angle
+25`, `35` and `45` and no switch at all give frames to lay side by side (the
+script's header has the commands). `scripts/b7-walk.play` is the rule by hand: a
+player pours a pile on real ground, walks over it, digs in it, reloads, and the
+whole thing is checked as a replay.
 
 `scripts/b1-water-under.play` lays a stone deck across a generated river and
 shoots the surface going on under it from above, from the side and from under

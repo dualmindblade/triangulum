@@ -1,0 +1,138 @@
+# B7, Andrew's #8, by hand: a player pours sand on one spot, walks up the pile
+# and down the far side, digs in it, and does it all again from a replay.
+# Everything here is player input: place, break, the walking keys.
+#   triangulum --play scripts/b7-walk.play --out out/b7/walk
+sim powder levels 35
+sun 35
+mode fly
+atblock 1 1990 59004 513
+assert block[1,1990,59004,511] == sand
+mode walk
+hotbar sand,gravel,stone,dirt
+select 1
+lookaxis +i 0
+wait 0.5
+assert on_ground == true
+replay record b7-walk.replay
+
+# ---- pour on one spot ----------------------------------------------------------
+# Five blocks ahead, each landing on what came before. A real hand would hold
+# the button: a click every quarter of a second.
+aim 4 0 -1
+assert crosshair != none
+tap place
+tick 5
+tap place
+tick 5
+tap place
+tick 5
+tap place
+tick 5
+tap place
+tick 5
+tap place
+tick 5
+tap place
+tick 5
+tap place
+tick 5
+tap place
+tick 5
+tap place
+tick 5
+tap place
+tick 5
+tap place
+tick 5
+tap place
+tick 5
+tap place
+tick 5
+tap place
+tick 5
+tap place
+tick 5
+tap place
+tick 5
+tap place
+tick 5
+tap place
+tick 5
+tap place
+tick 5
+tap place
+tick 5
+tap place
+tick 5
+tap place
+tick 5
+tap place
+tick 40
+assert falling == 0
+assert queued == 0
+assert vanished == 0
+assert powder_moves > 0
+state poured
+surface -2 -7 12 7 -2 6
+state on_the_beach
+shot walk_0_the_pile_from_the_foot
+
+# ---- walk up it, and down the far side -----------------------------------------
+lookaxis +i 0
+state before_walk
+hold w 0.5
+assert on_ground == true
+assert alt_agl > 1.5
+state on_the_pile
+shot walk_1_on_top
+hold w 0.6
+assert on_ground == true
+assert alt_agl < 1.5
+state going_down
+shot walk_2_going_down
+hold w 0.6
+assert on_ground == true
+shot walk_3_at_the_foot
+hold w 1.0
+assert on_ground == true
+state past_it
+lookaxis -i 10
+shot walk_4_looking_back
+
+# ---- back, a jump on the way, a sprint ------------------------------------------
+hold w+shift 0.6
+hold w,space 0.5
+assert vanished == 0
+hold w 0.8
+assert on_ground == true
+shot walk_5_back_on_it
+
+# ---- dig into it ----------------------------------------------------------------
+aim 2 0 -1
+assert crosshair == sand
+state before_dig
+tap break
+tick 40
+assert queued == 0
+state after_dig
+aim 2 0 -1
+assert crosshair != none
+tap break
+tick 40
+assert queued == 0
+shot walk_6_dug
+assert on_ground == true
+
+# ---- save and quit, and come back -------------------------------------------------
+save
+reload
+assert powder_moves >= 0
+wait 0.5
+assert on_ground == true
+shot walk_7_reloaded
+
+replay stop
+assert replay_notes == 0
+replay check b7-walk.replay
+assert replay_ok == true
+state final

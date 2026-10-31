@@ -113,6 +113,9 @@ pub struct GpuMesh {
     pub opaque_count: u32,
     pub water_base: u32,
     pub water_count: u32,
+    /// Sloped powder (B7): three slots a quad, drawn opaque.
+    pub slope_base: u32,
+    pub slope_count: u32,
     /// The chunk's word for the mesh view (`meshview::region_word`): set once
     /// at upload, copied into its draw records, read by no normal pipeline.
     pub region: u32,
@@ -149,6 +152,10 @@ pub struct Renderer {
     bind_layout: wgpu::BindGroupLayout,
     bind_group: wgpu::BindGroup,
     terrain_pipeline: wgpu::RenderPipeline,
+    slope_pipeline: wgpu::RenderPipeline,
+    /// This frame's sloped powder: the streamer fills it, no draw list passes
+    /// through a caller, and it stays empty unless `--powder levels` is on.
+    pub slope_draws: Vec<DrawRecord>,
     water_pipeline: wgpu::RenderPipeline,
     sky_pipeline: wgpu::RenderPipeline,
     /// The mesh view (M and Shift+M in the game), off by default.
@@ -318,6 +325,7 @@ impl Renderer {
             })
         };
         let terrain_pipeline = pipeline("terrain", "vs_main", "fs_main", None, Some(wgpu::Face::Back), depth(true, wgpu::CompareFunction::Greater));
+        let slope_pipeline = pipeline("slope", "vs_slope", "fs_main", None, Some(wgpu::Face::Back), depth(true, wgpu::CompareFunction::Greater));
         let water_pipeline = pipeline(
             "water",
             "vs_water",
@@ -359,6 +367,8 @@ impl Renderer {
             bind_layout: bgl,
             bind_group,
             terrain_pipeline,
+            slope_pipeline,
+            slope_draws: Vec::new(),
             water_pipeline,
             sky_pipeline,
             mesh_view: MeshView::NORMAL,
@@ -499,12 +509,30 @@ impl Renderer {
             self.queue.write_buffer(&self.quads_buf, wb as u64 * QUAD_BYTES, bytemuck::cast_slice(&water[..nw as usize]));
         }
         self.queue.write_buffer(&self.grids_buf, slot as u64 * GRID_BYTES as u64, bytemuck::cast_slice(grid));
-        Some(GpuMesh { slot, opaque_base: ob, opaque_count: no, water_base: wb, water_count: nw, region: 0 })
+        Some(GpuMesh { slot, opaque_base: ob, opaque_count: no, water_base: wb, water_count: nw, slope_base: 0, slope_count: 0, region: 0 })
+    }
+
+    /// Add a chunk's sloped powder to the mesh `add_mesh` made. None, and the
+    /// mesh given back, when out of room; no slopes, no cost.
+    pub fn add_slopes(&mut self, mut m: GpuMesh, slopes: &[[u32; 6]]) -> Option<GpuMesh> {
+        if slopes.is_empty() {
+            return Some(m);
+        }
+        let ns = slopes.len().min(MAX_QUADS_PER_CHUNK as usize) as u32;
+        let Some(sb) = self.alloc.alloc(3 * ns) else {
+            self.free_mesh(m);
+            return None;
+        };
+        self.queue.write_buffer(&self.quads_buf, sb as u64 * QUAD_BYTES, bytemuck::cast_slice(&slopes[..ns as usize]));
+        m.slope_base = sb;
+        m.slope_count = ns;
+        Some(m)
     }
 
     pub fn free_mesh(&mut self, m: GpuMesh) {
         self.alloc.free(m.opaque_base, m.opaque_count);
         self.alloc.free(m.water_base, 2 * m.water_count);
+        self.alloc.free(m.slope_base, 3 * m.slope_count);
         self.slot_free.push(m.slot);
         self.slots_used -= 1;
     }
@@ -523,15 +551,17 @@ impl Renderer {
     pub fn render(&mut self, cam: &CameraUniform, opaque: &[DrawRecord], water: &[DrawRecord], target: Option<&wgpu::TextureView>) -> FrameStats {
         let opaque = &opaque[..opaque.len().min(MAX_DRAWS)];
         let water = &water[..water.len().min(MAX_DRAWS - opaque.len())];
+        let slopes = self.slope_draws.len().min(MAX_DRAWS - opaque.len() - water.len());
         self.queue.write_buffer(&self.camera_buf, 0, bytemuck::bytes_of(cam));
         let sky = self.sky.uniform(cam);
         self.queue.write_buffer(&self.sky_buf, 0, bytemuck::bytes_of(&sky));
         let (mut tris, mut wtris) = (0u64, 0u64);
-        let total = opaque.len() + water.len();
+        let total = opaque.len() + water.len() + slopes;
         if total > 0 {
             let mut recs: Vec<DrawRecord> = Vec::with_capacity(total);
             recs.extend_from_slice(opaque);
             recs.extend_from_slice(water);
+            recs.extend_from_slice(&self.slope_draws[..slopes]);
             self.queue.write_buffer(&self.draws_buf, 0, bytemuck::cast_slice(&recs));
             let args: Vec<wgpu::util::DrawIndexedIndirectArgs> = recs
                 .iter()
@@ -601,6 +631,10 @@ impl Renderer {
                     _ => &self.terrain_pipeline,
                 });
                 pass.multi_draw_indexed_indirect(&self.indirect_buf, 0, opaque.len() as u32);
+            }
+            if slopes > 0 {
+                pass.set_pipeline(&self.slope_pipeline);
+                pass.multi_draw_indexed_indirect(&self.indirect_buf, (opaque.len() + water.len()) as u64 * 20, slopes as u32);
             }
             if !only {
                 // Reversed-Z infinity: fill only pixels the opaque geometry left
