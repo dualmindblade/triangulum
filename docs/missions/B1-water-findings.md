@@ -222,9 +222,18 @@ pay: it never reaches the lookup.
 - **A shore at an LOD boundary.** Dropping those side faces removes a translucent
   film there if the coarser chunk's ground is lower. I expect that to be invisible
   and did not look.
-- **Coverage.** The dip audit sampled four sites and the shore scan covered parts
+- **Coverage.** The dip audit sampled six sites and the shore scan covered parts
   of face 2. A resting shore elsewhere could behave differently.
 - **Andrew's machine.** The final binary was linked with the MSVC 14.44 tools on E:.
+
+## One thing outside my lane
+
+I ran the frozen baseline build once, as the bug-round page says to. Its replay
+scratch path is compiled in, so that run rebuilt
+`C:/code/triangulum/game/saves/_replay/Neisor-20261031-040850/` in the main
+checkout. That folder is a throwaway the game wipes on every replay, and no real
+save or replay was touched, but anyone following that recipe writes there. After
+that first run I used my own build, whose scratch folder is in my worktree.
 
 ## Proposed wording for STATUS.md
 
