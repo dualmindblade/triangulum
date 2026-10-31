@@ -18,10 +18,12 @@
 //!                           there; without it, stand on the ground.
 //!   atblock FACE I J K      stand on top of lattice block (FACE, I, J, K)
 //!   look HEADING PITCH      absolute view angles, degrees (0 = north, +east)
-//!   lookaxis AXIS PITCH     face exactly along a lattice axis: +i -i +j -j
+//!   lookaxis AXIS PITCH     look along the current face's local tangent:
+//!                           +i -i +j -j (a straight world ray across seams)
 //!   aim DI DJ DK            look at the lattice point (feet cell centre +
 //!                           DI, + DJ, feet layer + DK): the way to target a
-//!                           particular block face deterministically
+//!                           particular block face deterministically; the
+//!                           target point wraps onto its own cube face
 //!   turn DH DP              relative view change, degrees
 //!   mode walk|fly           like the G key
 //!   find flat|shore|river|lake|waterfall
@@ -389,7 +391,7 @@ impl Run {
             in_water: p.in_water,
             hotbar: engine.hotbar.iter().map(|&id| (engine.registry.def(id).label(), engine.registry.colour(id))).collect(),
             selected: p.selected,
-            outline: pick.map_or(Vec::new(), |hit| outline_segments(&engine.planet, &cam, aspect, w, h, hit.face, hit.cell)),
+            outline: pick.map_or(Vec::new(), |hit| outline_segments(&engine.planet, &cam, aspect, w, h, hit.block)),
             edits: engine.edits.len(),
             dirty: engine.edits.dirty_count(),
             sim_line: self.session.sim.describe(),

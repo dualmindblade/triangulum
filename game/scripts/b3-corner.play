@@ -1,0 +1,96 @@
+# B3: the exact lat/lon/feet altitude and views of Neisor-20261031-041624,
+# steps 800 and 1300. Run this same script with baseline-945d544 and the
+# fixed build, using separate --out and --save directories (see findings).
+# Terrain is fresh; the recording's earlier edits are not imported.
+sim off
+mode walk
+select 1
+at 35.26398985220677 134.99970599305274 13.000000000014552
+skytime 12:00
+skyspeed 0
+look -323.5720449160814 -44.312555875417985
+shot 01_step800
+assert face == 2
+assert crosshair_face == 4
+assert crosshair_i == 131069
+assert crosshair_j == 131071
+assert crosshair_k == 523
+assert block[4,131069,131071,524] == air
+tap place
+assert block[4,131069,131071,524] == stone
+assert crosshair_face == 4
+assert crosshair_i == 131069
+assert crosshair_j == 131071
+assert crosshair_k == 524
+shot 02_step800_placed
+tap break
+assert block[4,131069,131071,524] == air
+assert crosshair_k == 523
+shot 03_step800_broken
+
+at 35.26398985220677 134.99970599305274 13.000000000014552
+look -427.81598616218315 -39.64867942305302
+shot 04_step1300
+assert crosshair_face == 2
+assert crosshair_i == 131068
+assert crosshair_j == 131070
+assert crosshair_k == 523
+assert block[2,131068,131070,524] == air
+tap place
+assert block[2,131068,131070,524] == stone
+assert crosshair_k == 524
+shot 05_step1300_placed
+tap break
+assert block[2,131068,131070,524] == air
+assert crosshair_k == 523
+shot 06_step1300_broken
+
+# Bucket follows the same cross-face ray. Pause simulation so the poured
+# cell remains full for the selection/removal checks.
+look -323.5720449160814 -44.312555875417985
+select 9
+tap place
+assert block[4,131069,131071,524] == water
+assert level[4,131069,131071,524] == 255
+assert crosshair == water
+assert crosshair_face == 4
+assert crosshair_k == 524
+shot 07_bucket
+tap break
+assert block[4,131069,131071,524] == air
+assert level[4,131069,131071,524] == 0
+assert crosshair_k == 523
+
+# Body straddles all three faces at the vertex. A downward placement
+# would overlap it even when the target belongs to a different face.
+select 1
+at 35.264389682754654 135 12.5
+look 0 -85
+assert face == 2
+assert crosshair_face == 4
+assert crosshair_i == 131071
+assert crosshair_j == 131071
+assert crosshair_k == 523
+assert block[4,131071,131071,524] == air
+tap place
+assert block[4,131071,131071,524] == air
+assert crosshair_k == 523
+look 120 -85
+assert crosshair_face == 1
+assert crosshair_i == 0
+assert crosshair_j == 131071
+assert crosshair_k == 523
+assert block[1,0,131071,524] == air
+tap place
+assert block[1,0,131071,524] == air
+assert crosshair_k == 523
+look 240 -85
+assert crosshair_face == 2
+assert crosshair_i == 131071
+assert crosshair_j == 131071
+assert crosshair_k == 523
+assert block[2,131071,131071,524] == air
+tap place
+assert block[2,131071,131071,524] == air
+assert crosshair_k == 523
+shot 08_body_guard

@@ -427,7 +427,7 @@ impl Run {
             mode: if p.mode == Mode::Walk { "walk".into() } else { "fly".into() },
             hotbar: engine.hotbar.iter().map(|&id| (engine.registry.def(id).label(), engine.registry.colour(id))).collect(),
             selected: p.selected,
-            outline: pick.map_or(Vec::new(), |hit| outline_segments(&engine.planet, cam, w as f64 / h as f64, w, h, hit.face, hit.cell)),
+            outline: pick.map_or(Vec::new(), |hit| outline_segments(&engine.planet, cam, w as f64 / h as f64, w, h, hit.block)),
             ..Default::default()
         }
     }
