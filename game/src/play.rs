@@ -25,6 +25,8 @@
 //!                           particular block face deterministically; the
 //!                           target point wraps onto its own cube face
 //!   turn DH DP              relative view change, degrees
+//!   pose TEXT               the player exactly as TEXT says (a replay's pose,
+//!                           or a photo's pose.exact: a repro's first line)
 //!   mode walk|fly           like the G key
 //!   find flat|shore|river|lake|waterfall
 //!                           stand (walk mode) at the nearest such site,
@@ -90,6 +92,17 @@
 //! ---- output and checks ---------------------------------------------
 //!   shot NAME               settled frame (streaming drained) with the HUD
 //!                           as NAME.png, plus NAME.json state
+//!   photo NAME [live]       a photo, as P takes one (Shift+P with live): a
+//!                           clean frame with no HUD, settled unless live, as
+//!                           NAME.png with its sidecar NAME.json (photos.rs)
+//!   meshview [TINT] [LINES] the mesh view: TINT is normal lod chunk face quad
+//!                           block biome plate crust (the M key), LINES is
+//!                           nolines edges wire (Shift+M); "meshview edges",
+//!                           "meshview lod wire", "meshview normal"
+//!   compare A B             compare two frames, by name in the out directory
+//!                           or beside the script (A.png, B.png); sets
+//!                           compare_pixels (how many differ), compare_max
+//!                           (the largest channel difference) and compare_same
 //!   state NAME              NAME.json only
 //!   bench N                 render N frames at the current pose; reports
 //!                           avg / p95 / worst wall ms, the GPU time and the
@@ -137,6 +150,24 @@
 //!                              shot: drawn:L (a drawn chunk at LOD L with a
 //!                              mesh), empty:L, gap:L, hidden:L, or none
 //!
+//! ---- the T window, driven by synthetic events (menu.rs) --------------
+//!   menu open|close         open or shut it (the T key)
+//!   menu scale F            display scale: 1 is 100%, 1.5 is 150%
+//!   menu wait               until the map, the roll and the rivers are in
+//!   menu click SPOT [FX FY] click a named thing: map, teleport, delete,
+//!                           delete-yes, save, repro, preview, coords, title,
+//!                           notes, place-N, photo-N, tick-N; FX, FY (0..1)
+//!                           say where on it (the middle by default)
+//!   menu double SPOT [FX FY]  double-click
+//!   menu drag SPOT FX FY FX2 FY2  drag across it
+//!   menu wheel SPOT FX FY LINES   the wheel, over it
+//!   menu type TEXT...       type into the focused field
+//!   menu key esc|t|w        a key, routed as the app routes it
+//!   menu shot NAME          the frame with the window over it (NAME.png)
+//!                           Sets menu_open menu_zoom menu_lat menu_lon
+//!                           menu_photos menu_selected menu_target
+//!                           menu_lightbox menu_deleting menu_build_ms
+//!
 //! ---- video (play/video.rs) ------------------------------------------
 //!   record FILE [FPS]       start writing FILE (H.264 .mp4 under the out
 //!                           directory, via ffmpeg on PATH or
@@ -158,6 +189,7 @@
 //!   hud on|off              draw the game HUD (crosshair, block outline,
 //!                           hotbar; no stats) on written frames (default off)
 //!   settle                  drain streaming at the current pose (pre-warm)
+//!   clock SECONDS           the sky clock, exactly (a repro's second line)
 //!   skytime HH:MM           local solar time at the eye's longitude
 //!   sun ELEV [am|pm]        seek the clock to when the sun is ELEV degrees
 //!                           above the horizon here (pm: afternoon, default)
@@ -199,10 +231,14 @@ mod find;
 mod video;
 
 use crate::bench::Harness;
+use crate::controls::{Route, route_key};
 use crate::grid::BlockPos;
+use crate::menu::{self, Menu, MenuEnv, Rig};
+use crate::photos::{self, Shot, ShotInfo};
 use crate::player::{Input, Mode, STEP};
-use crate::replay::{self, Replay};
+use crate::replay::{self, ChunkDigests, Replay};
 use crate::session::{Action, Button, Session};
+use crate::sky::Clock;
 use crate::sim::STEPS_PER_TICK;
 use crate::ui::{Hud, draw_hud, outline_segments};
 use std::fmt::Write as _;
@@ -229,13 +265,22 @@ struct Run {
     /// The last `find` and `replay` results, as state fields.
     last_find: serde_json::Value,
     last_replay: serde_json::Value,
+    last_compare: serde_json::Value,
     out: String,
     video: video::Video,
+    /// The bake's region layers, once a mesh view tint has asked for them.
+    regions: crate::render::regions::RegionsState,
+    /// Where the script is: `compare` also looks there.
+    script_dir: std::path::PathBuf,
+    digests: ChunkDigests,
+    /// The T window, when a script has opened it.
+    menu: Option<(Menu, Rig)>,
+    last_menu: serde_json::Value,
 }
 
 impl Run {
     fn new(session: Session, harness: Harness, out: &str) -> Self {
-        Run { session, harness, log: String::new(), failed: 0, asserts: 0, last_bench: serde_json::Value::Null, last_stream: serde_json::Value::Null, last_find: serde_json::Value::Null, last_replay: serde_json::Value::Null, out: out.to_string(), video: video::Video::default() }
+        Run { session, harness, log: String::new(), failed: 0, asserts: 0, last_bench: serde_json::Value::Null, last_stream: serde_json::Value::Null, last_find: serde_json::Value::Null, last_replay: serde_json::Value::Null, last_compare: serde_json::Value::Null, out: out.to_string(), video: video::Video::default(), regions: Default::default(), script_dir: Default::default(), digests: Default::default(), menu: None, last_menu: serde_json::Value::Null }
     }
 
     /// `replay record FILE | replay stop | replay check FILE` (M2c): the
@@ -323,7 +368,7 @@ impl Run {
                     m.insert(k.clone(), val.clone());
                 }
             }
-            for extra in [&self.last_bench, &self.last_find, &self.last_replay] {
+            for extra in [&self.last_bench, &self.last_find, &self.last_replay, &self.last_compare, &self.last_menu] {
                 if let serde_json::Value::Object(b) = extra {
                     for (k, val) in b {
                         m.insert(k.clone(), val.clone());
@@ -400,12 +445,242 @@ impl Run {
             edits: engine.edits.len(),
             dirty: engine.edits.dirty_count(),
             sim_line: self.session.sim.describe(),
+            mesh_legend: crate::render::meshview::legend_for(self.harness.gpu.mesh_view, &self.harness.streamer.stats.drawn_per_lod, &engine.registry, &self.regions),
             ..Default::default()
         };
         let path = format!("{}/{name}.png", self.out);
         self.harness.save_with_ui(&path, &|ctx| draw_hud(ctx, &hud, true));
         self.say(format!("  shot {name}: {path} (settled in {secs:.1} s / {frames} frames{}; {} draws)", if ok { "" } else { " TIMEOUT" }, self.harness.streamer.stats.drawn));
         self.write_state(name);
+    }
+
+    /// `meshview ...`: set the view, reading the bake's layers first if the
+    /// tint needs them (the game reads them off its main thread).
+    fn mesh_view(&mut self, view: crate::render::MeshView) {
+        use crate::render::regions::RegionsState as R;
+        if view.tint.uses_bake() && self.regions == R::NotAsked {
+            self.regions = match crate::render::regions::load(&self.session.engine.config.bake) {
+                Ok(data) => {
+                    let plates = data.plates;
+                    self.harness.gpu.set_regions(Arc::new(data));
+                    R::Ready { plates }
+                }
+                Err(e) => {
+                    self.say(format!("  the bake's region layers: {e}"));
+                    R::Missing(e)
+                }
+            };
+        }
+        self.harness.gpu.mesh_view = view;
+    }
+
+    /// `photo NAME [live]`: what P and Shift+P write, by the same rule and in
+    /// the same format, without the window.
+    fn photo(&mut self, name: &str, live: bool) -> Result<(), String> {
+        let cam = self.session.player.camera();
+        self.sync_falling();
+        let (secs, frames, ok) = if live { (0.0, 0, false) } else { self.harness.settle(&cam, Duration::from_secs(180)) };
+        let engine = self.session.engine.clone();
+        self.harness.gpu.sky.set_observer(cam.pos, !engine.hide_water && engine.world.is_submerged(cam.pos));
+        self.harness.frame(&cam);
+        self.record_stream();
+        let (width, height) = (self.harness.gpu.width, self.harness.gpu.height);
+        let png = std::path::PathBuf::from(format!("{}/{name}.png", self.out));
+        let info = ShotInfo { kind: if live { "live" } else { "settled" }, settled: ok, settle_s: secs, settle_frames: frames as u32, width, height, hud: false, mesh_view: self.harness.gpu.mesh_view, preview_world: false, frame_ms: None };
+        let (settings, look) = (self.harness.gpu.sky.settings.clone(), self.harness.gpu.sky.look.clone());
+        let sidecar = photos::sidecar(&self.session, &cam, &settings, &look, &mut self.digests, &png, &info);
+        let rgba = self.harness.gpu.read_rgba();
+        photos::write_shot(&Shot { png: png.clone(), width, height, rgba, sidecar })?;
+        self.say(format!("  photo {name}: {} ({})", png.display(), if live { "live".to_string() } else { format!("settled in {secs:.1} s / {frames} frames") }));
+        self.write_menu_state();
+        Ok(())
+    }
+
+    /// One pass of the T window. `draw`: over the frame in the target.
+    fn menu_pass(&mut self, draw: bool) {
+        let Some((m, rig)) = self.menu.as_mut() else { return };
+        let (w, h) = (self.harness.gpu.width, self.harness.gpu.height);
+        let raw = rig.input(w, h);
+        let engine = self.session.engine.clone();
+        let presets = engine.presets();
+        let settings = self.harness.gpu.sky.settings.clone();
+        let env = MenuEnv { engine: &engine, bake_sha256: &self.session.bake_sha256, presets: &presets, here: crate::grid::Planet::lat_lon_deg(self.session.player.pos), can_move: true, day_length_s: settings.day_length_s };
+        let mut go = None;
+        self.harness.ui_pass(raw, draw, &mut |ctx| {
+            if let Some(g) = m.ui(ctx, &env) {
+                go = Some(g);
+            }
+        });
+        if let Some(go) = go {
+            let acts = menu::actions(&go, &self.session, &settings);
+            for a in acts {
+                let _ = self.session.apply(a);
+            }
+            self.say(format!("  went: {go:?}"));
+        }
+    }
+
+    fn menu_passes(&mut self, n: usize) {
+        for _ in 0..n {
+            self.menu_pass(false);
+        }
+    }
+
+    fn menu_wait(&mut self) -> Result<(), String> {
+        let t0 = Instant::now();
+        loop {
+            self.menu_pass(false);
+            if !self.menu.as_ref().is_some_and(|(m, _)| m.busy()) {
+                self.menu_passes(3);
+                if !self.menu.as_ref().is_some_and(|(m, _)| m.busy()) {
+                    return Ok(());
+                }
+            }
+            if t0.elapsed().as_secs() > 60 {
+                return Err("the window never settled".into());
+            }
+            std::thread::sleep(Duration::from_millis(3));
+        }
+    }
+
+    fn rig(&mut self) -> Result<&mut Rig, String> {
+        Ok(&mut self.menu.as_mut().ok_or("menu open first")?.1)
+    }
+
+    fn menu_spot(&self, name: &str, fx: f32, fy: f32) -> Result<egui::Pos2, String> {
+        let (m, _) = self.menu.as_ref().ok_or("menu open first")?;
+        let r = m.spots.get(name).ok_or_else(|| format!("nothing called {name} on screen"))?;
+        Ok(r.min + egui::vec2(fx * r.width(), fy * r.height()))
+    }
+
+    fn write_menu_state(&mut self) {
+        let Some((m, _)) = &self.menu else { return };
+        let v = m.view();
+        self.last_menu = serde_json::json!({
+            "menu_open": m.open, "menu_zoom": v.zoom, "menu_lat": v.lat, "menu_lon": v.lon,
+            "menu_photos": m.photos().len(), "menu_selected": m.selected(), "menu_target": m.target().is_some(),
+            "menu_lightbox": m.lightbox_open(), "menu_deleting": m.deleting(), "menu_build_ms": m.last_build_ms,
+        });
+    }
+
+    /// `menu ...`: the T window, by synthetic events (see the header).
+    fn menu_command(&mut self, args: &[&str]) -> Result<(), String> {
+        let f = |i: usize, default: f32| args.get(i).and_then(|s| s.parse::<f32>().ok()).unwrap_or(default);
+        match args.first().copied() {
+            Some("open") => {
+                let scale = self.menu.as_ref().map_or(1.0, |(_, r)| r.scale);
+                let mut m = self.menu.take().map_or_else(|| Menu::new(photos::dir()), |(m, _)| m);
+                m.show();
+                self.menu = Some((m, Rig::new(self.harness.egui().clone(), scale)));
+                self.menu_passes(2);
+            }
+            Some("close") => {
+                if let Some((m, _)) = &mut self.menu {
+                    m.hide();
+                }
+            }
+            Some("scale") => {
+                self.rig()?.scale = f(1, 1.0);
+                self.menu_passes(3);
+            }
+            Some("wait") => self.menu_wait()?,
+            Some(c @ ("click" | "double")) => {
+                let spot = args.get(1).ok_or("menu click SPOT [FX FY]")?;
+                let p = self.menu_spot(spot, f(2, 0.5), f(3, 0.5))?;
+                self.rig()?.move_to(p);
+                self.menu_passes(2);
+                for _ in 0..if c == "click" { 1 } else { 2 } {
+                    self.rig()?.button(true);
+                    self.menu_pass(false);
+                    self.rig()?.button(false);
+                    self.menu_pass(false);
+                }
+                self.menu_passes(2);
+            }
+            Some("drag") => {
+                let spot = args.get(1).ok_or("menu drag SPOT FX FY FX2 FY2")?;
+                let (a, b) = (self.menu_spot(spot, f(2, 0.5), f(3, 0.5))?, self.menu_spot(spot, f(4, 0.5), f(5, 0.5))?);
+                self.rig()?.move_to(a);
+                self.menu_passes(2);
+                self.rig()?.button(true);
+                self.menu_passes(2);
+                self.rig()?.move_to(b);
+                self.menu_passes(2);
+                self.rig()?.button(false);
+                self.menu_passes(2);
+            }
+            Some("wheel") => {
+                let spot = args.get(1).ok_or("menu wheel SPOT FX FY LINES")?;
+                let p = self.menu_spot(spot, f(2, 0.5), f(3, 0.5))?;
+                self.rig()?.move_to(p);
+                self.menu_passes(2);
+                self.rig()?.wheel(f(4, 1.0));
+                self.menu_passes(30);
+            }
+            Some("type") => {
+                let text = args[1..].join(" ");
+                self.rig()?.text(&text);
+                self.menu_passes(2);
+            }
+            Some("key") => {
+                let (code, key) = match args.get(1).copied() {
+                    Some("esc") => (winit::keyboard::KeyCode::Escape, egui::Key::Escape),
+                    Some("t") => (winit::keyboard::KeyCode::KeyT, egui::Key::T),
+                    Some("w") => (winit::keyboard::KeyCode::KeyW, egui::Key::W),
+                    _ => return Err("menu key esc|t|w".into()),
+                };
+                self.rig()?.key(key);
+                let (m, rig) = self.menu.as_mut().ok_or("menu open first")?;
+                let typing = rig.ctx.egui_wants_keyboard_input();
+                match route_key(code, true, false, m.open, typing) {
+                    Route::CloseMenu => m.hide(),
+                    Route::MenuBack => {
+                        if !m.escape(typing) {
+                            m.hide();
+                        }
+                    }
+                    _ => {}
+                }
+                self.menu_passes(2);
+            }
+            Some("shot") => {
+                let name = args.get(1).ok_or("menu shot NAME")?;
+                let cam = self.session.player.camera();
+                self.sync_falling();
+                self.harness.settle(&cam, Duration::from_secs(120));
+                self.menu_passes(3);
+                self.harness.frame(&cam);
+                self.menu_pass(true);
+                let path = format!("{}/{name}.png", self.out);
+                self.harness.gpu.save_png(&path);
+                self.say(format!("  menu shot {path}"));
+            }
+            _ => return Err("menu open|close|scale|wait|click|double|drag|wheel|type|key|shot".into()),
+        }
+        self.write_menu_state();
+        Ok(())
+    }
+
+    /// `compare A B`: how far apart two saved frames are.
+    fn compare(&mut self, a: &str, b: &str) -> Result<(), String> {
+        let load = |name: &str| {
+            let here = format!("{}/{name}.png", self.out);
+            let there = self.script_dir.join(format!("{name}.png")).to_string_lossy().into_owned();
+            crate::render::read_png(if Path::new(&here).exists() { &here } else { &there })
+        };
+        let ((wa, ha, pa), (wb, hb, pb)) = (load(a)?, load(b)?);
+        if (wa, ha) != (wb, hb) {
+            return Err(format!("{a} is {wa} x {ha}, {b} is {wb} x {hb}"));
+        }
+        let (mut pixels, mut max) = (0u64, 0u8);
+        for (x, y) in pa.chunks_exact(4).zip(pb.chunks_exact(4)) {
+            let d = (0..3).map(|c| x[c].abs_diff(y[c])).max().unwrap_or(0);
+            pixels += (d > 0) as u64;
+            max = max.max(d);
+        }
+        self.say(format!("  compare {a} {b}: {pixels} of {} pixels differ, by at most {max}", wa as u64 * ha as u64));
+        self.last_compare = serde_json::json!({ "compare_pixels": pixels, "compare_max": max, "compare_same": pixels == 0 });
+        Ok(())
     }
 
     /// Move with `input` held for `seconds`, streaming and rendering a
@@ -540,6 +815,12 @@ impl Run {
     fn field(&mut self, field: &str) -> Option<serde_json::Value> {
         if field == "sim_hash" {
             return Some(serde_json::Value::String(self.session.sim_hash()));
+        }
+        if field == "edit_hash" {
+            return Some(serde_json::Value::String(replay::edit_state(&self.session.engine.edits, &mut self.digests).0));
+        }
+        if field == "generator_version" {
+            return Some(crate::world::save::GENERATOR_VERSION.into());
         }
         if let Some(inner) = field.strip_prefix("falling_rel[").and_then(|r| r.strip_suffix(']')) {
             let v: Vec<i64> = inner.split(',').map(|x| x.trim().parse().ok()).collect::<Option<_>>()?;
@@ -685,6 +966,7 @@ pub fn run_play(session: Session, opts: PlayOptions) -> i32 {
     let engine = session.engine.clone();
     let harness = Harness::new(engine, opts.width, opts.height, &opts.out, opts.backend.as_deref());
     let mut run = Run::new(session, harness, &opts.out);
+    run.script_dir = Path::new(&opts.script).parent().map_or_else(Default::default, |p| p.to_path_buf());
     // The harness's sky holds unless a script sets `skyspeed` (as before
     // M2c); the session advances it on its steps.
     run.session.sky.speed = 0.0;
@@ -799,6 +1081,20 @@ pub fn run_play(session: Session, opts: PlayOptions) -> i32 {
                     run.session.player.pitch = (run.session.player.pitch + p.to_radians()).clamp(-1.55, 1.55);
                 }
                 _ => bad(&mut run, "turn DH DP"),
+            },
+            "pose" => match args.first().map(|t| replay::parse_pose(t, run.session.engine.planet.block_size)) {
+                Some(Ok(p)) => {
+                    let _ = run.session.apply(Action::Pose(Box::new(p)));
+                }
+                Some(Err(e)) => bad(&mut run, &format!("pose: {e}")),
+                None => bad(&mut run, "pose TEXT"),
+            },
+            "clock" => match num(0) {
+                Some(seconds) => {
+                    let speed = run.session.sky.speed;
+                    let _ = run.session.apply(Action::Sky(Clock { seconds, speed }));
+                }
+                None => bad(&mut run, "clock SECONDS"),
             },
             "mode" => match args.first().map(|s| s.to_lowercase()).as_deref() {
                 Some("walk") => {
@@ -929,6 +1225,31 @@ pub fn run_play(session: Session, opts: PlayOptions) -> i32 {
             "state" => match args.first() {
                 Some(name) => run.write_state(name),
                 None => bad(&mut run, "state NAME"),
+            },
+            "photo" => match args.first() {
+                Some(name) => {
+                    if let Err(e) = run.photo(name, args.get(1) == Some(&"live")) {
+                        bad(&mut run, &format!("photo: {e}"));
+                    }
+                }
+                None => bad(&mut run, "photo NAME [live]"),
+            },
+            "menu" => {
+                if let Err(e) = run.menu_command(args) {
+                    bad(&mut run, &format!("menu: {e}"));
+                }
+            }
+            "meshview" => match crate::render::MeshView::parse(args) {
+                Some(m) => run.mesh_view(m),
+                None => bad(&mut run, "meshview [normal|lod|chunk|face|quad|block|biome|plate|crust] [nolines|edges|wire]"),
+            },
+            "compare" => match (args.first(), args.get(1)) {
+                (Some(a), Some(b)) => {
+                    if let Err(e) = run.compare(a, b) {
+                        bad(&mut run, &format!("compare: {e}"));
+                    }
+                }
+                _ => bad(&mut run, "compare A B"),
             },
             "bench" => match num(0) {
                 Some(n) if n >= 1.0 => run.bench(n as usize),

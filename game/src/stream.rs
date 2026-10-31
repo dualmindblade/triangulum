@@ -1241,7 +1241,11 @@ impl Streamer {
             Mesh::Empty
         } else {
             match gpu.add_mesh(&m.opaque, &m.water, &m.grid) {
-                Some(up) => Mesh::Gpu(up),
+                Some(mut up) => {
+                    let k = m.key;
+                    up.region = crate::render::meshview::region_word(k.face, k.lod, k.cx, k.cy, k.cz);
+                    Mesh::Gpu(up)
+                }
                 None => {
                     self.stats.alloc_failures += 1;
                     self.cover.park(res.slot, res.epoch);
@@ -1398,10 +1402,10 @@ impl Streamer {
             let voxel = planet.voxel_m(n.key.lod) as f32;
             let d2 = rel.length_squared();
             if gm.opaque_count > 0 {
-                self.order.push((d2, DrawRecord { origin: o.to_array(), voxel, slot: gm.slot, quad_base: gm.opaque_base, quad_count: gm.opaque_count, pad: 0 }));
+                self.order.push((d2, DrawRecord { origin: o.to_array(), voxel, slot: gm.slot, quad_base: gm.opaque_base, quad_count: gm.opaque_count, pad: gm.region }));
             }
             if gm.water_count > 0 {
-                self.worder.push((d2, DrawRecord { origin: o.to_array(), voxel, slot: gm.slot, quad_base: gm.water_base, quad_count: gm.water_count, pad: 0 }));
+                self.worder.push((d2, DrawRecord { origin: o.to_array(), voxel, slot: gm.slot, quad_base: gm.water_base, quad_count: gm.water_count, pad: gm.region }));
             }
         }
         self.order.sort_unstable_by(|a, b| a.0.total_cmp(&b.0));
@@ -1509,7 +1513,7 @@ mod tests {
         fn alloc(&mut self) -> GpuMesh {
             self.next += 1;
             self.live.insert(self.next);
-            GpuMesh { slot: self.next, opaque_base: 0, opaque_count: 1, water_base: 0, water_count: 0 }
+            GpuMesh { slot: self.next, opaque_base: 0, opaque_count: 1, water_base: 0, water_count: 0, region: 0 }
         }
         fn free(&mut self, gm: GpuMesh) {
             if !self.live.remove(&gm.slot) {

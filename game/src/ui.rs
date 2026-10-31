@@ -55,6 +55,10 @@ pub struct Hud {
     pub save_note: String,
     /// The simulation's one-line status (`Sim::describe`), stats panel only.
     pub sim_line: String,
+    /// The mesh view's legend, when it is on.
+    pub mesh_legend: Option<crate::render::meshview::Legend>,
+    /// A line in the middle of the screen (a photo being taken or saved).
+    pub banner: Option<String>,
 }
 
 fn srgb(c: [f32; 3]) -> egui::Color32 {
@@ -159,7 +163,7 @@ pub fn draw_hud(ctx: &egui::Context, h: &Hud, stats: bool) {
                     line(h.sim_line.clone());
                 }
                 line("WASD move  Space jump/up  Ctrl sneak/down  Shift sprint  G walk/fly  LMB break  RMB place  1-9 block  scroll fly speed".into());
-                line("P preset  R to ground  V vsync  F water  H hud  F1 look panel  Q quit".into());
+                line("P photo  Shift+P live photo  T map, photos, teleport  R to ground  V vsync  F water  M mesh colours  Shift+M mesh lines  H hud  F1 look panel  Q quit".into());
             });
     }
     // Under every window (the look panel covers the hotbar's corner, not
@@ -175,6 +179,21 @@ pub fn draw_hud(ctx: &egui::Context, h: &Hud, stats: bool) {
         let pb = egui::pos2(b[0] / ppp, b[1] / ppp);
         painter.line_segment([pa, pb], egui::Stroke::new(3.0, egui::Color32::from_black_alpha(160)));
         painter.line_segment([pa, pb], egui::Stroke::new(1.5, egui::Color32::from_rgba_unmultiplied(255, 255, 255, 230)));
+    }
+    if let Some(l) = &h.mesh_legend {
+        // Beside the stats panel when it is up, not under it.
+        let mut area = ctx.content_rect();
+        if stats {
+            area.min.x = (area.min.x + 790.0).min(area.max.x * 0.5);
+        }
+        draw_mesh_legend(&painter, area, l);
+    }
+    if let Some(text) = &h.banner {
+        let g = painter.layout_no_wrap(text.clone(), egui::FontId::proportional(17.0), egui::Color32::WHITE);
+        let r = ctx.content_rect();
+        let at = egui::pos2(r.center().x - g.size().x / 2.0, r.max.y - 108.0);
+        painter.rect_filled(egui::Rect::from_min_size(at, g.size()).expand(7.0), 4.0, egui::Color32::from_black_alpha(170));
+        painter.galley(at, g, egui::Color32::WHITE);
     }
     // Hotbar along the bottom.
     if !h.hotbar.is_empty() {
@@ -204,6 +223,59 @@ pub fn draw_hud(ctx: &egui::Context, h: &Hud, stats: bool) {
     }
 }
 
+/// The mesh view's legend, top centre: its name, a line on what the colours
+/// mean, and the named colours in rows no wider than most of the screen.
+fn draw_mesh_legend(painter: &egui::Painter, rect: egui::Rect, legend: &crate::render::meshview::Legend) {
+    let white = egui::Color32::from_rgb(235, 235, 235);
+    let title = painter.layout_no_wrap(legend.title.clone(), egui::FontId::proportional(16.0), white);
+    let note = (!legend.note.is_empty()).then(|| painter.layout_no_wrap(legend.note.clone(), egui::FontId::proportional(13.0), egui::Color32::from_gray(200)));
+    let font = egui::FontId::monospace(13.0);
+    let max = (rect.width() - 24.0).max(240.0);
+    let (swatch, gap) = (11.0, 12.0);
+    let mut rows: Vec<Vec<(std::sync::Arc<egui::Galley>, egui::Color32)>> = vec![Vec::new()];
+    let mut x = 0.0;
+    for (name, [r, g, b]) in &legend.items {
+        let galley = painter.layout_no_wrap(name.clone(), font.clone(), white);
+        let w = swatch + 4.0 + galley.size().x + gap;
+        if x + w > max && x > 0.0 {
+            rows.push(Vec::new());
+            x = 0.0;
+        }
+        x += w;
+        rows.last_mut().unwrap().push((galley, egui::Color32::from_rgb(*r, *g, *b)));
+    }
+    let row_w = |row: &[(std::sync::Arc<egui::Galley>, egui::Color32)]| row.iter().map(|(g, _)| swatch + 4.0 + g.size().x + gap).sum::<f32>();
+    let width = rows.iter().map(|r| row_w(r)).fold(title.size().x, f32::max).max(note.as_ref().map_or(0.0, |n| n.size().x));
+    let row_h = 17.0;
+    let n_rows = if legend.items.is_empty() { 0 } else { rows.len() };
+    let height = title.size().y + note.as_ref().map_or(0.0, |n| n.size().y + 2.0) + n_rows as f32 * row_h + if n_rows > 0 { 4.0 } else { 0.0 };
+    let top = rect.min.y + 12.0;
+    let left = rect.center().x - width / 2.0;
+    painter.rect_filled(egui::Rect::from_min_size(egui::pos2(left, top), egui::vec2(width, height)).expand(7.0), 4.0, egui::Color32::from_black_alpha(185));
+    let mut y = top;
+    let th = title.size().y;
+    painter.galley(egui::pos2(rect.center().x - title.size().x / 2.0, y), title, white);
+    y += th;
+    if let Some(n) = note {
+        let nh = n.size().y;
+        painter.galley(egui::pos2(rect.center().x - n.size().x / 2.0, y + 2.0), n, white);
+        y += nh + 2.0;
+    }
+    y += 4.0;
+    if n_rows > 0 {
+        for row in rows {
+            let mut x = rect.center().x - (row_w(&row) - gap) / 2.0;
+            for (galley, colour) in row {
+                painter.rect_filled(egui::Rect::from_min_size(egui::pos2(x, y + 2.0), egui::vec2(swatch, swatch)), 2.0, colour);
+                let w = galley.size().x;
+                painter.galley(egui::pos2(x + swatch + 4.0, y), galley, white);
+                x += swatch + 4.0 + w + gap;
+            }
+            y += row_h;
+        }
+    }
+}
+
 /// A caption band along the bottom of the frame (for saved renders).
 pub fn draw_caption(ctx: &egui::Context, text: &str) {
     egui::Window::new("caption")
@@ -215,6 +287,31 @@ pub fn draw_caption(ctx: &egui::Context, text: &str) {
             ui.set_width(ctx.content_rect().width() - 20.0);
             ui.label(egui::RichText::new(text).monospace().size(18.0).color(egui::Color32::WHITE));
         });
+}
+
+/// The text sizes and spacing of the game's windows, big enough to read at
+/// 1080p and at 150% (M3a).
+pub fn apply_panel_style(ctx: &egui::Context) {
+    ctx.all_styles_mut(|s| {
+        use egui::{FontId, TextStyle};
+        s.text_styles.insert(TextStyle::Body, FontId::proportional(17.0));
+        s.text_styles.insert(TextStyle::Button, FontId::proportional(17.0));
+        s.text_styles.insert(TextStyle::Heading, FontId::proportional(21.0));
+        s.text_styles.insert(TextStyle::Small, FontId::proportional(14.5));
+        s.text_styles.insert(TextStyle::Monospace, FontId::monospace(15.0));
+        s.spacing.slider_width = 230.0;
+        s.spacing.interact_size = egui::vec2(44.0, 24.0);
+        s.spacing.item_spacing = egui::vec2(10.0, 7.0);
+    });
+}
+
+/// One egui pass from synthetic input, over the offscreen target when `draw`
+/// (otherwise only its textures are taken: the passes that lead up to a picture
+/// don't paint over each other). The harness drives the T window with this.
+pub fn ui_pass(ctx: &egui::Context, paint: &mut EguiPaint, gpu: &crate::render::Renderer, raw: egui::RawInput, draw: bool, build: &mut dyn FnMut(&egui::Context)) {
+    let full = ctx.run_ui(raw, |ui| build(ui.ctx()));
+    let prims = if draw { ctx.tessellate(full.shapes, full.pixels_per_point) } else { Vec::new() };
+    paint.paint(&gpu.device, &gpu.queue, &gpu.color_view, (gpu.width, gpu.height), full.pixels_per_point, &prims, &full.textures_delta);
 }
 
 /// Run one egui pass without a window and paint it over the renderer's

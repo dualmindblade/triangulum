@@ -21,7 +21,7 @@
 //!   --water-period N (1; ticks per water step: how many 20 Hz ticks a cell of water takes to move one cell)
 //! Player: --walk | --fly (default: walk when starting within 50 m of the ground)
 //!   --hotbar stone,dirt,...  (blocks on keys 1-9; default: the first eight solid blocks and water)
-//! Look (M3a): F1 opens the look panel  --panel (start with it open)
+//! Look (M3a): F1 opens the look panel  --panel (start with it open)  M and Shift+M step the mesh view
 //!   --look-file FILE (default assets/look.json; the panel saves to it, and to --blocks and --world)
 //! Other options: --lod-factor F (look.json's, 5) --threads N --no-ao --no-split --skirt N
 //!   --no-vsync --size WxH --hide-water --markers --backend vulkan|dx12
@@ -33,6 +33,9 @@
 //!   year-days must equal 4 * months-per-season * lunar-month-days
 //!   [ slows time, ] speeds time (0, 0.1, 1, 10, 60, 600, 3600x)
 //!   --sky-reel --out DIR  (settled 1080p sky comparison, four poses/four times)
+//! Photos: P takes one to game/interchange/ (settled), Shift+P the live frame, T opens the map
+//!   and the roll  --interchange DIR (somewhere else)
+//!   --repro SHOT.png   write SHOT.play beside a photo: an exact repro from its sidecar
 //! Replays (M2c): F10 in the game records one to game/replays/
 //!   --replay FILE         play it headless, check it, report the first divergence
 //!   --shot-at STEP        (with --replay, repeatable; STEP or "end") a settled shot there
@@ -47,7 +50,10 @@ pub mod engine;
 pub mod grid;
 pub mod landform_shots;
 pub mod look;
+pub mod map;
+pub mod menu;
 pub mod mesh;
+pub mod photos;
 pub mod play;
 pub mod player;
 pub mod render;
@@ -140,6 +146,8 @@ struct Args {
     shot_at: Vec<String>,
     watch: bool,
     record_replay: Option<String>,
+    interchange: Option<String>,
+    repro: Option<String>,
 }
 
 fn parse_args() -> Args {
@@ -208,6 +216,8 @@ fn parse_args() -> Args {
         shot_at: Vec::new(),
         watch: false,
         record_replay: None,
+        interchange: None,
+        repro: None,
     };
     let mut it = std::env::args().skip(1);
     while let Some(k) = it.next() {
@@ -290,6 +300,8 @@ fn parse_args() -> Args {
             "--shot-at" => a.shot_at.push(val()),
             "--watch" => a.watch = true,
             "--record-replay" => a.record_replay = Some(val()),
+            "--interchange" => a.interchange = Some(val()),
+            "--repro" => a.repro = Some(val()),
             "--help" | "-h" => {
                 println!("{}", include_str!("main.rs").lines().take_while(|l| l.starts_with("//!")).map(|l| l.trim_start_matches("//!").trim_start_matches(' ')).collect::<Vec<_>>().join("\n"));
                 std::process::exit(0);
@@ -308,6 +320,20 @@ fn fail(msg: &str) -> ! {
 fn main() {
     let args = parse_args();
     let root = env!("CARGO_MANIFEST_DIR");
+    if let Some(d) = &args.interchange {
+        photos::set_dir(d.into());
+    }
+    if let Some(p) = &args.repro {
+        let r = photos::repro(Path::new(p)).unwrap_or_else(|e| fail(&e));
+        println!("wrote {}
+
+the same frame, from game/:
+  {}
+
+near it, by hand:
+  {}", r.script.display(), r.command, r.at_command);
+        return;
+    }
     if args.threads > 0 {
         rayon::ThreadPoolBuilder::new().num_threads(args.threads).build_global().unwrap();
     }
