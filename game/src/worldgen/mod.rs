@@ -24,12 +24,14 @@
 //! whose top is W rounded to the voxel grid is water (a coarse voxel must
 //! not lose the sea or a lake to the ground under it), or opaque deep ocean
 //! where that voxel is also the world's bottom voxel (nothing would back the
-//! translucent water); layer 0 is bedrock (at coarse LODs the bottom voxel
-//! is solid, bedrock where only the floor makes it so); otherwise solid
-//! below the ground; a cell that is not solid holds water below W (at LOD 0
-//! with its exact level, 1..255; at coarse LODs full, in wet columns only);
-//! air above. Every ocean column therefore has an opaque voxel inside the
-//! world at or below sea level, at every LOD.
+//! translucent water); there the ground of a wet column ends a voxel under
+//! that surface, so what shows through the water is the column's floor block
+//! at every LOD; layer 0 is bedrock (at coarse LODs the bottom voxel is
+//! solid, bedrock where only the floor makes it so, the floor block under
+//! water); otherwise solid below the ground; a cell that is not solid holds
+//! water below W (at LOD 0 with its exact level, 1..255; at coarse LODs
+//! full, in wet columns only); air above. Every ocean column therefore has
+//! an opaque voxel inside the world at or below sea level, at every LOD.
 
 pub mod bake;
 pub mod hydro;
@@ -730,17 +732,26 @@ impl Generator {
                 // below sea level: L9 at sea level 512), nothing opaque lies
                 // under it and translucent water would show the sky through the
                 // planet (review 2 #12). It is opaque deep ocean instead, coloured
-                // like the next finer LOD's water over its rock floor. Below this
-                // LOD a floor voxel or the bedrock voxel always backs the water.
+                // like the next finer LOD's water over its gravel floor. Below this
+                // LOD a floor voxel always backs the water.
                 return if k_lo == 0.0 { (b.deep_ocean, 0) } else { (b.water, level) };
             }
         }
-        // World floor: layer 0 is bedrock; a coarse bottom voxel is solid.
-        if k_lo == 0.0 && (lod == 0 || h <= centre) {
-            return (b.bedrock, 0);
+        // The water voxel above took the place of any ground it overlapped,
+        // so at a coarse LOD the ground of a wet column ends a voxel under the
+        // snapped surface: the voxel under the water is the column's floor
+        // block, the one LOD 0 shows there, wherever the ground lay inside the
+        // voxel. Counting depth from the true ground instead came out as
+        // strata rock a voxel or two down, flipping wherever the ground
+        // crossed a half voxel: bands in the sea, different at every LOD.
+        let ground = if wet && lod > 0 { h.min(w_r - voxel_m) } else { h };
+        // World floor: layer 0 is bedrock; a coarse bottom voxel is solid
+        // (under water it is what shows, so the floor block again).
+        if k_lo == 0.0 && (lod == 0 || ground <= centre) {
+            return if wet && lod > 0 { (sf.top, 0) } else { (b.bedrock, 0) };
         }
-        if h > centre {
-            let depth = h - centre;
+        if ground > centre {
+            let depth = ground - centre;
             let id = if depth < voxel_m {
                 sf.top
             } else if depth < voxel_m + sf.soil_m as f64 {

@@ -16,6 +16,9 @@ fn out_dir() -> String {
 }
 
 fn world() -> Generator {
+    if std::env::var("SHORE_HALF").is_ok() {
+        return super::tests::half_metre_generator();
+    }
     match std::env::var("HYDRO_VSCALE").ok().and_then(|s| s.parse::<f64>().ok()) {
         Some(vs) => super::tests::generator_pub(Some(vs), 4096, 1536),
         None => super::tests::test_generator(),
@@ -471,7 +474,6 @@ fn shore_floor_by_lod() {
 /// were different at every LOD. (The coarsest LOD's sea is opaque: nothing
 /// shows through it, and its colour stands for the same floor.)
 #[test]
-#[ignore = "fails until the next commit fixes #4"]
 fn water_shows_the_same_floor_at_every_lod() {
     let g = world_gen();
     let reg = registry();
@@ -502,6 +504,43 @@ fn water_shows_the_same_floor_at_every_lod() {
             assert!(both == 0 || share > 0.85, "{site} LOD {lod}: only {:.1}% of {both} columns show what LOD 0 shows", 100.0 * share);
         }
     }
+}
+
+/// Not a check: a digest of the LOD-0 chunks around lakes, rivers and the
+/// recorded coasts. Two builds that print the same digest generate the same
+/// LOD 0 there, so neither needs a generator version over the other.
+#[test]
+#[ignore]
+fn shore_lod0_digest() {
+    use crate::sha256::{hex, sha256};
+    let g = world_gen();
+    let p = &g.planet;
+    let (mut dirs, rivers) = water_sites(9, 300);
+    dirs.extend(rivers);
+    for (_, lat, lon) in RECORDED {
+        dirs.extend(grid_dirs(g, Planet::dir_of_lat_lon_deg(lat, lon), 12, 500.0));
+    }
+    let mut keys: Vec<ChunkKey> = footprints_of(g, 0, &dirs)
+        .into_par_iter()
+        .flat_map_iter(|(f, cx, cy)| {
+            let key = ChunkKey::neisor(f, 0, cx, cy, 0);
+            let cols = g.chunk_columns(key);
+            let (mut lo, mut hi) = (f64::MAX, f64::MIN);
+            for c in &cols {
+                lo = lo.min(c.height_m as f64);
+                hi = hi.max(c.height_m as f64);
+                if c.water_m.is_finite() {
+                    hi = hi.max(c.water_m);
+                }
+            }
+            let z = |h: f64| ((p.sea_level as f64 + h / p.block_size) / CHUNK as f64).floor().max(0.0) as u32;
+            (z(lo - 8.0)..=z(hi + 8.0)).map(move |cz| ChunkKey::neisor(f, 0, cx, cy, cz)).collect::<Vec<_>>()
+        })
+        .collect();
+    keys.sort_by_key(|k| (k.face, k.cx, k.cy, k.cz));
+    let parts: Vec<[u8; 32]> = keys.par_iter().map(|k| sha256(&g.generate(*k).chunk.to_bytes())).collect();
+    let all: Vec<u8> = parts.iter().flatten().copied().collect();
+    println!("LOD-0 digest: {} chunks, {}", keys.len(), hex(&sha256(&all)));
 }
 
 // ---------------------------------------------------------------------------
@@ -618,8 +657,10 @@ struct CoastStats {
     /// separate runs of sand the shoreline breaks into.
     sand: f64,
     sand_runs: u32,
-    /// All pieces that do not reach the window's border (land + sea).
+    /// All pieces that do not reach the window's border (land + sea), and
+    /// how many the bake's own mask has in the window: coves and islands kept.
     pieces: u32,
+    bake_pieces: u32,
 }
 
 impl CoastStats {
@@ -644,6 +685,8 @@ fn window(g: &Generator, centre: DVec3, px: usize, spacing: f64, voxel_m: f64) -
         })
         .collect();
     let land: Vec<bool> = sea.iter().map(|b| !b).collect();
+    let bake_sea: Vec<bool> = (0..px * px).into_par_iter().map(|i| g.bake.sample(at((i % px) as f64, (i / px) as f64)).ocean >= 0.5).collect();
+    let bake_land: Vec<bool> = bake_sea.iter().map(|b| !b).collect();
     let mut edges = 0u64;
     for y in 0..px {
         for x in 0..px {
@@ -691,6 +734,7 @@ fn window(g: &Generator, centre: DVec3, px: usize, spacing: f64, voxel_m: f64) -
         sand: is_sand.iter().filter(|b| **b).count() as f64 / is_sand.len().max(1) as f64,
         sand_runs,
         pieces: closed(&land) + closed(&sea),
+        bake_pieces: closed(&bake_land) + closed(&bake_sea),
     };
     (sea, s)
 }
@@ -727,13 +771,13 @@ fn shore_coast_stats() {
     let g = world();
     let out = out_dir();
     let tag = std::env::var("SHORE_TAG").unwrap_or("run".into());
-    println!("| coast | lat, lon | view | coast km | land blobs | sea blobs | land slivers | sea slivers | per km | closed pieces | sand on shore | sand runs |");
+    println!("| coast | lat, lon | view | coast km | land blobs | sea blobs | land slivers | sea slivers | per km | closed pieces (bake's) | sand on shore | sand runs |");
     println!("|---|---|---|---|---|---|---|---|---|---|---|---|");
     for (name, d) in coast_places(&g) {
         let (lat, lon) = Planet::lat_lon_deg(d);
         for (view, px, spacing, voxel) in [("LOD 0", 1500usize, 2.0, g.planet.block_size), ("LOD 5", 500, 32.0, 32.0 * g.planet.block_size)] {
             let (sea, s) = window(&g, d, px, spacing, voxel);
-            println!("| {name} | {lat:.3}, {lon:.3} | {view} | {:.1} | {} | {} | {} | {} | {:.2} | {} | {:.0}% | {} |", s.coast_km, s.land_blobs, s.sea_blobs, s.land_slivers, s.sea_slivers, s.per_km(), s.pieces, 100.0 * s.sand, s.sand_runs);
+            println!("| {name} | {lat:.3}, {lon:.3} | {view} | {:.1} | {} | {} | {} | {} | {:.2} | {} ({}) | {:.0}% | {} |", s.coast_km, s.land_blobs, s.sea_blobs, s.land_slivers, s.sea_slivers, s.per_km(), s.pieces, s.bake_pieces, 100.0 * s.sand, s.sand_runs);
             put(&format!("{out}/{tag}_{name}_{}.png", view.replace(' ', "")), px, |i| if sea[i] { [40, 90, 200] } else { [214, 196, 140] });
         }
     }
