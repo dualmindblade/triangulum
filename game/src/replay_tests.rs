@@ -226,10 +226,9 @@ fn a_replay_recorded_under_other_simulation_rules_is_refused() {
     // B4 changed the rules again: a recording of the build before is refused
     // with what happened and what to do, not played into a divergence.
     rep.header.sim_rules = 2;
-    rep.header.engine = "triangulum 945d544".into();
     let err = compatibility(&template_session, &rep.header).unwrap_err();
     assert!(err.contains(&format!("simulation rules version 2 vs {}", crate::sim::RULES_VERSION)), "{err}");
-    assert!(err.contains("learned to slide") && err.contains("Your world and saves are fine") && err.contains("triangulum 945d544"), "{err}");
+    assert!(err.contains("learned to slide") && err.contains("Your world and saves are fine") && err.contains("with simulation rules 2"), "{err}");
     let _ = std::fs::remove_file(&path);
 }
 

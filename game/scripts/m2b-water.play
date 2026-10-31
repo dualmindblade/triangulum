@@ -107,7 +107,9 @@ assert water_out == 0
 mode fly
 hold space 0.1
 aim 1 0 -1.5
-assert crosshair == water
+# B4: under seek+dry the film has already run down into the hole, so the ray
+# reaches the trench's dirt floor, not water; the cell placed is the same.
+assert crosshair != none
 tap place
 assert water_placed == 510
 tick 1
@@ -125,7 +127,9 @@ assert level_rel[5,0,-1] >= 90
 assert level_rel[5,0,-1] <= 110
 assert level_rel[1,0,-1] >= 90
 assert level_rel[1,0,-1] <= 110
-assert water_rel[-8,-8,-3,13,8,1] == 765
+# B4: the third pour lands on a full cell and spreads over the grass, and that
+# film now runs off the patch down the nearest natural step, so the box is wider.
+assert water_rel[-30,-30,-14,30,30,1] == 765
 assert water_balance == 765
 state site_a
 

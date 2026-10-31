@@ -235,6 +235,10 @@ of the game; it says so when it cannot play.
 --sim-radius M        active region of the simulation around the player (112)
 --no-sim              start with the simulation off
 --water-period N      ticks per water step (1: a cell per 20 Hz tick)
+--no-slide            the rules before B4: straight down only, and the film stays (a later --film overrides that part)
+--film MODE           what becomes of level-1 water: keep, seek, merge, dry, seek+dry (the default)
+--film-reach N        how many cells a film runs along a dry line to a drop (8)
+--film-dry-s S        a film dries S to 3 S seconds after it comes to rest (10)
 --hotbar a,b,c        blocks on keys 1-9 by name (default: the first eight solid blocks and water)
 --walk | --fly        starting mode
 --hide-water          start with water hidden
@@ -452,6 +456,22 @@ later, so digging under a column collapses it in a chain and the column
 lands in order. Every block change, by you or by the simulation, notifies
 its six neighbours across chunk borders and cube-face edges.
 
+**Sliding (B4).** A resting block with a free cell beside it and a free cell
+below that one moves over and falls down that column. So powder cannot stand
+in towers or cliffs: it comes to rest with neighbouring columns at most one
+block apart, a slope of one block per block along the grid (45 degrees, and
+about 55 down the diagonal of a pile, which comes out diamond-shaped). A pit
+dug in a beach slumps in. A slide needs a free cell of its own below the free
+cell, counting the blocks already in flight in that column, so every slide
+ends at least one layer lower and a heap cannot cycle; a column takes blocks
+as fast as they land, so a cliff pours rather than bursts. The way a block
+goes is a pure function of the two cells and the tick. It works across chunk
+borders, cube edges and cube corners, and a block whose way lies through a
+chunk outside the active region waits where it is, with its update saved,
+until the region arrives. Natural sand and gravel do not move until a change
+reaches them: a generated beach steeper than the slope stands until touched.
+`--no-slide` is the old rule, unit for unit.
+
 Only LOD-0 chunks within `--sim-radius` metres of you (112 by default) are
 simulated; elsewhere the world is frozen. An update due in a frozen chunk
 waits until you come back, and is saved meanwhile; a block falling there
@@ -518,12 +538,37 @@ water that nothing moves differs from every lateral neighbour by at most 1:
 resting water may lean 1/256 per cell, and does: a pit dug beside the sea
 fills and leaves a dish one level per metre deep around it (18 levels, 7 cm,
 at the pit, flat again 19 m out). A lake drained through a channel keeps
-everything below the channel's sill and leaves a film on its surface layer
-that leans one level per cell up from the sill. The rule provably settles:
-the potential `sum over cells of (1024 k + L) L` strictly falls on every tick
-in which anything moves (the tests check it), so there is no cycle and no
-squirming. Thin films creep: a cell moves one unit a tick when it is 2 above
-its neighbour, so the last levels of a drained lake take hundreds of ticks.
+everything below the channel's sill. The rule provably settles: the potential
+`sum over cells of (1024 k + L) L` strictly falls on every tick in which
+anything moves (the tests check it), so there is no cycle and no squirming.
+Thin films creep: a cell moves one unit a tick when it is 2 above its
+neighbour, so the last levels of a drained lake take hundreds of ticks.
+
+**Water off a ledge (B4).** A cell that can neither fall nor spread, beside a
+free cell whose floor has room, moves half its level straight into the cell
+below that free cell: the level-1 cell at a ledge, which the 2-level rule can
+never move, goes over. In the potential this is exactly a fall, so the reason
+water comes to rest is unchanged.
+
+**The film (B4).** On its own the ledge rule only lowers what a drained area
+keeps by one level: a cell at level 1 beside a dry one is stuck again, so a
+terrace keeps a wedge rising one level per cell from its edge. `--film`
+chooses what happens to level-1 water:
+
+| `--film` | what it does | water |
+|---|---|---|
+| `keep` | nothing more: the wedge and the film stay | kept |
+| `seek` | a level-1 cell at the edge of the wet area looks along four straight lines, through dry cells, up to `--film-reach` cells, and runs to the nearest drop | kept |
+| `merge` | nothing is wetted with fewer than 2 units, and a level-1 cell gives its unit to its wettest neighbour: water beads up | kept |
+| `dry` | a level-1 cell dries after `--film-dry-s` to three times that | counted as `water_dried` |
+| `seek+dry` (default) | it runs to a drop if it can, and dries if it cannot | counted |
+
+A film never dries from water that is not a puddle: if the thicker water it
+leans on reaches generated water at the region's edge, or runs past 256 cells,
+it stays. So a poured block dries away, a lake keeps its shallows, and a
+trickle fed from the boundary comes to rest instead of drawing water in for
+ever. Cells waiting to dry cost nothing until their time comes, and they are
+saved. The stats line shows `drying` and `dried`; the water balance counts it.
 
 Updates run in a deterministic order (the M2a queue) through a tick-local
 overlay and are committed in one batch per tick; a cell a neighbour spread
@@ -726,7 +771,21 @@ stands by a generated river (nothing is scheduled until it is touched),
 digs a trench from the bank with the region one chunk wide, and checks the
 trench fills, the river inside the chunk keeps its water, and water flows
 in from the generated river upstream and out into it downstream, counted.
-All three must pass.
+All three must pass. `m2a-sand.play` runs under `sim slide off`, and the beach
+pits of `m2b-water.play` and `m2b-boundary.play` too, because they are about
+falling straight down and about water: free-standing towers and sand walls
+do not stand under the slide.
+
+`scripts/b4-slide.play` is the slide: a tower falling apart, a dropped cube
+becoming a pile (its slope printed), a sand cliff collapsing with a save and
+reload in the middle, the level-1 cell at a ledge, a shaft dug in a real beach,
+a heap over a cube corner, a block waiting at the edge of the active region.
+`scripts/b4-film.play` drains a terraced bowl, leaves a film on a wide table,
+pours a block on a table and on real ground; it asserts only what holds under
+every rule, so run it with `--film MODE` and compare the frames and the
+printed levels. `b4-oldsave-make.play`, run on an older build, and
+`b4-oldsave-load.play`, run on this one, check that an old save loads and that
+nothing in it wakes until it is touched.
 
 `scripts/m3b-hotbar.play` (run with `--blocks scripts/m3b-look/blocks.json`)
 builds a wall of the painted `clay_brick` block from the M3b session on key
@@ -842,9 +901,12 @@ give the same world, a damaged replay names its first divergence, a replay
 never touches the real save, harness pokes replay exactly, and a key tap
 shorter than a frame still counts. Several need the bake at
 `C:/code/triangulum/game/assets/world/seed42`. The stress tests are
-`cargo test --release -- --ignored stress` (5,041 sand blocks) and
+`cargo test --release -- --ignored stress` (5,041 sand blocks, a 10,800-block
+sand collapse, the cost of the B4 rules) and
 `cargo test --release -- --ignored water_stress --nocapture` (a 2,000-cell
-pour and a 10,000-cell dam break, with the per-tick cost).
+pour and a 10,000-cell dam break, with the per-tick cost). The B4 rule table,
+every film rule on every scene, is
+`cargo test --release film_rules_on_the_three_scenes -- --nocapture`.
 
 Blocks and textures (M3b): `blocks.json` with textures round-trips
 (written, read back, idempotent, back to the shipped file when the

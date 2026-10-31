@@ -19,7 +19,7 @@
 //!   a directory given with --save unless --reset-save is also given
 //! Simulation: --sim-radius M (112; LOD-0 chunks within it tick, the rest is frozen)  --no-sim
 //!   --water-period N (1; ticks per water step: how many 20 Hz ticks a cell of water takes to move one cell)
-//!   --no-slide (sand, gravel and water fall straight down only: the rule before Andrew's #7)
+//!   --no-slide (the rules before B4: straight down only, and the film stays; a later --film overrides that part)
 //!   --film keep|seek|merge|dry|seek+dry (what becomes of level-1 water, Andrew's #9; seek+dry)
 //!   --film-reach N (8; how many cells a film runs along a dry line to a drop)
 //!   --film-dry-s S (10; a film dries between S and 3 S seconds after it comes to rest)
@@ -265,7 +265,7 @@ fn parse_args() -> Args {
             "--sim-radius" => a.sim_radius = val().parse().unwrap(),
             "--no-sim" => a.no_sim = true,
             "--water-period" => a.water_period = val().parse().unwrap(),
-            "--no-slide" => a.flow.slide = false,
+            "--no-slide" => a.flow = sim::Flow { slide: false, film: sim::Film::Keep, ..a.flow },
             "--film" => a.flow.film = sim::Film::parse(&val()).unwrap_or_else(|e| fail(&e)),
             "--film-reach" => a.flow.film_reach = val().parse().unwrap(),
             "--film-dry-s" => a.flow.film_dry_ticks = ((val().parse::<f64>().unwrap() * sim::TICK_HZ as f64) as u64).max(1),

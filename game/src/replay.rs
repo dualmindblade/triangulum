@@ -1196,11 +1196,11 @@ pub fn compatibility(template: &Session, h: &Header) -> Result<(), String> {
     }
     if h.sim_rules != crate::sim::RULES_VERSION {
         bad.push(format!(
-            "simulation rules version {} vs {}: {} (this build's rules would not reproduce it, so it will not play here. Your world and saves are fine; to watch this recording, play it with the build that made it, {})",
+            "simulation rules version {} vs {}: {} (this build's rules would not reproduce it, so it will not play here. Your world and saves are fine; to watch this recording, use a build of the game with simulation rules {})",
             h.sim_rules,
             crate::sim::RULES_VERSION,
             if h.sim_rules < crate::sim::RULES_VERSION { "it was recorded before sand and water learned to slide off ledges" } else { "it was recorded by a newer build" },
-            h.engine
+            h.sim_rules
         ));
     }
     if h.bake_sha256 != template.bake_sha256 {

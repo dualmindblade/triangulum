@@ -50,7 +50,9 @@
 //!                           still log, and all notify when it resumes)
 //!   sim radius M            active region radius in metres (--sim-radius)
 //!   sim period N            ticks per water step (--water-period; 1)
-//!   sim slide on|off        powder and water go over ledges (--no-slide)
+//!   sim slide on|off        powder and water go over ledges. Off is the rules
+//!                           before B4 (--no-slide): the film rule goes to
+//!                           keep too, and on leaves it there
 //!   sim film MODE           what becomes of level-1 water (--film): keep,
 //!                           seek, merge, dry, seek+dry
 //!   sim reach N             how far a film runs to a drop (--film-reach)
@@ -876,7 +878,8 @@ pub fn run_play(session: Session, opts: PlayOptions) -> i32 {
                     run.say(format!("  water period {} tick(s)", n as u64));
                 }
                 (Some("slide"), _) if matches!(args.get(1).copied(), Some("on" | "off")) => {
-                    let flow = crate::sim::Flow { slide: args[1] == "on", ..run.session.sim.config.flow };
+                    let now = run.session.sim.config.flow;
+                    let flow = if args[1] == "on" { crate::sim::Flow { slide: true, ..now } } else { crate::sim::Flow { slide: false, film: crate::sim::Film::Keep, ..now } };
                     let _ = run.session.apply(Action::Flow(flow));
                     run.say(format!("  {}", flow.text()));
                 }

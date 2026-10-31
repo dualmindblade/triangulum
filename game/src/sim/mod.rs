@@ -1251,8 +1251,16 @@ impl Sim {
         self.tick = next;
         self.ghosts.retain(|(_, t)| next - *t < GHOST_TICKS);
         // A restored state first gets back the region it was saved with.
+        // A game starts at its spawn, not where it was saved, so the next
+        // line can jump the whole region. That is a load, not a walk: nothing
+        // around the player ran against a boundary that moved, so no pair
+        // wakes (under the slide they could move, and a save would stir with
+        // nobody touching it). Its frozen updates still run.
         if let Some(p) = self.pending_focus.take() {
             self.refocus(world, p);
+            if self.focus_chunk != Some(World::chunk_of(world.planet.block_of_pos(focus)).0) {
+                self.region_known = false;
+            }
         }
         self.refocus(world, focus);
 

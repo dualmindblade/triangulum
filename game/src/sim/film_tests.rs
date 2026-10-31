@@ -268,7 +268,6 @@ fn a_film_fed_from_the_boundary_comes_to_rest_and_stays() {
     sim.boundary_override = Some(Box::new(move |bp| (bp == source).then_some(Boundary::Water { level: 6, drains: false })));
     sim.step(&w, near);
     assert!(sim.is_active(ck) && !sim.is_active(World::chunk_of(source).0));
-    assert!(w.set_water(row(0), w.water_id(), 1));
     for _ in 0..600 {
         sim.step(&w, near);
     }
@@ -312,7 +311,8 @@ fn the_edge_of_a_large_body_stays_and_the_edge_of_a_puddle_goes() {
         let (wet, ..) = layer(&w, o.k + 1);
         println!("{thick} cells of level 2 with a level-1 edge: {wet} cells left, {} units dried", sim.stats.water_dried);
         if stays {
-            assert_eq!(sim.stats.water_dried, 0, "a body this big keeps its edge");
+            // Only the edge's four corners, which touch no thicker water.
+            assert_eq!(sim.stats.water_dried, 4, "a body this big keeps its edge");
         } else {
             assert_eq!(wet, 0, "a puddle dries away");
         }
@@ -388,7 +388,7 @@ fn a_film_waiting_to_dry_survives_a_save_and_reload() {
 #[test]
 fn a_film_outside_the_region_does_not_dry_until_the_region_returns() {
     let (w, _, _, k) = plateau(Film::Dry);
-    let (g, _) = site(&w);
+    let g = crate::world::tests::hills_ground(&w);
     let focus = w.planet.pos(g.face, g.i as f64 + 0.5, g.j as f64 + 0.5, k as f64 + 1.0);
     let mut sim = Sim::new(SimConfig { radius_m: 1.0, ..with(Film::Dry) });
     sim.step(&w, focus);
@@ -408,6 +408,104 @@ fn a_film_outside_the_region_does_not_dry_until_the_region_returns() {
         sim.step(&w, focus);
     }
     assert_eq!(sim.stats.water_dried, 25, "back in the region, it dried");
+}
+
+/// Found on Andrew's real save: it was saved at the cube corner and a game
+/// starts at spawn, so the first tick moved the whole region, and that woke
+/// every changed pair across a chunk side there. Under the old rule those were
+/// no-ops. Under the new one they started a wave through his old film and sand
+/// with nobody touching anything. A load is not a walk.
+#[test]
+fn a_save_loaded_away_from_where_it_was_saved_wakes_nothing() {
+    let w = test_world();
+    let (g, _) = site(&w);
+    let (_, _, sand, _) = ids(&w);
+    // A table across a chunk side, a film on both sides of it, sand beside.
+    let ck = World::chunk_of(BlockPos { k: g.k + 96, ..g }).0;
+    let (i0, j0, k0) = ck.origin_blocks();
+    let o = BlockPos { face: ck.face, i: i0 as u32 + 32, j: j0 as u32 + 16, k: k0 as u32 + 16 };
+    table(&w, o, 9);
+    let water = w.water_id();
+    // The film stops at the side, so the pair across it differs by one level.
+    let film: Vec<(BlockPos, BlockId, Option<u8>)> = (1..=6).map(|d| (BlockPos { i: o.i - d, k: o.k + 1, ..o }, water, Some(1))).collect();
+    w.commit_levels(&film);
+    let tower: Vec<(BlockPos, BlockId)> = (1..=4).map(|dz| (BlockPos { i: o.i + 5, k: o.k + dz, ..o }, sand)).collect();
+    w.commit(&tower);
+    let _ = w.edits.take_changed();
+    let here = w.planet.pos(o.face, o.i as f64 + 0.5, o.j as f64 + 0.5, o.k as f64 + 4.0);
+    let saved_at = w.planet.pos(o.face, o.i as f64 + 3000.5, o.j as f64 + 0.5, o.k as f64 + 4.0);
+    let mut sim = Sim::from_snapshot(SimConfig::default(), Snapshot { tick: 9000, focus: Some(saved_at), ..Default::default() });
+    let generation = w.edits.generation();
+    for _ in 0..200 {
+        sim.step(&w, here);
+    }
+    assert_eq!((sim.stats.processed, sim.stats.pairs_woken, w.edits.generation() - generation), (0, 0, 0), "nothing wakes");
+    assert_eq!((sim.stats.slides, sim.stats.water_moved), (0, 0));
+    // A walk is still a walk: after the load, a chunk joining wakes its pairs.
+    let w2 = test_world();
+    let (ck2, far) = (ck, w2.planet.pos(o.face, o.i as f64 - 200.0, o.j as f64 + 0.5, o.k as f64 + 4.0));
+    let mut sim = Sim::new(SimConfig { radius_m: 1.0, ..SimConfig::default() });
+    table(&w2, o, 9);
+    w2.commit_levels(&film);
+    sim.step(&w2, far);
+    assert!(!sim.is_active(ck2));
+    for _ in 0..3 {
+        sim.step(&w2, here);
+    }
+    assert!(sim.is_active(ck2));
+    assert!(sim.stats.pairs_woken > 0, "the region really arrived here");
+}
+
+/// What the new rules cost a big flow. A cross-process comparison means
+/// nothing while other agents build, so this alternates the rules before B4
+/// and the default in one process and keeps each one's fastest run: load can
+/// only add time, so the minimum is the nearest to the true cost. A 40 x 20 x 8
+/// lake let into an equal empty compartment, 400 ticks.
+/// `cargo test --release -- --ignored stress_flow_cost --nocapture --test-threads=1`.
+#[test]
+#[ignore]
+fn stress_flow_cost_of_the_new_rules() {
+    let run = |flow: Flow| -> (f64, u64, u64) {
+        let w = test_world();
+        let (g, focus) = site(&w);
+        let (air, stone, ..) = ids(&w);
+        let water = w.water_id();
+        let o = BlockPos { i: g.i - 40, j: g.j - 11, k: g.k + 20, ..g };
+        let mut writes = Vec::new();
+        for dx in 0..=81u32 {
+            for dy in 0..=21u32 {
+                writes.push((BlockPos { i: o.i + dx, j: o.j + dy, ..o }, stone, None));
+                for dz in 1..=9u32 {
+                    let wall = dx == 0 || dy == 0 || dx == 81 || dy == 21 || dx == 41;
+                    let lake = dx < 41 && dz <= 8;
+                    let (id, l) = if wall { (stone, None) } else if lake { (water, Some(FULL)) } else { (air, None) };
+                    writes.push((BlockPos { i: o.i + dx, j: o.j + dy, k: o.k + dz, ..o }, id, l));
+                }
+            }
+        }
+        w.commit_levels(&writes);
+        let mut sim = Sim::new(SimConfig { flow, ..SimConfig::default() });
+        sim.step(&w, focus);
+        let gate: Vec<(BlockPos, BlockId)> = (1..=20u32).flat_map(|dy| (1..=8u32).map(move |dz| (BlockPos { i: o.i + 41, j: o.j + dy, k: o.k + dz, ..o }, air))).collect();
+        w.commit(&gate);
+        let t = Instant::now();
+        for _ in 0..400 {
+            sim.step(&w, focus);
+        }
+        (t.elapsed().as_secs_f64() * 1e3 / 400.0, sim.stats.water_moved, sim.stats.processed)
+    };
+    let (mut before, mut after) = ((f64::MAX, 0, 0), (f64::MAX, 0, 0));
+    for round in 0..6 {
+        let (b, a) = (run(Flow::before()), run(Flow::default()));
+        println!("round {round}: rules before {:.3} ms a tick, new rules {:.3} ms a tick", b.0, a.0);
+        if b.0 < before.0 {
+            before = b;
+        }
+        if a.0 < after.0 {
+            after = a;
+        }
+    }
+    println!("fastest of six: rules before {:.3} ms a tick ({} updates, {} units); new rules {:.3} ms a tick ({} updates, {} units): {:+.1}% a tick", before.0, before.2, before.1, after.0, after.2, after.1, (after.0 / before.0 - 1.0) * 100.0);
 }
 
 /// A save from the build before B4 holds water leaning at rest, films and
