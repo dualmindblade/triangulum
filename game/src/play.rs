@@ -94,13 +94,15 @@
 //!   replay stop             finish it; sets replay_steps, replay_events,
 //!                           replay_checks_written, replay_notes (things the
 //!                           recorder could not capture: must be 0),
-//!                           replay_bytes
+//!                           replay_markers (moments marked), replay_bytes
 //!   replay check FILE       play FILE in a fresh session built from its own
 //!                           snapshot (scratch save saves/_replay/<stem>),
 //!                           here, and compare; sets replay_ok, replay_checks,
 //!                           replay_matched, replay_steps_played,
 //!                           replay_ended, replay_end_match,
-//!                           replay_divergence_step (none when it matched)
+//!                           replay_divergence_step (none when it matched),
+//!                           replay_look (same, different, unknown),
+//!                           replay_markers_read
 //!
 //! ---- output and checks ---------------------------------------------
 //!   shot NAME               settled frame (streaming drained) with the HUD
@@ -170,23 +172,38 @@
 //!                              shot: drawn:L (a drawn chunk at LOD L with a
 //!                              mesh), empty:L, gap:L, hidden:L, or none
 //!
+//! ---- marks and reports (annotate.rs, report.rs) ----------------------
+//!   mark                    F9: grab this frame live and open the annotator.
+//!                           Drive it with the menu commands below: its spots
+//!                           are canvas, comment, undo, annot-save, annot-cancel,
+//!                           tool-pen|arrow|box|text, ink-red|yellow|green|blue|white
+//!   mark stroke FX FY FX2 FY2 ...
+//!                           draw through these points of the picture (0..1),
+//!                           one pointer event each, as a real hand does
+//!   marked                  did the annotator close? Finish it as the app does:
+//!                           sets mark_step, mark_png, mark_annotated, replay_markers
+//!
 //! ---- the T window, driven by synthetic events (menu.rs) --------------
 //!   menu open|close         open or shut it (the T key)
 //!   menu scale F            display scale: 1 is 100%, 1.5 is 150%
 //!   menu wait               until the map, the roll and the rivers are in
 //!   menu click SPOT [FX FY] click a named thing: map, teleport, delete,
 //!                           delete-yes, save, repro, preview, coords, title,
-//!                           notes, place-N, photo-N, tick-N; FX, FY (0..1)
-//!                           say where on it (the middle by default)
+//!                           notes, place-N, photo-N, tick-N, annotate,
+//!                           tab-photos, tab-recordings, rec-N, marker-N, rec-title,
+//!                           rec-description, rec-save, make-report, report-photos,
+//!                           report-title, report-description, report-go; FX, FY
+//!                           (0..1) say where on it (the middle by default)
 //!   menu double SPOT [FX FY]  double-click
 //!   menu drag SPOT FX FY FX2 FY2  drag across it
 //!   menu wheel SPOT FX FY LINES   the wheel, over it
 //!   menu type TEXT...       type into the focused field
-//!   menu key esc|t|w        a key, routed as the app routes it
+//!   menu key esc|t|w|enter|ctrl+z  a key, routed as the app routes it
 //!   menu shot NAME          the frame with the window over it (NAME.png)
 //!                           Sets menu_open menu_zoom menu_lat menu_lon
 //!                           menu_photos menu_selected menu_target
 //!                           menu_lightbox menu_deleting menu_build_ms
+//!                           menu_recordings menu_annotating menu_report
 //!
 //! ---- video (play/video.rs) ------------------------------------------
 //!   record FILE [FPS]       start writing FILE (H.264 .mp4 under the out
@@ -257,10 +274,12 @@ use crate::menu::{self, Menu, MenuEnv, Rig};
 use crate::photos::{self, Shot, ShotInfo};
 use crate::player::{Input, Mode, STEP};
 use crate::replay::{self, ChunkDigests, Replay};
+use crate::report::{self, Grab, Moment, Ticker};
 use crate::session::{Action, Button, Session};
 use crate::sky::Clock;
 use crate::sim::STEPS_PER_TICK;
 use crate::ui::{Hud, draw_hud, outline_segments};
+use crate::visual::{self, Visual};
 use std::fmt::Write as _;
 use std::path::Path;
 use std::sync::Arc;
@@ -296,11 +315,22 @@ struct Run {
     /// The T window, when a script has opened it.
     menu: Option<(Menu, Rig)>,
     last_menu: serde_json::Value,
+    last_mark: serde_json::Value,
+    /// A marker's line on the HUD, as `--watch` shows it.
+    marker_line: Option<String>,
 }
 
 impl Run {
     fn new(session: Session, harness: Harness, out: &str) -> Self {
-        Run { session, harness, log: String::new(), failed: 0, asserts: 0, last_bench: serde_json::Value::Null, last_stream: serde_json::Value::Null, last_find: serde_json::Value::Null, last_replay: serde_json::Value::Null, last_compare: serde_json::Value::Null, out: out.to_string(), video: video::Video::default(), regions: Default::default(), script_dir: Default::default(), digests: Default::default(), menu: None, last_menu: serde_json::Value::Null }
+        Run { session, harness, log: String::new(), failed: 0, asserts: 0, last_bench: serde_json::Value::Null, last_stream: serde_json::Value::Null, last_find: serde_json::Value::Null, last_replay: serde_json::Value::Null, last_compare: serde_json::Value::Null, out: out.to_string(), video: video::Video::default(), regions: Default::default(), script_dir: Default::default(), digests: Default::default(), menu: None, last_menu: serde_json::Value::Null, last_mark: serde_json::Value::Null, marker_line: None }
+    }
+
+    /// What this run draws with (`visual.rs`).
+    fn visual_now(&self) -> Visual {
+        let e = &self.session.engine;
+        let mut look = self.harness.gpu.sky.look.clone();
+        look.detail.lod_factor = e.lod.factor;
+        Visual::of(&look, &e.registry, visual::startup_textures(), &self.harness.gpu.mesh_view.name(), e.mesh_opts.ao, e.mesh_opts.split, e.skirt)
     }
 
     /// `replay record FILE | replay stop | replay check FILE` (M2c): the
@@ -310,6 +340,7 @@ impl Run {
         match (args.first().copied(), args.get(1).copied()) {
             (Some("record"), Some(file)) => {
                 let path = Path::new(&self.out).join(file);
+                self.session.visual = Some(Arc::new(self.visual_now()));
                 let p = self.session.start_recording(&path, "recorded by a harness script")?;
                 self.say(format!("  recording a replay to {}", p.display()));
                 Ok(())
@@ -317,7 +348,7 @@ impl Run {
             (Some("stop"), _) => {
                 let s = self.session.stop_recording()?;
                 self.say(format!("  replay {}: {} steps, {} events, {} checks, {} notes; {:.1} KB ({:.1} KB of it the snapshot)", s.path.display(), s.steps, s.events, s.checks, s.notes, s.bytes as f64 / 1e3, s.snapshot_bytes as f64 / 1e3));
-                self.last_replay = serde_json::json!({ "replay_steps": s.steps, "replay_events": s.events, "replay_checks_written": s.checks, "replay_notes": s.notes, "replay_bytes": s.bytes });
+                self.last_replay = serde_json::json!({ "replay_steps": s.steps, "replay_events": s.events, "replay_checks_written": s.checks, "replay_notes": s.notes, "replay_markers": s.markers, "replay_bytes": s.bytes });
                 Ok(())
             }
             (Some("check"), Some(file)) => {
@@ -327,7 +358,8 @@ impl Run {
                 let t0 = Instant::now();
                 let mut s = replay::session_from(&self.session, &rep, &replay::scratch_dir(&stem))?;
                 let report = replay::Runner::new(&rep, &s).run(&mut s);
-                for l in report.text().lines() {
+                let look = visual::judge(rep.header.visual.as_ref(), &rep.header.build, rep.visual_changes(), &self.visual_now());
+                for l in format!("{}\n{}", report.text(), look.text()).lines() {
                     self.say(format!("  {l}"));
                 }
                 let secs = t0.elapsed().as_secs_f64();
@@ -341,6 +373,8 @@ impl Run {
                     "replay_end_match": report.end_sha.as_ref().is_some_and(|(a, b)| a == b),
                     "replay_divergence_step": report.first.as_ref().map(|d| d.step),
                     "replay_secs": secs,
+                    "replay_look": look.reproduced.name(),
+                    "replay_markers_read": rep.markers().len(),
                 });
                 Ok(())
             }
@@ -388,7 +422,7 @@ impl Run {
                     m.insert(k.clone(), val.clone());
                 }
             }
-            for extra in [&self.last_bench, &self.last_find, &self.last_replay, &self.last_compare, &self.last_menu] {
+            for extra in [&self.last_bench, &self.last_find, &self.last_replay, &self.last_compare, &self.last_menu, &self.last_mark] {
                 if let serde_json::Value::Object(b) = extra {
                     for (k, val) in b {
                         m.insert(k.clone(), val.clone());
@@ -466,6 +500,7 @@ impl Run {
             dirty: engine.edits.dirty_count(),
             sim_line: self.session.sim.describe(),
             mesh_legend: crate::render::meshview::legend_for(self.harness.gpu.mesh_view, &self.harness.streamer.stats.drawn_per_lod, &engine.registry, &self.regions),
+            marker: self.marker_line.clone(),
             ..Default::default()
         };
         let path = format!("{}/{name}.png", self.out);
@@ -498,6 +533,11 @@ impl Run {
     /// the same format, without the window.
     fn photo(&mut self, name: &str, live: bool) -> Result<(), String> {
         let cam = self.session.player.camera();
+        self.photo_from(name, live, &cam)
+    }
+
+    fn photo_from(&mut self, name: &str, live: bool, cam: &crate::camera::Camera) -> Result<(), String> {
+        let cam = *cam;
         self.sync_falling();
         let (secs, frames, ok) = if live { (0.0, 0, false) } else { self.harness.settle(&cam, Duration::from_secs(180)) };
         let engine = self.session.engine.clone();
@@ -524,7 +564,8 @@ impl Run {
         let engine = self.session.engine.clone();
         let presets = engine.presets();
         let settings = self.harness.gpu.sky.settings.clone();
-        let env = MenuEnv { engine: &engine, bake_sha256: &self.session.bake_sha256, presets: &presets, here: crate::grid::Planet::lat_lon_deg(self.session.player.pos), can_move: true, day_length_s: settings.day_length_s };
+        let recording = self.session.recorder.as_ref().map(|r| r.path().to_path_buf());
+        let env = MenuEnv { engine: &engine, bake_sha256: &self.session.bake_sha256, presets: &presets, here: crate::grid::Planet::lat_lon_deg(self.session.player.pos), can_move: true, day_length_s: settings.day_length_s, recording: recording.as_deref() };
         let mut go = None;
         self.harness.ui_pass(raw, draw, &mut |ctx| {
             if let Some(g) = m.ui(ctx, &env) {
@@ -580,7 +621,79 @@ impl Run {
             "menu_open": m.open, "menu_zoom": v.zoom, "menu_lat": v.lat, "menu_lon": v.lon,
             "menu_photos": m.photos().len(), "menu_selected": m.selected(), "menu_target": m.target().is_some(),
             "menu_lightbox": m.lightbox_open(), "menu_deleting": m.deleting(), "menu_build_ms": m.last_build_ms,
+            "menu_recordings": m.recordings().len(), "menu_annotating": m.annotating(),
+            "menu_report": m.last_report.as_ref().map(|p| p.display().to_string()),
         });
+    }
+
+    /// The window, ready to take an annotator over the frame in the target.
+    fn ensure_menu(&mut self) {
+        if self.menu.is_none() {
+            self.menu = Some((Menu::new(photos::dir()), Rig::new(self.harness.egui().clone(), 1.0)));
+        }
+    }
+
+    /// `mark ...`: F9, as the app does it (see the header).
+    fn mark_command(&mut self, args: &[&str]) -> Result<(), String> {
+        match args.first().copied() {
+            None => {
+                let t0 = Instant::now();
+                let cam = self.session.player.camera();
+                self.sync_falling();
+                let engine = self.session.engine.clone();
+                self.harness.gpu.sky.set_observer(cam.pos, !engine.hide_water && engine.world.is_submerged(cam.pos));
+                self.harness.frame(&cam);
+                self.record_stream();
+                let (width, height) = (self.harness.gpu.width, self.harness.gpu.height);
+                let rgba = self.harness.gpu.read_rgba();
+                let (settings, look) = (self.harness.gpu.sky.settings.clone(), self.harness.gpu.sky.look.clone());
+                let moment = Moment::grab(Grab { session: &self.session, cam: &cam, settings: &settings, look: &look, digests: &mut self.digests, rgba, width, height, mesh_view: self.harness.gpu.mesh_view, preview_world: false, frame_ms: None });
+                self.say(format!("  marking step {} ({}), grabbed in {:.1} ms", moment.step, moment.png.display(), t0.elapsed().as_secs_f64() * 1e3));
+                self.ensure_menu();
+                let (m, _) = self.menu.as_mut().unwrap();
+                m.mark_moment(moment);
+                self.menu_passes(3);
+                Ok(())
+            }
+            Some("stroke") => {
+                let pts: Vec<f32> = args[1..].iter().map(|s| s.parse::<f32>().map_err(|_| format!("{s:?} is not a number"))).collect::<Result<_, _>>()?;
+                if pts.len() < 2 || pts.len() % 2 != 0 {
+                    return Err("mark stroke FX FY [FX2 FY2 ...]".into());
+                }
+                let at: Vec<egui::Pos2> = pts.chunks_exact(2).map(|p| self.menu_spot("canvas", p[0], p[1])).collect::<Result<_, _>>()?;
+                self.rig()?.move_to(at[0]);
+                self.menu_passes(1);
+                self.rig()?.button(true);
+                self.menu_pass(false);
+                for p in &at[1..] {
+                    self.rig()?.move_to(*p);
+                    self.menu_pass(false);
+                }
+                self.rig()?.button(false);
+                self.menu_passes(2);
+                Ok(())
+            }
+            _ => Err("mark | mark stroke FX FY FX2 FY2 ...".into()),
+        }
+    }
+
+    /// `marked`: the annotator closed, so finish it as the app does.
+    fn marked(&mut self) -> Result<(), String> {
+        let (m, _) = self.menu.as_mut().ok_or("mark first")?;
+        let f = m.take_finished().ok_or("the annotator hasn't closed")?;
+        let Some((marks, comment)) = f.saved else {
+            self.say("  marker dropped");
+            self.last_mark = serde_json::json!({ "mark_saved": false });
+            return Ok(());
+        };
+        let step = f.moment.step;
+        let (shot, marks) = f.moment.commit(&mut self.session, marks, comment);
+        let png = shot.png.clone();
+        photos::write_marked(&shot, &marks)?;
+        let flat = photos::annotated_of(&png);
+        self.say(format!("  marker at step {step}: {} ({} marks)", png.display(), marks.len()));
+        self.last_mark = serde_json::json!({ "mark_saved": true, "mark_step": step, "mark_png": png.display().to_string(), "mark_annotated": flat.exists(), "mark_marks": marks.len() });
+        Ok(())
     }
 
     /// `menu ...`: the T window, by synthetic events (see the header).
@@ -647,9 +760,15 @@ impl Run {
                     Some("esc") => (winit::keyboard::KeyCode::Escape, egui::Key::Escape),
                     Some("t") => (winit::keyboard::KeyCode::KeyT, egui::Key::T),
                     Some("w") => (winit::keyboard::KeyCode::KeyW, egui::Key::W),
-                    _ => return Err("menu key esc|t|w".into()),
+                    Some("enter") => (winit::keyboard::KeyCode::Enter, egui::Key::Enter),
+                    Some("ctrl+z") => (winit::keyboard::KeyCode::KeyZ, egui::Key::Z),
+                    _ => return Err("menu key esc|t|w|enter|ctrl+z".into()),
                 };
-                self.rig()?.key(key);
+                if args.get(1) == Some(&"ctrl+z") {
+                    self.rig()?.key_with(key, egui::Modifiers::COMMAND);
+                } else {
+                    self.rig()?.key(key);
+                }
                 let (m, rig) = self.menu.as_mut().ok_or("menu open first")?;
                 let typing = rig.ctx.egui_wants_keyboard_input();
                 match route_key(code, true, false, m.open, typing) {
@@ -1332,6 +1451,18 @@ pub fn run_play(session: Session, opts: PlayOptions) -> i32 {
                     bad(&mut run, &format!("menu: {e}"));
                 }
             }
+            "mark" => {
+                if let Err(e) = run.mark_command(args) {
+                    bad(&mut run, &format!("mark: {e}"));
+                }
+                run.write_menu_state();
+            }
+            "marked" => {
+                if let Err(e) = run.marked() {
+                    bad(&mut run, &format!("marked: {e}"));
+                }
+                run.write_menu_state();
+            }
             "meshview" => match crate::render::MeshView::parse(args) {
                 Some(m) => run.mesh_view(m),
                 None => bad(&mut run, "meshview [normal|lod|chunk|face|quad|block|biome|plate|crust] [nolines|edges|wire]"),
@@ -1387,21 +1518,52 @@ pub struct ReplayOptions {
     /// With `watch`: save a frame and quit after this many seconds.
     pub screenshot: Option<String>,
     pub exit_after: Option<f64>,
+    /// What this run draws with, to hold against the recording's.
+    pub here: Visual,
+}
+
+/// How far a settled shot of a marker is from the frame he marked: (pixels that
+/// differ, by at most, of how many). Both must be on disk and the same size.
+fn frame_difference(recorded: &Path, replayed: &Path) -> Option<(u64, u8, u64)> {
+    let (wa, ha, a) = crate::render::read_png(&recorded.to_string_lossy()).ok()?;
+    let (wb, hb, b) = crate::render::read_png(&replayed.to_string_lossy()).ok()?;
+    if (wa, ha) != (wb, hb) {
+        return None;
+    }
+    let (mut pixels, mut max) = (0u64, 0u8);
+    for (x, y) in a.chunks_exact(4).zip(b.chunks_exact(4)) {
+        let d = (0..3).map(|c| x[c].abs_diff(y[c])).max().unwrap_or(0);
+        pixels += (d > 0) as u64;
+        max = max.max(d);
+    }
+    Some((pixels, max, wa as u64 * ha as u64))
 }
 
 /// `--replay FILE` (M2c): play a replay from its snapshot in a scratch save,
-/// check it as it goes, take the settled shots asked for, report the first
-/// divergence. Exit code 0 when it reproduced, 1 when it diverged, 2 when it
-/// could not play.
+/// check it as it goes, take the settled shots asked for and one at every
+/// marker, report the first divergence, and say separately whether the look was
+/// the same. Exit code 0 when the simulation reproduced, 1 when it diverged, 2
+/// when it could not play. A replay that can't play still lists its markers and
+/// writes its report: they don't need it.
 pub fn run_replay(template: Session, rep: Replay, opts: ReplayOptions) -> i32 {
     let _ = std::fs::create_dir_all(&opts.out);
     let h = &rep.header;
     println!("replay {}: recorded {} UTC by {} ({}); {} steps ({:.1} s), {} events, {} snapshot files ({:.1} KB), {} edited chunks at the start", rep.path.display(), h.created_utc, h.engine, h.note, rep.steps(), rep.steps() as f64 / 60.0, rep.lines.len(), h.files.len(), h.files.iter().map(|f| f.bytes).sum::<u64>() as f64 / 1e3, h.start_edits);
+    let markers = rep.markers();
+    if !markers.is_empty() {
+        println!("{}", report::marker_list(&markers));
+    }
+    let verdict = visual::judge(h.visual.as_ref(), &h.build, rep.visual_changes(), &opts.here);
     let scratch = replay::scratch_dir(&opts.name);
     let session = match replay::session_from(&template, &rep, &scratch) {
         Ok(s) => s,
         Err(e) => {
             eprintln!("error: {e}");
+            println!("this recording can't play here, but its markers stand on their own: their shots, words and poses are in report.json, and --repro SHOT.png rebuilds a frame");
+            let list: Vec<serde_json::Value> = markers.iter().enumerate().map(|(i, m)| report::marker_json(m, i + 1, &rep.path)).collect();
+            let json = serde_json::json!({ "replay": rep.path.display().to_string(), "ok": false, "played": false, "refused": e, "simulation": { "reproduced": null }, "visual": verdict.json(), "markers": list });
+            let _ = std::fs::write(format!("{}/report.json", opts.out), serde_json::to_string_pretty(&json).unwrap());
+            println!("report: {}/report.json", opts.out);
             return 2;
         }
     };
@@ -1424,11 +1586,13 @@ pub fn run_replay(template: Session, rep: Replay, opts: ReplayOptions) -> i32 {
         }
     }
     if opts.watch {
-        return crate::app::run_replay(session, rep, crate::app::AppOptions { width: opts.width, height: opts.height, vsync: opts.vsync, backend: opts.backend, screenshot: opts.screenshot, exit_after: opts.exit_after, record: None });
+        return crate::app::run_replay(session, rep, crate::app::AppOptions { width: opts.width, height: opts.height, vsync: opts.vsync, backend: opts.backend, screenshot: opts.screenshot, exit_after: opts.exit_after, record: None }, verdict);
     }
     let t0 = Instant::now();
     let mut log = String::new();
-    let report = if shots.is_empty() && !shot_end {
+    // What each marker's settled shot came to: (name, recorded vs replayed).
+    let mut taken: Vec<Option<(String, Option<(u64, u8, u64)>)>> = vec![None; markers.len()];
+    let report = if shots.is_empty() && !shot_end && markers.is_empty() {
         let mut s = session;
         replay::Runner::new(&rep, &s).run(&mut s)
     } else {
@@ -1437,11 +1601,27 @@ pub fn run_replay(template: Session, rep: Replay, opts: ReplayOptions) -> i32 {
         let mut run = Run::new(session, harness, &opts.out);
         let mut seen = engine;
         let mut runner = replay::Runner::new(&rep, &run.session);
+        let ticker = Ticker::new(markers.clone());
+        let block = run.session.engine.planet.block_size;
         loop {
             if !Arc::ptr_eq(&seen, &run.session.engine) {
                 // A reload or a water toggle made a new engine: draw from it.
                 seen = run.session.engine.clone();
                 run.harness.set_engine(seen.clone());
+            }
+            run.marker_line = ticker.line(runner.step());
+            // A marker's shot sees what he saw: this step, looking his way (the
+            // camera can be ahead of the step by mouse motion).
+            for (i, m) in markers.iter().enumerate().filter(|(_, m)| m.step == runner.step()) {
+                let name = m.replay_shot(i + 1);
+                let cam = replay::parse_pose(&m.pose, block).map_or_else(|_| run.session.player.camera(), |p| p.camera());
+                match run.photo_from(&name, false, &cam) {
+                    Ok(()) => {
+                        let recorded = report::markers_dir(&rep.path).join(format!("{}.png", m.shot));
+                        taken[i] = Some((name, frame_difference(&recorded, &Path::new(&opts.out).join(format!("{}.png", m.replay_shot(i + 1))))));
+                    }
+                    Err(e) => run.say(format!("  no shot of marker {}: {e}", i + 1)),
+                }
             }
             if shots.remove(&runner.step()) {
                 run.shot(&format!("step{:06}", runner.step()));
@@ -1450,6 +1630,7 @@ pub fn run_replay(template: Session, rep: Replay, opts: ReplayOptions) -> i32 {
                 break;
             }
         }
+        run.marker_line = None;
         if !Arc::ptr_eq(&seen, &run.session.engine) {
             run.harness.set_engine(run.session.engine.clone());
         }
@@ -1462,13 +1643,46 @@ pub fn run_replay(template: Session, rep: Replay, opts: ReplayOptions) -> i32 {
         log = std::mem::take(&mut run.log);
         runner.report
     };
-    let text = report.text();
+    let text = format!("{}\n{}", report.text(), verdict.text());
     println!("{text}");
     println!("(played in {:.1} s)", t0.elapsed().as_secs_f64());
     log.push_str(&text);
     log.push('\n');
+    // The look it was recorded in, ready for --look-file.
+    let mut look_note = serde_json::Value::Null;
+    if verdict.reproduced == visual::Reproduced::Different
+        && let Some(v) = &rep.header.visual
+    {
+        let path = format!("{}/recorded.look.json", opts.out);
+        if std::fs::write(&path, serde_json::to_string_pretty(&v.look).unwrap()).is_ok() {
+            println!("the look it was recorded in is in {path}: add --look-file with that path to play it in that look");
+            look_note = path.into();
+        }
+    }
+    let list: Vec<serde_json::Value> = markers
+        .iter()
+        .enumerate()
+        .map(|(i, m)| {
+            let mut v = report::marker_json(m, i + 1, &rep.path);
+            match &taken[i] {
+                Some((name, diff)) => {
+                    v["replay_shot"] = format!("{}/{name}.png", opts.out).into();
+                    if let Some((pixels, max, of)) = diff {
+                        v["frame_difference"] = serde_json::json!({ "pixels": pixels, "of": of, "at_most": max });
+                    }
+                }
+                None => v["replay_shot"] = serde_json::Value::Null,
+            }
+            v
+        })
+        .collect();
     let json = serde_json::json!({
         "replay": rep.path.display().to_string(),
+        "played": true,
+        "simulation": { "reproduced": report.ok(), "checks": report.checks, "matched": report.matched },
+        "visual": verdict.json(),
+        "recorded_look_file": look_note,
+        "markers": list,
         "ok": report.ok(),
         "steps": report.steps,
         "checks": report.checks,

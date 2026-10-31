@@ -1,0 +1,171 @@
+# B6: a whole bug report, start to finish, by synthetic events through the real
+# annotator and the real T window, with no window on the desktop. Photos and
+# recordings go in the script's own out directory, never game/interchange:
+#
+#   cargo run --release -- --play scripts/b6-report.play --out out/play/b6-report --interchange out/play/b6-report --replays out/play/b6-report
+#
+# Then, in a fresh process, what an agent does with what it made:
+#
+#   cargo run --release -- --replay out/play/b6-report/b6-sand.replay --interchange out/play/b6-report
+#
+# The script does what Andrew would: start recording, walk, see something, F9,
+# draw on the frame, say what's wrong, get back to the game, and at the end make
+# the report. The words are the script's; the marks go through the same pointer
+# events a hand makes.
+
+# ---- a photo to annotate from the roll
+mode fly
+at -4.5654 117.4744 1500
+look -60 -35
+skytime 09:30
+photo shot_hills_morning
+
+# ---- record: flat ground, a pile of sand with its foot knocked out
+find flat
+assert find_kind == flat
+replay record b6-sand.replay
+assert recording == true
+select 4
+assert selected_block == sand
+aim 3 0 0
+tap place
+aim 3 0 1
+tap place
+aim 3 0 2
+tap place
+aim 3 0 0.2
+tap break
+tick 14
+assert edits > 0
+aim 3 0 1
+turn 8 2
+settle
+
+# ---- F9: pen, then a box, then words. The game stops.
+assert steps > 0
+mark
+assert menu_annotating == true
+assert menu_open == false
+menu shot a01_open
+mark stroke 0.66 0.44 0.70 0.42 0.74 0.44 0.75 0.49 0.72 0.53 0.68 0.53 0.65 0.49 0.66 0.44
+menu click ink-yellow
+menu click tool-box
+mark stroke 0.29 0.49 0.57 0.71
+menu click ink-blue
+menu click tool-arrow
+mark stroke 0.90 0.20 0.585 0.56
+menu type The sand stack came down, and its top now sits above the line of the terrace
+menu shot a02_drawn
+menu key ctrl+z
+menu shot a03_undone
+menu click ink-blue
+mark stroke 0.90 0.20 0.585 0.56
+menu click tool-text
+menu click canvas 0.60 0.12
+menu type top of the stack
+menu key enter
+menu shot a04_text
+menu key enter
+assert menu_annotating == false
+marked
+assert mark_saved == true
+assert mark_annotated == true
+assert mark_marks == 4
+
+# ---- on with the game: a second marker, cancelled and then kept
+hold w 1
+tap jump
+mark
+menu click tool-pen
+mark stroke 0.2 0.2 0.3 0.3
+menu key esc
+assert menu_annotating == true
+menu shot a05_esc_once
+menu key esc
+assert menu_annotating == false
+marked
+assert mark_saved == false
+hold a 0.5
+settle
+mark
+menu click tool-box
+mark stroke 0.40 0.30 0.60 0.55
+menu type Second look from further along
+menu click annot-save
+marked
+assert mark_saved == true
+wait 1
+replay stop
+assert replay_notes == 0
+assert replay_markers == 2
+
+# ---- it replays exactly, markers and all
+replay check b6-sand.replay
+assert replay_ok == true
+assert replay_end_match == true
+assert replay_look == same
+assert replay_markers_read == 2
+
+# ---- F9 with nothing recording: a marked photo in the roll
+mark
+menu click tool-pen
+mark stroke 0.2 0.5 0.3 0.45 0.4 0.5
+menu type Not recording: this one is a photo
+menu key enter
+marked
+assert mark_saved == true
+
+# ---- the T window: photos and recordings
+menu open
+menu wait
+assert menu_photos == 2
+assert menu_recordings == 1
+menu shot m01_photos
+menu click photo-1
+menu wait
+menu shot m02_photo_selected
+
+# ---- annotate a photo from the roll
+menu click annotate
+menu wait
+assert menu_annotating == true
+mark stroke 0.60 0.30 0.66 0.36 0.72 0.31
+menu type The ridge has a seam along here
+menu shot m03_annotate_photo
+menu click annot-save
+assert menu_annotating == false
+menu wait
+assert menu_photos == 2
+menu shot m04_marked
+
+# ---- the recording: a title and description, its markers, and the report
+menu click tab-recordings
+menu wait
+menu click rec-0
+menu click rec-title
+menu type Sand stack sits too high (example)
+menu click rec-description
+menu type An example made by scripts/b6-report.play. The words are the script's and this is not a real bug.
+menu click rec-save
+menu wait
+menu click marker-0
+menu wait
+menu shot m05_recording
+menu click make-report
+menu shot m06_make_report
+menu click report-go
+menu wait
+assert menu_report != none
+menu shot m07_report_made
+
+# ---- and a report of photos, ticked on the roll
+menu click tab-photos
+menu click tick-0
+menu click tick-1
+menu click report-photos
+menu click report-title
+menu type Two photos (example)
+menu click report-go
+menu wait
+assert menu_report != none
+menu close

@@ -40,12 +40,19 @@
 //! Photos: P takes one to game/interchange/ (settled), Shift+P the live frame, T opens the map
 //!   and the roll  --interchange DIR (somewhere else)
 //!   --repro SHOT.png   write SHOT.play beside a photo: an exact repro from its sidecar
-//! Replays (M2c): F10 in the game records one to game/replays/
-//!   --replay FILE         play it headless, check it, report the first divergence
+//! Bug reports (B6): F9 marks a moment (draw on the frame, say what's wrong), in a recording or as
+//!   a photo; the T window's Annotate does the same to a photo, and its Make report gathers a
+//!   recording or some photos into one folder under interchange/reports/
+//! Replays (M2c): F10 in the game records one to game/replays/  --replays DIR (somewhere else)
+//!   --replay FILE         play it headless, check it, report the first divergence; lists its
+//!                         markers and takes a settled shot at each; says separately whether the
+//!                         simulation reproduced and whether the look was the same
 //!   --shot-at STEP        (with --replay, repeatable; STEP or "end") a settled shot there
-//!   --watch               (with --replay) play it in the window at real time instead
+//!   --watch               (with --replay) play it in the window at real time instead; a marker's
+//!                         text shows as it passes
 //!   --record-replay FILE  (the game) start recording at launch, as F10 does; Q, closing or --exit-after stops it
 
+pub mod annotate;
 pub mod app;
 pub mod bench;
 pub mod camera;
@@ -62,12 +69,14 @@ pub mod play;
 pub mod player;
 pub mod render;
 pub mod replay;
+pub mod report;
 pub mod session;
 pub mod sha256;
 pub mod sim;
 pub mod sky;
 pub mod stream;
 pub mod ui;
+pub mod visual;
 pub mod workshop;
 pub mod world;
 pub mod worldgen;
@@ -152,6 +161,7 @@ struct Args {
     watch: bool,
     record_replay: Option<String>,
     interchange: Option<String>,
+    replays: Option<String>,
     repro: Option<String>,
 }
 
@@ -223,6 +233,7 @@ fn parse_args() -> Args {
         watch: false,
         record_replay: None,
         interchange: None,
+        replays: None,
         repro: None,
     };
     let mut it = std::env::args().skip(1);
@@ -311,6 +322,7 @@ fn parse_args() -> Args {
             "--watch" => a.watch = true,
             "--record-replay" => a.record_replay = Some(val()),
             "--interchange" => a.interchange = Some(val()),
+            "--replays" => a.replays = Some(val()),
             "--repro" => a.repro = Some(val()),
             "--help" | "-h" => {
                 println!("{}", include_str!("main.rs").lines().take_while(|l| l.starts_with("//!")).map(|l| l.trim_start_matches("//!").trim_start_matches(' ')).collect::<Vec<_>>().join("\n"));
@@ -332,6 +344,9 @@ fn main() {
     let root = env!("CARGO_MANIFEST_DIR");
     if let Some(d) = &args.interchange {
         photos::set_dir(d.into());
+    }
+    if let Some(d) = &args.replays {
+        photos::set_replays_dir(d.into());
     }
     if let Some(p) = &args.repro {
         let r = photos::repro(Path::new(p)).unwrap_or_else(|e| fail(&e));
@@ -395,6 +410,7 @@ near it, by hand:
         println!("textures: {} picture(s) of {} x {} px from {}", textures.len(), textures.size, textures.size, textures.dir.display());
     }
     render::textures::install(render::textures::Installed { block_m: config.block_size_m, size: textures.size, pictures: textures.pictures().into_iter().cloned().collect() });
+    visual::install_textures(visual::texture_ids(&textures));
     // The identity of the bytes just loaded, not of the files as they are now (review 3 #5).
     let bake_sha = bake.identity().map(str::to_string).unwrap_or_else(|| fail(&format!("bake identity: {} has no meta.json to identify it by", config.bake)));
 
@@ -607,7 +623,12 @@ near it, by hand:
     }
     if let Some(r) = replay {
         let stem = Path::new(args.replay.as_deref().unwrap_or("replay")).file_stem().and_then(|s| s.to_str()).unwrap_or("replay").to_string();
-        let opts = play::ReplayOptions { out: out(&format!("out/replay/{stem}")), name: stem, shots: args.shot_at, watch: args.watch, width: args.width, height: args.win_height, backend: args.backend, vsync: args.vsync, screenshot: args.screenshot.clone(), exit_after: args.exit_after };
+        // What this run draws with, to hold against what the recording says it
+        // drew with.
+        let mut here_look = start_look.clone();
+        here_look.detail.lod_factor = engine.lod.factor;
+        let here = visual::Visual::of(&here_look, &registry, visual::startup_textures(), "normal", engine.mesh_opts.ao, engine.mesh_opts.split, engine.skirt);
+        let opts = play::ReplayOptions { out: out(&format!("out/replay/{stem}")), name: stem, shots: args.shot_at, watch: args.watch, width: args.width, height: args.win_height, backend: args.backend, vsync: args.vsync, screenshot: args.screenshot.clone(), exit_after: args.exit_after, here };
         std::process::exit(play::run_replay(session, r, opts));
     }
 

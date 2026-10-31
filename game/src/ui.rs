@@ -59,6 +59,8 @@ pub struct Hud {
     pub mesh_legend: Option<crate::render::meshview::Legend>,
     /// A line in the middle of the screen (a photo being taken or saved).
     pub banner: Option<String>,
+    /// A watched replay passing a marker: its text, at the top of the screen.
+    pub marker: Option<String>,
 }
 
 fn srgb(c: [f32; 3]) -> egui::Color32 {
@@ -164,6 +166,7 @@ pub fn draw_hud(ctx: &egui::Context, h: &Hud, stats: bool) {
                 }
                 line("WASD move  Space jump/up  Ctrl sneak/down  Shift sprint  G walk/fly  LMB break  RMB place  1-9 block  scroll fly speed".into());
                 line("P photo  Shift+P live photo  T map, photos, teleport  R to ground  V vsync  F water  M mesh colours  Shift+M mesh lines  H hud  F1 look panel  Q quit".into());
+                line("F9 mark what's wrong (draw on it, say why)  F10 start / stop recording  [ ] slower / faster time".into());
             });
     }
     // Under every window (the look panel covers the hotbar's corner, not
@@ -193,6 +196,17 @@ pub fn draw_hud(ctx: &egui::Context, h: &Hud, stats: bool) {
         let r = ctx.content_rect();
         let at = egui::pos2(r.center().x - g.size().x / 2.0, r.max.y - 108.0);
         painter.rect_filled(egui::Rect::from_min_size(at, g.size()).expand(7.0), 4.0, egui::Color32::from_black_alpha(170));
+        painter.galley(at, g, egui::Color32::WHITE);
+    }
+    if let Some(text) = &h.marker {
+        // Beside the stats panel when it is up, not under it.
+        let mut r = ctx.content_rect();
+        if stats {
+            r.min.x = (r.min.x + 790.0).min(r.max.x * 0.5);
+        }
+        let g = painter.layout(text.clone(), egui::FontId::proportional(21.0), egui::Color32::from_rgb(255, 225, 30), r.width() - 40.0);
+        let at = egui::pos2(r.center().x - g.size().x / 2.0, r.min.y + 24.0);
+        painter.rect_filled(egui::Rect::from_min_size(at, g.size()).expand(9.0), 4.0, egui::Color32::from_black_alpha(200));
         painter.galley(at, g, egui::Color32::WHITE);
     }
     // Hotbar along the bottom.

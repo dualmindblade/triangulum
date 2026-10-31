@@ -12,14 +12,22 @@
 //! thread with it open: the map builds on its own threads (`map.rs`), and the
 //! roll is scanned and photos are decoded on threads of their own.
 //!
-//! To add to a photo (B6): the window shows a `Photo`, and whatever a sidecar
-//! holds beyond that is read and written with `photos::edit_sidecar`. The
-//! editor is `ui_photo_editor`; the lightbox is `ui_lightbox`.
+//! The window shows a `Photo`, and whatever a sidecar holds beyond that is read
+//! and written with `photos::edit_sidecar`. The editor is `ui_photo_editor`; the
+//! lightbox is `ui_lightbox`.
+//!
+//! B6: a second list beside the photos, the recordings with their markers, each
+//! with a title and description; Make report gathers a recording or some photos
+//! into one folder (`report.rs`). The annotator (`annotate.rs`) lives here too,
+//! so the T window's Annotate and F9 are one thing: `mark_moment` opens it
+//! whether the window is open or not, and it draws instead of the window.
 
+use crate::annotate::{self, Annotator, Ink, Mark, Outcome, Tool};
 use crate::engine::{Engine, Preset};
 use crate::grid::Planet;
 use crate::map::{self, Base, Built, MapBuilder, River, Sig, Source, View};
 use crate::photos::{self, Photo};
+use crate::report::{self, Moment, Recording};
 use crate::session::{Action, Session};
 use crate::sky::{Clock, Settings};
 use crate::workshop::seek_hour;
@@ -140,6 +148,8 @@ pub struct MenuEnv<'a> {
     /// False while a replay is being watched: going anywhere would break it.
     pub can_move: bool,
     pub day_length_s: f64,
+    /// The recording being written: not one to gather into a report yet.
+    pub recording: Option<&'a Path>,
 }
 
 /// A decoded picture on its way from a thread.
@@ -154,13 +164,49 @@ struct Shown {
     tex: egui::TextureHandle,
 }
 
+/// Which list the side column shows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Tab {
+    Photos,
+    Recordings,
+}
+
+/// What an open annotator is working on.
+enum Job {
+    /// A photo on disk.
+    Photo(PathBuf),
+    /// F9: the moment just grabbed. The app finishes it.
+    Moment(Box<Moment>),
+}
+
+struct Annot {
+    annotator: Annotator,
+    job: Job,
+    /// The picture, on its way from a thread.
+    coming: Option<mpsc::Receiver<Option<egui::ColorImage>>>,
+}
+
+/// An F9 annotator that closed: saved with its marks and comment, or cancelled.
+pub struct Finished {
+    pub moment: Moment,
+    pub saved: Option<(Vec<Mark>, String)>,
+}
+
+/// The Make report dialog.
+struct MakeDialog {
+    title: String,
+    description: String,
+    recording: Option<PathBuf>,
+    photos: Vec<PathBuf>,
+}
+
 pub struct Menu {
     pub open: bool,
     /// The mouse was captured when the window opened; closing gives it back.
     pub recapture: bool,
     dir: PathBuf,
     photos: Vec<Photo>,
-    scanning: Option<mpsc::Receiver<Vec<Photo>>>,
+    scanning: Option<mpsc::Receiver<(Vec<Photo>, Vec<Recording>)>>,
     selected: Option<usize>,
     checked: BTreeSet<usize>,
     confirm_delete: bool,
@@ -197,6 +243,23 @@ pub struct Menu {
     scroll_to_selected: bool,
     /// Where things are on screen: the harness clicks them by name.
     pub spots: HashMap<String, Rect>,
+    /// Where the recordings are.
+    pub replays: PathBuf,
+    tab: Tab,
+    recordings: Vec<Recording>,
+    /// The selected recording, and the selected marker in it.
+    rec_selected: Option<usize>,
+    marker_selected: Option<usize>,
+    /// The annotator, when it is open, and the pen it left off with.
+    annot: Option<Annot>,
+    pen: (Tool, Ink),
+    /// Marks being saved on a photo.
+    saving: Option<mpsc::Receiver<Result<String, String>>>,
+    finished: Option<Finished>,
+    make: Option<MakeDialog>,
+    making: Option<mpsc::Receiver<Result<PathBuf, String>>>,
+    /// The last report made, to show the way to it.
+    pub last_report: Option<PathBuf>,
 }
 
 impl Menu {
@@ -237,6 +300,18 @@ impl Menu {
             recentre: 0,
             scroll_to_selected: false,
             spots: HashMap::new(),
+            replays: photos::replays_dir(),
+            tab: Tab::Photos,
+            recordings: Vec::new(),
+            rec_selected: None,
+            marker_selected: None,
+            annot: None,
+            pen: (Tool::Pen, Ink::Red),
+            saving: None,
+            finished: None,
+            make: None,
+            making: None,
+            last_report: None,
         }
     }
 
@@ -253,6 +328,9 @@ impl Menu {
         self.coords.clear();
         self.view = View::default();
         self.status.clear();
+        self.rec_selected = None;
+        self.marker_selected = None;
+        self.make = None;
         self.rescan();
     }
 
@@ -265,16 +343,77 @@ impl Menu {
 
     fn rescan(&mut self) {
         let (tx, rx) = mpsc::channel();
-        let dir = self.dir.clone();
+        let (dir, replays) = (self.dir.clone(), self.replays.clone());
         std::thread::spawn(move || {
-            let _ = tx.send(photos::scan(&dir));
+            let _ = tx.send((photos::scan(&dir), report::scan_recordings(&replays)));
         });
         self.scanning = Some(rx);
     }
 
-    /// Is a map being built, or the roll being read?
+    /// Is a map being built, the roll being read, or something being written?
     pub fn busy(&self) -> bool {
-        self.builder.building().is_some() || self.scanning.is_some() || self.rivers_coming.is_some() || !self.asked.is_empty()
+        self.builder.building().is_some() || self.scanning.is_some() || self.rivers_coming.is_some() || !self.asked.is_empty() || self.saving.is_some() || self.making.is_some() || self.annot.as_ref().is_some_and(|a| a.coming.is_some())
+    }
+
+    /// Is the annotator open?
+    pub fn annotating(&self) -> bool {
+        self.annot.is_some()
+    }
+
+    pub fn annotator(&mut self) -> Option<&mut Annotator> {
+        self.annot.as_mut().map(|a| &mut a.annotator)
+    }
+
+    /// F9: open the annotator on a moment, over whatever is on screen.
+    pub fn mark_moment(&mut self, moment: Moment) {
+        let mut annotator = moment.annotator();
+        (annotator.tool, annotator.ink) = self.pen;
+        self.annot = Some(Annot { annotator, job: Job::Moment(Box::new(moment)), coming: None });
+    }
+
+    /// The F9 annotator closed: the app takes it from here.
+    pub fn take_finished(&mut self) -> Option<Finished> {
+        self.finished.take()
+    }
+
+    /// The game is quitting with the annotator open on a moment: what's there
+    /// is kept, not lost.
+    pub fn finish_now(&mut self) -> Option<Finished> {
+        if !matches!(self.annot.as_ref().map(|a| &a.job), Some(Job::Moment(_))) {
+            return None;
+        }
+        let a = self.annot.take()?;
+        let Job::Moment(moment) = a.job else { return None };
+        Some(Finished { moment: *moment, saved: Some((a.annotator.marks, a.annotator.comment)) })
+    }
+
+    /// The list showing.
+    pub fn tab(&self) -> Tab {
+        self.tab
+    }
+
+    pub fn recordings(&self) -> &[Recording] {
+        &self.recordings
+    }
+
+    pub fn status(&self) -> &str {
+        &self.status
+    }
+
+    /// The photo the window is on: the selected row of the roll, or the selected
+    /// marker of a recording, which is a photo too.
+    fn current(&self) -> Option<&Photo> {
+        match self.tab {
+            Tab::Photos => self.selected.and_then(|i| self.photos.get(i)),
+            Tab::Recordings => self.recordings.get(self.rec_selected?)?.markers.get(self.marker_selected?)?.photo.as_ref(),
+        }
+    }
+
+    fn current_mut(&mut self) -> Option<&mut Photo> {
+        match self.tab {
+            Tab::Photos => self.selected.and_then(|i| self.photos.get_mut(i)),
+            Tab::Recordings => self.recordings.get_mut(self.rec_selected?)?.markers.get_mut(self.marker_selected?)?.photo.as_mut(),
+        }
     }
 
     /// The photos on the roll.
@@ -302,12 +441,19 @@ impl Menu {
         self.confirm_delete
     }
 
-    /// Esc, one layer at a time: a text field lets go of the keys, then the
-    /// lightbox, the delete question, the selection. False: nothing left, so
-    /// the window shuts.
+    /// Esc, one layer at a time: the annotator (it reads the key itself), a
+    /// text field lets go of the keys, then the Make report dialog, the
+    /// lightbox, the delete question, the selection. False: nothing left, so the
+    /// window shuts.
     pub fn escape(&mut self, typing: bool) -> bool {
+        if self.annot.is_some() {
+            return true;
+        }
         if typing {
             return true; // egui takes the focus away
+        }
+        if self.make.take().is_some() {
+            return true;
         }
         if self.lightbox {
             self.lightbox = false;
@@ -318,8 +464,14 @@ impl Menu {
             self.confirm_delete = false;
             return true;
         }
-        if self.selected.is_some() || self.target.is_some() {
+        if self.marker_selected.is_some() {
+            self.marker_selected = None;
+            self.preview = None;
+            return true;
+        }
+        if self.selected.is_some() || self.target.is_some() || self.rec_selected.is_some() {
             self.selected = None;
+            self.rec_selected = None;
             self.preview = None;
             self.target = None;
             return true;
@@ -329,15 +481,43 @@ impl Menu {
 
     /// Pick up whatever the threads finished.
     fn collect(&mut self, ctx: &egui::Context) {
-        if let Some(Ok(roll)) = self.scanning.as_ref().map(|r| r.try_recv()) {
+        if let Some(Ok((roll, recordings))) = self.scanning.as_ref().map(|r| r.try_recv()) {
             self.scanning = None;
-            // Keep the selection on the same photo.
+            // Keep the selection on the same photo and the same recording.
             let keep = self.selected.and_then(|i| self.photos.get(i)).map(|p| p.png.clone());
             self.photos = roll;
             self.selected = keep.and_then(|png| self.photos.iter().position(|p| p.png == png));
+            let keep = self.rec_selected.and_then(|i| self.recordings.get(i)).map(|r| r.path.clone());
+            self.recordings = recordings;
+            self.rec_selected = keep.and_then(|p| self.recordings.iter().position(|r| r.path == p));
+            if self.rec_selected.is_none() {
+                self.marker_selected = None;
+            }
             self.checked.clear();
             if self.status.is_empty() {
-                self.status = format!("{} photos", self.photos.len());
+                let plural = |n: usize| if n == 1 { "" } else { "s" };
+                self.status = format!("{} photo{}, {} recording{}", self.photos.len(), plural(self.photos.len()), self.recordings.len(), plural(self.recordings.len()));
+            }
+        }
+        if let Some(Ok(r)) = self.saving.as_ref().map(|r| r.try_recv()) {
+            self.saving = None;
+            self.status = match r {
+                Ok(name) => format!("Saved the marks on {name}"),
+                Err(e) => format!("Marks not saved: {e}"),
+            };
+            self.preview = None;
+            self.full = None;
+            self.rescan();
+        }
+        if let Some(Ok(r)) = self.making.as_ref().map(|r| r.try_recv()) {
+            self.making = None;
+            match r {
+                Ok(folder) => {
+                    self.status = format!("Report ready: {}", folder.display());
+                    println!("report: {}", folder.display());
+                    self.last_report = Some(folder);
+                }
+                Err(e) => self.status = format!("No report: {e}"),
             }
         }
         if let Some(Ok(r)) = self.rivers_coming.as_ref().map(|r| r.try_recv()) {
@@ -385,7 +565,7 @@ impl Menu {
     /// Where the Teleport button goes. A selected photo first, then a target
     /// on the map or typed.
     fn destination(&self, env: &MenuEnv) -> Option<Go> {
-        if let Some(p) = self.selected.and_then(|i| self.photos.get(i)) {
+        if let Some(p) = self.current() {
             let here = Identity::of(&env.engine.config);
             let same = p.world.as_ref() == Some(&here) && p.bake_sha256.as_deref() == Some(env.bake_sha256);
             let time = self.restore_time.then(|| match (p.clock_seconds, p.day_length_s, p.local_hour) {
@@ -408,10 +588,16 @@ impl Menu {
     /// Draw the window. Returns where to go when the player commits; the
     /// window shuts itself then.
     pub fn ui(&mut self, ctx: &egui::Context, env: &MenuEnv) -> Option<Go> {
+        if self.open {
+            self.collect(ctx);
+        }
+        if self.annot.is_some() {
+            self.ui_annotator(ctx);
+            return None;
+        }
         if !self.open {
             return None;
         }
-        self.collect(ctx);
         let fresh = self.source.as_ref().is_none_or(|s| !s.current(env.engine));
         if fresh {
             self.source = Some(Arc::new(Source::new(env.engine)));
@@ -459,10 +645,72 @@ impl Menu {
         });
         self.ui_lightbox(ctx, screen);
         self.ui_confirm_delete(ctx);
+        self.ui_make_report(ctx);
         if go.is_some() {
             self.hide();
         }
         go
+    }
+
+    /// The annotator, in place of the window.
+    fn ui_annotator(&mut self, ctx: &egui::Context) {
+        let Some(a) = &mut self.annot else { return };
+        if let Some(Ok(image)) = a.coming.as_ref().map(|r| r.try_recv()) {
+            a.coming = None;
+            match image {
+                Some(i) => a.annotator.set_picture(i),
+                None => {
+                    self.status = "That picture could not be read.".into();
+                    self.annot = None;
+                    return;
+                }
+            }
+        }
+        let outcome = a.annotator.ui(ctx);
+        for (k, v) in &a.annotator.spots {
+            self.spots.insert(k.clone(), *v);
+        }
+        self.pen = (a.annotator.tool, a.annotator.ink);
+        let Some(outcome) = outcome else { return };
+        let Some(a) = self.annot.take() else { return };
+        for k in a.annotator.spots.keys() {
+            self.spots.remove(k);
+        }
+        let saved = (outcome == Outcome::Save).then_some((a.annotator.marks, a.annotator.comment));
+        match a.job {
+            Job::Moment(moment) => self.finished = Some(Finished { moment: *moment, saved }),
+            Job::Photo(png) => {
+                let Some((marks, comment)) = saved else { return };
+                if let Some(p) = self.current_mut().filter(|p| p.png == png) {
+                    p.notes = comment.clone();
+                }
+                let (tx, rx) = mpsc::channel();
+                std::thread::spawn(move || {
+                    let name = png.file_name().map_or(String::new(), |n| n.to_string_lossy().into_owned());
+                    let _ = tx.send(annotate::save_to_photo(&png, &marks, &comment).map(|()| name));
+                });
+                self.saving = Some(rx);
+            }
+        }
+    }
+
+    /// Annotate: the original picture, with whatever marks it has, ready to go
+    /// on with. Read off this thread.
+    fn start_annotate(&mut self) {
+        let Some(p) = self.current().cloned() else { return };
+        let side: serde_json::Value = std::fs::read_to_string(p.png.with_extension("json")).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default();
+        let (w, h) = (side["view"]["width"].as_u64().unwrap_or(1920) as u32, side["view"]["height"].as_u64().unwrap_or(1080) as u32);
+        let mut annotator = Annotator::new(format!("Annotate {}", p.label()), "The original stays as it is. The marks go beside it.", "Save", w, h);
+        (annotator.tool, annotator.ink) = self.pen;
+        annotator.marks = annotate::marks_of(&side);
+        annotator.comment = p.notes.clone();
+        let (tx, rx) = mpsc::channel();
+        let path = p.png.clone();
+        std::thread::spawn(move || {
+            let image = crate::render::read_png(&path.to_string_lossy()).ok().map(|(w, h, rgba)| annotate::colour_image(&rgba, w, h));
+            let _ = tx.send(image);
+        });
+        self.annot = Some(Annot { annotator, job: Job::Photo(p.png), coming: Some(rx) });
     }
 
     fn ui_top(&mut self, ui: &mut egui::Ui) {
@@ -489,6 +737,14 @@ impl Menu {
         });
         ui.horizontal(|ui| {
             ui.label(egui::RichText::new(&self.status).strong());
+            if let Some(folder) = self.last_report.clone() {
+                if ui.small_button("Copy path").on_hover_text("Puts the report folder's path on the clipboard.").clicked() {
+                    ui.ctx().copy_text(folder.display().to_string());
+                }
+                if ui.small_button("Show folder").on_hover_text("Opens the report folder. Send the whole folder.").clicked() {
+                    show_folder(&folder);
+                }
+            }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.label(egui::RichText::new("Scroll zooms, drag pans, double-click resets, click sets a target. Esc backs out.").small().weak());
             });
@@ -575,6 +831,16 @@ impl Menu {
                 paint.circle_stroke(pos, if sel { 8.0 } else { 5.5 }, Stroke::new(1.5, Color32::from_black_alpha(160)));
             }
         }
+        // The selected marker of a recording.
+        if self.tab == Tab::Recordings
+            && let Some(p) = self.current()
+        {
+            let pos = bounds.project(rect, p.lat, p.lon);
+            if in_rect(pos) {
+                paint.circle_filled(pos, 6.0, Color32::from_rgb(255, 230, 90));
+                paint.circle_stroke(pos, 8.0, Stroke::new(1.5, Color32::from_black_alpha(160)));
+            }
+        }
         // You are here.
         let here = bounds.project(rect, env.here.0, env.here.1);
         if in_rect(here) {
@@ -599,6 +865,7 @@ impl Menu {
             match self.marker_at(rect, click) {
                 Some(i) => {
                     self.selected = Some(i);
+                    self.tab = Tab::Photos;
                     self.target = None;
                     self.coords.clear();
                     self.scroll_to_selected = true;
@@ -659,7 +926,7 @@ impl Menu {
     /// The selected photo over the map's corner: painted, not laid out, so
     /// selecting one can't change the window's size.
     fn ui_preview(&mut self, ui: &mut egui::Ui, rect: Rect) {
-        let Some(png) = self.selected.and_then(|i| self.photos.get(i)).map(|p| p.png.clone()) else { return };
+        let Some(png) = self.current().map(|p| p.shown().to_path_buf()) else { return };
         self.want_picture(&png, PREVIEW_PX);
         let Some(shown) = self.preview.as_ref().filter(|s| s.png == png) else { return };
         let ts = shown.tex.size_vec2();
@@ -694,8 +961,21 @@ impl Menu {
                 }
             });
             ui.separator();
-            self.ui_list(ui, list);
-            if self.selected.is_some() {
+            ui.horizontal(|ui| {
+                for (tab, name, spot) in [(Tab::Photos, format!("Photos ({})", self.photos.len()), "tab-photos"), (Tab::Recordings, format!("Recordings ({})", self.recordings.len()), "tab-recordings")] {
+                    let r = ui.selectable_label(self.tab == tab, egui::RichText::new(name).strong());
+                    self.spots.insert(spot.to_string(), r.rect);
+                    if r.clicked() && self.tab != tab {
+                        self.tab = tab;
+                        self.preview = None;
+                    }
+                }
+            });
+            match self.tab {
+                Tab::Photos => self.ui_list(ui, list),
+                Tab::Recordings => self.ui_recordings(ui, list, env),
+            }
+            if self.current().is_some() {
                 ui.separator();
                 self.ui_photo_editor(ui);
             }
@@ -709,7 +989,6 @@ impl Menu {
 
     fn ui_list(&mut self, ui: &mut egui::Ui, height: f32) {
         ui.horizontal(|ui| {
-            ui.strong(format!("Photos ({})", self.photos.len()));
             if ui.small_button("All").on_hover_text("Tick every photo.").clicked() {
                 self.checked = (0..self.photos.len()).collect();
             }
@@ -721,6 +1000,13 @@ impl Menu {
             self.spots.insert("delete".to_string(), r.rect);
             if r.clicked() {
                 self.confirm_delete = true;
+            }
+            // The ticked photos, or the one selected.
+            let set: Vec<PathBuf> = if n > 0 { self.checked.iter().filter_map(|&i| self.photos.get(i)).map(|p| p.png.clone()).collect() } else { self.selected.and_then(|i| self.photos.get(i)).map(|p| p.png.clone()).into_iter().collect() };
+            let r = ui.add_enabled(!set.is_empty(), egui::Button::new("Make report...").small()).on_hover_text("Gathers the ticked photos (or the selected one), with their marks, into one folder to send.");
+            self.spots.insert("report-photos".to_string(), r.rect);
+            if r.clicked() {
+                self.make = Some(MakeDialog { title: String::new(), description: String::new(), recording: None, photos: set });
             }
         });
         let row = 26.0;
@@ -748,7 +1034,7 @@ impl Menu {
                         }
                     }
                     let p = &self.photos[i];
-                    let r = ui.selectable_label(sel, p.label());
+                    let r = ui.selectable_label(sel, if p.annotated.is_some() { format!("{} (marked)", p.label()) } else { p.label() });
                     self.spots.insert(format!("photo-{i}"), r.rect);
                     if scroll_to == Some(i) {
                         r.scroll_to_me(Some(egui::Align::Center));
@@ -772,16 +1058,132 @@ impl Menu {
         });
     }
 
-    /// Title and notes of the selected photo, kept in its sidecar.
-    fn ui_photo_editor(&mut self, ui: &mut egui::Ui) {
-        let Some(sel) = self.selected.filter(|&i| i < self.photos.len()) else { return };
+    /// The recordings: each with its length and how many moments are marked.
+    /// The selected one shows its title and description, its markers, and the
+    /// way to send it.
+    fn ui_recordings(&mut self, ui: &mut egui::Ui, height: f32, env: &MenuEnv) {
+        if self.recordings.is_empty() {
+            ui.label(egui::RichText::new("No recordings yet. F10 starts one, and F9 marks a moment in it.").small().weak());
+            return;
+        }
+        let row = 26.0;
+        let list = ((height - 430.0).max(row * 3.0)).min(row * self.recordings.len() as f32 + 8.0);
+        let n = self.recordings.len();
+        egui::ScrollArea::vertical().id_salt("menu-recordings").max_height(list).auto_shrink([false, true]).show_rows(ui, row, n, |ui, range| {
+            for i in range {
+                let rec = &self.recordings[i];
+                let label = format!("{}  {}  {} marked", rec.label(), clock(rec.seconds()), rec.markers.len());
+                let mut hover = rec.name.clone();
+                if let Some(e) = &rec.error {
+                    hover.push_str(&format!("\n\nCould not be read: {e}"));
+                }
+                if !rec.description.trim().is_empty() {
+                    hover.push_str(&format!("\n\n{}", rec.description));
+                }
+                let r = ui.selectable_label(self.rec_selected == Some(i), label);
+                self.spots.insert(format!("rec-{i}"), r.rect);
+                if r.on_hover_text(hover).clicked() {
+                    self.rec_selected = Some(i);
+                    self.marker_selected = None;
+                    self.preview = None;
+                }
+            }
+        });
+        let Some(i) = self.rec_selected.filter(|&i| i < n) else { return };
+        ui.separator();
         ui.label("Title");
-        let t = ui.add(egui::TextEdit::singleline(&mut self.photos[sel].title).hint_text("A name for this shot").desired_width(f32::INFINITY));
+        let t = ui.add(egui::TextEdit::singleline(&mut self.recordings[i].title).hint_text("A name for this recording").desired_width(f32::INFINITY));
+        self.spots.insert("rec-title".to_string(), t.rect);
+        ui.label("Description");
+        let d = ui.add(egui::TextEdit::multiline(&mut self.recordings[i].description).hint_text("What happens in it").desired_rows(2).desired_width(f32::INFINITY));
+        self.spots.insert("rec-description".to_string(), d.rect);
+        let mut save = t.lost_focus() || d.lost_focus();
+        let live = env.recording.is_some_and(|p| p == self.recordings[i].path);
+        ui.horizontal(|ui| {
+            let r = ui.button("Save");
+            self.spots.insert("rec-save".to_string(), r.rect);
+            save |= r.clicked();
+            let r = ui.add_enabled(!live && self.recordings[i].error.is_none(), egui::Button::new("Make report...")).on_hover_text("Gathers this recording and its marked shots into one folder to send.").on_disabled_hover_text("Stop the recording first (F10).");
+            self.spots.insert("make-report".to_string(), r.rect);
+            if r.clicked() {
+                let rec = &self.recordings[i];
+                self.make = Some(MakeDialog { title: rec.title.clone(), description: rec.description.clone(), recording: Some(rec.path.clone()), photos: Vec::new() });
+            }
+        });
+        if save {
+            self.status = match report::save_recording_notes(&self.recordings[i]) {
+                Ok(()) => format!("Saved the notes of {}", self.recordings[i].name),
+                Err(e) => format!("Notes not saved: {e}"),
+            };
+        }
+        for m in 0..self.recordings[i].markers.len() {
+            let row = &self.recordings[i].markers[m];
+            let text = row.text().lines().next().unwrap_or("").to_string();
+            let label = format!("{}  {}", clock(row.marker.seconds()), if text.trim().is_empty() { "(no text)" } else { text.trim() });
+            let hover = format!("Marker {}, step {}\n\n{}", m + 1, row.marker.step, row.text());
+            let r = ui.selectable_label(self.marker_selected == Some(m), label);
+            self.spots.insert(format!("marker-{m}"), r.rect);
+            if r.on_hover_text(hover).clicked() {
+                self.marker_selected = Some(m);
+                self.preview = None;
+            }
+        }
+    }
+
+    /// Make report: a title and description, then a thread does the copying.
+    fn ui_make_report(&mut self, ctx: &egui::Context) {
+        let Some(mut d) = self.make.take() else { return };
+        let mut go = false;
+        let mut cancel = false;
+        let what = match &d.recording {
+            Some(r) => format!("Gathers {} and its marked shots into one folder under interchange/reports/.", r.file_name().map_or(String::new(), |n| n.to_string_lossy().into_owned())),
+            None => format!("Gathers {} photo{} with their marks into one folder under interchange/reports/.", d.photos.len(), if d.photos.len() == 1 { "" } else { "s" }),
+        };
+        let modal = egui::Modal::new(egui::Id::new("make-report")).show(ctx, |ui| {
+            ui.set_width(520.0);
+            ui.strong("Make a report");
+            ui.label(egui::RichText::new(what).small().weak());
+            ui.label("Title");
+            let r = ui.add(egui::TextEdit::singleline(&mut d.title).hint_text("What's wrong, in a few words").desired_width(f32::INFINITY));
+            self.spots.insert("report-title".to_string(), r.rect);
+            ui.label("Description");
+            let r = ui.add(egui::TextEdit::multiline(&mut d.description).hint_text("Anything else to say").desired_rows(3).desired_width(f32::INFINITY));
+            self.spots.insert("report-description".to_string(), r.rect);
+            ui.horizontal(|ui| {
+                let r = ui.button(egui::RichText::new("Make report").strong());
+                self.spots.insert("report-go".to_string(), r.rect);
+                go = r.clicked();
+                cancel = ui.button("Cancel").clicked();
+            });
+        });
+        if go {
+            let req = report::Request { title: d.title, description: d.description, recording: d.recording, photos: d.photos };
+            let (tx, rx) = mpsc::channel();
+            let dir = self.dir.clone();
+            std::thread::spawn(move || {
+                let _ = tx.send(report::make(&dir, &req));
+            });
+            self.making = Some(rx);
+            self.status = "Making the report...".into();
+        } else if !cancel && !modal.should_close() {
+            self.make = Some(d);
+        }
+    }
+
+    /// Title and notes of the selected photo or marker, kept in its sidecar.
+    fn ui_photo_editor(&mut self, ui: &mut egui::Ui) {
+        let Some(mut p) = self.current().cloned() else { return };
+        ui.label("Title");
+        let t = ui.add(egui::TextEdit::singleline(&mut p.title).hint_text("A name for this shot").desired_width(f32::INFINITY));
         self.spots.insert("title".to_string(), t.rect);
         ui.label("Notes");
-        let n = ui.add(egui::TextEdit::multiline(&mut self.photos[sel].notes).hint_text("Notes about this shot").desired_rows(2).desired_width(f32::INFINITY));
+        let n = ui.add(egui::TextEdit::multiline(&mut p.notes).hint_text("Notes about this shot").desired_rows(2).desired_width(f32::INFINITY));
         self.spots.insert("notes".to_string(), n.rect);
         let mut save = t.lost_focus() || n.lost_focus();
+        if let Some(q) = self.current_mut() {
+            q.title = p.title.clone();
+            q.notes = p.notes.clone();
+        }
         ui.horizontal(|ui| {
             let r = ui.button("Save");
             self.spots.insert("save".to_string(), r.rect);
@@ -789,18 +1191,23 @@ impl Menu {
             let r = ui.button("Repro").on_hover_text("Write a script beside the photo that takes this frame again, for a bug report.");
             self.spots.insert("repro".to_string(), r.rect);
             if r.clicked() {
-                self.status = match photos::repro(&self.photos[sel].png) {
+                self.status = match photos::repro(&p.png) {
                     Ok(r) => {
-                        println!("repro of {}:\n  {}\n  {}", self.photos[sel].name, r.command, r.at_command);
+                        println!("repro of {}:\n  {}\n  {}", p.name, r.command, r.at_command);
                         format!("Repro written: {}", r.script.file_name().map_or(String::new(), |n| n.to_string_lossy().into_owned()))
                     }
                     Err(e) => format!("No repro: {e}"),
                 };
             }
+            let r = ui.button("Annotate").on_hover_text("Draw on this picture and say what's wrong. The original stays as it is.");
+            self.spots.insert("annotate".to_string(), r.rect);
+            if r.clicked() {
+                self.start_annotate();
+            }
         });
         if save {
-            self.status = match photos::save_notes(&self.photos[sel]) {
-                Ok(()) => format!("Saved the notes of {}", self.photos[sel].name),
+            self.status = match photos::save_notes(&p) {
+                Ok(()) => format!("Saved the notes of {}", p.name),
                 Err(e) => format!("Notes not saved: {e}"),
             };
         }
@@ -842,15 +1249,15 @@ impl Menu {
         if !self.lightbox {
             return;
         }
-        let Some(p) = self.selected.and_then(|i| self.photos.get(i)).cloned() else {
+        let Some(p) = self.current().cloned() else {
             self.lightbox = false;
             return;
         };
-        self.want_picture(&p.png, LIGHTBOX_PX);
+        self.want_picture(p.shown(), LIGHTBOX_PX);
         let full = &self.full;
         let modal = egui::Modal::new(egui::Id::new("photo-lightbox")).backdrop_color(Color32::from_black_alpha(170)).show(ctx, |ui| {
             let (max_w, max_h) = (screen.width() * 0.86, (screen.height() * 0.86 - 70.0).max(120.0));
-            match full.as_ref().filter(|s| s.png == p.png) {
+            match full.as_ref().filter(|s| s.png == p.shown()) {
                 Some(s) => {
                     let ts = s.tex.size_vec2();
                     let k = (max_w / ts.x).min(max_h / ts.y).min(2.0);
@@ -926,6 +1333,19 @@ fn pos(x: f32, y: f32) -> Pos2 {
     egui::pos2(x, y)
 }
 
+/// Seconds as m:ss.s.
+fn clock(seconds: f64) -> String {
+    let t = seconds.max(0.0);
+    format!("{}:{:04.1}", (t / 60.0) as u64, t % 60.0)
+}
+
+/// Open a folder in the desktop's file manager.
+fn show_folder(folder: &Path) {
+    if cfg!(windows) {
+        let _ = std::process::Command::new("explorer").arg(folder).spawn();
+    }
+}
+
 /// A PNG as an egui picture, stepped down to at most `max_w` pixels wide.
 fn decode(path: &Path, max_w: usize) -> Option<egui::ColorImage> {
     let (w, h, rgba) = crate::render::read_png(&path.to_string_lossy()).ok()?;
@@ -990,8 +1410,13 @@ impl Rig {
     }
 
     pub fn key(&mut self, key: egui::Key) {
-        self.events.push(egui::Event::Key { key, physical_key: Some(key), pressed: true, repeat: false, modifiers: Default::default() });
-        self.events.push(egui::Event::Key { key, physical_key: Some(key), pressed: false, repeat: false, modifiers: Default::default() });
+        self.key_with(key, Default::default());
+    }
+
+    /// A key with Ctrl or Shift down.
+    pub fn key_with(&mut self, key: egui::Key, modifiers: egui::Modifiers) {
+        self.events.push(egui::Event::Key { key, physical_key: Some(key), pressed: true, repeat: false, modifiers });
+        self.events.push(egui::Event::Key { key, physical_key: Some(key), pressed: false, repeat: false, modifiers });
     }
 }
 

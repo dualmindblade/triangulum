@@ -1,6 +1,13 @@
 //! The windowed app: the player (walk or fly), streaming, rendering, the
 //! egui HUD, block breaking and placing, photos, the T window, and autosave.
+//!
+//! F9 (B6): the next frame is drawn clean and read back as a `Moment`, the mouse
+//! comes free, and the annotator takes the screen. Steps stop (`Gate`), the
+//! world isn't drawn, so a pen stroke costs one egui pass and nothing else, and
+//! closing it puts everything back. Nothing it does reaches the session except
+//! the marker, written when it's saved, at the step it was grabbed.
 
+use crate::annotate::Gate;
 use crate::camera::Camera;
 use crate::controls::{Controls, Route, route_key};
 use crate::engine::{Engine, Preset};
@@ -10,10 +17,12 @@ use crate::photos::{self, Shot, ShotInfo, ShotWriter};
 use crate::player::Mode;
 use crate::render::{DrawRecord, Renderer};
 use crate::replay::ChunkDigests;
+use crate::report::{Grab, Moment, Ticker};
 use crate::session::Session;
 use crate::sim::draw::FallingDraws;
 use crate::stream::Streamer;
 use crate::ui::{EguiPaint, Hud, draw_hud, outline_segments};
+use crate::visual::{self, Verdict, Visual};
 use crate::workshop::Workshop;
 use std::collections::VecDeque;
 use std::path::PathBuf;
@@ -44,6 +53,8 @@ const SETTLE_FRAMES: u32 = 10;
 const SETTLE_TIMEOUT: Duration = Duration::from_secs(20);
 /// How long the line about a saved photo stays up.
 const BANNER_LIFE: Duration = Duration::from_secs(4);
+/// While recording, how often to see whether the look or a texture changed.
+const VISUAL_EVERY: Duration = Duration::from_millis(500);
 
 /// P was pressed: the world holds still, and streaming runs, until this view
 /// has finished loading. No steps pass, so neither the simulation nor a replay
@@ -92,6 +103,13 @@ struct App {
     photo: Option<PendingPhoto>,
     /// Shift+P: the next frame, as drawn.
     live_shot: bool,
+    /// F9 was pressed: grab the next frame and open the annotator.
+    mark_wanted: bool,
+    /// The game's side of the annotator (stopped steps, swallowed input), and
+    /// whether the mouse goes back to the game afterwards.
+    gate: Gate,
+    mark_recapture: bool,
+    visual_checked: Instant,
     writer: ShotWriter,
     digests: ChunkDigests,
     banner: Option<(Instant, String)>,
@@ -122,6 +140,9 @@ struct WatchedReplay {
     runner: crate::replay::Runner<'static>,
     acc: f64,
     reported: bool,
+    ticker: Ticker,
+    /// The look, against the recording's.
+    visual: Verdict,
 }
 
 impl App {
@@ -218,12 +239,105 @@ impl App {
         let (lat, lon) = Planet::lat_lon_deg(cam.pos);
         let alt = cam.pos.length() - self.session.engine.planet.radius;
         let png = path.unwrap_or_else(|| photos::free_path(&photos::dir(), &photos::shot_stem(lat, lon, alt, cam.heading.to_degrees(), cam.pitch.to_degrees(), how.kind != "settled")));
-        let mut ms: Vec<f64> = self.frames.iter().map(|f| f.1).collect();
-        ms.sort_by(|a, b| a.total_cmp(b));
-        let frame_ms = (!ms.is_empty()).then(|| (ms.iter().sum::<f64>() / ms.len() as f64, ms[((ms.len() - 1) as f64 * 0.95).round() as usize]));
+        let frame_ms = self.frame_stats();
         let info = ShotInfo { kind: how.kind, settled: how.settled, settle_s: how.settle_s, settle_frames: how.settle_frames, width, height, hud: how.hud, mesh_view: self.workshop.mesh_view, preview_world: self.workshop.previewing(), frame_ms };
         let sidecar = photos::sidecar(&self.session, cam, &gfx.gpu.sky.settings, self.workshop.look(), &mut self.digests, &png, &info);
         self.writer.write(Shot { png, width, height, rgba, sidecar });
+    }
+
+    /// (average, 95th percentile) frame time over the last few seconds.
+    fn frame_stats(&self) -> Option<(f64, f64)> {
+        let mut ms: Vec<f64> = self.frames.iter().map(|f| f.1).collect();
+        ms.sort_by(|a, b| a.total_cmp(b));
+        (!ms.is_empty()).then(|| (ms.iter().sum::<f64>() / ms.len() as f64, ms[((ms.len() - 1) as f64 * 0.95).round() as usize]))
+    }
+
+    /// What the picture is made of now, for the recording (`visual.rs`): a new
+    /// value only when something changed, and a recording writes that down.
+    fn refresh_visual(&mut self, now: bool) {
+        if !now && self.visual_checked.elapsed() < VISUAL_EVERY {
+            return;
+        }
+        self.visual_checked = Instant::now();
+        let e = &self.session.engine;
+        let v = Visual::of(self.workshop.look(), &e.registry, visual::texture_ids(self.workshop.texture_set()), &self.workshop.mesh_view.name(), e.mesh_opts.ao, e.mesh_opts.split, e.skirt);
+        if self.session.visual.as_deref() != Some(&v) {
+            self.session.visual = Some(Arc::new(v));
+        }
+    }
+
+    /// F9, a frame later: the moment, grabbed, and the annotator open on it.
+    fn open_mark(&mut self, rgba: Vec<u8>, width: u32, height: u32, cam: &Camera) {
+        self.mark_wanted = false;
+        self.refresh_visual(true);
+        let frame_ms = self.frame_stats();
+        let Some(gfx) = &self.gfx else { return };
+        let moment = Moment::grab(Grab { session: &self.session, cam, settings: &gfx.gpu.sky.settings, look: self.workshop.look(), digests: &mut self.digests, rgba, width, height, mesh_view: self.workshop.mesh_view, preview_world: self.workshop.previewing(), frame_ms });
+        self.gate.open();
+        self.mark_recapture = self.captured;
+        self.set_capture(false);
+        crate::ui::apply_panel_style(&self.egui_ctx);
+        self.menu.mark_moment(moment);
+    }
+
+    /// The annotator closed: back to the game, with the marker if it was saved.
+    fn finish_mark(&mut self, f: menu::Finished) {
+        self.gate.close();
+        if self.mark_recapture {
+            self.set_capture(true);
+        }
+        let now = Instant::now();
+        let Some((marks, comment)) = f.saved else {
+            self.banner = Some((now, "Nothing saved".to_string()));
+            return;
+        };
+        let text = match &f.moment.recording {
+            Some((_, n)) => format!("Marker {n} saved, step {}", f.moment.step),
+            None => "Marked photo saved".to_string(),
+        };
+        let (shot, marks) = f.moment.commit(&mut self.session, marks, comment);
+        self.writer.write_marked(shot, marks);
+        self.banner = Some((now, text));
+    }
+
+    /// How many frames may queue up for the screen. One with the annotator
+    /// open: the pen is under the player's eye, next to the mouse pointer.
+    fn set_frame_latency(&mut self, frames: u32) {
+        let Some(gfx) = &mut self.gfx else { return };
+        if gfx.config.desired_maximum_frame_latency != frames {
+            gfx.config.desired_maximum_frame_latency = frames;
+            self.configure_surface();
+        }
+    }
+
+    /// A frame with the annotator open: only that. No world is drawn behind a
+    /// full-screen panel, so a stroke costs one egui pass.
+    fn annotate_frame(&mut self) {
+        self.set_frame_latency(1);
+        let engine = self.session.engine.clone();
+        let here = Planet::lat_lon_deg(self.session.player.pos);
+        let recording = self.session.recorder.as_ref().map(|r| r.path().to_path_buf());
+        let Some(gfx) = &mut self.gfx else { return };
+        let frame = match gfx.surface.get_current_texture() {
+            wgpu::CurrentSurfaceTexture::Success(t) | wgpu::CurrentSurfaceTexture::Suboptimal(t) => t,
+            _ => {
+                self.configure_surface();
+                return;
+            }
+        };
+        let view = frame.texture.create_view(&Default::default());
+        gfx.gpu.clear(&view);
+        let raw = gfx.egui_state.take_egui_input(&gfx.window);
+        let env = MenuEnv { engine: &engine, bake_sha256: &self.session.bake_sha256, presets: &self.presets, here, can_move: self.replay.is_none(), day_length_s: gfx.gpu.sky.settings.day_length_s, recording: recording.as_deref() };
+        let menu = &mut self.menu;
+        let full = self.egui_ctx.run_ui(raw, |ui| {
+            menu.ui(ui.ctx(), &env);
+        });
+        gfx.egui_state.handle_platform_output(&gfx.window, full.platform_output);
+        let prims = self.egui_ctx.tessellate(full.shapes, full.pixels_per_point);
+        gfx.egui_paint.paint(&gfx.gpu.device, &gfx.gpu.queue, &view, (gfx.config.width, gfx.config.height), full.pixels_per_point, &prims, &full.textures_delta);
+        gfx.window.pre_present_notify();
+        gfx.gpu.queue.present(frame);
     }
 
     /// What the line on screen says now.
@@ -257,11 +371,15 @@ impl App {
                 }
             }
         } else {
-            let path = path.unwrap_or_else(|| crate::replay::default_path(&self.session.engine.config.name));
+            let path = path.unwrap_or_else(|| {
+                let name = crate::replay::default_path(&self.session.engine.config.name);
+                photos::replays_dir().join(name.file_name().unwrap_or_default())
+            });
+            self.refresh_visual(true);
             match self.session.start_recording(&path, "recorded in the app (F10)") {
                 Ok(p) => {
-                    self.save_note = format!("RECORDING replay (F10 stops): {}", p.display());
-                    println!("recording a replay to {} (F10 stops)", p.display());
+                    self.save_note = format!("RECORDING replay (F9 marks a moment, F10 stops): {}", p.display());
+                    println!("recording a replay to {} (F9 marks a moment, F10 stops)", p.display());
                 }
                 Err(e) => {
                     self.save_note = format!("REPLAY FAILED: {e}");
@@ -276,11 +394,15 @@ impl App {
         let Some(gfx) = &self.gfx else { return };
         let speed = self.session.sky.speed;
         self.title_speed = speed;
-        let rec = if self.session.recording() { " | REC replay (F10 stops)" } else { "" };
+        let rec = if self.session.recording() { " | REC replay (F9 marks, F10 stops)" } else { "" };
         gfx.window.set_title(&format!("Triangulum | time {speed}x ([ slower, ] faster){rec}"));
     }
 
     fn save_on_exit(&mut self) {
+        // The window closed on an open annotator: what's there is kept.
+        if let Some(f) = self.menu.finish_now() {
+            self.finish_mark(f);
+        }
         if self.session.recording() {
             self.toggle_recording();
         }
@@ -298,8 +420,10 @@ impl App {
         self.last = now;
         // Fixed 60 Hz steps (the same steps the harness and a replay take):
         // the queued inputs go in at the next step, in order (M2c). None while
-        // a photo waits for the world to settle.
-        if self.photo.is_some() {
+        // a photo waits for the world to settle, or a moment is being marked.
+        if self.photo.is_some() || self.mark_wanted {
+        } else if self.gate.is_open() {
+            self.gate.frame(&mut self.controls, &mut self.session, dt);
         } else if let Some(w) = &mut self.replay {
             // A watched replay: its own inputs, at real time.
             w.acc += dt;
@@ -315,10 +439,15 @@ impl App {
                 w.reported = true;
                 let r = &w.runner.report;
                 println!("{}", r.text());
-                self.save_note = if r.ok() { format!("replay finished at step {}: reproduced exactly", r.steps) } else { format!("replay DIVERGED at step {} (see the console)", r.first.as_ref().map_or(0, |d| d.step)) };
+                println!("{}", w.visual.text());
+                let look = format!("look {}", w.visual.reproduced.name());
+                self.save_note = if r.ok() { format!("replay finished at step {}: simulation reproduced exactly; {look}", r.steps) } else { format!("replay DIVERGED at step {} (see the console)", r.first.as_ref().map_or(0, |d| d.step)) };
             }
         } else {
-            self.controls.frame(&mut self.session, dt);
+            self.gate.frame(&mut self.controls, &mut self.session, dt);
+        }
+        if self.session.recording() {
+            self.refresh_visual(false);
         }
         if let Some(gfx) = &mut self.gfx {
             gfx.gpu.sky.clock = self.session.sky;
@@ -348,6 +477,14 @@ impl App {
             self.workshop.say(text.clone());
             self.banner = Some((now, text));
         }
+        if self.menu.annotating() {
+            self.annotate_frame();
+            if let Some(f) = self.menu.take_finished() {
+                self.finish_mark(f);
+            }
+            return;
+        }
+        self.set_frame_latency(2);
         let cam = self.photo.as_ref().map_or_else(|| self.controls.camera(&self.session.player), |p| p.cam);
 
         let (Some(gfx), Some(streamer)) = (&mut self.gfx, &mut self.streamer) else { return };
@@ -390,6 +527,13 @@ impl App {
                 clean = Some((gfx.gpu.read_rgba(), Taken { kind: "settled", settled, settle_s: waited.as_secs_f64(), settle_frames: p.frames, hud: false }));
             }
         }
+        // F9: this frame again, clean, as it stands.
+        let mut marked = None;
+        if self.mark_wanted {
+            gfx.gpu.sky.set_observer(cam.pos, !engine.hide_water && engine.world.is_submerged(cam.pos));
+            gfx.gpu.render(&uni, &self.opaque, water, None);
+            marked = Some(gfx.gpu.read_rgba());
+        }
 
         // HUD (crosshair, outline and hotbar always; stats on H).
         let (w, h) = (gfx.config.width, gfx.config.height);
@@ -400,10 +544,12 @@ impl App {
             let mut hud = self.hud_info(gpu_ms, &cam, aspect, w, h);
             hud.hotbar_tex = self.workshop.hotbar_thumbs(&self.egui_ctx, &self.session.engine.hotbar);
             hud.banner = self.banner_text();
+            hud.marker = self.replay.as_ref().and_then(|r| r.ticker.line(r.runner.step()));
             let stats = self.show_stats;
             let live = self.live_shot;
+            let recording = self.session.recorder.as_ref().map(|r| r.path().to_path_buf());
             let (workshop, menu) = (&mut self.workshop, &mut self.menu);
-            let env = MenuEnv { engine: &engine, bake_sha256: &self.session.bake_sha256, presets: &self.presets, here: Planet::lat_lon_deg(cam.pos), can_move: self.replay.is_none(), day_length_s };
+            let env = MenuEnv { engine: &engine, bake_sha256: &self.session.bake_sha256, presets: &self.presets, here: Planet::lat_lon_deg(cam.pos), can_move: self.replay.is_none(), day_length_s, recording: recording.as_deref() };
             let full = self.egui_ctx.run_ui(raw, |ui| {
                 draw_hud(ui.ctx(), &hud, stats);
                 // The T window owns the screen: the panel waits behind it.
@@ -425,6 +571,9 @@ impl App {
         if let Some((rgba, how)) = clean {
             self.photo = None;
             self.store_photo(None, rgba, w, h, &cam, how);
+        }
+        if let Some(rgba) = marked {
+            self.open_mark(rgba, w, h, &cam);
         }
         // Shift+P, the look panel's button and --screenshot: the frame as
         // drawn, HUD and all, windows aside.
@@ -509,6 +658,7 @@ impl App {
             sim_line: self.session.sim.describe(),
             mesh_legend: self.mesh_legend(&st.drawn_per_lod),
             banner: None,
+            marker: None,
         }
     }
 }
@@ -558,7 +708,7 @@ impl ApplicationHandler for App {
         if let Some(p) = opts.record {
             self.toggle_recording_to(Some(p.into()));
         }
-        println!("app: WASD move, Space jump/up, Ctrl sneak (fly: down), Shift sprint, mouse look (click to capture, Esc releases), LMB break, RMB place, 1-9 block, G walk/fly, scroll fly speed, P photo, Shift+P live photo, T map photos teleport, R to ground, V vsync, F water, M mesh colours, Shift+M mesh lines, H hud, [ slower time, ] faster time, F10 record a replay, Q quit");
+        println!("app: WASD move, Space jump/up, Ctrl sneak (fly: down), Shift sprint, mouse look (click to capture, Esc releases), LMB break, RMB place, 1-9 block, G walk/fly, scroll fly speed, P photo, Shift+P live photo, T map photos teleport, R to ground, V vsync, F water, M mesh colours, Shift+M mesh lines, H hud, [ slower time, ] faster time, F9 mark what's wrong, F10 record a replay, Q quit");
     }
 
     fn window_event(&mut self, el: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
@@ -575,11 +725,18 @@ impl ApplicationHandler for App {
                     // Game keys queue their input for the next step (controls.rs);
                     // the app's own keys act here.
                     let pressed = event.state == ElementState::Pressed;
+                    // F9's annotator owns the keys: egui has them already, and
+                    // the game hears only that a held key was let go.
+                    if self.gate.is_open() {
+                        self.gate.key(&mut self.controls, code, pressed);
+                        return;
+                    }
                     // An open T window owns all input (§17.1).
                     let typing = self.egui_ctx.egui_wants_keyboard_input();
                     match route_key(code, pressed, event.repeat, self.menu.open, typing) {
                         Route::Window => return,
                         Route::OpenMenu => return self.open_menu(),
+                        Route::CloseMenu if self.menu.annotating() => return,
                         Route::CloseMenu => return self.close_menu(),
                         Route::MenuBack => {
                             if !self.menu.escape(typing) {
@@ -623,12 +780,16 @@ impl ApplicationHandler for App {
                                 }
                                 self.save_note = format!("mesh view: {}", v.label());
                             }
+                            KeyCode::F9 => self.mark_wanted = true,
                             KeyCode::F10 if self.replay.is_none() => self.toggle_recording(),
                             _ => {}
                         }
                     }
                 }
             }
+            // The annotator has the mouse, but a button held at F9 lets go.
+            WindowEvent::MouseInput { state, button, .. } if self.gate.is_open() => self.gate.button(&mut self.controls, button, state == ElementState::Pressed),
+            WindowEvent::MouseWheel { .. } if self.gate.is_open() => {}
             // The T window has the mouse; so does a watched replay's window.
             WindowEvent::MouseInput { .. } | WindowEvent::MouseWheel { .. } if self.replay.is_some() || self.menu.open => {}
             // While the look panel is open the mouse is its (M3a).
@@ -639,7 +800,7 @@ impl ApplicationHandler for App {
                     // The capturing click is not game input.
                     self.set_capture(true);
                 } else if self.captured || state == ElementState::Released {
-                    self.controls.button(button, state == ElementState::Pressed);
+                    self.gate.button(&mut self.controls, button, state == ElementState::Pressed);
                 }
             }
             WindowEvent::MouseWheel { delta, .. } => {
@@ -647,7 +808,7 @@ impl ApplicationHandler for App {
                     MouseScrollDelta::LineDelta(_, y) => y as f64,
                     MouseScrollDelta::PixelDelta(p) => p.y / 40.0,
                 };
-                self.controls.scroll(lines);
+                self.gate.scroll(&mut self.controls, lines);
             }
             WindowEvent::ModifiersChanged(m) => self.shift = m.state().shift_key(),
             WindowEvent::Focused(false) => {
@@ -663,7 +824,7 @@ impl ApplicationHandler for App {
     fn device_event(&mut self, _el: &ActiveEventLoop, _id: winit::event::DeviceId, event: DeviceEvent) {
         if let DeviceEvent::MouseMotion { delta } = event {
             if self.captured && self.replay.is_none() {
-                self.controls.motion(delta.0, delta.1);
+                self.gate.motion(&mut self.controls, delta.0, delta.1);
             }
         }
     }
@@ -686,11 +847,11 @@ pub fn run(session: Session, opts: AppOptions) {
 
 /// `--replay FILE --watch` (M2c): play a replay in the window at real
 /// time, checking it as it goes. Returns the exit code (0: reproduced).
-pub fn run_replay(session: Session, rep: crate::replay::Replay, opts: AppOptions) -> i32 {
+pub fn run_replay(session: Session, rep: crate::replay::Replay, opts: AppOptions, visual: Verdict) -> i32 {
     // The window owns the runner until the process ends.
     let rep: &'static crate::replay::Replay = Box::leak(Box::new(rep));
     let runner = crate::replay::Runner::new(rep, &session);
-    let ok = run_with(session, opts, Some(WatchedReplay { runner, acc: 0.0, reported: false }));
+    let ok = run_with(session, opts, Some(WatchedReplay { runner, acc: 0.0, reported: false, ticker: Ticker::new(rep.markers()), visual }));
     if ok { 0 } else { 1 }
 }
 
@@ -715,6 +876,10 @@ fn run_with(session: Session, opts: AppOptions, replay: Option<WatchedReplay>) -
         menu: Menu::new(photos::dir()),
         photo: None,
         live_shot: false,
+        mark_wanted: false,
+        gate: Gate::default(),
+        mark_recapture: false,
+        visual_checked: Instant::now(),
         writer: ShotWriter::default(),
         digests: ChunkDigests::default(),
         banner: None,
