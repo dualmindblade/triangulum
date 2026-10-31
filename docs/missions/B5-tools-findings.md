@@ -193,9 +193,8 @@ byte-exact frames across paths.
 A 1,356 x 678 picture on four worker threads: 264 to 346 ms, whole planet or
 zoomed in, with other agents running. Meanwhile the window keeps drawing the last
 picture, moved to the live view. In the test, the worst pass of the window during
-a 314 ms build was 9.9 ms, and that is one pass with no GPU work: a slow frame, not
-a hitch, and worth watching on the first open, when the rivers and the window's
-layout both land.
+a 314 ms build was 9.9 ms. That is one egui pass on the CPU, with nothing drawn; I
+didn't find which pass it was, so it is worth watching in the real window.
 
 ### Evidence
 
