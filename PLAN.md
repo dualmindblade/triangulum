@@ -82,7 +82,7 @@ Bug round from Andrew's first playthrough (`docs/missions/2026-10-30-bug-round.m
 | B6 | Bug reports: F9 marks a moment, the annotator, Make report, the look checked apart from the simulation (review 4 #8) | Opus | done |
 | R4 | Review 4's other twelve findings, save safety first | Astra | done |
 | B7 | #8: an experiment, powder with levels and an angle of repose | Opus | running |
-| S1 | Saves off the main thread | Astra | running |
+| S1 | Saves off the main thread | Astra | done |
 
 ## M4 — Things that move
 

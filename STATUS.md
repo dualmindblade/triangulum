@@ -227,6 +227,14 @@
   frame rate. Saves record the simulation's rules, so replays made before this
   need the build that made them.
 
+- **S1** (Astra, verified by Opus, merged): saves no longer stop the game. It
+  takes a quick copy of what changed and writes it in the background: in the
+  test, 400 changed chunks held the game up for about 12.7 s before and about
+  2.6 ms now (a busy machine, writing to the E: hard drive). "Saved" appears
+  only once it really is, quitting waits for a save in progress, and a failed
+  save keeps your changes and says so. The save format is unchanged. A real
+  power cut still hasn't been tried.
+
 **M1 is feature-complete.** The last step is yours: play it and tell me what
 feels wrong.
 
@@ -278,7 +286,7 @@ tool, matched to his recordings in `docs/missions/2026-10-30-bug-round.md`.
 | B6 reports | Annotated bug reports for screenshots and recordings, review 4 #8 | Opus | merged |
 | R4 hardening | Review 4's other findings, the save-safety ones first | Astra | merged |
 | B7 powder levels | #8: an experiment, powder with levels and an angle of repose, off by default | Opus | running |
-| S1 saves | Saves off the main thread, removing the 1 s autosave hitch | Astra | running |
+| S1 saves | Saves off the main thread, removing the autosave hitch | Astra | merged |
 
 Next, once Andrew has weighed in: M3c (non-full blocks) needs his look
 decisions, and underground darkness needs a lighting design.
