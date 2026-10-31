@@ -737,7 +737,7 @@ fn profile_hydro_parts() {
         h.rivers_at(*d, &cands[i / 1024], 1.0, &mut rivers);
         total_r += rivers.len();
         let l = h.lake_at(*d, &cands[i / 1024].cells, 1.0);
-        black_box(h.shape(*d, 5.0, &l, &rivers, 0.0, 0.5, 1.0, 0));
+        black_box(h.shape(*d, 5.0, &l, &rivers, false, 0.5, 1.0, 0));
     }
     let shape_all_ns = t.elapsed().as_nanos() as f64 / n;
     let avg_segs = cands.iter().map(|c| c.segs.len()).sum::<usize>() as f64 / 60.0;

@@ -15,9 +15,11 @@
 //! - `generate(key)`: always the full, correct contents (strata, bedrock,
 //!   water, markers) whatever the classification.
 //!
-//! Water (`hydro.rs`): a column may have a water surface W (the sea where
-//! the ocean mask is positive, a lake inside its zone, a river inside its
-//! channel); the terrain is shaped so the water is held at rest.
+//! Water (`hydro.rs`): a column may have a water surface W (the sea on its
+//! side of the shoreline, a lake inside its zone, a river inside its
+//! channel); the terrain is shaped so the water is held at rest. The
+//! shoreline is a smooth curve of its own (`coast.rs`) and the ground either
+//! side follows it, so noise never decides where the sea ends.
 //!
 //! Voxel rules, in order (`block_at`): above the world is air, below it
 //! bedrock; at a coarse LOD, in a wet column (ground below W) the voxel
@@ -34,6 +36,7 @@
 //! an opaque voxel inside the world at or below sea level, at every LOD.
 
 pub mod bake;
+pub mod coast;
 pub mod hydro;
 pub mod inspect;
 pub mod landform;
@@ -61,10 +64,8 @@ pub fn pidx(x: i32, y: i32, z: i32) -> usize {
     (((x + 1) as usize * PAD) + (y + 1) as usize) * PAD + (z + 1) as usize
 }
 
-/// Ocean-mask value by which a column whose surface ends below sea level is
-/// free to flood (coves, drowned valleys); further inland such columns are
-/// held at LAND_FLOOR_M instead, so no dry pit sits next to the sea.
-const SEA_MASK: f64 = 0.15;
+/// Low land away from the sea is held at this height, so no dry pit opens
+/// where the landform dips below sea level.
 const LAND_FLOOR_M: f64 = 0.3;
 /// Lapse rate applied to the landform's height (deg C per Earth km).
 const LAPSE_C_PER_KM: f64 = 6.5;
@@ -142,8 +143,8 @@ pub struct Column {
     pub river_bank: bool,
     pub temp_c: f32,
     pub precip: f32,
-    /// Ocean-mask fraction (near-shore indicator).
-    pub shore: f32,
+    /// On the beach: dry sand above the waterline, sand under the shallows.
+    pub beach: bool,
     /// Dither noise in [-1, 1] at ~40 m scale, for soft material thresholds.
     pub dither: f32,
     /// Strata column offset (m).
@@ -167,7 +168,7 @@ impl Default for Column {
             river_bank: false,
             temp_c: 0.0,
             precip: 0.0,
-            shore: 0.0,
+            beach: false,
             dither: 0.0,
             strata_off: 0.0,
             soil_km: 0.0,
@@ -382,28 +383,27 @@ impl Generator {
             _ => lf.dh,
         };
         let mut h = base + dh;
-        // Inland, ground pushed below sea level is held just above it; toward
-        // the sea that hold fades out (continuously in the ocean mask, so no
-        // cliff follows the mask's texels) and such ground floods: coves,
-        // drowned valleys.
-        if base >= -1.0 && h < LAND_FLOOR_M + 1.0 {
-            let hold = 1.0 - smoothstep(0.0, SEA_MASK, s.ocean);
-            h += hold * (soft_floor(h, LAND_FLOOR_M, 1.0) - h);
+        // The shoreline first; the ground follows it (`coast.rs`).
+        let p = dir * self.planet.radius;
+        let shore = coast::shore_at(s.coast * self.planet.radius, p, voxel_m, self.seed);
+        // Land the landform pushes below sea level is held just above it.
+        if !shore.sea && base >= -1.0 && h < LAND_FLOOR_M + 1.0 {
+            h = soft_floor(h, LAND_FLOOR_M, 1.0);
         }
+        h = coast::shape(h, shore.d);
         let (water_m, water_kind, channel, lake_sand, river_bank) = match hx {
             Some((hy, _)) if !lake.is_empty() || !rivers.is_empty() => {
-                let sh = hy.shape(dir, h, &lake, &rivers, s.ocean, lf.local.rugged, voxel_m, self.lod_of(voxel_m));
+                let sh = hy.shape(dir, h, &lake, &rivers, shore.sea, lf.local.rugged, voxel_m, self.lod_of(voxel_m));
                 h = sh.h;
                 (sh.water, sh.kind, sh.channel, sh.lake_floor || sh.lake_shore, sh.bank)
             }
-            _ if s.ocean > 0.0 => (0.0, WaterKind::Ocean, 0.0, false, false),
+            _ if shore.sea => (0.0, WaterKind::Ocean, 0.0, false, false),
             _ => (f64::NEG_INFINITY, WaterKind::None, 0.0, false, false),
         };
         let ocean = water_kind == WaterKind::Ocean && h < water_m;
         let river = if self.hydro.is_some() { channel } else { lf.river };
         // Lapse rate on the landform's own height, in Earth-equivalent km.
         let lapse = (LAPSE_C_PER_KM * dh / self.vscale / 1000.0).clamp(-12.0, 12.0);
-        let p = dir * self.planet.radius;
         let dither = gradient_noise(p / 41.0 + DVec3::splat(3.1), self.seed ^ 0xD17) as f32;
         let col = Column {
             height_m: h as f32,
@@ -414,7 +414,8 @@ impl Generator {
             river_bank,
             temp_c: (s.temp_c - lapse) as f32,
             precip: s.precip_mm as f32,
-            shore: s.ocean as f32,
+            // A cliff has no beach up it (a coarse voxel keeps its sand by a voxel's height).
+            beach: shore.beach && h < coast::BEACH_SAND_TOP_M + voxel_m,
             dither,
             strata_off: strata_off as f32,
             soil_km: s.soil_km as f32,
@@ -513,12 +514,17 @@ impl Generator {
         let step = (CHUNK as f64 + 1.0) / (N - 1) as f64; // voxels between samples
         let mut dh = [[0.0f64; N]; N];
         let mut sub = 0.0f64;
+        // The range of the distance from the coast over the samples (m).
+        let (mut cmin, mut cmax) = (f64::MAX, f64::MIN);
         for a in 0..N {
             for b in 0..N {
                 let x = -1.0 + step * a as f64;
                 let y = -1.0 + step * b as f64;
                 let dir = planet.dir(fp.face, i0 + (x + 0.5) * vb, j0 + (y + 0.5) * vb);
                 let s = self.bake.sample(dir);
+                let c = s.coast * planet.radius;
+                cmin = cmin.min(c);
+                cmax = cmax.max(c);
                 let l = self.lf.sample(dir, &s, voxel_m, self.strata.column_offset_m(dir));
                 dh[a][b] = l.dh;
                 sub = sub.max(self.lf.sub_amp_bound_m(&l.local, 4.0 * step * voxel_m));
@@ -558,6 +564,19 @@ impl Generator {
         if let Some(((a, b), _)) = hyd {
             hmin = hmin.min(a);
             hmax = hmax.max(b);
+        }
+        // At sea the ground stands below the sea's shallowest; near the
+        // coast it moves toward the shore's own profile, from sea level up
+        // to the beach's top. Every column is within half a sample diagonal
+        // of a sample, and the distance from the coast changes by about 1 m
+        // per m (1.5 allows for its interpolation), plus the wiggle.
+        let margin = coast::WIGGLE_MAX_M + 1.5 * std::f64::consts::FRAC_1_SQRT_2 * step * voxel_m;
+        if cmax > -margin {
+            hmin = hmin.min(-coast::SEA_DEPTH_M);
+        }
+        if cmax > -(coast::BAND_M + margin) && cmin < margin {
+            hmin = hmin.min(0.0);
+            hmax = hmax.max(coast::BEACH_TOP_M);
         }
         // The land floor lifts low dry land to just above sea level; the sea surface is at 0.
         if hmin < LAND_FLOOR_M + 1.0 {
@@ -649,8 +668,9 @@ impl Generator {
         let soil_blocks = (base + 0.6 * d - 2.5 * slope.min(1.2)).clamp(1.0, 4.0);
         let soil_m = soil_blocks.round() * s;
         if c.ocean {
-            let deep = -c.height_m > 6.0 * s + 2.0 * d;
-            let floor = if deep { b.gravel } else { b.sand };
+            // Sand under the shallows, gravel past them. (Sand under water
+            // reads grey: a whole shelf of it would turn the sea grey.)
+            let floor = if c.beach { b.sand } else { b.gravel };
             return Surface { top: floor, soil: floor, soil_m: 2.0 * s };
         }
         if c.river > 0.5 + 0.2 * d || (c.wet() && c.water_kind == WaterKind::River) {
@@ -658,8 +678,10 @@ impl Generator {
             return Surface { top: b.gravel, soil: b.sand, soil_m: 2.0 * s };
         }
         if c.wet() && c.water_kind == WaterKind::Lake {
-            // A lake bed: sand in the shallows, gravel deeper.
-            let deep = c.water_m - c.height_m as f64 > (2.5 + d as f64) * s as f64;
+            // A lake bed: sand in the shallows, gravel deeper. (The middle of
+            // a lake is about 3.3 m deep: the line stays well short of that,
+            // or the dither strews sand over the whole bed.)
+            let deep = c.water_m - c.height_m as f64 > (1.6 + 0.4 * d as f64) * s as f64;
             let floor = if deep { b.gravel } else { b.sand };
             return Surface { top: floor, soil: b.sand, soil_m: 2.0 * s };
         }
@@ -672,7 +694,7 @@ impl Generator {
         if t < -3.0 {
             return Surface { top: b.snow, soil: b.dirt, soil_m };
         }
-        if c.height_m < (2.5 + d) * s && c.shore > 0.05 {
+        if c.beach {
             return Surface { top: b.sand, soil: b.sand, soil_m: soil_m.max(2.0 * s) };
         }
         if pr < 130.0 && t > 8.0 {
@@ -1025,12 +1047,6 @@ fn dominant_face(d: DVec3) -> u8 {
     } else {
         5
     }
-}
-
-#[inline]
-fn smoothstep(a: f64, b: f64, x: f64) -> f64 {
-    let t = ((x - a) / (b - a)).clamp(0.0, 1.0);
-    t * t * (3.0 - 2.0 * t)
 }
 
 /// C1 soft floor: `h` above `floor + k` is unchanged; below, it eases

@@ -10,8 +10,8 @@
 //! # The water surface and the voxels
 //!
 //! A column has a water surface W (metres above sea) where some water body's
-//! zone covers it: the sea where the ocean mask is positive (W = 0), a lake
-//! where its field exceeds `zone` (W = the lake's level), a river inside its
+//! zone covers it: the sea on its side of the shoreline (`coast.rs`, W = 0), a
+//! lake where its field exceeds `zone` (W = the lake's level), a river inside its
 //! channel (W from the link's profile). Overlaps take the highest. At LOD 0
 //! a cell is solid when the ground is above its centre, and otherwise holds
 //! water level clamp(round((W - z) / s * 255), 0, 255) (z its bottom, s the
@@ -1160,17 +1160,18 @@ impl Hydro {
     }
 
     /// Shape one column: valleys, lake beds and aprons, banks, channels; and
-    /// its water surface. `h` is the natural ground (m above sea), `ocean`
-    /// the bake's ocean mask, `rugged` the landform's ruggedness.
+    /// its water surface. `h` is the natural ground (m above sea), `sea`
+    /// whether the column lies on the sea's side of the shoreline, `rugged`
+    /// the landform's ruggedness.
     #[allow(clippy::too_many_arguments)]
-    pub fn shape(&self, dir: DVec3, h: f64, lake: &LakeAt, rivers: &[RiverAt], ocean: f64, rugged: f64, voxel: f64, lod: u8) -> Shaped {
+    pub fn shape(&self, dir: DVec3, h: f64, lake: &LakeAt, rivers: &[RiverAt], sea: bool, rugged: f64, voxel: f64, lod: u8) -> Shaped {
         let mut h = h;
         let fb = FB_BANK_BLOCKS * self.block;
         let zone = self.lake_zone;
         let in_lake = lake.iter().any(|l| l.field > zone);
         // Under the sea or inside a lake the river's course is drowned: no
         // valley or channel is cut into the sea floor or the lake bed.
-        let drowned = in_lake || (ocean > 0.0 && h < 0.0);
+        let drowned = in_lake || (sea && h < 0.0);
         let bank_w = self.bank_w(voxel);
         // 1. River valleys (lowering): a floor FB_FLOOR_M above the river,
         // walls rising at 0.3-0.7, blended into the land by a soft minimum.
@@ -1316,7 +1317,7 @@ impl Hydro {
                 kind = WaterKind::Lake;
             }
         }
-        if ocean > 0.0 && 0.0 >= water {
+        if sea && 0.0 >= water {
             water = 0.0;
             kind = WaterKind::Ocean;
         }
