@@ -1,0 +1,27 @@
+# Bug round #11: does the T window read at 100% and 150%, and fit? Run it at
+# several window sizes; photos go in its own out directory:
+#
+#   cargo run --release -- --play scripts/b5-menu-scale.play --size 1920x1080 --out out/play/fit --interchange out/play/fit
+
+mode fly
+at -4.5654 117.4744 1500
+look -60 -35
+photo shot_one
+at -3.4154 136.3992 300
+lookaxis -i -35
+photo shot_two
+
+menu open
+menu wait
+menu click photo-0
+menu wait
+menu shot at_100
+menu scale 1.5
+menu wait
+menu shot at_150
+assert menu_selected == 0
+assert menu_photos == 2
+menu click map 0.3 0.4
+assert menu_target == true
+menu click teleport
+assert menu_open == false

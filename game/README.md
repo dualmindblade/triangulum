@@ -51,9 +51,10 @@ or just send them: everyone who pulls gets your look. You can also edit
 the files in a text editor; the game notices within half a second.
 
 **Screenshots.** *Screenshot* saves exactly what you see, without the
-panel, to `game/out/look/`, with a `.json` file beside it that lists every
-look value, the time of day and where you stood. Send both, and whoever
-gets them sees what you saw and can rebuild your look.
+panel, as a photo in `game/interchange/` (see "Photos, the map and teleport"),
+with a `.json` file beside it that lists every look value, the time of day and
+where you stood. Send both, and whoever gets them sees what you saw and can
+rebuild your look.
 
 ### Adding a block
 
@@ -171,14 +172,16 @@ mode when higher; `--walk` and `--fly` force it.
 | 1–9 | select a hotbar block (9 is water: the bucket) |
 | scroll | fly speed |
 | R | drop to the ground here, in walk mode |
-| P | next preset place (hills, mountains, highest peak, steep coast, orbit) |
+| P | take a photo: the world finishes loading first, and the HUD is left out |
+| Shift+P | take a photo of this very frame, HUD and all |
+| T | the map, your photos, teleport and the scenic places |
 | F | hide / show water |
 | M | mesh view: colour the mesh by region (LOD, chunk, cube face, quad, block, biome, plate, crust) or back to normal |
 | Shift+M | mesh view: lines (none, edges, edges only) |
 | H | stats panel on / off |
 | V | vsync on / off |
 | [ / ] | slow / speed up time (0, 0.1, 1, 10, 60, 600, 3600×) |
-| F1 | the look panel (frees the mouse while open) |
+| F1 | the look panel (frees the mouse while open); Esc closes it too |
 | F10 | start / stop recording a replay (below) |
 | Q | save and quit |
 
@@ -213,9 +216,48 @@ and how many chunks are edited and unsaved.
 The player is a 0.6 × 1.8 m box, eyes at 1.62 m, reach 6 m, with radial
 gravity, a 1.28 m jump and simple buoyancy in water. There is no fall damage.
 
+## Photos, the map and teleport
+
+**P** takes a photo. The game holds still for a moment while the world around
+you finishes loading (the screen says so), then saves a clean picture with no
+HUD. **Shift+P** saves this very frame at once, with the HUD and whatever hasn't
+loaded yet: that is the one to use for something you only see while moving.
+Photos go in `game/interchange/` as `shot_*.png`, each with a `.json` beside it
+saying where you stood, the time, the world and the look. Git ignores that
+folder.
+
+**T** opens the window (T or Esc shuts it). While it is open it has the keyboard
+and the mouse, and the game carries on behind it.
+
+- **The map** is drawn from the world data for exactly the view you are looking
+  at. Scroll to zoom in on the pointer, drag to pan, double-click to go back to
+  the whole planet. *Base* picks what the colours show: *Biomes* (the block on
+  the ground, in its colour from the look panel), *Temp* and *Precip* (yearly
+  means), *Elevation* (with contour lines; every 4th is stronger, and the note
+  on the map says how far apart they are). *Relief*, *Rivers*, *Lakes* and
+  *Markers* turn those on and off. A click sets a red target. The green dot is
+  you, and each blue dot is a photo.
+- **Photos.** Click a dot or a row: the picture shows on the map, and clicking
+  that shows it full size. Give it a *Title* and *Notes*; they are kept in its
+  `.json`. Tick photos and press *Delete* to move them, and everything saved
+  with them, to `interchange/trash/`. Nothing is destroyed.
+- **Teleport** goes to the selected photo, the target, or what you type: `lat
+  lon` lands you on the ground (or above deep water), `lat lon alt` hovers there,
+  metres above sea level. *Restore photo's time of day* also puts the sun, moon
+  and season back as they were. A photo from another world takes you to the same
+  latitude and longitude, not the exact spot.
+- **Places** are the scenic spots that used to be on P. One click goes there.
+
+Esc backs out one thing at a time: a text box, the full picture, the delete
+question, the selection, then the window. A teleport or a place during an F10
+recording is recorded, so the replay does the same. While you watch a replay the
+window is for looking only.
+
 ## Reporting a bug: press F10 (M2c)
 
-When something looks or behaves wrong, record it:
+For something you can see standing still, a photo is enough: press **P**, open
+**T**, select it, write what's wrong in *Notes*, and send the `.png` and the
+`.json`. For anything that moves or changes, record it:
 
 1. Press **F10**. The window title says `REC replay`, and the stats panel
    (H) names the file. (It saves your game first.)
@@ -233,6 +275,20 @@ When something looks or behaves wrong, record it:
 
 A replay usually takes a few kilobytes per minute plus the edited part of
 your world (a few kilobytes per chunk you changed).
+
+Turning a photo back into the same frame (what an agent does with your photo):
+the *Repro* button in the T window does this, or from `game/`:
+
+```
+cargo run --release -- --repro interchange/shot_lat4.990_lon-29.403_alt0.047km_yaw37_pitch-29.png
+```
+
+It writes `shot_*.play` beside the photo, with the exact pose and clock, and
+prints the `--play` command with the photo's world, window size and look, plus an
+`--at` command to stand near the same place by hand. The script checks the world
+has the same edits as the photo (give it a **copy** of the save if it had any:
+`--save COPY --keep-save`) and says how many pixels differ from the original.
+Scripts can do the same with `pose`, `clock`, `photo NAME [live]` and `compare`.
 
 Playing one back (what an agent does with your file):
 

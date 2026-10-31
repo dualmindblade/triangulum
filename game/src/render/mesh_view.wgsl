@@ -37,7 +37,7 @@ struct MeshOut {
     @location(4) shade: f32,
     // Voxel size (m), and the chunk's region word (meshview::region_word).
     @location(5) @interpolate(flat) voxel: f32,
-    // Region word, block id, quad index.
+    // Region word, block id, quad number within the chunk.
     @location(6) @interpolate(flat) ids: vec3<u32>,
 };
 
@@ -78,7 +78,9 @@ fn mesh_vertex(vi: u32, ii: u32, water: bool) -> MeshOut {
     out.normal = v.normal;
     out.shade = v.face_shade * v.ao;
     out.voxel = d.voxel;
-    out.ids = vec3<u32>(d.pad1, q.y & 0xFFFFu, vi >> 2u);
+    // Counted from the draw's first quad: where a chunk landed in the quad
+    // buffer differs between runs, and a quad's colour shouldn't.
+    out.ids = vec3<u32>(d.pad1, q.y & 0xFFFFu, (vi >> 2u) - d.quad_base);
     return out;
 }
 

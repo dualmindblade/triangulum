@@ -33,8 +33,43 @@ pub struct Controls {
     pending: Vec<Action>,
     /// Fixed-step accumulator (s).
     acc: f64,
-    /// The preset P goes to next.
-    preset: usize,
+    /// The place last chosen in the T window (index into `Engine::presets`).
+    place: usize,
+}
+
+/// Where a key goes (§17.1): an open window owns all input.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Route {
+    /// Nobody: an open window has it, or it is a repeat.
+    Window,
+    /// The game's and the app's own keys, as ever (every release comes here,
+    /// so nothing sticks down).
+    Game,
+    OpenMenu,
+    CloseMenu,
+    /// Esc with the T window open: back out one layer.
+    MenuBack,
+}
+
+/// Decide where a key goes, with egui already told about it. `menu_open`: the
+/// T window is open. `typing`: a text field has the keyboard.
+pub fn route_key(code: KeyCode, pressed: bool, repeat: bool, menu_open: bool, typing: bool) -> Route {
+    if !pressed {
+        return Route::Game;
+    }
+    if menu_open {
+        return match code {
+            _ if repeat => Route::Window,
+            KeyCode::Escape => Route::MenuBack,
+            KeyCode::KeyT if !typing => Route::CloseMenu,
+            _ => Route::Window,
+        };
+    }
+    match code {
+        KeyCode::KeyT if repeat => Route::Window,
+        KeyCode::KeyT if !typing => Route::OpenMenu,
+        _ => Route::Game,
+    }
 }
 
 fn is_movement(code: KeyCode) -> bool {
@@ -42,15 +77,33 @@ fn is_movement(code: KeyCode) -> bool {
 }
 
 impl Controls {
-    /// The preset last chosen with P (index into `Engine::presets`).
-    pub fn preset(&self) -> usize {
-        self.preset
+    /// The place last chosen in the T window.
+    pub fn place(&self) -> usize {
+        self.place
+    }
+
+    pub fn set_place(&mut self, i: usize) {
+        self.place = i;
+    }
+
+    /// Queue an input for the next step, as a key press does (the T window's
+    /// teleports and places).
+    pub fn queue(&mut self, action: Action) {
+        self.pending.push(action);
+    }
+
+    /// A window took over the input: let go of the mouse button and every key
+    /// (their release events may go to it).
+    pub fn release_all(&mut self) {
+        self.pending.push(Action::Release);
+        self.held.clear();
+        self.tapped.clear();
     }
 
     /// A key went down or up. Returns true on the first press of a key
     /// (not an auto-repeat), so the app can act on its own keys (Esc, Q, V,
     /// H, F10). Game keys queue their action here.
-    pub fn key(&mut self, code: KeyCode, pressed: bool, presets: usize) -> bool {
+    pub fn key(&mut self, code: KeyCode, pressed: bool) -> bool {
         if !pressed {
             self.held.remove(&code);
             return false;
@@ -65,10 +118,6 @@ impl Controls {
         let action = match code {
             KeyCode::KeyG => Some(Action::ToggleMode),
             KeyCode::KeyR => Some(Action::Ground),
-            KeyCode::KeyP if presets > 0 => {
-                self.preset = (self.preset + 1) % presets;
-                Some(Action::Preset(self.preset))
-            }
             KeyCode::KeyF => Some(Action::ToggleWater),
             KeyCode::BracketLeft => Some(Action::Time(false)),
             KeyCode::BracketRight => Some(Action::Time(true)),

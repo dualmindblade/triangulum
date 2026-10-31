@@ -199,6 +199,13 @@ impl ChunkDigests {
     }
 }
 
+/// The hash of the world's edits and how many chunks hold them (a photo's
+/// `edits`): the digest a replay's checks use, read and nothing changed.
+pub fn edit_state(store: &Arc<EditStore>, digests: &mut ChunkDigests) -> (String, usize) {
+    let map = digests.all(store);
+    (format!("{:016x}", world_digest(&map)), map.len())
+}
+
 fn world_digest(map: &BTreeMap<ChunkKey, u64>) -> u64 {
     let mut d = Digest::new(b"world");
     d.u64(map.len() as u64);
@@ -781,6 +788,12 @@ pub fn default_path(world_name: &str) -> PathBuf {
     let name: String = world_name.chars().map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '_' }).collect();
     let (date, time) = utc_now();
     PathBuf::from(format!("{}/replays/{name}-{date}-{time}.replay", env!("CARGO_MANIFEST_DIR")))
+}
+
+/// UTC now as "YYYYMMDD-HHMMSS".
+pub fn utc_stamp() -> String {
+    let (date, time) = utc_now();
+    format!("{date}-{time}")
 }
 
 /// UTC now as ("YYYYMMDD", "HHMMSS").
@@ -1396,4 +1409,4 @@ impl<'r> Runner<'r> {
 
 #[cfg(test)]
 #[path = "replay_tests.rs"]
-mod tests;
+pub(crate) mod tests;
