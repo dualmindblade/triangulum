@@ -4,7 +4,7 @@
 #   triangulum --play scripts/b7-default-frames.play --out out/b7/default-new
 mode fly
 sun 35
-assert flow == "slide=on film=seek+dry reach=8 dry=200"
+assert slides == 0
 atblock 2 107147 57531 612
 aim 10 0 -30
 photo frame_hills

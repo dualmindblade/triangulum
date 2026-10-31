@@ -1,0 +1,7 @@
+# B7: the frame's cost alone, for alternating with another build. Three settled
+# benches at the start of the game: run two builds in turn and keep each one's
+# fastest (separate runs on a busy machine say nothing on their own).
+settle
+bench 600
+bench 600
+bench 600
