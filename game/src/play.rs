@@ -105,10 +105,15 @@
 //!                           (the largest channel difference) and compare_same
 //!   state NAME              NAME.json only
 //!   bench N                 render N frames at the current pose; reports
-//!                           avg / p95 / worst wall ms and the GPU time
+//!                           avg / p95 / worst wall ms, the GPU time and the
+//!                           triangles drawn (all, and of water)
 //!   log TEXT...             annotate the transcript
 //!   column DI DJ            print the blocks of a column near the feet
 //!                           (layers -4..+3 relative to the feet block)
+//!   cells DI0 DI1 DJ0 DJ1 DK
+//!                           print a map of one layer near the feet: ###
+//!                           solid, ... air, a number is that cell's water
+//!                           level (+i to the right, +j up)
 //!   assert FIELD [OP] VALUE [TOL]
 //!                           OP: == != < <= > >= ~ (approx, TOL default
 //!                           0.01); omitted means ==. VALUE: number,
@@ -757,10 +762,12 @@ impl Run {
         self.harness.settle(&cam, Duration::from_secs(180));
         let mut wall = Vec::with_capacity(n);
         let mut gpu = Vec::with_capacity(n);
+        let (mut tris, mut water_tris) = (0, 0);
         for _ in 0..n {
             let s = self.harness.frame(&cam);
             wall.push(s.wall_ms);
             gpu.push(s.gpu_ms);
+            (tris, water_tris) = (s.tris, s.water_tris);
         }
         self.record_stream();
         let mut sorted = wall.clone();
@@ -769,8 +776,8 @@ impl Run {
         let p95 = sorted[((n as f64 - 1.0) * 0.95).round() as usize];
         let worst = *sorted.last().unwrap_or(&0.0);
         let gavg = gpu.iter().sum::<f64>() / n.max(1) as f64;
-        self.last_bench = serde_json::json!({ "bench_frames": n, "bench_avg_ms": avg, "bench_p95_ms": p95, "bench_worst_ms": worst, "bench_gpu_avg_ms": gavg, "bench_fps": 1000.0 / avg });
-        self.say(format!("  bench {n} frames: wall avg {avg:.2} ms (p95 {p95:.2}, worst {worst:.2}) = {:.0} fps; gpu avg {gavg:.2} ms; {} draws", 1000.0 / avg, self.harness.streamer.stats.drawn));
+        self.last_bench = serde_json::json!({ "bench_frames": n, "bench_avg_ms": avg, "bench_p95_ms": p95, "bench_worst_ms": worst, "bench_gpu_avg_ms": gavg, "bench_fps": 1000.0 / avg, "bench_tris": tris, "bench_water_tris": water_tris });
+        self.say(format!("  bench {n} frames: wall avg {avg:.2} ms (p95 {p95:.2}, worst {worst:.2}) = {:.0} fps; gpu avg {gavg:.2} ms; {} draws; {tris} triangles, {water_tris} of water", 1000.0 / avg, self.harness.streamer.stats.drawn));
     }
 
     /// Evaluate `assert FIELD [OP] VALUE [TOL]`.
@@ -1042,6 +1049,31 @@ pub fn run_play(session: Session, opts: PlayOptions) -> i32 {
                     run.say(format!("  column face {} i {} j {} (feet layer {}): {}", f.face, ci, cj, ck, names.join(" ")));
                 }
                 _ => bad(&mut run, "column DI DJ"),
+            },
+            "cells" => match (num(0), num(1), num(2), num(3), num(4)) {
+                (Some(i0), Some(i1), Some(j0), Some(j1), Some(dk)) => {
+                    let f = crate::player::Frame::at(&run.session.engine.planet, run.session.player.pos);
+                    let (fi, fj, ck) = f.feet_cell();
+                    let k = ck + dk as i64;
+                    run.say(format!("  cells face {} layer {k} (### solid, ... air, number: water level), rows j, columns i from {}", f.face, fi + i0 as i64));
+                    for dj in (j0 as i64..=j1 as i64).rev() {
+                        let row: Vec<String> = (i0 as i64..=i1 as i64)
+                            .map(|di| {
+                                let (i, j) = (fi + di, fj + dj);
+                                let level = run.session.level_at(f.face, i, j, k);
+                                if level > 0 {
+                                    format!("{level:3}")
+                                } else if run.session.block_name(f.face, i, j, k) == "air" {
+                                    "...".to_string()
+                                } else {
+                                    "###".to_string()
+                                }
+                            })
+                            .collect();
+                        run.say(format!("  j {:7} {}", fj + dj, row.join(" ")));
+                    }
+                }
+                _ => bad(&mut run, "cells DI0 DI1 DJ0 DJ1 DK"),
             },
             "turn" => match (num(0), num(1)) {
                 (Some(h), Some(p)) => {

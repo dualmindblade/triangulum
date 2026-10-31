@@ -659,7 +659,19 @@ cells sharing that lattice corner (Minecraft's rule: weight 10 at 0.8 and
 above, air counts as 0, solid is left out, a cell with water above it is
 full), so neighbouring surfaces meet exactly, and a side face against air
 takes the same two top corners, so falls and partial columns are watertight.
-Full water is the geometry it always was.
+Full water is the geometry it always was: a corner with nothing partial at it
+is full, air or no air, which is what a chunk with no partial water draws
+flat. Corners read the real cells: the generator's skirt lowers a chunk's
+border columns so the terrain grows side faces that hide LOD seams, and water
+reading those columns would take the shore's ground for air: its surface would
+dip at every chunk border, and a side face there would z-fight with the
+ground's own wall (`World::padded_levels` lists the cells to correct).
+At a cube corner the three real cells count once each. A top face shows under
+a solid, so a surface runs on beneath a bridge, except when it lies flat in
+the solid's underside, where it would z-fight and tint a view from below
+twice. Coarse LODs have no levels: a surface off the voxel grid rounds to a
+different height at different LODs (a lake at +12.03 m is at 12 at LOD 2 and
+16 at LOD 3), and from above you see under the higher sheet at the boundary.
 
 ## Saves
 
@@ -826,6 +838,10 @@ trench fills, the river inside the chunk keeps its water, and water flows
 in from the generated river upstream and out into it downstream, counted.
 All three must pass.
 
+`scripts/b1-water-under.play` lays a stone deck across a generated river and
+shoots the surface going on under it from above, from the side and from under
+water.
+
 `scripts/m3b-hotbar.play` (run with `--blocks scripts/m3b-look/blocks.json`)
 builds a wall of the painted `clay_brick` block from the M3b session on key
 1 (the `hotbar` command), checks its blocks, and shoots it with the hotbar.
@@ -854,6 +870,7 @@ aim DI DJ DK             look at a lattice point relative to the feet cell
 hold w,shift 2           hold keys for seconds; tap break|place|jump|g|1..9
 tick N | sim on|off      N simulation ticks (20 Hz); pause or resume it
 sim radius M | period N  active region radius; ticks per water step
+cells DI0 DI1 DJ0 DJ1 DK  map of one layer near the feet, with water levels
 shot NAME                settled frame + state; bench N; state NAME
 save | reload            write edits; quit-and-restart from disk
 assert FIELD OP VALUE    position, altitude, on_ground, in_water, crosshair,
@@ -933,7 +950,10 @@ basin resting until touched and a lake draining through a channel to its
 sill, displacement by a landing block and loss under a sealed lid, a pit at
 the shore filling from the sea with the water accounted exactly, boundary
 cells as reservoirs, drains and walls that are never written, the water
-period, and the mesher's shared corners. Replays (`src/replay_tests.rs`,
+period, and the mesher's shared corners. The mesher (`src/mesh.rs`): water
+under a solid, a resting lake flat to its shore on chunk borders, a fall's lip
+still sloped, chunks and cube faces agreeing on every shared corner, and no
+water side face against real ground. Replays (`src/replay_tests.rs`,
 driven through the app's own input code with synthetic window events):
 record then replay gives the same state, the same inputs at 144 and 30 fps
 give the same world, a damaged replay names its first divergence, a replay
