@@ -801,7 +801,7 @@ impl Workshop {
             // Leave the real world saved: unsaved edits (or simulation
             // changes) go to disk now, and nothing reaches its save until
             // we come back. With nothing unsaved the save is not touched.
-            let unsaved = session.engine.edits.dirty_count() > 0 || session.sim.is_dirty();
+            let unsaved = session.has_unsaved_changes();
             if let Err(e) = if unsaved { session.save_now().map(|_| ()) } else { Ok(()) } {
                 self.terrain = self.terrain_running;
                 self.note(format!("Your world could not be saved, so the preview did not start: {e}"));

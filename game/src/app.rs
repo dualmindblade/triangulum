@@ -18,7 +18,7 @@ use crate::player::Mode;
 use crate::render::{DrawRecord, Renderer};
 use crate::replay::ChunkDigests;
 use crate::report::{Grab, Moment, Ticker};
-use crate::session::Session;
+use crate::session::{SaveOnExit, Session};
 use crate::sim::draw::FallingDraws;
 use crate::stream::Streamer;
 use crate::ui::{EguiPaint, Hud, draw_hud, outline_segments};
@@ -127,6 +127,7 @@ struct App {
     screenshot: Option<String>,
     exit_after: Option<f64>,
     want_exit: bool,
+    quitting: Option<SaveOnExit>,
     save_note: String,
     falling_draw: FallingDraws,
     /// Andrew's look panel (F1) and the look files it saves and watches (M3a).
@@ -143,6 +144,48 @@ struct WatchedReplay {
     ticker: Ticker,
     /// The look, against the recording's.
     visual: Verdict,
+}
+
+/// Outside the optional stats HUD; also drawn over the annotator.
+fn draw_save_status(ctx: &egui::Context, quitting: bool, error: Option<&str>) {
+    if !quitting && error.is_none() { return; }
+    egui::Window::new(if quitting { "Saving before quitting" } else { "Save failed" })
+        .collapsible(false).resizable(false).anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+        .show(ctx, |ui| {
+            if quitting {
+                ui.spinner();
+                ui.label("Please wait. Finishing the save and your last changes...");
+            } else if let Some(error) = error {
+                ui.label(error);
+                ui.label("Your changes are still in memory. Saving will retry. Q retries saving and quitting.");
+            }
+        });
+}
+
+#[cfg(test)]
+mod save_ui_tests {
+    #[test]
+    fn s1_waiting_and_errors_are_drawn_without_the_stats_hud() {
+        fn text(shape: &egui::epaint::Shape, out: &mut String) {
+            match shape {
+                egui::epaint::Shape::Text(t) => out.push_str(t.galley.text()),
+                egui::epaint::Shape::Vec(v) => { for s in v { text(s, out); } }
+                _ => {}
+            }
+        }
+        for (quitting, error, expected) in [(true, None, "Please wait"), (false, Some("Disk is full"), "Disk is full")] {
+            let ctx = egui::Context::default();
+            ctx.all_styles_mut(|s| s.animation_time = 0.0);
+            let mut drawn = String::new();
+            for _ in 0..2 {
+                let output = ctx.run_ui(egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1280.0, 720.0))), ..Default::default() }, |ui| {
+                    super::draw_save_status(ui.ctx(), quitting, error);
+                });
+                for shape in output.shapes { text(&shape.shape, &mut drawn); }
+            }
+            assert!(drawn.contains(expected), "missing visible status: {drawn}");
+        }
+    }
 }
 
 impl App {
@@ -331,8 +374,10 @@ impl App {
         let raw = gfx.egui_state.take_egui_input(&gfx.window);
         let env = MenuEnv { engine: &engine, bake_sha256: &self.session.bake_sha256, presets: &self.presets, here, can_move: self.replay.is_none(), day_length_s: gfx.gpu.sky.settings.day_length_s, recording: recording.as_deref() };
         let menu = &mut self.menu;
+        let save_error = self.session.save_error.as_deref();
         let full = self.egui_ctx.run_ui(raw, |ui| {
             menu.ui(ui.ctx(), &env);
+            draw_save_status(ui.ctx(), false, save_error);
         });
         gfx.egui_state.handle_platform_output(&gfx.window, full.platform_output);
         let prims = self.egui_ctx.tessellate(full.shapes, full.pixels_per_point);
@@ -399,7 +444,10 @@ impl App {
         gfx.window.set_title(&format!("Triangulum | time {speed}x ([ slower, ] faster){rec}"));
     }
 
-    fn save_on_exit(&mut self) {
+    fn request_exit(&mut self) {
+        if self.quitting.is_some() { return; }
+        self.want_exit = false;
+        self.exit_after = None;
         // The window closed on an open annotator: what's there is kept.
         if let Some(f) = self.menu.finish_now() {
             self.finish_mark(f);
@@ -407,12 +455,13 @@ impl App {
         if self.session.recording() {
             self.toggle_recording();
         }
-        match self.session.save_now() {
-            Ok(n) if n > 0 => println!("saved {n} chunk(s) to {}", self.session.save.as_ref().map_or("-".into(), |s| s.path.display().to_string())),
-            Ok(_) => {}
-            Err(e) => eprintln!("save failed: {e}"),
+        self.quitting = Some(SaveOnExit::default());
+        self.controls.focus_lost();
+        self.set_capture(false);
+        self.save_note = "Saving before quitting... Please wait.".into();
+        if let Some(gfx) = &self.gfx {
+            gfx.window.set_title("Triangulum | Saving before quitting... Please wait.");
         }
-        self.writer.finish();
     }
 
     fn frame(&mut self) {
@@ -423,7 +472,7 @@ impl App {
         // the queued inputs go in at the next step, in order (M2c). None while
         // a photo waits for the world to settle, or a moment is being marked.
         let elapsed = (now - self.started).as_secs_f64();
-        if self.photo.is_some() || self.mark_wanted {
+        if self.quitting.is_some() || self.photo.is_some() || self.mark_wanted {
             self.controls.pause_at(elapsed);
         } else if self.gate.is_open() {
             self.gate.frame_at(&mut self.controls, &mut self.session, elapsed);
@@ -462,8 +511,11 @@ impl App {
             self.save_note = format!("REPLAY FAILED: {e}");
         }
         // Autosave (debounced).
-        match self.session.save_if_due(now) {
+        let last_save = self.session.last_save;
+        match if self.quitting.is_none() { self.session.save_if_due(now) } else { Ok(0) } {
             Ok(n) if n > 0 => self.save_note = format!("saved {n} chunk(s)"),
+            Ok(_) if self.session.last_save != last_save => self.save_note = "saved".into(),
+            Ok(_) if self.session.save_in_flight() && self.quitting.is_none() && self.session.save_error.is_none() => self.save_note = "Saving...".into(),
             Ok(_) => {}
             Err(e) => {
                 self.save_note = format!("SAVE FAILED: {e}");
@@ -500,7 +552,9 @@ impl App {
         let view = frame.texture.create_view(&Default::default());
         // The look panel's changes and the look files (M3a): render dials,
         // block colours, distance detail, terrain previews.
-        self.workshop.update(&mut self.session, streamer, &mut self.falling_draw, &mut gfx.gpu);
+        if self.quitting.is_none() {
+            self.workshop.update(&mut self.session, streamer, &mut self.falling_draw, &mut gfx.gpu);
+        }
         let t0 = Instant::now();
         let aspect = gfx.gpu.width as f64 / gfx.gpu.height as f64;
         let vp = cam.view_proj(aspect);
@@ -550,15 +604,18 @@ impl App {
             let stats = self.show_stats;
             let live = self.live_shot;
             let recording = self.session.recorder.as_ref().map(|r| r.path().to_path_buf());
+            let quitting = self.quitting.is_some();
+            let save_error = self.session.save_error.clone();
             let (workshop, menu) = (&mut self.workshop, &mut self.menu);
             let env = MenuEnv { engine: &engine, bake_sha256: &self.session.bake_sha256, presets: &self.presets, here: Planet::lat_lon_deg(cam.pos), can_move: self.replay.is_none(), day_length_s, recording: recording.as_deref() };
             let full = self.egui_ctx.run_ui(raw, |ui| {
                 draw_hud(ui.ctx(), &hud, stats);
+                draw_save_status(ui.ctx(), quitting, save_error.as_deref());
                 // The T window owns the screen: the panel waits behind it.
-                if !menu.open && !live {
+                if !quitting && !menu.open && !live {
                     workshop.ui(ui.ctx());
                 }
-                if let Some(g) = menu.ui(ui.ctx(), &env) {
+                if let Some(g) = (!quitting).then(|| menu.ui(ui.ctx(), &env)).flatten() {
                     go = Some(g);
                 }
             });
@@ -594,6 +651,7 @@ impl App {
         let gfx = self.gfx.as_mut().unwrap();
         gfx.window.pre_present_notify();
         gfx.gpu.queue.present(frame);
+        if let Some(quit) = &mut self.quitting { quit.presented(); }
         let frame_ms = now.elapsed().as_secs_f64() * 1e3;
         self.frames.push_back((now, frame_ms));
         while self.frames.front().is_some_and(|(t, _)| now.duration_since(*t).as_secs_f64() > 5.0) {
@@ -713,15 +771,15 @@ impl ApplicationHandler for App {
         println!("app: WASD move, Space jump/up, Ctrl sneak (fly: down), Shift sprint, mouse look (click to capture, Esc releases), LMB break, RMB place, 1-9 block, G walk/fly, scroll fly speed, P photo, Shift+P live photo, T map photos teleport, R to ground, V vsync, F water, M mesh colours, Shift+M mesh lines, H hud, [ slower time, ] faster time, F9 mark what's wrong, F10 record a replay, Q quit");
     }
 
-    fn window_event(&mut self, el: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
+    fn window_event(&mut self, _el: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
+        if self.quitting.is_some() && !matches!(&event, WindowEvent::RedrawRequested | WindowEvent::Resized(_) | WindowEvent::CloseRequested) { return; }
         self.controls.at(self.started.elapsed().as_secs_f64());
         if let Some(gfx) = self.gfx.as_mut() {
             let _ = gfx.egui_state.on_window_event(&gfx.window, &event);
         }
         match event {
             WindowEvent::CloseRequested => {
-                self.save_on_exit();
-                el.exit()
+                self.request_exit();
             }
             WindowEvent::KeyboardInput { event, .. } => {
                 if let PhysicalKey::Code(code) = event.physical_key {
@@ -766,8 +824,7 @@ impl ApplicationHandler for App {
                             KeyCode::Escape => self.set_capture(false),
                             KeyCode::KeyP => self.take_photo(),
                             KeyCode::KeyQ => {
-                                self.save_on_exit();
-                                el.exit()
+                                self.request_exit();
                             }
                             KeyCode::KeyV => {
                                 self.vsync = !self.vsync;
@@ -827,7 +884,7 @@ impl ApplicationHandler for App {
     fn device_event(&mut self, _el: &ActiveEventLoop, _id: winit::event::DeviceId, event: DeviceEvent) {
         self.controls.at(self.started.elapsed().as_secs_f64());
         if let DeviceEvent::MouseMotion { delta } = event {
-            if self.captured && self.replay.is_none() {
+            if self.captured && self.replay.is_none() && self.quitting.is_none() {
                 self.gate.motion(&mut self.controls, delta.0, delta.1);
             }
         }
@@ -835,9 +892,23 @@ impl ApplicationHandler for App {
 
     fn about_to_wait(&mut self, el: &ActiveEventLoop) {
         if self.want_exit {
-            self.save_on_exit();
-            el.exit();
-            return;
+            self.request_exit();
+        }
+        if let Some(quit) = &mut self.quitting {
+            match quit.poll(&mut self.session) {
+                Ok(true) => {
+                    self.writer.finish();
+                    el.exit();
+                    return;
+                }
+                Err(e) => {
+                    self.quitting = None;
+                    self.save_note = format!("SAVE FAILED: {e}");
+                    eprintln!("save failed; quit cancelled: {e}");
+                    self.update_title();
+                }
+                Ok(false) => {}
+            }
         }
         if let Some(g) = &self.gfx {
             g.window.request_redraw();
@@ -899,6 +970,7 @@ fn run_with(session: Session, opts: AppOptions, replay: Option<WatchedReplay>) -
         screenshot,
         exit_after,
         want_exit: false,
+        quitting: None,
         save_note: String::new(),
         falling_draw: FallingDraws::default(),
         workshop,

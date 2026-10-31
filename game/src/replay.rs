@@ -847,9 +847,9 @@ fn utc_now() -> (String, String) {
 
 impl Recorder {
     /// Write the magic line, the header and the snapshot, and start the
-    /// event stream. The session's state is not changed (the simulation
-    /// absorbs pending changes for its snapshot, as a save does, which is
-    /// the same as absorbing them at the next tick).
+    /// event stream. Recording absorbs pending notifications for its starting
+    /// snapshot, exactly as the next tick would schedule them. S1 save copies
+    /// include those same notifications without consuming them.
     pub fn start(s: &mut Session, path: &Path, note: &str) -> Result<Self, String> {
         let world = s.engine.world.clone();
         let sim_bytes = s.sim.snapshot(world.as_ref()).to_bytes();

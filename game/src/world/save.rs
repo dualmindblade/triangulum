@@ -41,6 +41,8 @@
 //! against the world's bounds and every palette id against the registry
 //! before anything is installed (review #14). Dirty chunks are acknowledged
 //! to the store only once the commit is on disk (review #2).
+//! The session captures an owned, packed snapshot and gives it to one worker
+//! (`save_worker.rs`); completion returns revisions to the game thread.
 //!
 //! A save whose header does not match the running world is refused with a
 //! clear message rather than loaded into the wrong lattice or the wrong
@@ -56,6 +58,10 @@ use serde::{Deserialize, Serialize};
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
+
+#[path = "save_worker.rs"]
+mod worker;
+pub use worker::{SNAPSHOT_LIMIT, SaveSnapshot, SaveWorker};
 
 /// 3: generation commits, per-file digests, stored water levels and the
 /// simulation state (M2a). A version-2 save has none of these, so it is
@@ -517,18 +523,24 @@ impl SaveDir {
     /// Write one generation: the header (if missing), every dirty chunk
     /// and, when given, the simulation state, each to a new file, flushed;
     /// then their directories; then switch `commit.json` to the new
-    /// generation in one durable replace; then acknowledge the written
-    /// revisions to the store and remove the files the new generation
-    /// superseded (module doc, "Durability"). Returns how many chunks were
+    /// generation in one durable replace; then remove superseded files and
+    /// acknowledge the written revisions to the store (module doc,
+    /// "Durability"). Returns how many chunks were
     /// written. Nothing is created when there is nothing to write.
     pub fn flush(&self, store: &EditStore, config: &WorldConfig, registry: &Registry, bake_sha256: &str, sim: Option<&[u8]>) -> Result<usize, String> {
         self.flush_with(&OsFs, store, config, registry, bake_sha256, sim)
     }
 
     pub(crate) fn flush_with(&self, fs: &dyn SaveFs, store: &EditStore, config: &WorldConfig, registry: &Registry, bake_sha256: &str, sim: Option<&[u8]>) -> Result<usize, String> {
-        let dirty = store.dirty_snapshot();
+        let (dirty, _) = store.save_snapshot(usize::MAX)?;
+        let acked = self.flush_snapshot_with(fs, &dirty, config, registry, bake_sha256, sim)?;
+        store.acknowledge(&acked);
+        Ok(acked.len())
+    }
+
+    fn flush_snapshot_with(&self, fs: &dyn SaveFs, dirty: &[super::edits::SaveChunk], config: &WorldConfig, registry: &Registry, bake_sha256: &str, sim: Option<&[u8]>) -> Result<Vec<(ChunkKey, u64)>, String> {
         if dirty.is_empty() && sim.is_none() {
-            return Ok(0);
+            return Ok(Vec::new());
         }
         // Validate before changing even the header, and before a reference
         // can reach superseded-file cleanup. Check filesystem links as well.
@@ -548,11 +560,11 @@ impl SaveDir {
         let mut index: FastMap<[u32; 5], usize> = commit.chunks.iter().enumerate().map(|(i, e)| (e.key, i)).collect();
         let mut superseded = Vec::new();
         let mut acked = Vec::with_capacity(dirty.len());
-        for d in &dirty {
+        for d in dirty {
             assert_eq!(d.key.lod, 0, "only LOD-0 chunks are saved");
             assert_eq!(d.key.body, BODY_NEISOR, "a Neisor save holds Neisor chunks");
             let file = Self::chunk_file(d.key, generation);
-            let bytes = chunk_file_bytes(d.key, &Chunk::from_dense(&d.ids, d.water.as_deref()));
+            let bytes = chunk_file_bytes(d.key, &Chunk::from_dense(&d.ids.to_dense(), d.water.as_deref()));
             // A name no committed generation uses: written in place.
             write_new(fs, &self.path.join(&file), &bytes)?;
             let entry = CommitEntry { key: key_array(d.key), file, sha256: hex(&sha256(&bytes)) };
@@ -586,12 +598,11 @@ impl SaveDir {
         write_atomic(fs, &self.commit_path(), text.as_bytes())?;
         sync_dir(fs, &self.path)?;
         // Only now is the previous generation no longer needed.
-        store.acknowledge(&acked);
         for f in superseded {
             // A file that will not go is garbage, not damage: loading ignores it.
             let _ = fs.remove(&self.path.join(f));
         }
-        Ok(dirty.len())
+        Ok(acked)
     }
 }
 
@@ -1460,8 +1471,8 @@ mod tests {
         println!("{} failure points checked: {ops:?}", ops.len());
     }
 
-    /// Not part of `cargo test`: what a save of N dirty chunks costs (the
-    /// game saves on its main thread). `cargo test --release -- --ignored
+    /// The synchronous disk protocol's cost for N dirty chunks (S1 measures
+    /// Session requests separately). `cargo test --release -- --ignored
     /// save_cost --nocapture --test-threads=1`.
     #[test]
     #[ignore]

@@ -848,13 +848,12 @@ impl Sim {
     /// falling blocks. It changes nothing, and it counts the changes still
     /// waiting in the world's log as the updates they become (due next
     /// tick, exactly as `absorb` schedules them), so it does not depend on
-    /// when they are absorbed: a save absorbs them early, a replay that
-    /// does not save absorbs them at the next tick, and both hash the
+    /// when they are absorbed: a read-only save copy includes the same
+    /// pending updates that the next tick will absorb, and both hash the
     /// same. The edited chunks are left out; the replay digests them chunk
     /// by chunk.
     pub fn state_digest(&self, world: &World) -> (u64, usize) {
-        let changed = world.edits.take_changed();
-        world.edits.push_changed(changed.iter().copied());
+        let changed = world.edits.changed_snapshot();
         let mut virtual_queue;
         let queue = if changed.is_empty() {
             &self.queue
@@ -970,17 +969,34 @@ impl Sim {
         }
     }
 
-    /// Everything the tick state owes to pending changes, then the state:
-    /// what a save writes. Changes logged since the last tick are due at
-    /// the next one, exactly as `step` would schedule them.
-    pub fn snapshot(&mut self, world: &World) -> Snapshot {
-        self.absorb(world, self.tick + 1);
-        self.dirty = false;
+    /// Upper bound for a read-only save copy, including pending neighbours
+    /// before deduplication and the temporary copy of the notification log.
+    pub fn save_snapshot_bound(&self, world: &World) -> usize {
+        let pending = world.edits.pending_changes();
+        std::mem::size_of::<Snapshot>()
+            + (self.queue.len() + pending * 7 + self.drying.len() + self.frozen_count()) * std::mem::size_of::<(u64, PosKey)>()
+            + self.frozen.len() * std::mem::size_of::<(ChunkKey, Vec<(u64, PosKey)>)>()
+            + self.falling.len() * std::mem::size_of::<Falling>()
+            + pending * std::mem::size_of::<BlockPos>()
+    }
+
+    /// The next tick's notifications are included without consuming them or
+    /// changing dirty state. Autosave timing is not a simulation input.
+    pub fn snapshot_for_save(&self, world: &World) -> Snapshot {
+        let changed = world.edits.changed_snapshot();
+        let mut queue = Vec::with_capacity(self.queue.len() + changed.len() * 7);
+        queue.extend(self.queue.iter().copied());
+        for bp in changed {
+            queue.push((self.tick + 1, PosKey::of(bp)));
+            queue.extend(world.neighbours(bp).into_iter().map(|n| (self.tick + 1, PosKey::of(n))));
+        }
+        queue.sort_unstable();
+        queue.dedup();
         let mut falling = self.falling.clone();
         falling.sort_by_key(Falling::sort_key);
         Snapshot {
             tick: self.tick,
-            queue: self.queue.iter().copied().collect(),
+            queue,
             frozen: self.frozen.iter().map(|(k, v)| (*k, v.iter().map(|(key, due)| (*due, *key)).collect())).collect(),
             falling,
             config: Some(self.config),
@@ -990,6 +1006,15 @@ impl Sim {
             sim_rules: RULES_VERSION,
             region_radius: self.region_radius,
         }
+    }
+
+    /// Everything the tick state owes to pending changes, then the state:
+    /// what a save writes. Changes logged since the last tick are due at
+    /// the next one, exactly as `step` would schedule them.
+    pub fn snapshot(&mut self, world: &World) -> Snapshot {
+        self.absorb(world, self.tick + 1);
+        self.dirty = false;
+        self.snapshot_for_save(world)
     }
 
     /// SHA-256 over everything that decides the future (review 3 #4): the

@@ -877,8 +877,33 @@ the saved block table. An unrecorded ID cannot be guessed from today's
 blocks.json. Newly recorded identities use the block's immutable original
 name; existing saved names and legacy `was` aliases still work.
 
-Edits are saved a couple of seconds after you stop editing (at the latest
-15 s after the first unsaved edit) and when you quit. A save whose header
+Autosave starts a couple of seconds after you stop editing, or 15 s after
+the first unsaved edit once the previous write has finished. Quitting also
+saves. The game copies the dirty chunks in their packed form, the simulation
+and the world/block
+identity at that instant. One worker compresses, hashes and writes that
+copy while play continues. Changes made during the write stay dirty for
+the next save. Taking or finishing a save changes no simulation state.
+The HUD says **Saving...** while the worker runs; **saved** means the
+generation has completed its durable flushes.
+
+**Q and closing the window** show a waiting message and pause play while
+the current write finishes, then save the last changes before exiting.
+A failure keeps the game open and shows the error even with the HUD hidden.
+Autosave retries after two seconds, retaining unsaved changes; Q can retry
+saving and quitting. F10 starting a recording, reload, terrain previews,
+the harness's `save`, and replay reloads all wait for the save they need.
+A failed save prevents those operations from proceeding.
+
+There is no queue of world copies: requests while the writer is busy leave
+the dirty data for the next save. The single snapshot has a **256 MiB**
+payload limit, checked before copying chunks and simulation queues. If a
+world exceeds that limit, saving reports an error and retains its dirt;
+it never writes a partial snapshot. The worker also needs space for the
+manifest, serialized simulation and one chunk's compression buffers.
+Save format 3 and simulation layout 4 are unchanged.
+
+A save whose header
 does not match the running world is refused at startup with the reasons;
 start with the saved settings or point `--save` somewhere else. A save from
 an older generator version can't be continued by any setting: the message
@@ -1058,7 +1083,7 @@ tick N | sim on|off      N simulation ticks (20 Hz); pause or resume it
 sim radius M | period N  active region radius; ticks per water step
 cells DI0 DI1 DJ0 DJ1 DK  map of one layer near the feet, with water levels
 shot NAME                settled frame + state; bench N; state NAME
-save | reload            write edits; quit-and-restart from disk
+save | reload            wait for edits to reach disk; quit-and-restart from disk
 assert FIELD OP VALUE    position, altitude, on_ground, in_water, crosshair,
                          block[F,I,J,K], block_rel[DI,DJ,DK], falling,
                          falling_rel[DI,DJ], queued, sim_hash,
