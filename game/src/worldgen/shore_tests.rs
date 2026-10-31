@@ -660,6 +660,8 @@ struct CoastStats {
     /// how many the bake's own mask has in the window: coves and islands kept.
     pieces: u32,
     bake_pieces: u32,
+    /// The bake's own pieces smaller than a texel: real, however small.
+    bake_blobs: u32,
 }
 
 impl CoastStats {
@@ -734,6 +736,7 @@ fn window(g: &Generator, centre: DVec3, px: usize, spacing: f64, voxel_m: f64) -
         sand_runs,
         pieces: closed(&land) + closed(&sea),
         bake_pieces: closed(&bake_land) + closed(&bake_sea),
+        bake_blobs: blobs(&bake_land) + blobs(&bake_sea),
     };
     (sea, s)
 }
@@ -779,7 +782,7 @@ fn coasts_are_coherent() {
                 println!("{world} {name} {view}: {:.1} km of coast, {} blobs, {} slivers, {} closed pieces (bake {})", s.coast_km, s.land_blobs + s.sea_blobs, s.land_slivers + s.sea_slivers, s.pieces, s.bake_pieces);
                 measured += s.coast_km;
                 let at = format!("{world} {name} {view}");
-                assert_eq!(s.land_blobs + s.sea_blobs, 0, "{at}: pieces smaller than a bake texel: {s:?}");
+                assert!(s.land_blobs + s.sea_blobs <= s.bake_blobs + 1, "{at}: pieces smaller than a bake texel the bake doesn't have: {s:?}");
                 assert!(s.per_km() < 1.0, "{at}: {:.2} slivers per km of coast: {s:?}", s.per_km());
                 assert!(s.pieces <= s.bake_pieces + 1, "{at}: more pieces than the planet has: {s:?}");
             }

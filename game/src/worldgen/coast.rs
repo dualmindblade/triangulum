@@ -61,7 +61,7 @@ pub const BEACH_SAND_TOP_M: f64 = 4.0;
 /// holds these to the promise above.
 const WIGGLE_TOP_M: f64 = 1024.0;
 const WIGGLE_OCTAVES: u32 = 7;
-pub const WIGGLE_AMP: f64 = 0.04;
+pub const WIGGLE_AMP: f64 = 0.065;
 /// Largest |wiggle| anywhere (m).
 pub const WIGGLE_MAX_M: f64 = WIGGLE_AMP * 2.0 * WIGGLE_TOP_M;
 /// Beyond this distance from the coastline, before the wiggle, nothing here
@@ -138,8 +138,11 @@ pub fn shape(h: f64, d: f64) -> f64 {
         if x >= RIDGE_END_M {
             return h;
         }
-        let rim = BEACH_TOP_M * (1.0 - (-x * BEACH_SLOPE / BEACH_TOP_M).exp()) * (1.0 - smoothstep(RIDGE_START_M, RIDGE_END_M, x));
-        rim + smoothstep(0.0, REACH_M, x) * (h - rim).max(0.0)
+        let rim = BEACH_TOP_M * (1.0 - (-x * BEACH_SLOPE / BEACH_TOP_M).exp());
+        let held = rim + smoothstep(0.0, REACH_M, x) * (h - rim).max(0.0);
+        // The hold fades out rather than stopping: land below sea level
+        // behind a coast (a real dry basin) comes down to its own height.
+        held + smoothstep(RIDGE_START_M, RIDGE_END_M, x) * (h - held)
     }
 }
 
@@ -268,8 +271,8 @@ mod tests {
                 assert!((v - prev).abs() < step, "h {h}: jump {} at {d}", (v - prev).abs());
                 if d > 0.0 {
                     assert!(v < 0.0, "h {h}: ground {v} at sea, {d} m out");
-                } else if d < 0.0 {
-                    assert!(v > 0.0 || d < -RIDGE_END_M, "h {h}: ground {v} on land, {} m in", -d);
+                } else if d < 0.0 && d > -RIDGE_START_M {
+                    assert!(v > 0.0, "h {h}: ground {v} on land, {} m in", -d);
                 }
                 prev = v;
                 d += 0.25;
