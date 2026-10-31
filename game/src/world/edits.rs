@@ -11,7 +11,7 @@
 //! neighbour notifications), so saving, streaming and the simulation stay
 //! out of each other's way. All three are fed by one batch commit.
 //!
-//! Saving is acknowledged, not assumed (review #2): `dirty_snapshot` hands
+//! Saving is acknowledged, not assumed (review #2): `save_snapshot` hands
 //! out the dirty chunks without clearing anything, and `acknowledge` clears
 //! only the revisions that were actually persisted, so a failed write is
 //! retried on the next save and a chunk edited during a save stays dirty.
@@ -232,6 +232,15 @@ pub struct DirtyChunk {
     pub key: ChunkKey,
     pub rev: u64,
     pub ids: Vec<BlockId>,
+    pub water: Option<Vec<u8>>,
+}
+
+/// An owned save copy in the store's packed representation. Expansion and
+/// disk compression belong to the writer, not the frame requesting a save.
+pub struct SaveChunk {
+    pub key: ChunkKey,
+    pub rev: u64,
+    pub ids: PackedIds,
     pub water: Option<Vec<u8>>,
 }
 
@@ -490,7 +499,9 @@ impl EditStore {
             assert_eq!(l.len(), VOXELS);
         }
         let mut g = self.inner.write().unwrap();
-        if g.chunks.insert(key, Edited::new(&ids, water)).is_none() {
+        let mut edited = Edited::new(&ids, water);
+        if let Some(old) = g.chunks.get(&key) { edited.rev = old.rev + 1; }
+        if g.chunks.insert(key, edited).is_none() {
             g.index(key);
         }
         if dirty {
@@ -531,6 +542,10 @@ impl EditStore {
         self.inner.read().unwrap().changed.len()
     }
 
+    pub fn changed_snapshot(&self) -> Vec<BlockPos> {
+        self.inner.read().unwrap().changed.clone()
+    }
+
     pub fn dirty_count(&self) -> usize {
         self.inner.read().unwrap().dirty.len()
     }
@@ -554,6 +569,22 @@ impl EditStore {
         let mut out: Vec<DirtyChunk> = g.dirty.iter().filter_map(|k| g.chunks.get(k).map(|e| DirtyChunk { key: *k, rev: e.rev, ids: e.ids.to_dense(), water: e.water.clone() })).collect();
         out.sort_by_key(|d| d.key);
         out
+    }
+
+    /// Check the entire copy's bound under the same lock before allocating.
+    /// Never truncate: chunks and simulation must describe one whole moment.
+    pub fn save_snapshot(&self, limit: usize) -> Result<(Vec<SaveChunk>, usize), String> {
+        let g = self.inner.read().unwrap();
+        let bytes = g.dirty.len() * (std::mem::size_of::<SaveChunk>() + std::mem::size_of::<(ChunkKey, u64)>())
+            + g.dirty.iter().map(|k| g.chunks[k].heap_bytes()).sum::<usize>();
+        if bytes > limit { return Err("save snapshot exceeds its memory budget".into()); }
+        let mut out = Vec::with_capacity(g.dirty.len());
+        for k in &g.dirty {
+            let e = &g.chunks[k];
+            out.push(SaveChunk { key: *k, rev: e.rev, ids: e.ids.clone(), water: e.water.clone() });
+        }
+        out.sort_unstable_by_key(|d| d.key);
+        Ok((out, bytes))
     }
 
     /// A save persisted these revisions: the chunks stop being dirty unless

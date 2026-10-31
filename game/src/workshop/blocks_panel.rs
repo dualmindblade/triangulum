@@ -360,10 +360,13 @@ impl Workshop {
     pub(super) fn commit_paint(&mut self, id: BlockId, face: usize) {
         let Some(pic) = self.bui.editor.picture.clone() else { return };
         let file = self.own_file(id, face);
+        if let Err(e) = self.texset.set_picture(&file, pic) {
+            self.note(e);
+            return;
+        }
         if self.shown_file(id, face).as_deref() != Some(file.as_str()) || (face >= 3 && self.textures[id as usize].per_face()) {
             self.set_faces(id, face, Some(file.clone()));
         }
-        self.texset.set_picture(&file, pic);
         self.bui.editing = Some(file);
     }
 
@@ -448,7 +451,7 @@ impl Workshop {
                 self.bui.editor.replace(Picture::flat(size, c));
                 self.commit_paint(id, face);
             }
-            let waiting = self.bui.import.is_some();
+            let waiting = self.bui.import.is_some() || self.bui.decoding.is_some();
             if ui.add_enabled(!waiting, egui::Button::new("Import PNG...")).on_hover_text("Any PNG picture: it is cut to a square and resized to the texture size.").clicked() {
                 self.start_import((id, face));
             }
@@ -500,7 +503,13 @@ impl Workshop {
         }
     }
 
-    fn poll_import(&mut self) {
+    pub(super) fn poll_import(&mut self) {
+        if let Some((target, path, job)) = self.bui.decoding.take() {
+            match job.poll() {
+                None => self.bui.decoding = Some((target, path, job)),
+                Some(result) => self.finish_import(target, &path, result),
+            }
+        }
         let Some((target, rx)) = &self.bui.import else { return };
         let target = *target;
         match rx.try_recv() {
@@ -530,17 +539,20 @@ impl Workshop {
         if id as usize >= self.blocks.len() {
             return;
         }
-        let read = std::fs::read(path).map_err(|e| e.to_string()).and_then(|b| crate::render::textures::decode_png(&b));
-        match read {
-            Ok((w, h, rgba)) => {
+        let under = self.colours[id as usize].faces()[faces_of(face)[0]];
+        let job = crate::render::textures::PictureJob::start(path.to_path_buf(), self.texset.size, Some(under));
+        self.bui.decoding = Some((target, path.to_path_buf(), job));
+    }
+
+    fn finish_import(&mut self, (id, face): (BlockId, usize), path: &std::path::Path, result: Result<(u32, u32, Picture), String>) {
+        match result {
+            Ok((w, h, pic)) => {
                 if self.bui.selected != Some(id) || self.bui.face != face {
                     self.select(Some(id));
                     self.bui.face = face;
                 }
                 self.sync_editor(id, face);
-                let under = self.colours[id as usize].faces()[faces_of(face)[0]];
-                let pic = Picture::from_rgba(w, h, &rgba, self.texset.size).over(under);
-                self.bui.editor.replace(pic);
+                self.bui.editor.replace(pic.resized(self.texset.size));
                 self.commit_paint(id, face);
                 let size = self.texset.size;
                 self.note(format!("Imported {} ({w} x {h}{}) onto {}'s {}.", path.display(), if w == h && w == size { String::new() } else { format!(", made {size} x {size}") }, self.blocks[id as usize].label(), FACE_CHOICES.iter().find(|c| c.0 == face).map_or("faces", |c| c.1)));

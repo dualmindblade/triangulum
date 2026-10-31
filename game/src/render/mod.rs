@@ -268,8 +268,14 @@ impl Renderer {
         // Block textures: what main installed (M3b), or one blank layer.
         let installed = textures::installed();
         let tex_size = installed.map_or(crate::world::blocks::DEFAULT_TEXTURE_SIZE, |t| t.size);
-        let pictures: Vec<&Picture> = installed.map_or(Vec::new(), |t| t.pictures.iter().collect());
-        let tex_layers = (pictures.len() as u32).max(1).next_power_of_two().max(4);
+        let limit = alimits.max_texture_array_layers.min(textures::DEFAULT_LAYER_LIMIT);
+        let pictures: Vec<&Picture> = installed.map_or(Vec::new(), |t| t.pictures.iter().take(limit as usize).collect());
+        if installed.is_some_and(|t| t.pictures.len() > pictures.len()) {
+            eprintln!("block textures exceed the device's {limit} layers; excess faces use their average colours");
+            let safe: Vec<_> = colours.iter().map(|c| if c[3] >= limit as f32 { [c[0], c[1], c[2], -1.0] } else { *c }).collect();
+            queue.write_buffer(&colours_buf, 0, bytemuck::cast_slice(&safe));
+        }
+        let tex_layers = textures::layer_capacity(pictures.len(), limit).expect("bounded texture layers");
         let (block_tex, block_view) = make_block_texture(&device, tex_size, tex_layers);
         for (i, p) in pictures.iter().enumerate() {
             write_layer(&queue, &block_tex, i as u32, p);
@@ -440,11 +446,16 @@ impl Renderer {
     /// Replace every block texture (M3b): `pictures[layer]`, all of
     /// `size`. The array is rebuilt when it is too small or the size
     /// changed; the colour table names the layers each face samples.
-    pub fn set_textures(&mut self, size: u32, pictures: &[&Picture]) {
+    pub fn texture_layer_limit(&self) -> u32 {
+        self.device.limits().max_texture_array_layers.min(textures::DEFAULT_LAYER_LIMIT)
+    }
+
+    pub fn set_textures(&mut self, size: u32, pictures: &[&Picture]) -> Result<(), String> {
+        let capacity = textures::layer_capacity(pictures.len(), self.texture_layer_limit())?;
         let need = (pictures.len() as u32).max(1);
         if size != self.tex_size || need > self.tex_layers {
             self.tex_size = size;
-            self.tex_layers = need.next_power_of_two().max(4);
+            self.tex_layers = capacity;
             let (t, v) = make_block_texture(&self.device, size, self.tex_layers);
             self.block_tex = t;
             self.block_view = v;
@@ -453,6 +464,7 @@ impl Renderer {
         for (i, p) in pictures.iter().enumerate() {
             write_layer(&self.queue, &self.block_tex, i as u32, p);
         }
+        Ok(())
     }
 
     /// Replace one layer's picture (painting in the panel, a file edited on

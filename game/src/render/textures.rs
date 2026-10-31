@@ -24,6 +24,94 @@ use crate::world::Registry;
 use crate::world::blocks::{FACES_PER_BLOCK, FaceLayer};
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
+use std::io::Read as _;
+
+// Bound both the decoder-owned allocations and our output buffers. Large
+// accepted images are decoded serially by the image worker, never in a frame.
+const MAX_PNG_BYTES: usize = 32 << 20;
+const MAX_RGBA_BYTES: usize = 32 << 20;
+pub const DEFAULT_LAYER_LIMIT: u32 = 2048;
+
+/// Capacity rounding must never cross the actual device limit, including
+/// limits that are not powers of two.
+pub fn layer_capacity(need: usize, limit: u32) -> Result<u32, String> {
+    let need = u32::try_from(need.max(1)).map_err(|_| "too many block textures")?;
+    if need > limit { return Err(format!("{need} block textures exceed the device's {limit} array layers")); }
+    Ok(need.next_power_of_two().max(4).min(limit))
+}
+
+fn checked_pixels(w: u32, h: u32) -> Result<usize, String> {
+    if w == 0 || h == 0 || w > 8192 || h > 8192 {
+        return Err(format!("a {w} x {h} picture: up to 8192 x 8192 please"));
+    }
+    let bytes = (w as u64) * (h as u64) * 4;
+    if bytes > MAX_RGBA_BYTES as u64 {
+        return Err(format!("a {w} x {h} picture needs {bytes} decoded bytes; limit is {MAX_RGBA_BYTES}"));
+    }
+    Ok(bytes as usize / 4)
+}
+
+pub fn read_png(path: &Path) -> Result<Vec<u8>, String> {
+    let file = std::fs::File::open(path).map_err(|e| format!("read {}: {e}", path.display()))?;
+    let mut bytes = Vec::new();
+    file.take(MAX_PNG_BYTES as u64 + 1).read_to_end(&mut bytes).map_err(|e| e.to_string())?;
+    if bytes.len() > MAX_PNG_BYTES { return Err(format!("PNG file exceeds {MAX_PNG_BYTES} bytes")); }
+    Ok(bytes)
+}
+
+/// Only tiny, bounded PNGs may be read synchronously during a frame.
+fn small_png(path: &Path) -> bool {
+    let Ok(mut file) = std::fs::File::open(path) else { return true };
+    if file.metadata().map_or(true, |m| m.len() > 64 * 1024) { return false; }
+    let mut head = [0u8; 24];
+    if file.read_exact(&mut head).is_err() || &head[..8] != b"\x89PNG\r\n\x1a\n" { return true; }
+    let w = u32::from_be_bytes(head[16..20].try_into().unwrap());
+    let h = u32::from_be_bytes(head[20..24].try_into().unwrap());
+    w <= 64 && h <= 64
+}
+
+type Decoded = Result<(u32, u32, Picture), String>;
+
+/// One shared worker bounds memory even when many changed PNGs or imports
+/// arrive together. Results carry only the small resampled picture.
+pub struct PictureJob {
+    receiver: std::sync::mpsc::Receiver<Decoded>,
+    _alive: std::sync::Arc<()>,
+}
+
+impl PictureJob {
+    pub fn start(path: PathBuf, size: u32, under: Option<[f32; 3]>) -> Self {
+        type Job = Box<dyn FnOnce() + Send>;
+        static WORKER: OnceLock<std::sync::mpsc::Sender<Job>> = OnceLock::new();
+        let worker = WORKER.get_or_init(|| {
+            let (tx, rx) = std::sync::mpsc::channel::<Job>();
+            std::thread::Builder::new().name("block-pictures".into()).spawn(move || {
+                while let Ok(job) = rx.recv() { job(); }
+            }).expect("picture worker");
+            tx
+        });
+        let (tx, rx) = std::sync::mpsc::channel();
+        let alive = std::sync::Arc::new(());
+        let wanted = std::sync::Arc::downgrade(&alive);
+        let _ = worker.send(Box::new(move || {
+            if wanted.upgrade().is_none() { return; }
+            let result = read_png(&path).and_then(|b| decode_png(&b)).map(|(w, h, rgba)| {
+                let pic = Picture::from_rgba(w, h, &rgba, size);
+                (w, h, match under { Some(c) => pic.over(c), None => pic.opaque() })
+            });
+            let _ = tx.send(result);
+        }));
+        Self { receiver: rx, _alive: alive }
+    }
+
+    pub fn poll(&self) -> Option<Decoded> {
+        match self.receiver.try_recv() {
+            Ok(result) => Some(result),
+            Err(std::sync::mpsc::TryRecvError::Empty) => None,
+            Err(_) => Some(Err("picture worker stopped".into())),
+        }
+    }
+}
 
 /// A face picture: `size` x `size` RGBA8, sRGB-encoded as in a PNG.
 #[derive(Clone, Debug, PartialEq)]
@@ -47,16 +135,22 @@ pub fn to_srgb(x: f32) -> u8 {
 
 /// Decode a PNG of any size and colour type to RGBA8.
 pub fn decode_png(bytes: &[u8]) -> Result<(u32, u32, Vec<u8>), String> {
+    if bytes.len() > MAX_PNG_BYTES { return Err("PNG file is too big".into()); }
     let mut decoder = png::Decoder::new(std::io::Cursor::new(bytes));
+    decoder.set_limits(png::Limits { bytes: 8 << 20 });
     decoder.set_transformations(png::Transformations::normalize_to_color8());
+    let header = decoder.read_header_info().map_err(|e| format!("not a PNG I can read: {e}"))?;
+    let px = checked_pixels(header.width, header.height)?;
     let mut reader = decoder.read_info().map_err(|e| format!("not a PNG I can read: {e}"))?;
-    let mut buf = vec![0u8; reader.output_buffer_size().ok_or("the picture is too big")?];
+    let output = reader.output_buffer_size().filter(|n| *n <= MAX_RGBA_BYTES).ok_or("the picture is too big")?;
+    let mut buf = vec![0u8; output];
     let info = reader.next_frame(&mut buf).map_err(|e| format!("broken PNG: {e}"))?;
     let (w, h) = (info.width, info.height);
-    if w == 0 || h == 0 || w > 8192 || h > 8192 {
-        return Err(format!("a {w} x {h} picture: up to 8192 x 8192 please"));
+    checked_pixels(w, h)?;
+    if info.color_type == png::ColorType::Rgba {
+        buf.truncate(info.buffer_size());
+        return Ok((w, h, buf));
     }
-    let px = (w * h) as usize;
     let data = &buf[..info.line_size * h as usize];
     let mut rgba = Vec::with_capacity(px * 4);
     for row in data.chunks_exact(info.line_size) {
@@ -142,7 +236,7 @@ impl Picture {
     /// so a transparent pixel shows its colour (and counts in the far
     /// average) like any other.
     pub fn load(path: &Path, size: u32) -> Result<Picture, String> {
-        let bytes = std::fs::read(path).map_err(|e| format!("read {}: {e}", path.display()))?;
+        let bytes = read_png(path)?;
         Picture::decode(&bytes, size).map(Picture::opaque).map_err(|e| format!("{}: {e}", path.display()))
     }
 
@@ -289,6 +383,12 @@ pub struct TextureSet {
     missing: Vec<(String, String, FileWatch)>,
     /// Round-robin position of the file poll.
     poll_at: usize,
+    pending: Vec<(String, u32, FileWatch, PictureJob)>,
+    background: bool,
+    limit: usize,
+    /// Unreferenced paintings stay saveable without occupying GPU layers.
+    orphaned: Vec<Layer>,
+    notices: Vec<String>,
 }
 
 /// The textures folder for a blocks file: `textures/` beside it.
@@ -302,15 +402,18 @@ fn norm(file: &str) -> String {
 
 impl TextureSet {
     pub fn new(dir: PathBuf, size: u32) -> Self {
-        Self { size, dir, layers: Vec::new(), dirty: Vec::new(), missing: Vec::new(), poll_at: 0 }
+        Self { size, dir, layers: Vec::new(), dirty: Vec::new(), missing: Vec::new(), poll_at: 0, pending: Vec::new(), background: true, limit: DEFAULT_LAYER_LIMIT as usize, orphaned: Vec::new(), notices: Vec::new() }
     }
 
     /// Every texture `registry` names, loaded, with the layers assigned
     /// into the registry (its colour table then says which faces sample).
     pub fn for_registry(registry: &Registry, dir: PathBuf) -> Self {
         let mut set = Self::new(dir, registry.texture_size());
+        set.background = false; // Startup has no frame deadline.
         set.assign(registry);
+        set.background = true;
         set.dirty.clear();
+        set.notices.clear(); // Startup reports missing files through `missing()`.
         set
     }
 
@@ -325,6 +428,19 @@ impl TextureSet {
     pub fn is_empty(&self) -> bool {
         self.layers.is_empty()
     }
+
+    pub fn set_limit(&mut self, limit: u32) -> bool {
+        let limit = limit.min(DEFAULT_LAYER_LIMIT) as usize;
+        if self.limit == limit { return false; }
+        self.limit = limit;
+        for l in self.layers.drain(limit.min(self.layers.len())..) {
+            if l.unsaved { self.orphaned.push(l); }
+        }
+        self.dirty = (0..self.layers.len()).collect();
+        true
+    }
+
+    pub fn has_dirty(&self) -> bool { !self.dirty.is_empty() }
 
     pub fn layer(&self, file: &str) -> Option<usize> {
         let f = norm(file);
@@ -341,7 +457,7 @@ impl TextureSet {
 
     /// Does the file exist on disk (or is it painted, waiting to be saved)?
     pub fn known(&self, file: &str) -> bool {
-        self.layer(file).is_some() || self.path_of(file).exists()
+        self.layer(file).is_some() || self.orphaned.iter().any(|l| l.file == norm(file)) || self.path_of(file).exists()
     }
 
     /// Files named but not readable, with the reason.
@@ -355,18 +471,56 @@ impl TextureSet {
         if let Some(i) = self.layer(&f) {
             return Some(i);
         }
+        if self.layers.len() < self.limit {
+            if let Some(i) = self.orphaned.iter().position(|l| l.file == f) {
+                let l = self.orphaned.remove(i);
+                self.layers.push(l);
+                self.dirty.push(self.layers.len() - 1);
+                return Some(self.layers.len() - 1);
+            }
+        }
+        if self.pending.iter().any(|(name, ..)| *name == f) || self.missing.iter().any(|(name, ..)| *name == f) {
+            return None;
+        }
+        self.load_file(&f)
+    }
+
+    fn load_file(&mut self, f: &str) -> Option<usize> {
+        if self.pending.iter().any(|(name, ..)| name == f) { return self.layer(f); }
         let path = self.path_of(&f);
-        match Picture::load(&path, self.size) {
+        if self.layer(f).is_none() && self.layers.len() + self.pending.iter().filter(|(name, ..)| self.layer(name).is_none()).count() >= self.limit {
+            return self.loaded(f, Err(format!("texture layer limit {} reached; remove a texture reference before adding another", self.limit)), FileWatch::new(path));
+        }
+        if self.background && !small_png(&path) {
+            self.pending.push((f.into(), self.size, FileWatch::new(path.clone()), PictureJob::start(path, self.size, None)));
+            return self.layer(f);
+        }
+        self.loaded(f, Picture::load(&path, self.size), FileWatch::new(path))
+    }
+
+    fn loaded(&mut self, f: &str, result: Result<Picture, String>, watch: FileWatch) -> Option<usize> {
+        match result {
             Ok(picture) => {
+                if self.layer(f).is_none() && self.layers.len() >= self.limit {
+                    return self.loaded(f, Err(format!("texture layer limit {} reached", self.limit)), watch);
+                }
                 self.missing.retain(|(m, _, _)| *m != f);
                 let avg = picture.average();
-                self.layers.push(Layer { file: f, picture, avg, watch: FileWatch::new(path), unsaved: false });
-                self.dirty.push(self.layers.len() - 1);
-                Some(self.layers.len() - 1)
+                let layer = Layer { file: f.into(), picture, avg, watch, unsaved: false };
+                let i = if let Some(i) = self.layer(f) {
+                    self.layers[i] = layer;
+                    i
+                } else {
+                    self.layers.push(layer);
+                    self.layers.len() - 1
+                };
+                self.dirty.push(i);
+                Some(i)
             }
             Err(e) => {
-                if !self.missing.iter().any(|(m, _, _)| *m == f) {
-                    self.missing.push((f, e, FileWatch::new(path)));
+                self.notices.push(format!("{f} was not applied: {e}"));
+                if self.layer(f).is_none() && !self.missing.iter().any(|(m, _, _)| *m == f) {
+                    self.missing.push((f.into(), e, watch));
                 }
                 None
             }
@@ -378,6 +532,15 @@ impl TextureSet {
     /// colour table changed.
     pub fn assign(&mut self, registry: &Registry) -> bool {
         let textures = registry.textures();
+        let named: std::collections::HashSet<String> = textures.iter().flat_map(|t| t.faces().into_iter().flatten().map(norm).collect::<Vec<_>>()).collect();
+        let old_len = self.layers.len();
+        for l in std::mem::take(&mut self.layers) {
+            if named.contains(&l.file) { self.layers.push(l); }
+            else if l.unsaved { self.orphaned.push(l); }
+        }
+        if old_len != self.layers.len() { self.dirty = (0..self.layers.len()).collect(); }
+        self.pending.retain(|(f, ..)| named.contains(f));
+        self.missing.retain(|(f, e, _)| named.contains(f) && !(e.starts_with("texture layer limit") && self.layers.len() < self.limit));
         let mut layers: Vec<[FaceLayer; FACES_PER_BLOCK]> = Vec::with_capacity(textures.len());
         for t in &textures {
             let mut l = [None; FACES_PER_BLOCK];
@@ -389,21 +552,25 @@ impl TextureSet {
             layers.push(l);
         }
         // Files nobody names any more are not missing.
-        let named: Vec<String> = textures.iter().flat_map(|t| t.faces().into_iter().flatten().map(norm).collect::<Vec<_>>()).collect();
         self.missing.retain(|(f, _, _)| named.contains(f));
         registry.set_layers(&layers)
     }
 
     /// Put a painted picture in a file's layer (adding the layer when the
     /// file is new). It shows at once and is written by `save`.
-    pub fn set_picture(&mut self, file: &str, picture: Picture) -> usize {
+    pub fn set_picture(&mut self, file: &str, picture: Picture) -> Result<usize, String> {
         let f = norm(file);
         let picture = picture.resized(self.size);
+        if let Some(i) = self.layer(&f) {
+            if self.layers[i].picture == picture { return Ok(i); }
+        }
+        if self.layer(&f).is_none() && self.layers.len() >= self.limit {
+            return Err(format!("texture layer limit {} reached; remove a texture reference first", self.limit));
+        }
+        self.orphaned.retain(|l| l.file != f);
+        self.pending.retain(|(name, ..)| *name != f); // A late decode cannot overwrite painting.
         let i = match self.layer(&f) {
             Some(i) => {
-                if self.layers[i].picture == picture {
-                    return i;
-                }
                 self.layers[i].avg = picture.average();
                 self.layers[i].picture = picture;
                 i
@@ -418,37 +585,42 @@ impl TextureSet {
         };
         self.layers[i].unsaved = true;
         self.dirty.push(i);
-        i
+        Ok(i)
     }
 
     /// Files painted but not written.
     pub fn unsaved(&self) -> Vec<String> {
-        self.layers.iter().filter(|l| l.unsaved).map(|l| l.file.clone()).collect()
+        self.layers.iter().chain(&self.orphaned).filter(|l| l.unsaved).map(|l| l.file.clone()).collect()
     }
 
     /// Write every painted picture to its file.
     pub fn save(&mut self) -> Result<Vec<String>, String> {
         let mut written = Vec::new();
-        for l in self.layers.iter_mut().filter(|l| l.unsaved) {
+        for l in self.layers.iter_mut().chain(&mut self.orphaned).filter(|l| l.unsaved) {
             let path = self.dir.join(&l.file);
             l.picture.save(&path)?;
             l.watch = FileWatch::new(path);
             l.unsaved = false;
             written.push(l.file.clone());
         }
+        self.orphaned.clear(); // Successfully saved, and no face uses them.
         Ok(written)
     }
 
     /// Throw away painting: every unsaved picture goes back to its file
     /// (or to nothing, when it was never written).
     pub fn revert(&mut self) {
+        self.orphaned.clear();
         for i in 0..self.layers.len() {
             if !self.layers[i].unsaved {
                 continue;
             }
             let path = self.dir.join(&self.layers[i].file);
             self.layers[i].unsaved = false;
-            if let Ok(p) = Picture::load(&path, self.size) {
+            if !small_png(&path) {
+                let file = self.layers[i].file.clone();
+                self.load_file(&file);
+            } else if let Ok(p) = Picture::load(&path, self.size) {
                 self.layers[i].avg = p.average();
                 self.layers[i].picture = p;
                 self.dirty.push(i);
@@ -462,34 +634,42 @@ impl TextureSet {
     /// missing file appeared (the caller then reassigns).
     pub fn poll(&mut self, budget: usize) -> (Vec<String>, bool) {
         let mut notes = Vec::new();
-        let total = self.layers.len() + self.missing.len();
+        let mut reload = Vec::new();
         let mut appeared = false;
+        for (file, size, mut watch, job) in std::mem::take(&mut self.pending) {
+            match job.poll() {
+                None => self.pending.push((file, size, watch, job)),
+                Some(_) if size != self.size || watch.changed() => reload.push(file),
+                Some(result) => {
+                    appeared |= self.loaded(&file, result.map(|(_, _, p)| p), watch).is_some();
+                }
+            }
+        }
+        let total = self.layers.len() + self.missing.len();
         for _ in 0..budget.min(total) {
             let k = self.poll_at % total;
             self.poll_at = (self.poll_at + 1) % total.max(1);
             if k < self.layers.len() {
                 if self.layers[k].watch.changed() {
-                    let path = self.dir.join(&self.layers[k].file);
-                    match Picture::load(&path, self.size) {
-                        Ok(p) => {
-                            if p != self.layers[k].picture {
-                                self.layers[k].avg = p.average();
-                                self.layers[k].picture = p;
-                                self.layers[k].unsaved = false;
-                                self.dirty.push(k);
-                                notes.push(format!("{} changed on disk: applied.", self.layers[k].file));
-                            }
-                        }
-                        Err(e) => notes.push(format!("{} changed but was not applied: {e}", self.layers[k].file)),
-                    }
+                    reload.push(self.layers[k].file.clone());
                 }
             } else {
                 let m = k - self.layers.len();
                 if self.missing[m].2.changed() {
-                    appeared = true;
+                    reload.push(self.missing[m].0.clone());
                 }
             }
         }
+        reload.sort();
+        reload.dedup();
+        for file in reload {
+            self.missing.retain(|(f, ..)| *f != file);
+            if self.load_file(&file).is_some() {
+                notes.push(format!("{file} changed on disk: applied."));
+                appeared = true;
+            }
+        }
+        notes.append(&mut self.notices);
         (notes, appeared)
     }
 
@@ -502,11 +682,15 @@ impl TextureSet {
         self.size = size;
         for i in 0..self.layers.len() {
             let path = self.dir.join(&self.layers[i].file);
-            let from_disk = if self.layers[i].unsaved { None } else { Picture::load(&path, size).ok() };
+            let from_disk = if self.layers[i].unsaved || !small_png(&path) { None } else { Picture::load(&path, size).ok() };
             self.layers[i].picture = from_disk.unwrap_or_else(|| self.layers[i].picture.resized(size));
             self.layers[i].avg = self.layers[i].picture.average();
         }
         self.dirty = (0..self.layers.len()).collect();
+        let reload: Vec<_> = self.layers.iter().filter(|l| !l.unsaved).map(|l| l.file.clone()).collect();
+        for file in reload {
+            if !small_png(&self.path_of(&file)) { self.load_file(&file); }
+        }
     }
 
     /// Layers whose pixels changed since the last call (for the renderer).
@@ -558,6 +742,103 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("textures")).unwrap();
         dir
+    }
+
+    #[test]
+    fn r4_png_dimensions_are_checked_before_decoding_pixels() {
+        // A wide but one-row header proves the allocation/decode ordering
+        // without ever asking this machine to allocate the review's 16 GiB.
+        let mut bytes = Vec::new();
+        {
+            let mut enc = png::Encoder::new(&mut bytes, 8193, 1);
+            enc.set_color(png::ColorType::Rgba);
+            enc.write_header().unwrap();
+        }
+        let error = decode_png(&bytes).unwrap_err();
+        assert!(error.contains("8193"), "reject the dimensions before trying to decode the missing pixels: {error}");
+    }
+
+    #[test]
+    fn r4_replacing_texture_references_reclaims_unused_layers() {
+        let dir = scratch("r4-reclaim");
+        let reg = Registry::load(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/blocks.json")).unwrap();
+        let mut set = TextureSet::new(dir.join("textures"), 16);
+        for n in 0..6 {
+            let name = format!("replacement{n}.png");
+            Picture::flat(16, [0.2; 3]).save(&set.path_of(&name)).unwrap();
+            let mut refs = reg.textures();
+            refs[1].all = Some(name.clone());
+            reg.set_textures(&refs);
+            set.assign(&reg);
+            assert_eq!(set.len(), 1, "replacements must not consume layers forever");
+            assert_eq!(set.layer(&name), Some(0));
+        }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn r4_texture_capacity_stays_within_device_limits() {
+        assert_eq!(layer_capacity(2048, 2048).unwrap(), 2048);
+        assert!(layer_capacity(2049, 2048).is_err());
+        assert_eq!(layer_capacity(129, 193).unwrap(), 193);
+        assert_eq!(layer_capacity(0, 2).unwrap(), 2);
+        assert!(checked_pixels(65_536, 65_536).is_err());
+        assert!(checked_pixels(8192, 8192).unwrap_err().contains("decoded bytes"));
+        let dir = scratch("r4-limit");
+        let reg = Registry::load(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/blocks.json")).unwrap();
+        let mut set = TextureSet::new(dir.join("textures"), 16);
+        set.set_limit(2);
+        let mut refs = reg.textures();
+        for n in 0..3 {
+            let name = format!("limit{n}.png");
+            Picture::flat(16, [0.2; 3]).save(&set.path_of(&name)).unwrap();
+            refs[n + 1].all = Some(name);
+        }
+        reg.set_textures(&refs);
+        set.assign(&reg);
+        assert_eq!(set.len(), 2);
+        assert!(set.missing()[0].1.contains("limit 2"));
+        assert_eq!(reg.colour_table()[3 * 3][3], -1.0);
+        assert!(set.set_picture("fourth.png", Picture::flat(16, [0.3; 3])).is_err());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn r4_large_hot_reload_runs_in_the_worker_and_preserves_painting() {
+        let dir = scratch("r4-worker");
+        let reg = Registry::load(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/blocks.json")).unwrap();
+        let mut refs = reg.textures();
+        refs[1].all = Some("large.png".into());
+        reg.set_textures(&refs);
+        let mut set = TextureSet::new(dir.join("textures"), 16);
+        let path = set.path_of("large.png");
+        Picture::flat(256, [0.2; 3]).save(&path).unwrap();
+        set.assign(&reg);
+        assert_eq!(set.pending.len(), 1);
+        assert!(set.picture("large.png").is_none());
+        for _ in 0..500 {
+            set.poll(8);
+            if set.picture("large.png").is_some() { break; }
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        assert!(set.picture("large.png").is_some());
+        Picture::flat(128, [0.6; 3]).save(&path).unwrap();
+        set.poll(8);
+        assert_eq!(set.pending.len(), 1);
+        let unchanged = set.picture("large.png").unwrap().clone();
+        set.set_picture("large.png", unchanged).unwrap();
+        assert_eq!(set.pending.len(), 1, "an unchanged stroke must not cancel hot reload");
+        let paint = Picture::flat(16, [0.8, 0.1, 0.2]);
+        set.set_picture("large.png", paint.clone()).unwrap();
+        assert!(set.pending.is_empty(), "late decoding cannot overwrite a new stroke");
+        refs[1].all = None;
+        reg.set_textures(&refs);
+        set.assign(&reg);
+        assert!(set.is_empty(), "unused painting occupies no GPU layer");
+        assert_eq!(set.unsaved(), vec!["large.png"]);
+        set.save().unwrap();
+        assert_eq!(Picture::load(&path, 16).unwrap(), paint);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
@@ -692,13 +973,13 @@ mod tests {
         let dir = scratch("paint");
         let mut set = TextureSet::new(dir.join("textures"), 16);
         let mut p = Picture::flat(16, [0.5, 0.5, 0.5]);
-        set.set_picture("brick.png", p.clone());
+        set.set_picture("brick.png", p.clone()).unwrap();
         assert_eq!(set.unsaved(), vec!["brick.png".to_string()]);
         assert!(!dir.join("textures/brick.png").exists());
         assert_eq!(set.save().unwrap(), vec!["brick.png".to_string()]);
         assert_eq!(Picture::load(&dir.join("textures/brick.png"), 16).unwrap(), p);
         p.set(0, 0, [255, 0, 0, 255]);
-        set.set_picture("brick.png", p.clone());
+        set.set_picture("brick.png", p.clone()).unwrap();
         set.revert();
         assert_eq!(set.picture("brick.png").unwrap().get(0, 0), [to_srgb(0.5), to_srgb(0.5), to_srgb(0.5), 255]);
         assert!(set.unsaved().is_empty());

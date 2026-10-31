@@ -19,6 +19,31 @@ fn tick_is_three_player_steps() {
 }
 
 #[test]
+fn r4_old_registry_compatibility_does_linear_work() {
+    use crate::world::blocks::{BlockDef, BlockColours, Registry, DEFS_COPIED};
+    let reg = Registry::load(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/blocks.json")).unwrap();
+    let old = rules_digest(&reg);
+    let mut defs = reg.defs();
+    for id in defs.len()..4096 {
+        let mut d = BlockDef::new_solid(&format!("block_{id}"), BlockColours::flat([0.2; 3]), false);
+        d.id = id as u16;
+        defs.push(d);
+    }
+    let expanded = Registry::from_defs(defs).unwrap();
+    DEFS_COPIED.with(|n| n.set(0));
+    RULES_HASHED.with(|n| n.set(0));
+    assert!(rules_extend(&expanded, &old));
+    let copied = DEFS_COPIED.with(|n| n.get());
+    let hashed = RULES_HASHED.with(|n| n.get());
+    assert!(copied <= 4096 && hashed <= 4096, "4096 definitions: copied {copied}, hashed {hashed}");
+    assert_eq!(hashed, reg.len(), "the legacy prefix is found as soon as it is hashed");
+    for n in [1, 19, 20, 3000, 4096] {
+        assert!(rules_extend(&expanded, &rules_digest_upto(&expanded, n)));
+    }
+    assert!(!rules_extend(&expanded, &[0; 32]));
+}
+
+#[test]
 fn pos_key_round_trips_and_orders_canonically() {
     let ps = [
         BlockPos { face: 0, i: 0, j: 0, k: 0 },
@@ -48,20 +73,23 @@ fn snapshot_bytes_round_trip_and_reject_damage() {
         focus: Some(DVec3::new(1.0e6, -2.5e6, 3.25e5)),
         rules: Some([7; 32]),
         drying: vec![(90, PosKey(11)), (91, PosKey(12))],
+        ..Default::default()
     };
     let bytes = snap.to_bytes();
     assert_eq!(Snapshot::from_bytes(&bytes).unwrap(), snap);
     // Version 2 adds one byte saying which parts follow.
-    assert_eq!(Snapshot::default().to_bytes().len(), 4 + 4 + 8 + 8 * 3 + 1);
+    assert_eq!(Snapshot::default().to_bytes().len(), 4 + 4 + 8 + 8 * 3 + 1 + 5);
     // A version-1 file (no settings, focus or rules) still reads.
     let mut v1 = Snapshot { config: None, focus: None, rules: None, drying: vec![], ..snap.clone() }.to_bytes();
+    v1.truncate(v1.len() - 5); // v4's algorithm and absent region radius
     v1.pop();
     v1[4..8].copy_from_slice(&1u32.to_le_bytes());
-    assert_eq!(Snapshot::from_bytes(&v1).unwrap(), Snapshot { config: None, focus: None, rules: None, drying: vec![], ..snap.clone() });
+    assert_eq!(Snapshot::from_bytes(&v1).unwrap(), Snapshot { config: None, focus: None, rules: None, drying: vec![], sim_rules: 1, ..snap.clone() });
     // A version-2 file (the build before B4): settings without flow settings.
     // It reads, and takes this build's flow settings.
     let no_focus = Snapshot { focus: None, rules: None, drying: vec![], ..snap.clone() };
     let mut v2 = no_focus.to_bytes();
+    v2.truncate(v2.len() - 5);
     let text = no_focus.config.unwrap().flow.text();
     let flow_at = v2.len() - text.len() - 4;
     assert_eq!(&v2[flow_at + 4..], text.as_bytes());
@@ -70,6 +98,15 @@ fn snapshot_bytes_round_trip_and_reject_damage() {
     let read = Snapshot::from_bytes(&v2).unwrap();
     assert_eq!(read.config.unwrap().flow, Flow::default());
     assert_eq!(read.config.unwrap().water_period, 3);
+    assert_eq!(read.sim_rules, 2);
+    let mut v3 = snap.to_bytes();
+    v3.truncate(v3.len() - 5);
+    v3[4..8].copy_from_slice(&3u32.to_le_bytes());
+    let read = Snapshot::from_bytes(&v3).unwrap();
+    assert_eq!(read.sim_rules, 3);
+    assert_eq!(read.region_radius, Some(37.5));
+    let future = Snapshot { sim_rules: RULES_VERSION + 1, ..snap.clone() };
+    assert!(Snapshot::from_bytes(&future.to_bytes()).unwrap_err().contains("simulation rules"));
     assert!(Snapshot::from_bytes(&bytes[..bytes.len() - 3]).is_err(), "truncated");
     let mut extra = bytes.clone();
     extra.push(0);
@@ -584,6 +621,13 @@ fn a_reload_keeps_the_active_region_it_was_computed_for() {
     assert_eq!(back.active_chunks(), sim.active_chunks(), "the restored region is the saved one");
     assert!(sim.stats.falls > 0, "the sand fell in the original");
     assert_eq!(back.state_hash(&w2), sim.state_hash(&w), "equal hashes, equal futures");
+}
+
+#[test]
+fn r4_algorithm_version_changes_the_state_hash() {
+    let w = test_world();
+    let sim = Sim::new(SimConfig::default());
+    assert_ne!(sim.state_hash_for_rules(&w, 2), sim.state_hash(&w));
 }
 
 /// Review 3 #4: what decides the future is in the hash: the region's

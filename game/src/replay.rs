@@ -847,9 +847,9 @@ fn utc_now() -> (String, String) {
 
 impl Recorder {
     /// Write the magic line, the header and the snapshot, and start the
-    /// event stream. The session's state is not changed (the simulation
-    /// absorbs pending changes for its snapshot, as a save does, which is
-    /// the same as absorbing them at the next tick).
+    /// event stream. Recording absorbs pending notifications for its starting
+    /// snapshot, exactly as the next tick would schedule them. S1 save copies
+    /// include those same notifications without consuming them.
     pub fn start(s: &mut Session, path: &Path, note: &str) -> Result<Self, String> {
         let world = s.engine.world.clone();
         let sim_bytes = s.sim.snapshot(world.as_ref()).to_bytes();
@@ -1340,6 +1340,10 @@ pub struct Report {
     /// Checks after the first divergence that did not match either.
     pub later_mismatches: usize,
     pub ended: bool,
+    /// Last matching full checkpoint before any divergence or execution error.
+    pub verified_through: Option<u64>,
+    /// A checkpoint covers the end, including inputs on that same step.
+    pub end_covered: bool,
     /// (recorded, replayed) full state hashes at the end line.
     pub end_sha: Option<(String, String)>,
     pub notes: Vec<String>,
@@ -1349,7 +1353,18 @@ pub struct Report {
 
 impl Report {
     pub fn ok(&self) -> bool {
-        self.first.is_none() && self.errors.is_empty()
+        self.verdict() == "exact"
+    }
+
+    pub fn verdict(&self) -> &'static str {
+        if self.first.is_some() || !self.errors.is_empty() { "diverged" }
+        else if self.ended && self.end_covered { "exact" }
+        else { "incomplete" }
+    }
+
+    /// 2 remains the command line's invalid-file/startup error status.
+    pub fn exit_code(&self) -> i32 {
+        match self.verdict() { "exact" => 0, "incomplete" => 3, _ => 1 }
     }
 
     pub fn text(&self) -> String {
@@ -1360,7 +1375,9 @@ impl Report {
             None => t.push_str("; no end line (cut-off recording)"),
         }
         match &self.first {
-            None => t.push_str("\nreplay OK: the session reproduced exactly"),
+            None if self.ok() => t.push_str("\nreplay OK: the session reproduced exactly"),
+            None if self.errors.is_empty() => t.push_str(&format!("\nreplay INCOMPLETE: {}; the claimed end is not covered", self.verified_through.map_or("no checkpoint verified".into(), |s| format!("verified through step {s}")))),
+            None => t.push_str("\nreplay FAILED: errors prevented reproduction"),
             Some(d) => {
                 t.push_str(&format!("\nFIRST DIVERGENCE at step {} ({:.2} s in, event line {}):", d.step, d.step as f64 / 60.0, d.line_no));
                 for w in &d.what {
@@ -1393,6 +1410,7 @@ pub struct Runner<'r> {
     digests: ChunkDigests,
     recorded: BTreeMap<ChunkKey, u64>,
     done: bool,
+    covered: bool,
     pub report: Report,
 }
 
@@ -1406,7 +1424,7 @@ impl<'r> Runner<'r> {
         if start != rep.header.start_world || map.len() != rep.header.start_edits {
             report.first = Some(Divergence { step: 0, line_no: 0, what: vec![format!("the snapshot loaded as world {start} with {} edited chunks; recorded {} with {}", map.len(), rep.header.start_world, rep.header.start_edits)] });
         }
-        Self { rep, next: 0, step: 0, keys: Input::default(), digests, recorded: map, done: false, report }
+        Self { rep, next: 0, step: 0, keys: Input::default(), digests, recorded: map, done: false, covered: false, report }
     }
 
     /// Steps played so far.
@@ -1431,8 +1449,9 @@ impl<'r> Runner<'r> {
             self.next += 1;
             self.report.events += 1;
             match &l.event {
-                Event::Keys(i) => self.keys = *i,
+                Event::Keys(i) => { self.keys = *i; self.covered = false; }
                 Event::Act(a) => {
+                    self.covered = false;
                     if let Err(e) = s.apply(a.clone()) {
                         self.report.errors.push(format!("step {}: {}: {e}", l.step, l.text));
                     }
@@ -1442,13 +1461,14 @@ impl<'r> Runner<'r> {
                 // and `Replay::visual_changes` read them.
                 Event::Note(t) if crate::report::is_ours(t) => {}
                 Event::Note(t) => self.report.notes.push(format!("step {}: {t}", l.step)),
-                Event::End { sha, .. } => {
+                Event::End { sha, steps } => {
                     let got = s.sim_hash();
                     if *sha != got && self.report.first.is_none() {
                         self.report.first = Some(Divergence { step: l.step, line_no: l.line_no, what: vec![format!("the full state hash (sim_hash) differs: recorded {sha}, replayed {got}")] });
                     }
                     self.report.end_sha = Some((sha.clone(), got));
                     self.report.ended = true;
+                    self.report.end_covered = self.covered && *steps == self.step;
                     self.finish();
                     return false;
                 }
@@ -1459,6 +1479,7 @@ impl<'r> Runner<'r> {
             return false;
         }
         s.step(&self.keys, STEP);
+        self.covered = false;
         self.step += 1;
         true
     }
@@ -1477,6 +1498,10 @@ impl<'r> Runner<'r> {
         let what = compare(rec, &got, &self.recorded, &map);
         if what.is_empty() {
             self.report.matched += 1;
+            if self.report.first.is_none() && self.report.errors.is_empty() {
+                self.report.verified_through = Some(self.step);
+                self.covered = true;
+            }
         } else if self.report.first.is_none() {
             self.report.first = Some(Divergence { step: l.step, line_no: l.line_no, what });
         } else {

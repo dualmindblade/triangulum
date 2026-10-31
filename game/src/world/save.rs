@@ -41,6 +41,8 @@
 //! against the world's bounds and every palette id against the registry
 //! before anything is installed (review #14). Dirty chunks are acknowledged
 //! to the store only once the commit is on disk (review #2).
+//! The session captures an owned, packed snapshot and gives it to one worker
+//! (`save_worker.rs`); completion returns revisions to the game thread.
 //!
 //! A save whose header does not match the running world is refused with a
 //! clear message rather than loaded into the wrong lattice or the wrong
@@ -56,6 +58,10 @@ use serde::{Deserialize, Serialize};
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
+
+#[path = "save_worker.rs"]
+mod worker;
+pub use worker::{SNAPSHOT_LIMIT, SaveSnapshot, SaveWorker};
 
 /// 3: generation commits, per-file digests, stored water levels and the
 /// simulation state (M2a). A version-2 save has none of these, so it is
@@ -133,6 +139,10 @@ impl Identity {
 pub struct Header {
     pub format_version: u32,
     pub generator_version: u32,
+    /// Last writer's simulation algorithm, independent of the block flags.
+    /// Old headers omitted it; their snapshot layout identifies the rules.
+    #[serde(default)]
+    pub sim_rules: Option<u32>,
     pub body: u8,
     pub world: Identity,
     pub projection: String,
@@ -147,12 +157,13 @@ impl Header {
         Self {
             format_version: FORMAT_VERSION,
             generator_version: GENERATOR_VERSION,
+            sim_rules: Some(crate::sim::RULES_VERSION),
             body: BODY_NEISOR,
             world: Identity::of(config),
             projection: "EqualAreaCobe".into(),
             projection_table_sha256: projection_table_sha256().to_string(),
             bake_sha256: bake_sha256.to_string(),
-            blocks: registry.defs().iter().filter(|d| !d.name.starts_with("unused_")).map(|d| (d.id, d.name.clone())).collect(),
+            blocks: registry.defs().iter().filter(|d| !d.name.starts_with("unused_")).map(|d| (d.id, d.first_name().to_string())).collect(),
         }
     }
 
@@ -224,6 +235,9 @@ impl Header {
             return Err(format!("the save was made for a different world ({}); start with the saved settings or point --save at another directory", bad.join("; ")));
         }
         let mut warnings = Vec::new();
+        if let Some(note) = crate::sim::check_saved_rules(self.sim_rules)? {
+            warnings.push(note);
+        }
         if have.name != want.name {
             warnings.push(format!("world name '{}' in the save, '{}' now", have.name, want.name));
         }
@@ -263,6 +277,38 @@ pub struct Commit {
     pub generation: u64,
     pub chunks: Vec<CommitEntry>,
     pub sim: Option<CommitFile>,
+}
+
+impl Commit {
+    /// A manifest is untrusted too, including when it arrived inside a replay.
+    /// References must name this save's own generation files, never metadata
+    /// or a path supplied by another save.
+    fn validate(&self) -> Result<(), String> {
+        let generation_of = |file: &str, prefix: &str, suffix: &str| -> bool {
+            file.strip_prefix(prefix).and_then(|s| s.strip_suffix(suffix)).and_then(|s| s.parse::<u64>().ok())
+                .is_some_and(|g| g > 0 && g <= self.generation && file == format!("{prefix}{g}{suffix}"))
+        };
+        if self.generation == u64::MAX {
+            return Err("refusing commit.json: generation is exhausted".into());
+        }
+        let mut names = std::collections::HashSet::new();
+        for e in &self.chunks {
+            let [b, f, x, y, z] = e.key;
+            let prefix = format!("chunks/b{b}_f{f}_{x}_{y}_{z}.g");
+            if !names.insert(&e.file) {
+                return Err(format!("refusing commit.json: {:?} is listed twice", e.file));
+            }
+            if !generation_of(&e.file, &prefix, ".chunk") {
+                return Err(format!("refusing commit.json chunk reference {:?}", e.file));
+            }
+        }
+        if let Some(e) = &self.sim {
+            if !generation_of(&e.file, "sim.g", ".bin") {
+                return Err(format!("refusing commit.json simulation reference {:?}", e.file));
+            }
+        }
+        Ok(())
+    }
 }
 
 fn key_array(key: ChunkKey) -> [u32; 5] {
@@ -349,12 +395,13 @@ impl SaveDir {
     /// every id a chunk of this save can hold.
     fn extend_header_blocks(&self, fs: &dyn SaveFs, registry: &Registry) -> Result<(), String> {
         let Some(mut h) = self.read_header()? else { return Ok(()) };
-        let known = h.blocks.iter().map(|(id, _)| *id).max();
-        let new: Vec<(BlockId, String)> = registry.defs().iter().filter(|d| known.is_none_or(|k| d.id > k) && !d.name.starts_with("unused_")).map(|d| (d.id, d.name.clone())).collect();
-        if new.is_empty() {
+        let known: std::collections::HashSet<BlockId> = h.blocks.iter().map(|(id, _)| *id).collect();
+        let new: Vec<(BlockId, String)> = registry.defs().iter().filter(|d| !known.contains(&d.id) && !d.name.starts_with("unused_")).map(|d| (d.id, d.first_name().to_string())).collect();
+        if new.is_empty() && h.sim_rules == Some(crate::sim::RULES_VERSION) {
             return Ok(());
         }
         h.blocks.extend(new);
+        h.sim_rules = Some(crate::sim::RULES_VERSION);
         let text = serde_json::to_string_pretty(&h).map_err(|e| e.to_string())?;
         write_atomic(fs, &self.header_path(), text.as_bytes())?;
         sync_dir(fs, &self.path)
@@ -367,7 +414,9 @@ impl SaveDir {
             return Ok(None);
         }
         let text = std::fs::read_to_string(&p).map_err(|e| format!("read {}: {e}", p.display()))?;
-        serde_json::from_str(&text).map(Some).map_err(|e| format!("parse {}: {e}", p.display()))
+        let commit: Commit = serde_json::from_str(&text).map_err(|e| format!("parse {}: {e}", p.display()))?;
+        commit.validate()?;
+        Ok(Some(commit))
     }
 
     fn chunk_file(key: ChunkKey, generation: u64) -> String {
@@ -376,13 +425,26 @@ impl SaveDir {
 
     /// Read a committed file and check its digest.
     fn read_verified(&self, file: &str, sha256_hex: &str) -> Result<Vec<u8>, String> {
-        let p = self.path.join(file);
+        let p = self.owned_file(file)?;
         let bytes = std::fs::read(&p).map_err(|e| format!("read {}: {e}", p.display()))?;
         let got = hex(&sha256(&bytes));
         if got != sha256_hex {
             return Err(format!("{}: digest {}.. but commit.json records {}.. (damaged or tampered)", p.display(), &got[..12], &sha256_hex[..sha256_hex.len().min(12)]));
         }
         Ok(bytes)
+    }
+
+    fn owned_file(&self, file: &str) -> Result<PathBuf, String> {
+        if !is_save_file_name(file) {
+            return Err(format!("refusing save file reference {file:?}"));
+        }
+        let root = self.path.canonicalize().map_err(|e| format!("{}: {e}", self.path.display()))?;
+        let path = self.path.join(file);
+        let resolved = path.canonicalize().map_err(|e| format!("{}: {e}", path.display()))?;
+        if !resolved.starts_with(&root) {
+            return Err(format!("refusing save file outside {}: {file}", self.path.display()));
+        }
+        Ok(path)
     }
 
     /// The simulation state as committed (`sim::Snapshot::from_bytes` reads
@@ -436,6 +498,7 @@ impl SaveDir {
         let (per_edge, per_col) = (planet.chunks_per_edge(0), planet.chunks_per_column(0));
         let chunks = self.read_chunks()?;
         let mut seen = std::collections::HashSet::new();
+        let identities: std::collections::HashSet<BlockId> = header.blocks.iter().map(|(id, _)| *id).collect();
         for (key, chunk) in &chunks {
             if key.cx >= per_edge || key.cy >= per_edge || key.cz >= per_col {
                 return Err(format!("refusing to load {}: chunk {key:?} lies outside the world ({per_edge} chunks per edge, {per_col} per column)", self.path.display()));
@@ -445,6 +508,9 @@ impl SaveDir {
             }
             if let Some(&id) = chunk.palette().iter().find(|&&id| id as usize >= registry.len()) {
                 return Err(format!("refusing to load {}: chunk {key:?} holds block id {id}, unknown to blocks.json ({} blocks)", self.path.display(), registry.len()));
+            }
+            if let Some(&id) = chunk.palette().iter().find(|id| !identities.contains(id)) {
+                return Err(format!("refusing to load {}: chunk {key:?} uses block id {id} without a recorded identity in header.json; restore its original block table before loading", self.path.display()));
             }
         }
         let n = chunks.len();
@@ -457,36 +523,48 @@ impl SaveDir {
     /// Write one generation: the header (if missing), every dirty chunk
     /// and, when given, the simulation state, each to a new file, flushed;
     /// then their directories; then switch `commit.json` to the new
-    /// generation in one durable replace; then acknowledge the written
-    /// revisions to the store and remove the files the new generation
-    /// superseded (module doc, "Durability"). Returns how many chunks were
+    /// generation in one durable replace; then remove superseded files and
+    /// acknowledge the written revisions to the store (module doc,
+    /// "Durability"). Returns how many chunks were
     /// written. Nothing is created when there is nothing to write.
     pub fn flush(&self, store: &EditStore, config: &WorldConfig, registry: &Registry, bake_sha256: &str, sim: Option<&[u8]>) -> Result<usize, String> {
         self.flush_with(&OsFs, store, config, registry, bake_sha256, sim)
     }
 
     pub(crate) fn flush_with(&self, fs: &dyn SaveFs, store: &EditStore, config: &WorldConfig, registry: &Registry, bake_sha256: &str, sim: Option<&[u8]>) -> Result<usize, String> {
-        let dirty = store.dirty_snapshot();
+        let (dirty, _) = store.save_snapshot(usize::MAX)?;
+        let acked = self.flush_snapshot_with(fs, &dirty, config, registry, bake_sha256, sim)?;
+        store.acknowledge(&acked);
+        Ok(acked.len())
+    }
+
+    fn flush_snapshot_with(&self, fs: &dyn SaveFs, dirty: &[super::edits::SaveChunk], config: &WorldConfig, registry: &Registry, bake_sha256: &str, sim: Option<&[u8]>) -> Result<Vec<(ChunkKey, u64)>, String> {
         if dirty.is_empty() && sim.is_none() {
-            return Ok(0);
+            return Ok(Vec::new());
+        }
+        // Validate before changing even the header, and before a reference
+        // can reach superseded-file cleanup. Check filesystem links as well.
+        let mut commit = self.read_commit()?.unwrap_or_default();
+        for file in commit.chunks.iter().map(|e| &e.file).chain(commit.sim.iter().map(|e| &e.file)) {
+            self.owned_file(file)?;
         }
         if !self.present()? {
             self.write_header_with(fs, config, registry, bake_sha256)?;
         } else {
+            self.read_header()?.ok_or("save header disappeared")?.check(config, registry, bake_sha256)?;
             self.extend_header_blocks(fs, registry)?;
         }
         let dir = self.chunks_dir();
         std::fs::create_dir_all(&dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
-        let mut commit = self.read_commit()?.unwrap_or_default();
         let generation = commit.generation + 1;
         let mut index: FastMap<[u32; 5], usize> = commit.chunks.iter().enumerate().map(|(i, e)| (e.key, i)).collect();
         let mut superseded = Vec::new();
         let mut acked = Vec::with_capacity(dirty.len());
-        for d in &dirty {
+        for d in dirty {
             assert_eq!(d.key.lod, 0, "only LOD-0 chunks are saved");
             assert_eq!(d.key.body, BODY_NEISOR, "a Neisor save holds Neisor chunks");
             let file = Self::chunk_file(d.key, generation);
-            let bytes = chunk_file_bytes(d.key, &Chunk::from_dense(&d.ids, d.water.as_deref()));
+            let bytes = chunk_file_bytes(d.key, &Chunk::from_dense(&d.ids.to_dense(), d.water.as_deref()));
             // A name no committed generation uses: written in place.
             write_new(fs, &self.path.join(&file), &bytes)?;
             let entry = CommitEntry { key: key_array(d.key), file, sha256: hex(&sha256(&bytes)) };
@@ -520,12 +598,11 @@ impl SaveDir {
         write_atomic(fs, &self.commit_path(), text.as_bytes())?;
         sync_dir(fs, &self.path)?;
         // Only now is the previous generation no longer needed.
-        store.acknowledge(&acked);
         for f in superseded {
             // A file that will not go is garbage, not damage: loading ignores it.
             let _ = fs.remove(&self.path.join(f));
         }
-        Ok(dirty.len())
+        Ok(acked)
     }
 }
 
@@ -577,8 +654,32 @@ impl SaveDir {
         if let Some((bad, _)) = files.iter().find(|(n, _)| !is_save_file_name(n)) {
             return Err(format!("refusing a save image with the file name {bad:?}"));
         }
+        let mut image = std::collections::HashMap::new();
+        for (name, bytes) in files {
+            if image.insert(name.as_str(), bytes).is_some() {
+                return Err(format!("refusing duplicate save image file {name:?}"));
+            }
+        }
+        let header = image.get("header.json").ok_or("save image has no header.json")?;
+        serde_json::from_slice::<Header>(header).map_err(|e| format!("save image header.json: {e}"))?;
+        let commit: Commit = serde_json::from_slice(image.get("commit.json").ok_or("save image has no commit.json")?)
+            .map_err(|e| format!("save image commit.json: {e}"))?;
+        commit.validate()?;
+        let committed: std::collections::HashSet<&str> = commit.chunks.iter().map(|e| e.file.as_str()).chain(commit.sim.iter().map(|e| e.file.as_str())).chain(["header.json", "commit.json"]).collect();
+        if let Some((name, _)) = files.iter().find(|(name, _)| !committed.contains(name.as_str())) {
+            return Err(format!("save image contains uncommitted file {name:?}"));
+        }
+        for (name, digest) in commit.chunks.iter().map(|e| (&e.file, &e.sha256)).chain(commit.sim.iter().map(|e| (&e.file, &e.sha256))) {
+            let bytes = image.get(name.as_str()).ok_or_else(|| format!("save image omits committed file {name:?}"))?;
+            if hex(&sha256(bytes)) != *digest {
+                return Err(format!("save image file {name:?} has the wrong digest"));
+            }
+        }
         if self.exists() || self.commit_path().exists() {
             return Err(format!("{} already holds a save; a save image is only installed into an empty directory", self.path.display()));
+        }
+        if self.path.exists() && std::fs::read_dir(&self.path).map_err(|e| e.to_string())?.next().is_some() {
+            return Err(format!("{} is not empty; refusing to install a save image", self.path.display()));
         }
         std::fs::create_dir_all(self.chunks_dir()).map_err(|e| format!("create {}: {e}", self.chunks_dir().display()))?;
         // commit.json last, as `flush` does.
@@ -757,6 +858,113 @@ mod tests {
         let p = std::env::temp_dir().join(format!("triangulum-save-test-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&p);
         SaveDir::new(p)
+    }
+
+    #[test]
+    fn r4_image_manifest_cannot_reference_external_or_missing_files() {
+        let image = snapshot_image(&EditStore::new(), &config(), &registry(), BAKE, b"state").unwrap();
+        for (n, file) in ["../sim.g1.bin", "chunks/../../sim.g1.bin", "C:/sim.g1.bin", "C:\\sim.g1.bin", "sim.g9.bin", "header.json"].iter().enumerate() {
+            let mut evil = image.clone();
+            let bytes = &mut evil.iter_mut().find(|(n, _)| n == "commit.json").unwrap().1;
+            let mut commit: Commit = serde_json::from_slice(bytes).unwrap();
+            commit.sim.as_mut().unwrap().file = file.to_string();
+            *bytes = serde_json::to_vec(&commit).unwrap();
+            let dir = temp_dir(&format!("r4-escape-{n}"));
+            assert!(dir.install_image(&evil).is_err(), "accepted manifest reference {file}");
+            assert!(!dir.path.exists(), "validate before installing anything");
+        }
+        let mut missing = image.clone();
+        missing.retain(|(name, _)| name != "sim.g1.bin");
+        assert!(temp_dir("r4-missing").install_image(&missing).is_err());
+        let mut duplicate = image.clone();
+        duplicate.push(image[0].clone());
+        assert!(temp_dir("r4-duplicate").install_image(&duplicate).is_err());
+    }
+
+    #[test]
+    fn r4_manifest_is_checked_before_reading_or_flushing() {
+        let dir = temp_dir("r4-direct");
+        let (cfg, reg) = (config(), registry());
+        dir.flush(&EditStore::new(), &cfg, &reg, BAKE, Some(b"state")).unwrap();
+        let mut commit = dir.read_commit().unwrap().unwrap();
+        commit.sim.as_mut().unwrap().file = "../outside.bin".into();
+        let evil = serde_json::to_vec(&commit).unwrap();
+        std::fs::write(dir.commit_path(), &evil).unwrap();
+        assert!(dir.read_commit().is_err(), "an unsafe manifest must never reach a reader or cleanup");
+        assert!(dir.read_sim().is_err());
+        assert!(dir.flush(&EditStore::new(), &cfg, &reg, BAKE, Some(b"next")).is_err());
+        assert_eq!(std::fs::read(dir.commit_path()).unwrap(), evil);
+        std::fs::remove_dir_all(dir.path).unwrap();
+    }
+
+    #[test]
+    fn r4_used_ids_require_a_saved_identity() {
+        let dir = temp_dir("r4-identity");
+        let (cfg, reg) = (config(), registry());
+        let store = EditStore::new();
+        store.set(ChunkKey::neisor(2, 0, 100, 200, 17), 1, 2, 3, 4, || vec![1; VOXELS]);
+        dir.flush(&store, &cfg, &reg, BAKE, None).unwrap();
+        let mut header = dir.read_header().unwrap().unwrap();
+        header.blocks.retain(|(id, _)| *id != 4);
+        std::fs::write(dir.header_path(), serde_json::to_vec(&header).unwrap()).unwrap();
+        let result = dir.load_into(&cfg, &reg, BAKE, &EditStore::new());
+        assert!(result.is_err(), "a current numeric id cannot establish a missing saved identity");
+        assert!(result.unwrap_err().contains("identity"));
+        std::fs::remove_dir_all(dir.path).unwrap();
+    }
+
+    #[test]
+    fn r4_header_extension_fills_id_gaps() {
+        let dir = temp_dir("r4-gap");
+        let (cfg, reg) = (config(), registry());
+        let mut defs = reg.defs();
+        let gap = defs.len() as u16;
+        let mut later = BlockDef::new_solid("later", super::super::blocks::BlockColours::flat([0.2; 3]), false);
+        later.id = gap + 1;
+        defs.push(later);
+        let sparse = Registry::from_defs(defs.clone()).unwrap();
+        dir.flush(&EditStore::new(), &cfg, &sparse, BAKE, Some(b"state")).unwrap();
+        let mut filled = BlockDef::new_solid("filled", super::super::blocks::BlockColours::flat([0.3; 3]), false);
+        filled.id = gap;
+        defs.push(filled);
+        let filled = Registry::from_defs(defs).unwrap();
+        let store = EditStore::new();
+        store.set(ChunkKey::neisor(2, 0, 100, 200, 17), 1, 2, 3, gap, || vec![1; VOXELS]);
+        dir.flush(&store, &cfg, &filled, BAKE, None).unwrap();
+        assert!(dir.read_header().unwrap().unwrap().blocks.contains(&(gap, "filled".into())));
+        dir.load_into(&cfg, &filled, BAKE, &EditStore::new()).unwrap();
+        std::fs::remove_dir_all(dir.path).unwrap();
+    }
+
+    #[test]
+    fn r4_falling_ids_require_a_saved_identity() {
+        let dir = temp_dir("r4-falling-identity");
+        let (cfg, reg) = (config(), registry());
+        let snap = crate::sim::Snapshot {
+            falling: vec![crate::sim::Falling { id: 4, face: 2, i: 100, j: 200, z: 612.0, vel: -1.0 }],
+            ..Default::default()
+        };
+        dir.flush(&EditStore::new(), &cfg, &reg, BAKE, Some(&snap.to_bytes())).unwrap();
+        let mut header = dir.read_header().unwrap().unwrap();
+        header.blocks.retain(|(id, _)| *id != 4);
+        std::fs::write(dir.header_path(), serde_json::to_vec(&header).unwrap()).unwrap();
+        assert!(crate::session::Session::load_sim(Some(&dir), crate::sim::SimConfig::default(), &reg).is_err());
+        std::fs::remove_dir_all(dir.path).unwrap();
+    }
+
+    #[test]
+    fn r4_save_records_and_checks_simulation_algorithm_version() {
+        let (cfg, reg) = (config(), registry());
+        let mut json = serde_json::to_value(Header::for_world(&cfg, &reg, BAKE)).unwrap();
+        assert_eq!(json["sim_rules"], crate::sim::RULES_VERSION);
+        json["sim_rules"] = serde_json::json!(crate::sim::RULES_VERSION + 1);
+        let future: Header = serde_json::from_value(json.clone()).unwrap();
+        assert!(future.check(&cfg, &reg, BAKE).unwrap_err().contains("simulation"));
+        for old in [serde_json::Value::Null, serde_json::json!(1), serde_json::json!(2)] {
+            json["sim_rules"] = old;
+            let legacy: Header = serde_json::from_value(json.clone()).unwrap();
+            assert!(!legacy.check(&cfg, &reg, BAKE).unwrap().is_empty(), "safe continuation is explicit");
+        }
     }
 
     #[test]
@@ -1033,9 +1241,10 @@ mod tests {
         // Out of bounds: a chunk file whose key is past the face edge (N / 32 = 4096 chunks per edge).
         let far = ChunkKey::neisor(1, 0, 4096, 0, 0);
         let bytes = chunk_file_bytes(far, &Chunk::uniform(2));
-        std::fs::write(dir.path.join("chunks/far.chunk"), &bytes).unwrap();
+        let far_file = SaveDir::chunk_file(far, 1);
+        std::fs::write(dir.path.join(&far_file), &bytes).unwrap();
         let mut c = commit.clone();
-        c.chunks = vec![CommitEntry { key: key_array(far), file: "chunks/far.chunk".into(), sha256: hex(&sha256(&bytes)) }];
+        c.chunks = vec![CommitEntry { key: key_array(far), file: far_file, sha256: hex(&sha256(&bytes)) }];
         rewrite(&c);
         let err = dir.load_into(&cfg, &reg, BAKE, &EditStore::new()).unwrap_err();
         assert!(err.contains("outside the world"), "{err}");
@@ -1047,15 +1256,20 @@ mod tests {
         assert!(err.contains("listed twice"), "{err}");
         // Unknown id: a palette entry past the registry.
         let bytes = chunk_file_bytes(good, &Chunk::uniform(65535));
-        std::fs::write(dir.path.join("chunks/bad-id.chunk"), &bytes).unwrap();
+        let bad_file = SaveDir::chunk_file(good, 2);
+        std::fs::write(dir.path.join(&bad_file), &bytes).unwrap();
         let mut c = commit.clone();
-        c.chunks = vec![CommitEntry { key: key_array(good), file: "chunks/bad-id.chunk".into(), sha256: hex(&sha256(&bytes)) }];
+        c.generation = 2;
+        c.chunks = vec![CommitEntry { key: key_array(good), file: bad_file, sha256: hex(&sha256(&bytes)) }];
         rewrite(&c);
         let err = dir.load_into(&cfg, &reg, BAKE, &EditStore::new()).unwrap_err();
         assert!(err.contains("block id 65535"), "{err}");
         // A file whose embedded key disagrees with the manifest.
         let mut c = commit.clone();
-        c.chunks = vec![CommitEntry { key: key_array(ChunkKey::neisor(1, 0, 11, 20, 30)), ..good_entry.clone() }];
+        let wrong_key = ChunkKey::neisor(1, 0, 11, 20, 30);
+        let wrong_file = SaveDir::chunk_file(wrong_key, 1);
+        std::fs::copy(dir.path.join(&good_entry.file), dir.path.join(&wrong_file)).unwrap();
+        c.chunks = vec![CommitEntry { key: key_array(wrong_key), file: wrong_file, ..good_entry.clone() }];
         rewrite(&c);
         let err = dir.load_into(&cfg, &reg, BAKE, &EditStore::new()).unwrap_err();
         assert!(err.contains("commit.json lists it as"), "{err}");
@@ -1257,8 +1471,8 @@ mod tests {
         println!("{} failure points checked: {ops:?}", ops.len());
     }
 
-    /// Not part of `cargo test`: what a save of N dirty chunks costs (the
-    /// game saves on its main thread). `cargo test --release -- --ignored
+    /// The synchronous disk protocol's cost for N dirty chunks (S1 measures
+    /// Session requests separately). `cargo test --release -- --ignored
     /// save_cost --nocapture --test-threads=1`.
     #[test]
     #[ignore]

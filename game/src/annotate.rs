@@ -306,7 +306,7 @@ pub fn save_to_photo(png: &Path, marks: &[Mark], comment: &str) -> Result<(), St
 /// held at F9 and let go while drawing would stay down, and F9 itself would be
 /// dead (it is still "held" in `Controls`). A key held at F9 and held all the
 /// way through is still held: the game carries on where it stopped, with the
-/// same accumulator and the same queue.
+/// same queue.
 #[derive(Default)]
 pub struct Gate {
     open: bool,
@@ -368,10 +368,17 @@ impl Gate {
         }
     }
 
-    /// A frame: its steps, or none while the annotator is open. The time spent
-    /// in there is not owed afterwards: nothing accumulates.
-    pub fn frame(&self, c: &mut Controls, session: &mut Session, dt: f64) -> usize {
-        if self.open { 0 } else { c.frame(session, dt) }
+    /// A frame: its steps, or none while the annotator is open. The app's clock
+    /// goes on while he draws, so an open annotator has to say the time passed
+    /// unstepped: skipping the call would leave it all owed, and the game would
+    /// race to catch up on close.
+    pub fn frame_at(&self, c: &mut Controls, session: &mut Session, elapsed: f64) -> usize {
+        if self.open {
+            c.pause_at(elapsed);
+            0
+        } else {
+            c.frame_at(session, elapsed)
+        }
     }
 }
 

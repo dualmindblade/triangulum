@@ -25,6 +25,10 @@ use glam::DVec3;
 use std::sync::Arc;
 use std::time::Instant;
 
+#[cfg(test)]
+#[path = "save_tests.rs"]
+mod save_tests;
+
 /// What a mouse button does.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Button {
@@ -105,6 +109,13 @@ pub struct Session {
     pub bake_sha256: String,
     pub last_save: Option<Instant>,
     pub saved_chunks: usize,
+    save_worker: save::SaveWorker,
+    save_exists: bool,
+    /// Persistent until a successful retry; the app shows this even with HUD off.
+    pub save_error: Option<String>,
+    retry_save_at: Option<Instant>,
+    saving_revision: Option<u64>,
+    saved_state: Option<(u64, [u8; 32])>,
     /// The simulation (M2a): ticks every `STEPS_PER_TICK` player steps.
     pub sim: Sim,
     steps: u64,
@@ -123,10 +134,40 @@ pub struct Session {
     pub visual: Option<Arc<crate::visual::Visual>>,
 }
 
+/// Quit's small state machine is driven by redraws and completion polls. The
+/// first waiting frame must be presented before any final snapshot is taken.
+#[derive(Default)]
+pub struct SaveOnExit {
+    displayed: bool,
+    final_started: bool,
+}
+
+impl SaveOnExit {
+    pub fn presented(&mut self) { self.displayed = true; }
+
+    /// true only when the in-flight generation AND the final state are durable.
+    /// An error cancels quit; the session retains the dirt and the visible error.
+    pub fn poll(&mut self, session: &mut Session) -> Result<bool, String> {
+        if !self.displayed { return Ok(false); }
+        if session.save_in_flight() {
+            match session.poll_save() {
+                None => return Ok(false),
+                Some(result) => { result?; }
+            }
+        }
+        if self.final_started { return Ok(true); }
+        self.final_started = true;
+        Ok(!session.request_save()?)
+    }
+}
+
 impl Session {
     pub fn new(engine: Arc<Engine>, player: Player, save: Option<SaveDir>, bake_sha256: String, sim: Sim) -> Self {
         engine.edits.set_slopes(sim.config.flow.powder != crate::sim::Powder::Blocks);
-        Self { engine, player, save, bake_sha256, last_save: None, saved_chunks: 0, sim, steps: 0, sky: Clock { seconds: 0.0, speed: 0.0 }, held: None, last_reload: None, recorder: None, visual: None }
+        let save_exists = save.as_ref().is_some_and(SaveDir::exists);
+        Self { engine, player, save, bake_sha256, last_save: None, saved_chunks: 0,
+            save_worker: save::SaveWorker::default(), save_exists, save_error: None, retry_save_at: None, saving_revision: None, saved_state: None,
+            sim, steps: 0, sky: Clock { seconds: 0.0, speed: 0.0 }, held: None, last_reload: None, recorder: None, visual: None }
     }
 
     pub fn planet(&self) -> &crate::grid::Planet {
@@ -292,9 +333,7 @@ impl Session {
         if self.recorder.is_some() {
             return Err("already recording a replay".into());
         }
-        if let Err(e) = self.save_now() {
-            eprintln!("replay: the save could not be brought up to date first ({e}); recording from memory anyway");
-        }
+        self.save_now()?;
         let rec = Recorder::start(self, path, note)?;
         let p = rec.path().to_path_buf();
         self.recorder = Some(rec);
@@ -344,6 +383,18 @@ impl Session {
                     } else {
                         format!("{d} was played with --powder levels and holds partial powder, which this game would turn into whole blocks. It is left as it is: start with --powder levels to go on with it")
                     });
+                }
+                let header = dir.unwrap().read_header()?.ok_or("simulation save has no header.json")?;
+                crate::sim::check_saved_rules(header.sim_rules)?;
+                if let Some(note) = crate::sim::check_saved_rules(Some(snap.sim_rules))? {
+                    println!("note: {note}");
+                }
+                let names: std::collections::HashMap<_, _> = header.blocks.iter().map(|(id, name)| (*id, name)).collect();
+                for f in &snap.falling {
+                    let name = names.get(&f.id).ok_or_else(|| format!("falling block id {} has no recorded identity in header.json", f.id))?;
+                    if f.id as usize >= registry.len() || !registry.def(f.id).answers_to(name) {
+                        return Err(format!("falling block id {} does not match its saved identity {name:?}", f.id));
+                    }
                 }
                 if let Some(saved) = snap.config.filter(|c| *c != config) {
                     println!("note: the save's simulation ran with radius {} m, {}, water period {}, {}; it continues with radius {} m, {}, water period {}, {}", saved.radius_m, if saved.enabled { "on" } else { "off" }, saved.water_period, saved.flow.text(), config.radius_m, if config.enabled { "on" } else { "off" }, config.water_period, config.flow.text());
@@ -523,29 +574,82 @@ impl Session {
         &self.engine.edits
     }
 
-    /// Write dirty chunks if the debounce says so.
+    /// Poll completion, then start a snapshot if the debounce says so.
+    /// A return value counts durable completions only, never submitted work.
     pub fn save_if_due(&mut self, now: Instant) -> Result<usize, String> {
-        if self.save.is_some() && self.engine.edits.due_for_save(now) {
-            return self.save_now();
+        if let Some(result) = self.poll_save() { return result; }
+        if !self.save_in_flight() && self.retry_save_at.is_none_or(|at| now >= at)
+            && self.save.is_some() && (self.engine.edits.due_for_save(now) || self.save_error.is_some()) {
+            self.request_save()?;
         }
         Ok(0)
     }
 
-    /// Write the dirty chunks and the simulation state. The state goes
-    /// along whenever chunks are written, whenever it changed, and whenever
-    /// the save already exists (so its tick stays current); an untouched
-    /// world creates nothing.
-    pub fn save_now(&mut self) -> Result<usize, String> {
-        let Some(dir) = &self.save else { return Ok(0) };
-        let world = self.engine.world.clone();
-        let write_sim = self.engine.edits.dirty_count() > 0 || self.sim.is_dirty() || self.sim.has_state() || dir.exists();
-        let snap = write_sim.then(|| self.sim.snapshot(world.as_ref()).to_bytes());
-        let n = dir.flush(&self.engine.edits, &self.engine.config, &self.engine.registry, &self.bake_sha256, snap.as_deref())?;
-        if n > 0 {
-            self.last_save = Some(Instant::now());
-            self.saved_chunks += n;
+    pub fn save_in_flight(&self) -> bool { self.save_worker.busy() }
+
+    fn save_failed(&mut self, error: String) -> String {
+        self.save_error = Some(error.clone());
+        self.retry_save_at = Some(Instant::now() + std::time::Duration::from_secs(2));
+        error
+    }
+
+    fn save_state(&self) -> (u64, [u8; 32]) {
+        (self.engine.edits.generation(), crate::sha256::sha256(&self.sim.snapshot_for_save(&self.engine.world).to_bytes()))
+    }
+
+    /// Used before detaching the real world for a terrain preview. A completed
+    /// save changes no simulation flags, so compare against its captured state.
+    pub fn has_unsaved_changes(&self) -> bool {
+        self.save_in_flight() || self.save_error.is_some() || self.engine.edits.dirty_count() > 0
+            || self.saved_state.map_or_else(|| self.sim.is_dirty(), |s| s != self.save_state())
+    }
+
+    /// Capture now, write on the worker. Busy requests are coalesced without
+    /// allocating a queued snapshot; remaining dirt is saved on the next turn.
+    /// No filesystem operation or simulation mutation runs here.
+    pub fn request_save(&mut self) -> Result<bool, String> {
+        if self.save_in_flight() { return Ok(false); }
+        let Some(dir) = self.save.clone() else { return Ok(false) };
+        if !(self.engine.edits.dirty_count() > 0 || self.sim.is_dirty() || self.sim.has_state() || self.save_exists) {
+            return Ok(false);
         }
-        Ok(n)
+        let snapshot = save::SaveSnapshot::capture(&self.engine, &self.bake_sha256, &self.sim, save::SNAPSHOT_LIMIT)
+            .map_err(|e| self.save_failed(e))?;
+        debug_assert!(snapshot.bytes <= save::SNAPSHOT_LIMIT);
+        self.saving_revision = Some(self.engine.edits.generation());
+        self.save_worker.start(dir, snapshot, self.engine.edits.clone()).map_err(|e| self.save_failed(e))?;
+        Ok(true)
+    }
+
+    fn finish_save(&mut self, wait: bool) -> Option<Result<usize, String>> {
+        self.save_worker.finish(wait).map(|result| match result {
+            Ok(saved) => {
+                let n = saved.chunks;
+                self.last_save = Some(Instant::now());
+                self.saved_chunks += n;
+                self.save_exists = true;
+                self.saved_state = self.saving_revision.take().map(|rev| (rev, saved.sim_digest));
+                self.save_error = None;
+                self.retry_save_at = None;
+                Ok(n)
+            }
+            Err(e) => {
+                self.saving_revision = None;
+                Err(self.save_failed(e))
+            }
+        })
+    }
+
+    pub fn poll_save(&mut self) -> Option<Result<usize, String>> { self.finish_save(false) }
+
+    pub fn wait_for_save(&mut self) -> Result<usize, String> { self.finish_save(true).unwrap_or(Ok(0)) }
+
+    /// Barrier for the harness, reload and recording: finish the old snapshot,
+    /// then capture and finish the latest state. Simulation stays paused here.
+    pub fn save_now(&mut self) -> Result<usize, String> {
+        let n = self.wait_for_save()?;
+        self.request_save()?;
+        Ok(n + self.wait_for_save()?)
     }
 
     /// Flush, then rebuild the world and the simulation from the save on
@@ -562,6 +666,7 @@ impl Session {
         let engine = Arc::new(self.engine.with_edits(edits));
         self.engine = engine.clone();
         self.sim = Self::load_sim(self.save.as_ref(), self.sim.config, &self.engine.registry)?;
+        self.saved_state = Some(self.save_state());
         Ok((engine, report))
     }
 

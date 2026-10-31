@@ -348,7 +348,10 @@ where it first went different, and how ("step 1260, 21 s in: player
 position 0.4 m apart; world: face 2 chunk (3349, 1797, 17) differs").
 The shots and a `report.json` go to `game/out/replay/<name>/`. The exit
 code is 0 when it reproduced, 1 when it diverged, 2 when it could not
-play (the wrong bake, a damaged file). A replay needs the same world
+play (the wrong bake, a damaged file), and 3 when the recording is incomplete.
+Exact success requires a matching checkpoint at the claimed end, after any
+inputs on that step. Incomplete reports give the last verified step;
+`report.json` includes `verdict` and `verified_through`. A replay needs the same world
 settings and bake it was recorded with, and is meant for the same build
 of the game; it says so when it cannot play, and still lists its markers
 and writes its `report.json`.
@@ -367,6 +370,11 @@ report, ready for `--look-file`. Textures are recorded by identity, not content,
 a replay can say one differs but can't bring it back. Each marker in `report.json`
 also says how many pixels its settled shot differs from the frame that was marked;
 that frame was live, so distant detail still loading counts.
+
+R4 adds the algorithm version and previous region radius to simulation
+hashes. Recordings from before that change can differ at their checks even
+with `sim_rules = 3`; use their recording build to play those files. Their
+saves remain readable when the world/generator checks match.
 
 ## Useful options
 
@@ -570,6 +578,14 @@ into the face's own file: a face showing an example, or a file another
 block or face also uses, gets a new file named after the block (copy on
 write). *Import PNG...* opens the Windows file dialog (the `rfd` crate) on
 a thread; a PNG dropped on the window imports too.
+
+PNG headers are checked before pixel allocation: dimensions up to 8192 on
+each side, at most 32 MiB of decoded RGBA, and files at most 32 MiB. Imports
+and substantial hot reloads use one background decoder so they do not stop
+the game or decode many large images at once. Texture arrays use at most
+2048 layers or the device's limit, whichever is smaller. Excess textures
+are reported and leave their faces flat. Unused layers are reclaimed;
+unreferenced paintings remain available to *Save look*.
 
 `TRIANGULUM_PANEL_BLOCK=stone` (with `TRIANGULUM_PANEL_SECTION=blocks` and
 `--panel`) opens a block's details for screenshots.
@@ -833,7 +849,7 @@ Only chunks that changed are saved, whatever changed them (you or the
 simulation), under `game/saves/<world>/` (gitignored):
 
 ```
-header.json      format version (3), generator version, body id, the
+header.json      format version (3), generator version, sim_rules, body id, the
                  world's identity (seed, block size, H, sea level, N,
                  vertical scale, roughness), the projection and its table's
                  SHA-256, the bake's content SHA-256, the block-id table
@@ -848,7 +864,8 @@ chunks/*.gN.chunk  one LOD-0 chunk each, in full (ids and water levels,
 sim.gN.bin       the simulation: tick, update queue, frozen updates, blocks
                  in flight, and (since M2c) the settings it ran under,
                  where its active region was computed (a reload resumes
-                 that exact region) and a digest of the block rules
+                 that exact region), its previous radius, the simulation
+                 algorithm version, and a digest of the block rules
 ```
 
 A save is one snapshot: a generation's files are written and flushed to
@@ -865,8 +882,45 @@ committed, so a failed write is retried. A save folder with a
 `commit.json` but no `header.json` is damaged, not empty: it is refused
 with a message instead of loading as an untouched world.
 
-Edits are saved a couple of seconds after you stop editing (at the latest
-15 s after the first unsaved edit) and when you quit. A save whose header
+Simulation snapshots now use layout 4 and still read layouts 1, 2 and 3.
+The algorithm version is independent of that layout and of block flags:
+`sim_rules` is 3. Rules 1 and 2 can continue safely under 3, with a notice;
+scheduled work uses the current rules and resting cells stay asleep until
+disturbed. A larger radius wakes the newly connected boundaries. Unknown
+algorithm versions are refused without writing the save. Old headers that
+omit the version still load; their snapshot layout identifies the old rules.
+Every used block ID, including blocks in flight, must have an identity in
+the saved block table. An unrecorded ID cannot be guessed from today's
+blocks.json. Newly recorded identities use the block's immutable original
+name; existing saved names and legacy `was` aliases still work.
+
+Autosave starts a couple of seconds after you stop editing, or 15 s after
+the first unsaved edit once the previous write has finished. Quitting also
+saves. The game copies the dirty chunks in their packed form, the simulation
+and the world/block
+identity at that instant. One worker compresses, hashes and writes that
+copy while play continues. Changes made during the write stay dirty for
+the next save. Taking or finishing a save changes no simulation state.
+The HUD says **Saving...** while the worker runs; **saved** means the
+generation has completed its durable flushes.
+
+**Q and closing the window** show a waiting message and pause play while
+the current write finishes, then save the last changes before exiting.
+A failure keeps the game open and shows the error even with the HUD hidden.
+Autosave retries after two seconds, retaining unsaved changes; Q can retry
+saving and quitting. F10 starting a recording, reload, terrain previews,
+the harness's `save`, and replay reloads all wait for the save they need.
+A failed save prevents those operations from proceeding.
+
+There is no queue of world copies: requests while the writer is busy leave
+the dirty data for the next save. The single snapshot has a **256 MiB**
+payload limit, checked before copying chunks and simulation queues. If a
+world exceeds that limit, saving reports an error and retains its dirt;
+it never writes a partial snapshot. The worker also needs space for the
+manifest, serialized simulation and one chunk's compression buffers.
+Save format 3 and simulation layout 4 are unchanged.
+
+A save whose header
 does not match the running world is refused at startup with the reasons;
 start with the saved settings or point `--save` somewhere else. A save from
 an older generator version can't be continued by any setting: the message
@@ -1053,7 +1107,7 @@ tick N | sim on|off      N simulation ticks (20 Hz); pause or resume it
 sim radius M | period N  active region radius; ticks per water step
 cells DI0 DI1 DJ0 DJ1 DK  map of one layer near the feet, with water levels
 shot NAME                settled frame + state; bench N; state NAME
-save | reload            write edits; quit-and-restart from disk
+save | reload            wait for edits to reach disk; quit-and-restart from disk
 assert FIELD OP VALUE    position, altitude, on_ground, in_water, crosshair,
                          block[F,I,J,K], block_rel[DI,DJ,DK], falling,
                          falling_rel[DI,DJ], queued, sim_hash,
