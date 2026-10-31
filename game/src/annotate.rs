@@ -507,6 +507,10 @@ impl Annotator {
         let [w, h] = self.size;
         let to_image = |p: Pos2| [tenth(((p.x - canvas.min.x) / k).clamp(0.0, w)), tenth(((p.y - canvas.min.y) / k).clamp(0.0, h))];
         let events = ctx.input(|i| i.events.clone());
+        // The field of a text mark being typed, not of the last one.
+        if self.draft.is_none() {
+            self.spots.remove("draft");
+        }
         let over_draft = self.spots.get("draft").copied();
         for e in events {
             match e {
@@ -634,6 +638,9 @@ impl Annotator {
         let id = Id::new("annotator-comment");
         let r = ui.add(egui::TextEdit::multiline(&mut self.comment).id(id).hint_text("What's wrong? One sentence is enough.").desired_rows(2).desired_width(f32::INFINITY).lock_focus(true).return_key(egui::KeyboardShortcut::new(Modifiers::SHIFT, Key::Enter)));
         self.spots.insert("comment".into(), r.rect);
+        if r.changed() {
+            self.armed = false;
+        }
         // The comment has the keyboard unless a text mark is being typed, so
         // typing just works after any stroke.
         if !self.typing_mark() {
