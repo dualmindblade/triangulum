@@ -1,0 +1,38 @@
+# B7: frames of the default game, to lay against another build's: with the
+# switch off, none of this may change by a pixel. Clean photos, settled, at a
+# fixed sky, of ground, a beach, sand falling and sliding, water, a river.
+#   triangulum --play scripts/b7-default-frames.play --out out/b7/default-new
+mode fly
+sun 35
+assert slides == 0
+atblock 2 107147 57531 612
+aim 10 0 -30
+photo frame_hills
+fill -5 -12 -8 21 12 -8 stone
+fill 8 0 -7 8 0 6 sand
+fill 12 3 -7 16 7 -7 water
+tick 6
+aim 8 0 -5
+photo frame_sand_falling
+tick 60
+photo frame_sand_settled
+state settled
+atblock 1 2003 59004 516
+lookaxis -i 0
+aim -5 0 -5
+photo frame_beach
+atblock 1 1998 59004 513
+aim 0 0 -1.5
+tap break
+tick 30
+atblock 1 2003 59004 516
+lookaxis -i 0
+aim -5 0 -5
+photo frame_beach_dug
+find river
+photo frame_river
+find lake
+photo frame_lake
+state final
+assert falling == 0
+assert vanished == 0

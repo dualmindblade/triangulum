@@ -69,7 +69,7 @@ fn mesh_vertex(vi: u32, ii: u32, water: bool) -> MeshOut {
         cu = cv;
         cv = t;
     }
-    let v = vertex(vi, ii, water);
+    let v = vertex(vi, ii, water, false);
     var out: MeshOut;
     out.pos = v.pos;
     out.quad = vec2<f32>(f32(cu), f32(cv));

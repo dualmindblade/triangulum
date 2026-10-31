@@ -17,6 +17,9 @@ use glam::{DMat3, DVec3, IVec3};
 #[cfg(test)]
 #[path = "picking_tests.rs"]
 mod picking_tests;
+#[cfg(test)]
+#[path = "player/slope_tests.rs"]
+mod slope_tests;
 
 /// Fixed simulation step (the harness and the app both use it).
 pub const STEP: f64 = 1.0 / 60.0;
@@ -36,6 +39,12 @@ const TERMINAL: f64 = 70.0;
 /// Skin in lattice units: boxes stop this short of a face and ignore cells
 /// they only touch.
 const EPS: f64 = 1e-5;
+/// Sloped powder (B7), in layers: the most a slope lifts a body in one step
+/// when walking onto it, which only the edge of a pile on a shelf can ask for,
+/// and how far down a grounded body follows it. At the steepest angle at a
+/// sprint the surface drops 0.30 of a layer in a step.
+const SLOPE_STEP_UP: f64 = 0.6;
+const SLOPE_STICK: f64 = 0.35;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Mode {
@@ -239,7 +248,47 @@ impl Player {
     pub fn step(&mut self, vox: &dyn Voxels, planet: &Planet, input: &Input, dt: f64) {
         match self.mode {
             Mode::Fly => self.step_fly(planet, input, dt),
-            Mode::Walk => self.step_walk(vox, planet, input, dt),
+            Mode::Walk if vox.has_slopes() => self.step_on_slopes(vox, planet, input, dt),
+            Mode::Walk => self.step_walk(vox, planet, input, dt, true),
+        }
+    }
+
+    /// A walking step under `--powder levels` (B7). The cells a slope replaces
+    /// are open to the sweeps (`Soft`), and the surface carries the body: after
+    /// the ordinary step it stands on the highest point of the slope under its
+    /// box (`slope_under`), the same triangles the mesher draws, so the box
+    /// never enters the slope and nothing can be fallen through. On the way
+    /// down it stays on the ground rather than skipping off each step.
+    fn step_on_slopes(&mut self, vox: &dyn Voxels, planet: &Planet, input: &Input, dt: f64) {
+        let start = Frame::at(planet, self.pos);
+        let grounded = self.on_ground;
+        // Sneaking holds an edge of something solid, and a slope has none.
+        let plain = slope_under(vox, &start, self.lattice_box(&start)).is_none();
+        self.step_walk(&Soft(vox), planet, input, dt, plain);
+        let f = Frame::at(planet, self.pos);
+        let Some(mut top) = slope_under(vox, &f, self.lattice_box(&f)) else { return };
+        let mut k = f.k;
+        if top > k && top > start.k + SLOPE_STEP_UP {
+            // More than a step up from where this one began (a pile's edge
+            // on a shelf): the sideways part of the move does not happen.
+            let up = self.pos.normalize();
+            self.vel = up * self.vel.dot(up);
+            self.pos = planet.dir(start.face, start.i, start.j) * planet.radius_at(k);
+            let back = Frame::at(planet, self.pos);
+            k = back.k;
+            let Some(t) = slope_under(vox, &back, self.lattice_box(&back)) else { return };
+            top = t;
+        }
+        let up = self.pos.normalize();
+        let vz = self.vel.dot(up);
+        if k < top {
+            self.pos = up * planet.radius_at(top + EPS);
+            self.vel -= up * vz.min(0.0);
+            self.on_ground = true;
+        } else if grounded && vz <= 0.0 && !self.in_water && k - top <= SLOPE_STICK {
+            self.pos = up * planet.radius_at(top + EPS);
+            self.vel -= up * vz;
+            self.on_ground = true;
         }
     }
 
@@ -278,7 +327,8 @@ impl Player {
         self.head_in_water = false;
     }
 
-    fn step_walk(&mut self, vox: &dyn Voxels, planet: &Planet, input: &Input, dt: f64) {
+    /// `hold_edges`: sneaking keeps the box over something solid.
+    fn step_walk(&mut self, vox: &dyn Voxels, planet: &Planet, input: &Input, dt: f64, hold_edges: bool) {
         let f = Frame::at(planet, self.pos);
         // Where the body is: water at the feet or the hips means swimming.
         // Level-aware (M2b): a point above a partial cell's surface is dry.
@@ -366,7 +416,8 @@ impl Player {
         let hit_z = dz != dl.z;
         bmin.z += dz;
         bmax.z += dz;
-        let (dx, dy, hit_x, hit_y) = sweep_horizontal(vox, f.face, bmin, bmax, dl.x, dl.y, sneak);
+        let hold = sneak && hold_edges;
+        let (dx, dy, hit_x, hit_y) = sweep_horizontal(vox, f.face, bmin, bmax, dl.x, dl.y, hold);
         self.on_ground = hit_z && dl.z < 0.0;
         if hit_z {
             self.vel -= up * self.vel.dot(up);
@@ -407,7 +458,7 @@ impl Player {
         let f2 = Frame::from_lattice(planet, face2, i2, j2, nk);
         let dl2 = f2.to_lattice(rest);
         let (b2min, b2max) = self.lattice_box(&f2);
-        let (dx2, dy2, hit_x2, hit_y2) = sweep_horizontal(vox, face2, b2min, b2max, dl2.x, dl2.y, sneak);
+        let (dx2, dy2, hit_x2, hit_y2) = sweep_horizontal(vox, face2, b2min, b2max, dl2.x, dl2.y, hold);
         if hit_x2 {
             self.vel -= f2.ei * self.vel.dot(f2.ei);
         }
@@ -469,6 +520,53 @@ impl Player {
         self.vel = DVec3::ZERO;
         self.on_ground = true;
     }
+}
+
+/// The world as the sweeps see it under `--powder levels`: a cell a slope
+/// replaces is open. What holds the body up there is `slope_under`.
+struct Soft<'a>(&'a dyn Voxels);
+
+/// The id `Soft` gives such a cell. No block has it.
+const SOFT: BlockId = BlockId::MAX;
+
+impl Voxels for Soft<'_> {
+    fn block(&self, face: u8, i: i64, j: i64, k: i64) -> BlockId {
+        let id = self.0.block(face, i, j, k);
+        if self.0.is_powder(id) && self.0.slope(face, i, j, k).is_some_and(|s| k <= s.top) { SOFT } else { id }
+    }
+    fn is_solid(&self, id: BlockId) -> bool {
+        id != SOFT && self.0.is_solid(id)
+    }
+    fn is_liquid(&self, id: BlockId) -> bool {
+        id != SOFT && self.0.is_liquid(id)
+    }
+    fn water_level(&self, face: u8, i: i64, j: i64, k: i64) -> u8 {
+        self.0.water_level(face, i, j, k)
+    }
+}
+
+/// The highest point of any slope under the box's footprint, in layers, or
+/// None if it stands on none. The surface is flat triangles meeting along a
+/// cell's diagonals, so that point is a corner of the footprint within a cell,
+/// where the footprint's edge crosses a diagonal, or the middle of the cell.
+fn slope_under(vox: &dyn Voxels, f: &Frame, (bmin, bmax): (DVec3, DVec3)) -> Option<f64> {
+    let k = (bmin.z + 1e-6).floor() as i64;
+    let mut high: Option<f64> = None;
+    for ci in (bmin.x + EPS).floor() as i64..=(bmax.x - EPS).floor() as i64 {
+        for cj in (bmin.y + EPS).floor() as i64..=(bmax.y - EPS).floor() as i64 {
+            let Some(s) = vox.slope(f.face, ci, cj, k) else { continue };
+            let (u0, u1) = ((bmin.x - ci as f64).clamp(0.0, 1.0), (bmax.x - ci as f64).clamp(0.0, 1.0));
+            let (v0, v1) = ((bmin.y - cj as f64).clamp(0.0, 1.0), (bmax.y - cj as f64).clamp(0.0, 1.0));
+            let points = [(u0, v0), (u1, v0), (u0, v1), (u1, v1), (u0, u0), (u1, u1), (v0, v0), (v1, v1), (u0, 1.0 - u0), (u1, 1.0 - u1), (1.0 - v0, v0), (1.0 - v1, v1), (0.5, 0.5)];
+            for (u, v) in points {
+                if (u0..=u1).contains(&u) && (v0..=v1).contains(&v) {
+                    let h = s.height_at(u, v);
+                    high = Some(high.map_or(h, |top| top.max(h)));
+                }
+            }
+        }
+    }
+    high
 }
 
 /// Is there something solid under any part of the box's footprint?

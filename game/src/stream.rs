@@ -47,7 +47,7 @@
 //! microseconds. Ranges live in a bounded, oldest-first cache.
 
 use crate::grid::{BlockPos, Bounds, CHUNK, ChunkKey, FastMap, FootprintKey, Planet};
-use crate::mesh::{MeshData, MeshOptions, mesh_chunk_levels};
+use crate::mesh::{MeshData, MeshOptions, mesh_chunk_slopes};
 use crate::render::{DrawRecord, GpuMesh, Renderer};
 use crate::world::{Registry, World};
 use glam::{DVec3, Mat4, Vec3, Vec4};
@@ -93,7 +93,7 @@ impl PartialEq for Mesh {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
             (Mesh::Absent, Mesh::Absent) | (Mesh::Empty, Mesh::Empty) => true,
-            (Mesh::Gpu(a), Mesh::Gpu(b)) => (a.slot, a.opaque_base, a.opaque_count, a.water_base, a.water_count) == (b.slot, b.opaque_base, b.opaque_count, b.water_base, b.water_count),
+            (Mesh::Gpu(a), Mesh::Gpu(b)) => (a.slot, a.opaque_base, a.opaque_count, a.water_base, a.water_count, a.slope_base, a.slope_count) == (b.slot, b.opaque_base, b.opaque_count, b.water_base, b.water_count, b.slope_base, b.slope_count),
             _ => false,
         }
     }
@@ -1214,7 +1214,8 @@ impl Streamer {
         rayon::spawn(move || {
             let g = world.generate(w.key);
             let levels = world.padded_levels(w.key, &g);
-            let mesh = mesh_chunk_levels(&g, levels.as_ref(), &registry, &world.planet, opts);
+            let powder = world.padded_powder(w.key, &g);
+            let mesh = mesh_chunk_slopes(&g, levels.as_ref(), powder.as_ref(), &registry, &world.planet, opts);
             let _ = tx.send(JobResult { mesh, gen_us: g.gen_us, slot: w.slot, epoch: w.epoch, rev: w.rev });
         });
     }
@@ -1237,10 +1238,10 @@ impl Streamer {
             }
         }
         let m = &res.mesh;
-        let mesh = if m.opaque.is_empty() && m.water.is_empty() {
+        let mesh = if m.opaque.is_empty() && m.water.is_empty() && m.slopes.is_empty() {
             Mesh::Empty
         } else {
-            match gpu.add_mesh(&m.opaque, &m.water, &m.grid) {
+            match gpu.add_mesh(&m.opaque, &m.water, &m.grid).and_then(|up| gpu.add_slopes(up, &m.slopes)) {
                 Some(mut up) => {
                     let k = m.key;
                     up.region = crate::render::meshview::region_word(k.face, k.lod, k.cx, k.cy, k.cz);
@@ -1293,7 +1294,7 @@ impl Streamer {
             {
                 let what = match n.mesh {
                     _ if n.hidden => "hidden",
-                    Mesh::Gpu(gm) if gm.opaque_count + gm.water_count > 0 => "drawn",
+                    Mesh::Gpu(gm) if gm.opaque_count + gm.water_count + gm.slope_count > 0 => "drawn",
                     Mesh::Gpu(_) | Mesh::Empty => "empty",
                     Mesh::Absent => "gap",
                 };
@@ -1384,6 +1385,7 @@ impl Streamer {
         // to back, water back to front.
         opaque.clear();
         water.clear();
+        gpu.slope_draws.clear();
         let planes = frustum_planes(view_proj);
         let mut culled = 0usize;
         self.order.clear();
@@ -1406,6 +1408,9 @@ impl Streamer {
             }
             if gm.water_count > 0 {
                 self.worder.push((d2, DrawRecord { origin: o.to_array(), voxel, slot: gm.slot, quad_base: gm.water_base, quad_count: gm.water_count, pad: gm.region }));
+            }
+            if gm.slope_count > 0 {
+                gpu.slope_draws.push(DrawRecord { origin: o.to_array(), voxel, slot: gm.slot, quad_base: gm.slope_base, quad_count: gm.slope_count, pad: gm.region });
             }
         }
         self.order.sort_unstable_by(|a, b| a.0.total_cmp(&b.0));
@@ -1513,7 +1518,7 @@ mod tests {
         fn alloc(&mut self) -> GpuMesh {
             self.next += 1;
             self.live.insert(self.next);
-            GpuMesh { slot: self.next, opaque_base: 0, opaque_count: 1, water_base: 0, water_count: 0, region: 0 }
+            GpuMesh { slot: self.next, opaque_base: 0, opaque_count: 1, water_base: 0, water_count: 0, slope_base: 0, slope_count: 0, region: 0 }
         }
         fn free(&mut self, gm: GpuMesh) {
             if !self.live.remove(&gm.slot) {

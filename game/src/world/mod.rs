@@ -6,6 +6,7 @@ pub mod blocks;
 pub mod chunk;
 pub mod edits;
 pub mod save;
+pub mod slope;
 
 pub use blocks::{BlockDef, BlockId, Registry};
 pub use chunk::Chunk;
@@ -70,6 +71,19 @@ pub trait Voxels {
             return true;
         }
         frac * f64::from(edits::WATER_FULL) < f64::from(self.water_level(face, i, j, k))
+    }
+    /// May any cell be a sloped surface (`--powder levels`, B7)? While false
+    /// nothing below is asked.
+    fn has_slopes(&self) -> bool {
+        false
+    }
+    /// The slope layer `k` of column (i, j) is in or just over (`slope.rs`).
+    fn slope(&self, _face: u8, _i: i64, _j: i64, _k: i64) -> Option<slope::Slope> {
+        None
+    }
+    /// Is this block loose, so that a slope may replace it?
+    fn is_powder(&self, _id: BlockId) -> bool {
+        false
     }
 }
 
@@ -288,6 +302,11 @@ impl World {
             let up = BlockPos { k, ..bp };
             let (uid, ul) = self.block_and_level_at(up);
             if !self.registry.is_replaceable(uid) {
+                // Loose powder (`--powder levels`, where it can stack over
+                // water) is no ceiling: water rises through it.
+                if self.edits.slopes_on() && self.registry.has_gravity(uid) {
+                    continue;
+                }
                 break;
             }
             let cap = (edits::WATER_FULL - ul) as u32;
@@ -384,9 +403,13 @@ impl World {
         let mut invalidated: crate::grid::FastSet<ChunkKey> = crate::grid::FastSet::default();
         let mut scratch = Vec::with_capacity(32);
         let mut log = Vec::new();
+        let slopes = self.edits.slopes_on();
         for ((bp, _, _), c) in valid.iter().zip(&changed) {
             if *c {
                 self.affected_chunks_into(*bp, &mut scratch);
+                if slopes {
+                    self.slope_reach(*bp, &mut scratch);
+                }
                 invalidated.extend(scratch.drain(..));
                 log.push(*bp);
             }
@@ -398,6 +421,21 @@ impl World {
             self.edits.push_changed(log.iter().copied());
         }
         log.len()
+    }
+
+    /// A slope reaches further up and down than the one-cell padding: the
+    /// LOD-0 chunks above and below `bp`, if a change here can move a surface
+    /// or a cut cell there (`slope.rs`).
+    fn slope_reach(&self, bp: BlockPos, out: &mut Vec<ChunkKey>) {
+        let (k, c) = (bp.k as i64, CHUNK as i64);
+        let z = k % c;
+        for at in [(z < slope::WINDOW).then_some(k - c), (z >= c - slope::WINDOW).then_some(k + c)].into_iter().flatten() {
+            if at < 0 || at >= self.planet.height as i64 {
+                continue;
+            }
+            let neighbour = BlockPos { k: at as u32, ..bp };
+            out.extend(self.affected_chunks(neighbour).into_iter().filter(|key| key.lod == 0));
+        }
     }
 
     /// The six face neighbours of a block that exist: across chunk borders
@@ -786,6 +824,17 @@ impl Voxels for World {
             Some(bp) => self.water_level_at(bp),
             None => 0,
         }
+    }
+    #[inline]
+    fn has_slopes(&self) -> bool {
+        self.edits.slopes_on()
+    }
+    fn slope(&self, face: u8, i: i64, j: i64, k: i64) -> Option<slope::Slope> {
+        self.slope_at(face, i, j, k)
+    }
+    #[inline]
+    fn is_powder(&self, id: BlockId) -> bool {
+        self.registry.has_gravity(id)
     }
 }
 

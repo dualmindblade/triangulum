@@ -27,6 +27,7 @@
 
 use crate::grid::{CHUNK, ChunkKey, Planet};
 use crate::world::Registry;
+use crate::world::slope::PaddedPowder;
 use crate::worldgen::{Generated, PAD, pidx};
 use glam::DVec3;
 use std::time::Instant;
@@ -57,11 +58,18 @@ pub const WATER_FLAT: u32 = 0xFFFF_FFFF;
 pub type Quad = [u32; 2];
 /// A water quad: `Quad` plus the corner heights and a spare word.
 pub type WaterQuad = [u32; 4];
+/// A slope quad (B7, `world/slope.rs`): `Quad`, four i16 heights over the
+/// chunk's floor in 1/255 of a voxel (water's bytes can't leave their cell),
+/// and four gradients (two i8s each) for smooth shading. Three quad slots.
+pub type SlopeQuad = [u32; 6];
 
 pub struct MeshData {
     pub key: ChunkKey,
     pub opaque: Vec<Quad>,
     pub water: Vec<WaterQuad>,
+    /// Sloped powder (B7, `world/slope.rs`): opaque, and empty unless
+    /// `--powder levels` left partial powder here.
+    pub slopes: Vec<SlopeQuad>,
     pub grid: Vec<f32>,
     /// World position of the chunk's lattice corner (i0, j0, k0).
     pub origin: DVec3,
@@ -232,6 +240,12 @@ pub fn mesh_chunk(generated: &Generated, registry: &Registry, planet: &Planet, o
 /// Mesh a generated chunk; `water_cells` (`World::padded_levels`) gives
 /// LOD-0 water its sloped surfaces.
 pub fn mesh_chunk_levels(generated: &Generated, water_cells: Option<&PaddedWater>, registry: &Registry, planet: &Planet, opt: MeshOptions) -> MeshData {
+    mesh_chunk_slopes(generated, water_cells, None, registry, planet, opt)
+}
+
+/// Mesh a generated chunk: `powder` (`World::padded_powder`) takes the cells
+/// a slope replaces out of the cube mesh and adds its quads.
+pub fn mesh_chunk_slopes(generated: &Generated, water_cells: Option<&PaddedWater>, powder: Option<&PaddedPowder>, registry: &Registry, planet: &Planet, opt: MeshOptions) -> MeshData {
     let t0 = Instant::now();
     let key = generated.key;
     let ids = &generated.ids;
@@ -253,6 +267,30 @@ pub fn mesh_chunk_levels(generated: &Generated, water_cells: Option<&PaddedWater
             masks.liquid[c] = l;
         }
     }
+    // The cells a slope replaces leave the cubes, and those water stands
+    // beside take its level (`World::water_beside`).
+    let wetted;
+    let water_cells = match (powder, water_cells) {
+        (Some(p), Some(w)) => {
+            for &(x, y, z) in &p.soft {
+                masks.solid[col(x as i32, y as i32)] &= !(1u64 << (z as i32 + 1));
+            }
+            let mut levels = w.levels.clone();
+            for &(x, y, z, level) in &p.wet {
+                masks.liquid[col(x as i32, y as i32)] |= 1u64 << (z as i32 + 1);
+                levels[pidx(x as i32, y as i32, z as i32)] = level;
+            }
+            wetted = PaddedWater { levels, skirted: w.skirted.clone() };
+            Some(&wetted)
+        }
+        (Some(p), None) => {
+            for &(x, y, z) in &p.soft {
+                masks.solid[col(x as i32, y as i32)] &= !(1u64 << (z as i32 + 1));
+            }
+            None
+        }
+        (None, w) => w,
+    };
     let mut opaque = Vec::new();
     let mut water = Vec::new();
     let any_solid = masks.solid.iter().any(|&m| m & INNER != 0);
@@ -310,7 +348,12 @@ pub fn mesh_chunk_levels(generated: &Generated, water_cells: Option<&PaddedWater
         // Merge key: block id and the four corner heights (full water merges as before).
         let face_key = |axis: u32, sign: u32, u: usize, v: usize, slice: usize| -> (u32, u32) {
             let (x, y, z) = voxel_of(axis, slice, u, v);
-            let id = ids[pidx(x, y, z)] as u32 | (0xFF << 16);
+            let id = ids[pidx(x, y, z)];
+            let id = match powder {
+                Some(p) if !registry.is_liquid(id) => p.water,
+                _ => id,
+            };
+            let id = id as u32 | (0xFF << 16);
             let heights = surface.as_ref().map_or(WATER_FLAT, |s| s.heights(axis, sign, x, y, z));
             (id, heights)
         };
@@ -340,7 +383,8 @@ pub fn mesh_chunk_levels(generated: &Generated, water_cells: Option<&PaddedWater
     }
     grid[GRID_R0_INDEX] = r0 as f32;
     let bounds = planet.chunk_bounds(key);
-    MeshData { key, opaque, water, grid, origin, center: bounds.centre, radius: bounds.radius as f32, mesh_us: t0.elapsed().as_micros() as u32 }
+    let slopes = powder.map_or_else(Vec::new, |p| p.quads.clone());
+    MeshData { key, opaque, water, slopes, grid, origin, center: bounds.centre, radius: bounds.radius as f32, mesh_us: t0.elapsed().as_micros() as u32 }
 }
 
 /// The longest tangent edge of a sea-surface quad at `lod`, in voxels: a

@@ -95,14 +95,24 @@ fn lagrange5(t: f32) -> array<f32, 5> {
 // fills the shading inputs. Water quads (M2b) are two slots each: the usual
 // two words, then four 8-bit corner heights that lower the top corners of
 // a partial cell's faces (255 = the voxel's top, the geometry of full water).
-fn vertex(vi: u32, ii: u32, water: bool) -> VOut {
+//
+// Sloped powder (B7, world/slope.rs) is three slots: four i16 vertex heights
+// over the chunk's floor in 1/255 of a voxel, then four gradients.
+fn vertex(vi: u32, ii: u32, water: bool, slope: bool) -> VOut {
     let d = draws[ii];
     var q: vec2<u32>;
     var heights = 0xFFFFFFFFu;
+    var corners = vec2<u32>(0u, 0u);
+    var leans = vec2<u32>(0u, 0u);
     if (water) {
         let e = d.quad_base + 2u * ((vi >> 2u) - d.quad_base);
         q = quads[e];
         heights = quads[e + 1u].x;
+    } else if (slope) {
+        let e = d.quad_base + 3u * ((vi >> 2u) - d.quad_base);
+        q = quads[e];
+        corners = quads[e + 1u];
+        leans = quads[e + 2u];
     } else {
         q = quads[vi >> 2u];
     }
@@ -146,6 +156,20 @@ fn vertex(vi: u32, ii: u32, water: bool) -> VOut {
             let hc = f32((heights >> (8u * ao_corner)) & 0xFFu);
             lp.z += (hc - 255.0) / 255.0;
         }
+    }
+    // A slope's vertices stand at their own heights, on every face of it. A
+    // top is two fans around the middle of the cell (slope.rs): `w - 1` is
+    // which, the second being the first turned half way round.
+    let fan = slope && axis == 2u && sign == 1u;
+    if (fan) {
+        var order = FAN;
+        var p = order[c];
+        if (w != 1u) { p = vec2<f32>(1.0) - p; }
+        lp.x = f32(u0) + p.x;
+        lp.y = f32(v0) + p.y;
+        lp.z = corner_height(corners, c);
+    } else if (slope) {
+        lp.z = corner_height(corners, ao_corner);
     }
 
     // Curvature grid over the footprint (4x4 cells of 8 voxels): bilinear
@@ -205,6 +229,18 @@ fn vertex(vi: u32, ii: u32, water: bool) -> VOut {
         case 1u: { n = normalize(cross(up, du)) * sgn; }
         default: { n = normalize(up) * sgn; }
     }
+    // A sloped top lights by its gradient at each vertex, in the column's own
+    // frame (du and dv span eight voxels of the grid), so a pile shades
+    // smoothly across its cells rather than as facets.
+    if (fan) {
+        var word = leans.x;
+        if (c >= 2u) { word = leans.y; }
+        let g = word >> (16u * (c & 1u));
+        let gu = f32(i32(g << 24u) >> 24u) / 32.0;
+        let gv = f32(i32(g << 16u) >> 24u) / 32.0;
+        n = normalize(cross(du * 0.125 + up * (gu * d.voxel), dv * 0.125 + up * (gv * d.voxel)));
+        if (dot(n, up) < 0.0) { n = -n; }
+    }
 
     var out: VOut;
     out.pos = cam.view_proj * vec4<f32>(world, 1.0);
@@ -241,7 +277,24 @@ fn vertex(vi: u32, ii: u32, water: bool) -> VOut {
 
 @vertex
 fn vs_main(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> VOut {
-    return vertex(vi, ii, false);
+    return vertex(vi, ii, false, false);
+}
+
+@vertex
+fn vs_slope(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> VOut {
+    return vertex(vi, ii, false, true);
+}
+
+// A fan's vertices over its cell: vertex 1, shared by both its triangles in
+// the index pattern, is the middle.
+const FAN = array<vec2<f32>, 4>(vec2<f32>(1.0, 0.0), vec2<f32>(0.5, 0.5), vec2<f32>(0.0, 0.0), vec2<f32>(0.0, 1.0));
+
+// Vertex c of a slope quad, in voxels over the chunk's floor.
+fn corner_height(corners: vec2<u32>, c: u32) -> f32 {
+    var word = corners.x;
+    if (c >= 2u) { word = corners.y; }
+    let shift = 16u * (1u - (c & 1u));
+    return f32(i32(word << shift) >> 16u) / 255.0;
 }
 
 @fragment
@@ -301,7 +354,7 @@ fn atmosphere(c: vec3<f32>, rel: vec3<f32>) -> vec3<f32> {
 
 @vertex
 fn vs_water(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> VOut {
-    return vertex(vi, ii, true);
+    return vertex(vi, ii, true, false);
 }
 
 @fragment
