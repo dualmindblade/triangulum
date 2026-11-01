@@ -72,7 +72,7 @@
 //!   hotbar A,B,...          what keys 1-9 hold, by block name (M3b; the
 //!                           harness otherwise keeps the default hotbar,
 //!                           whatever blocks.json says)
-//!   speed M_PER_S           fly speed (scroll wheel), 1..5000
+//!   speed M_PER_S           fly speed (scroll wheel), 0.01 and up, unbounded
 //!   travel SECONDS [KEYS]   like hold (default "w"), but every step also
 //!                           streams and renders a frame and checks the
 //!                           coverage tree (no overlapping draws, no
@@ -1202,7 +1202,7 @@ pub fn run_play(session: Session, opts: PlayOptions) -> i32 {
             },
             "look" => match (num(0), num(1)) {
                 (Some(h), Some(p)) => {
-                    run.session.player.heading = h.to_radians();
+                    run.session.player.set_heading(h.to_radians());
                     run.session.player.pitch = p.to_radians().clamp(-1.55, 1.55);
                 }
                 _ => bad(&mut run, "look HEADING PITCH"),
@@ -1220,8 +1220,7 @@ pub fn run_play(session: Session, opts: PlayOptions) -> i32 {
                             continue;
                         }
                     };
-                    let (north, east, _) = crate::camera::Camera::local_frame(run.session.player.pos);
-                    run.session.player.heading = v.dot(east).atan2(v.dot(north));
+                    run.session.player.face(v);
                     run.session.player.pitch = p.to_radians().clamp(-1.55, 1.55);
                 }
                 _ => bad(&mut run, "lookaxis AXIS PITCH"),
@@ -1234,9 +1233,8 @@ pub fn run_play(session: Session, opts: PlayOptions) -> i32 {
                     let target = planet.pos(f.face, ci as f64 + 0.5 + di, cj as f64 + 0.5 + dj, ck as f64 + dk);
                     let eye = run.session.player.eye();
                     let d = (target - eye).normalize();
-                    let (north, east, up) = crate::camera::Camera::local_frame(eye);
-                    run.session.player.heading = d.dot(east).atan2(d.dot(north));
-                    run.session.player.pitch = d.dot(up).clamp(-1.0, 1.0).asin().clamp(-1.55, 1.55);
+                    run.session.player.face(d);
+                    run.session.player.pitch = d.dot(eye.normalize()).clamp(-1.0, 1.0).asin().clamp(-1.55, 1.55);
                 }
                 _ => bad(&mut run, "aim DI DJ DK"),
             },
@@ -1349,8 +1347,7 @@ pub fn run_play(session: Session, opts: PlayOptions) -> i32 {
             },
             "turn" => match (num(0), num(1)) {
                 (Some(h), Some(p)) => {
-                    run.session.player.heading += h.to_radians();
-                    run.session.player.pitch = (run.session.player.pitch + p.to_radians()).clamp(-1.55, 1.55);
+                    run.session.player.look(h.to_radians(), -p.to_radians());
                 }
                 _ => bad(&mut run, "turn DH DP"),
             },
@@ -1479,8 +1476,8 @@ pub fn run_play(session: Session, opts: PlayOptions) -> i32 {
                 _ => bad(&mut run, "motion reset"),
             },
             "speed" => match num(0) {
-                Some(v) if (1.0..=5000.0).contains(&v) => run.session.player.fly_speed = v,
-                _ => bad(&mut run, "speed M_PER_S (1..5000)"),
+                Some(v) if (crate::player::MIN_FLY_SPEED..=crate::player::MAX_FLY_SPEED).contains(&v) => run.session.player.fly_speed = v,
+                _ => bad(&mut run, "speed M_PER_S (positive; 1e6 and far beyond is fine)"),
             },
             "travel" => match num(0) {
                 Some(secs) => match parse_keys(args.get(1).copied().unwrap_or("w")) {
@@ -1648,6 +1645,7 @@ pub struct ReplayOptions {
     /// With `watch`: save a frame and quit after this many seconds.
     pub screenshot: Option<String>,
     pub exit_after: Option<f64>,
+    pub no_focus: bool,
     /// What this run draws with, to hold against the recording's.
     pub here: Visual,
     /// `--record-video FILE`: an mp4 of the replay, live frames at 30 fps
@@ -1721,7 +1719,7 @@ pub fn run_replay(template: Session, rep: Replay, opts: ReplayOptions) -> i32 {
         }
     }
     if opts.watch {
-        return crate::app::run_replay(session, rep, crate::app::AppOptions { width: opts.width, height: opts.height, vsync: opts.vsync, backend: opts.backend, screenshot: opts.screenshot, exit_after: opts.exit_after, record: None }, verdict);
+        return crate::app::run_replay(session, rep, crate::app::AppOptions { width: opts.width, height: opts.height, vsync: opts.vsync, backend: opts.backend, screenshot: opts.screenshot, exit_after: opts.exit_after, record: None, no_focus: opts.no_focus, captured: false, crash_test: false }, verdict);
     }
     let t0 = Instant::now();
     let mut log = String::new();

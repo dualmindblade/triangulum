@@ -1,0 +1,10 @@
+﻿idle 739.562 s
+ready: alive True adapter: NVIDIA GeForce RTX 2060 (Dx12, DiscreteGpu)
+minimised: alive True iconic True
+restored: alive True
+tiny: alive True client 0x0
+back: alive True client 645x362
+focus: alive True
+quiet: foreground 330062 (was 330062), clip 0,0,2560,1440
+closed
+--- err

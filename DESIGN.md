@@ -95,6 +95,15 @@ with their OK; record the change here with the date.
 3. **Vehicles** are built on their own perfect-cube grid from a frame block
    and never merge into the planet.
 
+## Moving the player
+
+- Holding a movement key follows a great circle, walking or flying (Andrew,
+  2026-10-31). A body faces a direction carried along each move, not a compass
+  heading; a heading is how people and scripts say a direction.
+- The fly speed has no ceiling (Andrew, 2026-10-31).
+- Leaving the window never stops the game: minimised it draws nothing and keeps
+  stepping, and losing focus lets go of the mouse.
+
 ## Saves and replays
 
 - Saves store every chunk that changed, whatever changed it. Block ids are

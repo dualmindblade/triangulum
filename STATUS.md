@@ -286,6 +286,14 @@ sliding powder, water flicker, and the terrain work (real mountains, rivers
 carved into the land, boundaries rough at every scale, sea level in the middle
 and a planet-size slider). Tasks are in `PLAN.md`.
 
+- **C1, merged:** minimising no longer kills the game, the wheel has no ceiling
+  (1 cm/s up, past the sun if you hold it), and WASD follows great circles over
+  both poles. Every panic now leaves a file in `game/out/crash/`. Recordings
+  from before this refuse to play and say why; their markers and reports stand.
+  The powder launch crash was **not reproduced**: ten real launches ran clean.
+  Three launch failures that look like a crash are fixed, but none is known to
+  be what Andrew saw. Findings: `docs/missions/C1-window-findings.md`.
+
 **The first bug round, all merged:** Andrew's first list, 11 items plus
 Austin's annotation tool, matched to his recordings in
 `docs/missions/2026-10-30-bug-round.md`.
@@ -316,6 +324,18 @@ decisions, and underground darkness needs a lighting design.
   the mouse wheel on the map, the annotator's pen, and clicking at cube corners
   were all driven by test events, never by real hands. Tell me if any of them
   misbehave.
+- **Try leaving the window (C1).** No test has had real focus. Alt-Tab away: the
+  pointer should be free at once. Come back by Alt-Tab and by clicking: the
+  first click should capture the mouse and break nothing. Click the taskbar
+  button twice. And `--powder levels --save saves/Neisor` should show a box
+  saying why it won't start; nobody has seen that box yet.
+- **Andrew, if the powder crash comes back:** tell me what you typed, and send
+  the newest file in `game/out/crash/`.
+- **Andrew's calls from C1:** the mouse stays free until a click after you leave
+  the window (the other way, Alt-Tab recaptures it but clicking back breaks a
+  block); the wheel's floor is 1 cm/s (it was 1 m/s); and level flight now stays
+  level, so flying at the horizon from orbit circles the planet. To leave, look
+  up or hold Space.
 - **Austin: Visual Studio needs repairing** when a restart suits you: restart,
   then tick *Desktop development with C++* in the Visual Studio Installer, then
   delete `game/.cargo/config.toml`. Until then the game builds from a linker

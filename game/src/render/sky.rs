@@ -63,7 +63,8 @@ impl Sky {
         let eye = eye_m / self.radius;
         let state = self.settings.at(self.clock.seconds);
         let to_sun = state.sun - eye;
-        let angular_radius = (109.0 / to_sun.length()).asin();
+        // Inside the sun, which a free camera can reach, the disc is the whole sky.
+        let angular_radius = (109.0 / to_sun.length()).min(1.0).asin();
         let look = &self.look;
         let atmosphere_m = look.sky.atmosphere_height_m;
         // The limb (the glow seen from space) keeps July's proportion to

@@ -244,9 +244,7 @@ impl Session {
         let mut out = Ok(None);
         match action {
             Action::Look(dx, dy) => {
-                let p = &mut self.player;
-                p.heading += dx * LOOK_RAD_PER_COUNT;
-                p.pitch = (p.pitch - dy * LOOK_RAD_PER_COUNT).clamp(-PITCH_MAX, PITCH_MAX);
+                self.player.look(dx * LOOK_RAD_PER_COUNT, dy * LOOK_RAD_PER_COUNT);
             }
             Action::Press(b) => {
                 out = Ok(self.click(b));
@@ -267,7 +265,9 @@ impl Session {
             }
             Action::Scroll(lines) => {
                 let p = &mut self.player;
-                p.fly_speed = (p.fly_speed * 1.3f64.powf(lines)).clamp(1.0, 5000.0);
+                if lines.is_finite() {
+                    p.fly_speed = (p.fly_speed * 1.3f64.powf(lines)).clamp(player::MIN_FLY_SPEED, player::MAX_FLY_SPEED);
+                }
             }
             Action::Sky(c) => self.sky = c,
             Action::Sim(on) => self.sim.config.enabled = on,
@@ -310,7 +310,7 @@ impl Session {
             return;
         }
         let p = presets[i % presets.len()].clone();
-        self.player.heading = p.heading_deg.to_radians();
+        self.player.set_heading(p.heading_deg.to_radians());
         self.player.pitch = p.pitch_deg.to_radians();
         if p.alt_agl > 50.0 {
             self.set_mode(Mode::Fly);
@@ -371,8 +371,10 @@ impl Session {
         use crate::sim::Powder;
         let levels = config.flow.powder != Powder::Blocks;
         let bytes = dir.map(|d| d.read_sim()).transpose()?.flatten();
+        // A header with no commit is a first save cut off (`flush`): nothing was
+        // ever played here, so there is nothing to protect.
         if let (true, None, Some(d)) = (levels, &bytes, dir)
-            && d.exists()
+            && d.read_commit()?.is_some()
         {
             return Err(format!("{} is not a --powder levels save, so this game will not touch it. Without --save it keeps its own, beside the real one", d.path.display()));
         }
@@ -517,7 +519,7 @@ impl Session {
         let planet = self.engine.planet;
         match alt_asl_m {
             Some(alt) => {
-                self.player.pos = dir * (planet.radius + alt);
+                self.player.place(dir * (planet.radius + alt));
                 self.player.vel = DVec3::ZERO;
                 self.player.on_ground = false;
             }
@@ -541,7 +543,7 @@ impl Session {
         p.on_ground = false;
         let hover = |p: &mut Player, alt: f64| {
             p.mode = Mode::Fly;
-            p.pos = dir * (planet.radius + alt);
+            p.place(dir * (planet.radius + alt));
         };
         match alt_asl_m {
             Some(alt) => {
@@ -569,7 +571,7 @@ impl Session {
         let planet = self.engine.planet;
         let dir = planet.dir(bp.face, bp.i as f64 + 0.5, bp.j as f64 + 0.5);
         if self.player.mode == Mode::Fly {
-            self.player.pos = dir * planet.radius_at(bp.k as f64 + 1.0);
+            self.player.place(dir * planet.radius_at(bp.k as f64 + 1.0));
             self.player.vel = DVec3::ZERO;
         } else {
             self.player.place_on_ground(self.engine.world.as_ref(), &planet, dir, bp.k as f64 + 1.0);
@@ -706,7 +708,7 @@ impl Session {
             "face": f.face, "i": fi, "j": fj, "k": fk,
             "fi": f.i, "fj": f.j, "fk": f.k,
             "x": p.pos.x, "y": p.pos.y, "z": p.pos.z,
-            "heading": p.heading.to_degrees(), "pitch": p.pitch.to_degrees(),
+            "heading": p.heading().to_degrees(), "pitch": p.pitch.to_degrees(),
             "on_ground": p.on_ground, "in_water": p.in_water, "head_in_water": p.head_in_water,
             "vel_up": p.vel.dot(up), "speed": vh.length(),
             "selected": p.selected + 1, "selected_block": name(self.selected_block()),

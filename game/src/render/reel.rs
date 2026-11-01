@@ -107,13 +107,13 @@ pub fn run(engine: Arc<Engine>, out: &str, backend: Option<&str>) {
                 .to_degrees();
             manifest.push(serde_json::json!({
                 "name": stem, "latitude": lat, "longitude": lon, "altitude_asl_m": alt,
-                "heading": cam.heading.to_degrees(), "pitch": cam.pitch.to_degrees(),
+                "heading": cam.heading().to_degrees(), "pitch": cam.pitch.to_degrees(),
                 "local_solar_hour": hour, "absolute_seconds": h.gpu.sky.clock.seconds,
                 "sun_lat": sun_lat, "sun_lon": sun_lon, "sun_altitude_deg": sun_alt,
                 "gpu_ms_provisional": frame.gpu_ms, "settled_seconds": settle_s,
                 "viewer_altitude_agl_km": old_alt_km,
             }));
-            comparison.push_str(&format!("teleport {lat:.9} {lon:.9} {old_alt_km:.9}\nlook {:.9} {:.9}\nsun {sun_lat:.9} {sun_lon:.9}\nshot {stem}\n", cam.heading.to_degrees(), cam.pitch.to_degrees()));
+            comparison.push_str(&format!("teleport {lat:.9} {lon:.9} {old_alt_km:.9}\nlook {:.9} {:.9}\nsun {sun_lat:.9} {sun_lon:.9}\nshot {stem}\n", cam.heading().to_degrees(), cam.pitch.to_degrees()));
             println!(
                 "{stem}: at {lat:.6} {lon:.6} {alt:.3}, sun altitude {sun_alt:.2}, GPU {:.3} ms (provisional)",
                 frame.gpu_ms

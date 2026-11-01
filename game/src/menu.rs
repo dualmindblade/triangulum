@@ -98,7 +98,7 @@ pub fn actions(go: &Go, session: &Session, settings: &Settings) -> Vec<Action> {
                 }
                 None => {
                     let mut e = session.teleport_pose(dir, Some(p.alt_m));
-                    e.heading = p.heading_deg.to_radians();
+                    e.set_heading(p.heading_deg.to_radians());
                     e.pitch = p.pitch_deg.to_radians().clamp(-crate::session::PITCH_MAX, crate::session::PITCH_MAX);
                     e
                 }
