@@ -384,6 +384,8 @@ impl Run {
             self.video.settle_timeouts
         );
         self.say(msg);
+        // The stream and motion counters as they stand at the end of the recording.
+        self.record_stream();
         let mut m = match std::mem::take(&mut self.last_stream) {
             serde_json::Value::Object(m) => m,
             _ => Default::default(),

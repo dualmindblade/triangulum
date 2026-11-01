@@ -63,6 +63,11 @@ pub struct MotionStats {
     pub stale_max_ticks: f64,
     /// Blocks whose chunk's mesh revision was unknown this frame.
     pub unknown: usize,
+    /// The longest `emit` took, microseconds, and the sum over the frames
+    /// that drew anything (`emit_frames`): the cost of the look.
+    pub emit_us_max: u32,
+    pub emit_us_sum: u64,
+    pub emit_frames: u64,
 }
 
 /// Where to draw a block, given whether its chunk's mesh has caught up
@@ -133,6 +138,7 @@ impl FallingDraws {
     /// streamer's records). Last frame's grid slots are reused: that frame
     /// was submitted before these writes are queued.
     pub fn emit(&mut self, gpu: &mut Renderer, planet: &Planet, blocks: &[Drawn], cam: DVec3, out: &mut Vec<DrawRecord>) {
+        let t0 = std::time::Instant::now();
         for gm in self.slots.drain(..) {
             gpu.free_mesh(gm);
         }
@@ -233,6 +239,10 @@ impl FallingDraws {
         st.held_max = st.held_max.max(st.held);
         st.ghosts_max = st.ghosts_max.max(st.ghosts);
         st.gaps_max = st.gaps_max.max(st.gaps);
+        let us = t0.elapsed().as_micros() as u32;
+        st.emit_us_max = st.emit_us_max.max(us);
+        st.emit_us_sum += us as u64;
+        st.emit_frames += 1;
     }
 
     #[cfg(test)]

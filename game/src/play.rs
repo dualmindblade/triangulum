@@ -169,8 +169,10 @@
 //!                             water_updates_last water_flips water_flickers
 //!                             motion_frames motion_doubles_max motion_held_max
 //!                             motion_ghosts_max motion_gaps_max
-//!                             motion_stale_max_ticks (what the falling-block
-//!                             draw held back since `motion reset`, C2)
+//!                             motion_stale_max_ticks motion_emit_max_ms
+//!                             motion_emit_avg_ms (what the falling-block draw
+//!                             held back since `motion reset`, and its cost
+//!                             per frame that drew something, C2)
 //!                             water_period flow sim_radius (units: 255 = a cell)
 //!                             sky_seconds sky_speed (the session's sky
 //!                             clock) steps recording
@@ -463,6 +465,8 @@ impl Run {
             // What the falling-block draw found since `motion reset` (C2).
             "motion_frames": m.frames, "motion_doubles_max": m.doubles_max, "motion_held_max": m.held_max,
             "motion_ghosts_max": m.ghosts_max, "motion_gaps_max": m.gaps_max, "motion_stale_max_ticks": m.stale_max_ticks,
+            "motion_emit_max_ms": m.emit_us_max as f64 / 1e3,
+            "motion_emit_avg_ms": m.emit_us_sum as f64 / 1e3 / m.emit_frames.max(1) as f64,
         });
     }
 
@@ -1782,7 +1786,7 @@ pub fn run_replay(template: Session, rep: Replay, opts: ReplayOptions) -> i32 {
             }
             run.record_stream();
             let m = run.harness.motion();
-            run.say(format!("  motion over {} frames: doubles max {} (blocks held instead), held max {}, ghosts max {}, gaps max {} (landed blocks kept instead), mesh at most {:.2} ticks behind a block", m.frames, m.doubles_max, m.held_max, m.ghosts_max, m.gaps_max, m.stale_max_ticks));
+            run.say(format!("  motion over {} frames: doubles max {} (blocks held instead), held max {}, ghosts max {}, gaps max {} (landed blocks kept instead), mesh at most {:.2} ticks behind a block, draw at most {:.2} ms", m.frames, m.doubles_max, m.held_max, m.ghosts_max, m.gaps_max, m.stale_max_ticks, m.emit_us_max as f64 / 1e3));
         }
         if shot_end {
             run.shot(&format!("end_step{:06}", runner.step()));

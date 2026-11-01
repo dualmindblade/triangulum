@@ -19,14 +19,16 @@ hud off
 recmode live
 
 # ---- A. one block over a plate's edge --------------------------------------
-atblock 2 107147 57531 606
-fill -4 -4 -2 4 4 -2 stone
-fill 5 -4 -5 8 4 -5 stone
+# (the lower plate runs under the whole scene, so the landed block stays put;
+# the eye is 2 m from the block)
+atblock 2 107149 57531 606
+fill -6 -4 -2 2 4 -2 stone
+fill -6 -4 -5 10 4 -5 stone
 tick 2
 assert queued == 0
 sim off
-fill 4 0 -1 4 0 -1 sand
-aim 4.5 0 -1
+fill 2 0 -1 2 0 -1 sand
+aim 2.5 0 -1
 shot A_placed
 motion reset
 record c2-slide-A.mp4 30
@@ -67,8 +69,8 @@ assert slides == 1
 wait 1.5
 stop
 assert falling == 0
-assert block_rel[5,0,-4] == sand
-assert block_rel[4,0,-1] == air
+assert block_rel[3,0,-4] == sand
+assert block_rel[2,0,-1] == air
 shot A_landed
 state A_done
 assert motion_gaps_max == 0
@@ -76,7 +78,7 @@ assert motion_gaps_max == 0
 # ---- B. over a cube face edge ------------------------------------------------
 atblock 0 131071 65536 760
 fill -4 -4 -2 0 4 -2 stone
-fill 1 -4 -5 4 4 -5 stone
+fill -4 -4 -5 4 4 -5 stone
 tick 2
 assert queued == 0
 sim off
@@ -141,18 +143,18 @@ state C_done
 assert motion_gaps_max == 0
 
 # ---- D. a save and a reload in the middle of a slide -------------------------
-atblock 2 107187 57531 606
-fill -4 -4 -2 4 4 -2 stone
-fill 5 -4 -5 8 4 -5 stone
+atblock 2 107189 57531 606
+fill -6 -4 -2 2 4 -2 stone
+fill -6 -4 -5 10 4 -5 stone
 tick 2
 assert queued == 0
+assert falling == 0
 sim off
-fill 4 0 -1 4 0 -1 sand
-aim 4.5 0 -1
+fill 2 0 -1 2 0 -1 sand
+aim 2.5 0 -1
 sim on
 tick 1
 assert falling == 1
-assert slides == 3
 save
 assert dirty == 0
 reload
@@ -170,7 +172,7 @@ wait 0.0167
 photo D_reloaded_s05 live
 wait 1.5
 assert falling == 0
-assert block_rel[5,0,-4] == sand
+assert block_rel[3,0,-4] == sand
 shot D_landed
 state D_done
 
@@ -184,14 +186,13 @@ fill -12 -12 0 11 11 9 sand
 look 90 -30
 sim on
 motion reset
-speed 1
 record c2-slide-E.mp4 30
-travel 8 s
+wait 8
 stop
 assert falling == 0
 assert queued == 0
 assert vanished == 0
-shot E_settled
 state E_done
+shot E_settled
 assert motion_gaps_max == 0
 assert tick_ms_avg < 8

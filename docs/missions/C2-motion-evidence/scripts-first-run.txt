@@ -1,0 +1,37 @@
+== scripts
+m1-done: exit 0: done in 32.9 s: 94 asserts, 0 failed, 0 errors
+m2a-sand: exit 0: done in 28.1 s: 95 asserts, 0 failed, 0 errors
+m2b-water: exit 1: done in 55.9 s: 97 asserts, 6 failed, 0 errors
+ASSERT FAILED (line 73): level_rel[1,0,-1] == 127, actual 128
+ASSERT FAILED (line 74): level_rel[2,0,-1] == 128, actual 127
+ASSERT FAILED (line 78): level_rel[1,0,-1] == 127, actual 64
+ASSERT FAILED (line 80): level_rel[3,0,-1] == 64, actual 63
+ASSERT FAILED (line 88): level_rel[5,0,-2] > 0, actual 0
+ASSERT FAILED (line 217): level[1,1965,59004,511] == 255, actual 253
+m2b-boundary: exit 1: done in 42.1 s: 44 asserts, 5 failed, 0 errors
+ASSERT FAILED (line 44): level_rel[1,0,-1] == 127, actual 64
+ASSERT FAILED (line 46): level_rel[3,0,-1] == 64, actual 63
+ASSERT FAILED (line 65): level_rel[1,0,-1] == 127, actual 64
+ASSERT FAILED (line 67): level_rel[3,0,-1] == 64, actual 63
+ASSERT FAILED (line 69): level_rel[5,0,-2] == 0, actual 64
+m2b-river: exit 0: done in 22.1 s: 42 asserts, 0 failed, 0 errors
+m2c-replay: exit 0: done in 18.4 s: 29 asserts, 0 failed, 0 errors
+b4-slide: exit 0: done in 152.9 s: 49 asserts, 0 failed, 0 errors
+b4-film: exit 0: done in 57.0 s: 10 asserts, 0 failed, 0 errors
+b4-oldsave-make: exit 1: done in 0.2 s: 4 asserts, 1 failed, 0 errors
+ASSERT FAILED (line 17): block_rel[0,0,0] == sand, actual air
+b4-oldsave-load: exit 1: done in 0.2 s: 16 asserts, 7 failed, 0 errors
+ASSERT FAILED (line 8): block_rel[0,0,0] == sand, actual air
+ASSERT FAILED (line 9): level_rel[-8,0,-5] == 1, actual 0
+ASSERT FAILED (line 10): sim_tick > 200, actual 0
+ASSERT FAILED (line 20): block_rel[0,0,0] == sand, actual air
+ASSERT FAILED (line 21): level_rel[-8,0,-5] == 1, actual 0
+ASSERT FAILED (line 26): slides > 0, actual 0
+ASSERT FAILED (line 28): level_rel[-8,0,-5] == 1, actual 0
+b7-compare: exit 0: done in 43.9 s: 34 asserts, 0 failed, 0 errors
+b7-close: exit 1: done in 70.9 s: 11 asserts, 1 failed, 0 errors
+ASSERT FAILED (line 133): falling == 0, actual 9
+b7-walk: exit 0: done in 69.8 s: 24 asserts, 0 failed, 0 errors
+edge-corner-flight: exit 0: done in 90.6 s: 17 asserts, 0 failed, 0 errors
+tunnel-wall-reload: exit 0: done in 39.3 s: 18 asserts, 0 failed, 0 errors
+== all scripts done

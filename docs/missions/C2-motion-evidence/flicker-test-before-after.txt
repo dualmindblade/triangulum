@@ -1,0 +1,12 @@
+test sim::film_tests::nothing_spreads_onto_a_cell_over_a_drop ... FAILED
+settled in 808 ticks: 0 wet cells (0 at level 1, 0 units) on the table, at most 240 units in the basin at once, 255 dried, 1222 flips, 64 flickers
+test sim::film_tests::a_puddle_drains_to_a_ledge_through_its_film_without_blinking ... FAILED
+test result: FAILED. 0 passed; 2 failed; 0 ignored; 0 measured; 397 filtered out; finished in 13.97s
+settled in 1048 ticks: 0 wet cells (0 at level 1, 0 units) on the table, at most 169 units in the basin at once, 255 dried, 702 flips, 0 flickers
+test sim::film_tests::a_puddle_drains_to_a_ledge_through_its_film_without_blinking ... ok
+settled in 422 ticks, 80 flips, 0 flickers
+test sim::film_tests::nothing_spreads_onto_a_cell_over_a_drop ... ok
+test sim::film_tests::film_rules_on_the_three_scenes has been running for over 60 seconds
+test sim::film_tests::film_rules_on_the_three_scenes ... ok
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 396 filtered out; finished in 81.63s
+test annotate::tests::a_pass_stays_quick_with_a_lot_drawn ... FAILED
