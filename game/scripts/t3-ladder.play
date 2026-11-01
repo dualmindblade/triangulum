@@ -1,0 +1,139 @@
+# Round 2 #4 (T3, boundaries): one point on each kind of line, from orbit down to
+# standing on it, straight down at noon. Each height is drawn at a coarser LOD,
+# so the claim to check is that the line keeps its character all the way. The
+# points are on the lines of the T3 build; the frozen build's frames at the same
+# places show what was there. Not a gate; nothing is asserted.
+#
+#   <exe> --bake DIR --no-save --size 1920x1080 --play scripts/t3-ladder.play --out OUT
+#
+# Heights are metres above sea level, not layers: nothing here moves with sea level.
+mode fly
+
+# --- A lake shore, Andrew's lake
+at 6.98382 38.65730 150000
+skytime 12:00
+look 0 -89.9
+photo lake_150km
+at 6.98382 38.65730 40000
+look 0 -89.9
+photo lake_40km
+at 6.98382 38.65730 10000
+look 0 -89.9
+photo lake_10km
+at 6.98382 38.65730 2500
+look 0 -89.9
+photo lake_2500m
+at 6.98382 38.65730 600
+look 0 -89.9
+photo lake_600m
+at 6.98382 38.65730 150
+look 0 -89.9
+photo lake_150m
+at 6.98382 38.65730 40
+look 0 -89.9
+photo lake_40m
+at 6.98382 38.65730 12
+look 40 -35
+photo lake_foot
+
+# --- Grass against dry grass, Andrew's biome photo
+at 2.17313 24.25564 150000
+skytime 12:00
+look 0 -89.9
+photo biome_150km
+at 2.17313 24.25564 40000
+look 0 -89.9
+photo biome_40km
+at 2.17313 24.25564 10000
+look 0 -89.9
+photo biome_10km
+at 2.17313 24.25564 2500
+look 0 -89.9
+photo biome_2500m
+at 2.17313 24.25564 600
+look 0 -89.9
+photo biome_600m
+at 2.17313 24.25564 150
+look 0 -89.9
+photo biome_150m
+at 2.17313 24.25564 40
+look 0 -89.9
+photo biome_40m
+at 2.17313 24.25564 22
+look 40 -35
+photo biome_foot
+
+# --- The snow line, Andrew's snow photo
+at 10.05000 21.75775 150000
+skytime 12:00
+look 0 -89.9
+photo snow_150km
+at 10.05000 21.75775 40000
+look 0 -89.9
+photo snow_40km
+at 10.05000 21.75775 10000
+look 0 -89.9
+photo snow_10km
+at 10.05000 21.75775 2500
+look 0 -89.9
+photo snow_2500m
+at 10.05000 21.75775 600
+look 0 -89.9
+photo snow_600m
+at 10.05000 21.75775 200
+look 0 -89.9
+photo snow_150m
+at 10.05000 21.75775 90
+look 0 -89.9
+photo snow_40m
+at 10.05000 21.75775 60
+look 40 -35
+photo snow_foot
+
+# --- The polar ice edge, Andrew's polar photo
+at -83.97385 85.80160 150000
+skytime 12:00
+look 0 -89.9
+photo polar_150km
+at -83.97385 85.80160 40000
+look 0 -89.9
+photo polar_40km
+at -83.97385 85.80160 10000
+look 0 -89.9
+photo polar_10km
+at -83.97385 85.80160 2500
+look 0 -89.9
+photo polar_2500m
+at -83.97385 85.80160 600
+look 0 -89.9
+photo polar_600m
+at -83.97385 85.80160 150
+look 0 -89.9
+photo polar_150m
+at -83.97385 85.80160 40
+look 0 -89.9
+photo polar_40m
+at -83.97385 85.80160 12
+look 40 -35
+photo polar_foot
+
+# --- A coast, the recorded one of 041021 (B2), for comparing with the lake
+at -31.5959 119.1264 150000
+skytime 12:00
+look 0 -89.9
+photo coast_150km
+at -31.5959 119.1264 40000
+look 0 -89.9
+photo coast_40km
+at -31.5959 119.1264 10000
+look 0 -89.9
+photo coast_10km
+at -31.5959 119.1264 2500
+look 0 -89.9
+photo coast_2500m
+at -31.5959 119.1264 600
+look 0 -89.9
+photo coast_600m
+at -31.5959 119.1264 150
+look 0 -89.9
+photo coast_150m

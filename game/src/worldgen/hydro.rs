@@ -77,6 +77,7 @@
 //! least 40 m) per link, faded out near the nodes, with bends kept over five
 //! half-widths in radius.
 
+use super::boundary::Warp;
 use super::noise::{gradient_noise, hash01};
 use crate::grid::FastMap;
 use glam::DVec3;
@@ -277,9 +278,10 @@ const LAKE_APRON: f64 = 0.14;
 /// Lake depth (m) reached inward of the shore, and the shallowest water at the shore (blocks).
 const LAKE_DEPTH_M: f64 = 3.0;
 const LAKE_SHORE_DEPTH_BLOCKS: f64 = 0.3;
-/// Shoreline wiggle: field units, wavelength (m).
-const SHORE_NOISE: f64 = 0.03;
-const SHORE_NOISE_WL_M: f64 = 36.0;
+/// `LakeField::grad` is the field's slope where it's read; the outline's warp
+/// can squeeze that into a few times less ground, so a distance worked out
+/// from it is only good to about this factor.
+const SHORE_STRETCH: f64 = 6.0;
 /// Rivers draw their channel up to this LOD, and beyond it only if at least
 /// this fraction of a voxel wide (half-width).
 const CHANNEL_MAX_LOD: u8 = 4;
@@ -482,7 +484,7 @@ pub struct RiverAt {
 #[derive(Clone, Copy, Debug, Default)]
 pub struct LakeField {
     pub lake: i32,
-    /// Field value (with the shoreline wiggle) and its gradient (per m).
+    /// Field value (read through the outline's warp) and its gradient (per m).
     pub field: f64,
     pub grad: f64,
 }
@@ -581,6 +583,9 @@ pub struct Hydro {
     cell_grid: SphereGrid,
     /// Largest influence radius of any link (m), for bounds.
     pub max_reach: f64,
+    /// Bends lake outlines (`boundary.rs`), and how far it can reach (m).
+    shore_warp: Warp,
+    shore_reach: f64,
 }
 
 /// Meanders: wavelength in channel widths (D-12: meandering scales with
@@ -746,9 +751,11 @@ impl Hydro {
             });
         }
         let r_field = data.lake_r_chord * radius;
+        let shore_warp = Warp::shore(radius, block, r_field, seed);
+        let shore_reach = shore_warp.reach_m(radius);
         let mut cell_grid = SphereGrid::new(2048.0);
         for (k, c) in data.field.iter().enumerate() {
-            cell_grid.insert(c.pos * radius, r_field, k as u32);
+            cell_grid.insert(c.pos * radius, r_field + shore_reach, k as u32);
         }
         let mut hydro = Self {
             radius,
@@ -769,6 +776,8 @@ impl Hydro {
             seg_grid,
             cell_grid,
             max_reach,
+            shore_warp,
+            shore_reach,
         };
         hydro.lake_ends();
         hydro.pass_on_short_drops();
@@ -828,9 +837,10 @@ impl Hydro {
     }
 
     /// Where each link meets a lake: the arc length at which its course
-    /// leaves the lake's band (outflows) or enters it for good (inflows).
-    /// The field is sampled every few metres along the course, without the
-    /// shoreline wiggle.
+    /// leaves the lake's band for good (outflows) or enters it for good (inflows).
+    /// The field is sampled every few metres along the course, with the
+    /// outline's bends down to a few metres, so a river meets the lake where
+    /// its shore really is.
     fn lake_ends(&mut self) {
         const STEP: f64 = 3.0;
         const MIN_ACTIVE: f64 = 40.0;
@@ -846,21 +856,29 @@ impl Hydro {
                     .map(|t| {
                         let x = s.len * t as f64 / n as f64;
                         let d = s.point(x);
-                        let c = self.cands(d, 0.0);
-                        let l = self.lake_at(d, &c.cells, 1.0e9);
+                        let reach = s.hw + 12.0;
+                        let c = self.cands(d, reach);
+                        let l = self.lake_at(d, &c.cells, 4.0);
                         // Inside: in the lake's band, or the channel's edge
-                        // (and its banks) within reach of the lake's water.
+                        // (and its banks) within reach of the lake's water. A
+                        // bent shore can reach the channel's edge from a field
+                        // that says otherwise here, so look there too.
+                        let along = s.point((x + STEP).min(s.len)) - s.point((x - STEP).max(0.0));
+                        let side = d.cross(along).normalize_or_zero() * (reach / self.radius);
+                        let (l1, l2) = (self.lake_at((d + side).normalize(), &c.cells, 4.0), self.lake_at((d - side).normalize(), &c.cells, 4.0));
                         let near = |k: i32| {
                             k >= 0
-                                && l.iter().any(|lf| lf.lake == k && (lf.field > LAKE_APRON || self.lake_zone - lf.field < (s.hw + 12.0) * lf.grad))
+                                && (l.iter().any(|lf| lf.lake == k && (lf.field > LAKE_APRON || self.lake_zone - lf.field < reach * lf.grad))
+                                    || [&l1, &l2].iter().any(|e| e.iter().any(|lf| lf.lake == k && lf.field > self.lake_zone)))
                         };
                         (near(s.lake_a), near(s.lake_b))
                     })
                     .collect();
                 let mut lo = 0.0;
                 if s.lake_a >= 0 {
-                    let first_out = inside.iter().position(|b| !b.0).unwrap_or(n);
-                    lo = s.len * first_out as f64 / n as f64;
+                    // Leaves it for good: a bent shore can come back to the course.
+                    let last_in = inside.iter().rposition(|b| b.0).map_or(0, |i| (i + 1).min(n));
+                    lo = s.len * last_in as f64 / n as f64;
                 }
                 let mut hi = s.len;
                 if s.lake_b >= 0 {
@@ -920,8 +938,13 @@ impl Hydro {
         }
         let mut cells = Vec::new();
         self.cell_grid.query(p, r, &mut cells);
-        let rf = self.lake_r_chord * self.radius;
+        let rf = self.lake_r_chord * self.radius + self.shore_reach;
         cells.retain(|&k| (self.field[k as usize].pos - dir).length() * self.radius <= rf + r);
+        // Most field cells are the dry land around lakes: with no lake among
+        // them there's nothing to find, and no outline to warp for.
+        if !cells.iter().any(|&k| self.field[k as usize].lake >= 0) {
+            cells.clear();
+        }
         Cands { segs, runs, cells }
     }
 
@@ -1097,12 +1120,17 @@ impl Hydro {
         }
     }
 
-    /// The lake field at a direction (with the shoreline wiggle, band-limited).
+    /// The lake field at a direction, read at the warped position
+    /// (`boundary.rs`), band-limited: an outline has only the pieces the
+    /// field has, bent at every scale.
     pub fn lake_at(&self, dir: DVec3, cells: &[u32], voxel: f64) -> LakeAt {
         let mut out = LakeAt::default();
-        if cells.is_empty() {
+        // The warp is the dearest thing here: a lake has to be within its reach.
+        let far = self.lake_r_chord + self.shore_reach / self.radius;
+        if !cells.iter().any(|&k| self.field[k as usize].lake >= 0 && (self.field[k as usize].pos - dir).length() < far) {
             return out;
         }
+        let dir = self.shore_warp.at(dir, voxel);
         let r = self.lake_r_chord;
         let mut den = 0.0;
         let mut gden = DVec3::ZERO;
@@ -1138,19 +1166,34 @@ impl Hydro {
         if den <= 0.0 || np == 0 {
             return out;
         }
-        // Shoreline wiggle near the shore, faded at coarse voxels.
-        let fade = (SHORE_NOISE_WL_M / (4.0 * voxel) - 1.0).clamp(0.0, 1.0);
-        let noise = if fade > 0.0 { SHORE_NOISE * fade * gradient_noise(dir * (self.radius / SHORE_NOISE_WL_M), self.seed ^ 0x5A0E) } else { 0.0 };
         for &(lake, num, gnum) in &per[..np] {
             let f = num / den;
             let g = (gnum - gden * f) / den;
             let g = (g - dir * g.dot(dir)).length() / self.radius;
-            let near = smoothstep(0.02, 0.12, f) * smoothstep(0.65, 0.45, f);
-            out.items[out.n] = LakeField { lake, field: f + near * noise, grad: g };
+            out.items[out.n] = LakeField { lake, field: f, grad: g };
             out.n += 1;
         }
         out.items[..out.n].sort_by(|a, b| b.field.total_cmp(&a.field).then(a.lake.cmp(&b.lake)));
         out
+    }
+
+    /// A lake bent over a river that stands above it stops short of the river
+    /// and its bank. (The other way round, the river yields: `shape`, step 4.)
+    /// Two waters at different levels are parted by ground either way.
+    pub fn lake_yields(&self, lake: &mut LakeAt, rivers: &[RiverAt], voxel: f64, lod: u8) {
+        let eps = 0.5 / 255.0 * self.block;
+        let bank = self.bank_w(voxel);
+        let zone = self.lake_zone;
+        for lf in lake.items[..lake.n].iter_mut().filter(|l| l.field > zone) {
+            let w = self.lakes[lf.lake as usize].w;
+            let over = rivers.iter().any(|r| {
+                let s = &self.segs[r.seg as usize];
+                self.has_channel(s, lod, voxel) && r.d < self.half_width(s, voxel) + bank && self.w_water(r.seg, &r.prof, r.s_near) > w + eps
+            });
+            if over {
+                lf.field = zone;
+            }
+        }
     }
 
     /// Landform damping near lakes (1 = full landform).
@@ -1295,7 +1338,7 @@ impl Hydro {
                     // In the other channel's bank band: its bank stands here.
                     o.d < hwo + bank_w && self.w_water(o.seg, &o.prof, o.s_near) > ww + eps
                 }
-            }) || lake.iter().any(|lf| lf.field <= zone && (zone - lf.field) < bank_w * lf.grad && self.lakes[lf.lake as usize].w > ww + eps);
+            }) || lake.iter().any(|lf| lf.field <= zone && (zone - lf.field) < SHORE_STRETCH * bank_w * lf.grad && self.lakes[lf.lake as usize].w > ww + eps);
             if yields {
                 continue;
             }
@@ -1308,7 +1351,11 @@ impl Hydro {
                 water = ww;
                 kind = WaterKind::River;
             }
-            channel = channel.max(1.0 - q * q);
+            // Under a lake or the sea there is no channel, so no gravel
+            // stripe across the shallows.
+            if !drowned {
+                channel = channel.max(1.0 - q * q);
+            }
         }
         for lf in lake.iter().filter(|l| l.field > zone) {
             let l = self.lakes[lf.lake as usize];

@@ -147,13 +147,13 @@ assert queued == 0
 
 # ---- E. a pit in a real beach ------------------------------------------------------
 mode fly
-assert block[1,1998,59004,511] == sand
-assert block[1,1998,59004,512] == sand
-atblock 1 2003 59004 516
+assert block[1,1921,59004,511] == sand
+assert block[1,1921,59004,512] == sand
+atblock 1 1926 59004 516
 lookaxis -i 0
 aim -5 0 -5
 photo E_beach_0_before
-atblock 1 1998 59004 513
+atblock 1 1921 59004 513
 aim 0 0 -1.5
 assert crosshair == sand
 tap break
@@ -170,7 +170,7 @@ tick 120
 assert falling == 0
 assert queued == 0
 state E_pit
-atblock 1 2003 59004 516
+atblock 1 1926 59004 516
 lookaxis -i 0
 aim -5 0 -5
 photo E_beach_1_after_digging_four_deep

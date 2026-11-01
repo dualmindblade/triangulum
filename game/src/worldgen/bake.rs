@@ -75,6 +75,15 @@ pub struct BakeSample {
 pub trait Bake: Send + Sync {
     /// Smooth sample (C1 for elevation, temperature, precipitation).
     fn sample(&self, dir: DVec3) -> BakeSample;
+    /// Just the signed angle from the coastline of `sample`.
+    fn coast(&self, dir: DVec3) -> f64 {
+        self.sample(dir).coast
+    }
+    /// Just the temperature (C) and precipitation (mm) of `sample`.
+    fn climate(&self, dir: DVec3) -> (f64, f64) {
+        let s = self.sample(dir);
+        (s.temp_c, s.precip_mm)
+    }
     /// Conservative (min, max) elevation in km over a gnomonic rectangle on
     /// one face, padded so the smooth interpolant's overshoot stays inside.
     fn elev_range_km(&self, face: u8, a0: f64, b0: f64, a1: f64, b1: f64) -> (f32, f32);
@@ -482,6 +491,51 @@ impl RasterBake {
 }
 
 impl Bake for RasterBake {
+    fn coast(&self, dir: DVec3) -> f64 {
+        let (f, a, b) = Self::face_ab(dir);
+        let face = &self.faces[f];
+        let (x, y) = self.texel_coords(a, b);
+        let (x0, y0) = (x.floor(), y.floor());
+        let (ix, iy) = (x0 as i64, y0 as i64);
+        let res = self.res as i64;
+        let (wx, wy) = (catmull_weights(x - x0), catmull_weights(y - y0));
+        let mut coast = 0.0;
+        for dy in -1..=2 {
+            let yy = (iy + dy).clamp(0, res - 1) as usize * self.res;
+            let mut r = 0.0;
+            for dx in -1..=2 {
+                r += wx[(dx + 1) as usize] * face.coast[yy + (ix + dx).clamp(0, res - 1) as usize] as f64;
+            }
+            coast += wy[(dy + 1) as usize] * r;
+        }
+        coast
+    }
+
+    fn climate(&self, dir: DVec3) -> (f64, f64) {
+        let (f, a, b) = Self::face_ab(dir);
+        let face = &self.faces[f];
+        let (x, y) = self.texel_coords(a, b);
+        let (x0, y0) = (x.floor(), y.floor());
+        let (ix, iy) = (x0 as i64, y0 as i64);
+        let res = self.res as i64;
+        let (wx, wy) = (catmull_weights(x - x0), catmull_weights(y - y0));
+        let (mut temp, mut precip) = (0.0, 0.0);
+        for dy in -1..=2 {
+            let yy = (iy + dy).clamp(0, res - 1) as usize * self.res;
+            let (mut rt, mut rp) = (0.0, 0.0);
+            for dx in -1..=2 {
+                let xx = (ix + dx).clamp(0, res - 1) as usize;
+                let w = wx[(dx + 1) as usize];
+                rt += w * face.temp_c[yy + xx] as f64;
+                rp += w * face.precip[yy + xx] as f64;
+            }
+            let w = wy[(dy + 1) as usize];
+            temp += w * rt;
+            precip += w * rp;
+        }
+        (temp, precip)
+    }
+
     fn sample(&self, dir: DVec3) -> BakeSample {
         let (f, a, b) = Self::face_ab(dir);
         let face = &self.faces[f];

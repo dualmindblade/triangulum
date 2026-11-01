@@ -18,8 +18,13 @@
 //! Water (`hydro.rs`): a column may have a water surface W (the sea on its
 //! side of the shoreline, a lake inside its zone, a river inside its
 //! channel); the terrain is shaped so the water is held at rest. The
-//! shoreline is a smooth curve of its own (`coast.rs`) and the ground either
-//! side follows it, so noise never decides where the sea ends.
+//! shoreline is a curve of its own (`coast.rs`) and the ground either side
+//! follows it, so noise never decides where the sea ends.
+//!
+//! Boundaries (`boundary.rs`): the coast, lake outlines, the snow and ice
+//! lines and the biomes are contours of smooth fields read through a warp of
+//! the sphere, so each is one line, rough at every scale, in the pieces the
+//! planet has.
 //!
 //! Voxel rules, in order (`block_at`): above the world is air, below it
 //! bedrock; at a coarse LOD, in a wet column (ground below W) the voxel
@@ -36,6 +41,7 @@
 //! an opaque voxel inside the world at or below sea level, at every LOD.
 
 pub mod bake;
+pub mod boundary;
 pub mod coast;
 pub mod hydro;
 pub mod inspect;
@@ -47,6 +53,7 @@ use crate::grid::{CHUNK, ChunkKey, FootprintKey, Planet};
 use crate::world::chunk::VOXELS;
 use crate::world::{BlockId, Chunk, Registry};
 use bake::Bake;
+use boundary::Warp;
 use glam::DVec3;
 use hydro::{Cands, Hydro, LakeAt, WaterKind};
 use landform::{Landform, Local};
@@ -67,8 +74,24 @@ pub fn pidx(x: i32, y: i32, z: i32) -> usize {
 /// Low land away from the sea is held at this height, so no dry pit opens
 /// where the landform dips below sea level.
 const LAND_FLOOR_M: f64 = 0.3;
+/// The climate's thresholds: snow on land, ice on water, hot deserts (C),
+/// deserts and dry grass (mm of rain a year). `settle_climate` must know them all.
+const SNOW_C: f32 = -3.0;
+const ICE_C: f32 = -4.0;
+const DESERT_C: f32 = 8.0;
+const DESERT_MM: f32 = 130.0;
+const DRY_MM: f32 = 320.0;
+/// Sample nodes per axis over a padded chunk (`climate_nodes`), and voxels
+/// between them.
+const CLIMATE_NODES: usize = 5;
+const NODE_STEP: f64 = (PAD - 1) as f64 / (CLIMATE_NODES - 1) as f64;
 /// Lapse rate applied to the landform's height (deg C per Earth km).
 const LAPSE_C_PER_KM: f64 = 6.5;
+/// The lapse sees the landform as a voxel of this size sees it (m): the hills,
+/// not the hummocks. Their contours are rough enough at that scale, so only
+/// octaves up to `LAPSE_WARP_TOP_M` bend them.
+const LAPSE_VOXEL_M: f64 = 128.0;
+const LAPSE_WARP_TOP_M: f64 = 512.0;
 
 /// Block ids the generator places, resolved from the registry by name.
 #[derive(Clone, Copy, Debug)]
@@ -141,11 +164,21 @@ pub struct Column {
     /// Right beside a river channel: keeps its soil however steep the
     /// channel edge (no bare-rock rim along every river).
     pub river_bank: bool,
+    /// Climate as the thresholds read it (`Generator::climate_at`). Exact in
+    /// `Generator::column` and wherever a chunk holds a threshold; elsewhere
+    /// in a chunk, interpolated and on the same side of every threshold.
     pub temp_c: f32,
     pub precip: f32,
+    /// How much of the landform's lapse applies here: none on the sea, whose
+    /// surface has no height whatever its floor does, fading out over a lake.
+    pub lapse_share: f32,
+    /// What the landform adds here, before anything shapes it (m).
+    pub landform_m: f32,
     /// On the beach: dry sand above the waterline, sand under the shallows.
     pub beach: bool,
-    /// Dither noise in [-1, 1] at ~40 m scale, for soft material thresholds.
+    /// Dither noise in [-1, 1] at ~40 m scale, for small soft thresholds
+    /// (soil depth, river beds, bare rock). Not for anything with a long
+    /// edge: across a gentle gradient a dither is scatter (`boundary.rs`).
     pub dither: f32,
     /// Strata column offset (m).
     pub strata_off: f32,
@@ -168,6 +201,8 @@ impl Default for Column {
             river_bank: false,
             temp_c: 0.0,
             precip: 0.0,
+            lapse_share: 0.0,
+            landform_m: 0.0,
             beach: false,
             dither: 0.0,
             strata_off: 0.0,
@@ -231,6 +266,9 @@ pub struct Generator {
     pub hydro: Option<Arc<Hydro>>,
     /// Largest |landform| anywhere (m), for global bounds.
     max_relief_m: f64,
+    /// Where a column reads the climate and the coast (`boundary.rs`).
+    pub warp: Warp,
+    coast_warp: Warp,
 }
 
 /// What the generator knows about the water at one column (for the
@@ -276,7 +314,9 @@ impl Generator {
         let lf = Landform { seed: seed ^ 0x1A4D_F0E1, radius: planet.radius, vscale, landform, roughness, valleys: hydro.is_none() };
         let elev_max = (0..6u8).map(|f| bake.elev_range_km(f, -1.0, -1.0, 1.0, 1.0).1).fold(f32::MIN, f32::max) as f64;
         let max_relief_m = lf.bound_m(lf.relief_bound_m(bake.rough_max_km() as f64, elev_max));
-        Ok(Self { planet, bake, seed, vscale, roughness, landform, lf, blocks, strata, skirt: 2, markers: Vec::new(), hide_water: false, hydro, max_relief_m })
+        let warp = Warp::climate(planet.radius, planet.block_size, seed);
+        let coast_warp = Warp::coast(planet.radius, planet.block_size, seed);
+        Ok(Self { planet, bake, seed, vscale, roughness, landform, lf, blocks, strata, skirt: 2, markers: Vec::new(), hide_water: false, hydro, max_relief_m, warp, coast_warp })
     }
 
     /// The highest block id this generator places (M3b: the simulation's
@@ -348,13 +388,14 @@ impl Generator {
 
     /// The column plus the landform's displacement and local parameters.
     fn column_full(&self, dir: DVec3, voxel_m: f64) -> (Column, f64, Local) {
-        self.column_from(dir, voxel_m, None, None, None)
+        self.column_from(dir, voxel_m, None, None, None, true)
     }
 
     /// A column, with the landform's coarse part optionally given
     /// (interpolated from a chunk's grid; see `chunk_columns`) and the
-    /// hydrology candidates of the chunk (found here when not given).
-    fn column_from(&self, dir: DVec3, voxel_m: f64, coarse: Option<(f64, f64, f64, f64)>, strata_off: Option<f64>, cands: Option<&Cands>) -> (Column, f64, Local) {
+    /// hydrology candidates of the chunk (found here when not given). With
+    /// `climate` off the column's climate is left for `settle_climate`.
+    fn column_from(&self, dir: DVec3, voxel_m: f64, coarse: Option<(f64, f64, f64, f64)>, strata_off: Option<f64>, cands: Option<&Cands>, climate: bool) -> (Column, f64, Local) {
         let s = self.bake.sample(dir);
         let base = s.elev_km * 1000.0 * self.vscale;
         let strata_off = strata_off.unwrap_or_else(|| self.strata.column_offset_m(dir));
@@ -373,7 +414,9 @@ impl Generator {
         let lake = match hx {
             Some((h, c)) if !c.is_empty() => {
                 h.rivers_at(dir, c, voxel_m, &mut rivers);
-                h.lake_at(dir, &c.cells, voxel_m)
+                let mut l = h.lake_at(dir, &c.cells, voxel_m);
+                h.lake_yields(&mut l, &rivers, voxel_m, self.lod_of(voxel_m));
+                l
             }
             _ => LakeAt::default(),
         };
@@ -385,16 +428,17 @@ impl Generator {
         let mut h = base + dh;
         // The shoreline first; the ground follows it (`coast.rs`).
         let p = dir * self.planet.radius;
-        let shore = coast::shore_at(s.coast * self.planet.radius, p, voxel_m, self.seed);
-        // Land the landform pushes below sea level is held just above it.
-        if !shore.sea && base >= -1.0 && h < LAND_FLOOR_M + 1.0 {
+        let shore = coast::shore_at(self.coast_m(dir, s.coast, voxel_m), p, voxel_m, self.seed);
+        // Land the landform pushes below sea level is held just above it, and
+        // so is land the warp lays over the bake's sea floor.
+        if !shore.sea && (base >= -1.0 || s.coast > 0.0) && h < LAND_FLOOR_M + 1.0 {
             h = soft_floor(h, LAND_FLOOR_M, 1.0);
         }
         h = coast::shape(h, shore.d);
         let (water_m, water_kind, channel, lake_sand, river_bank) = match hx {
             Some((hy, _)) if !lake.is_empty() || !rivers.is_empty() => {
                 let sh = hy.shape(dir, h, &lake, &rivers, shore.sea, lf.local.rugged, voxel_m, self.lod_of(voxel_m));
-                h = sh.h;
+                h = if sh.water == f64::NEG_INFINITY { coast::held(sh.h, shore.d) } else { sh.h };
                 (sh.water, sh.kind, sh.channel, sh.lake_floor || sh.lake_shore, sh.bank)
             }
             _ if shore.sea => (0.0, WaterKind::Ocean, 0.0, false, false),
@@ -402,8 +446,12 @@ impl Generator {
         };
         let ocean = water_kind == WaterKind::Ocean && h < water_m;
         let river = if self.hydro.is_some() { channel } else { lf.river };
-        // Lapse rate on the landform's own height, in Earth-equivalent km.
-        let lapse = (LAPSE_C_PER_KM * dh / self.vscale / 1000.0).clamp(-12.0, 12.0);
+        let lapse_share = match hx {
+            _ if shore.sea => 0.0,
+            Some((h, _)) if !lake.is_empty() => h.lake_damp(&lake),
+            _ => 1.0,
+        };
+        let (temp_c, precip) = if climate { self.climate_at(dir, voxel_m, lapse_share, lf.dh) } else { (0.0, 0.0) };
         let dither = gradient_noise(p / 41.0 + DVec3::splat(3.1), self.seed ^ 0xD17) as f32;
         let col = Column {
             height_m: h as f32,
@@ -412,8 +460,10 @@ impl Generator {
             water_kind,
             lake_sand,
             river_bank,
-            temp_c: (s.temp_c - lapse) as f32,
-            precip: s.precip_mm as f32,
+            temp_c: temp_c as f32,
+            precip: precip as f32,
+            lapse_share: lapse_share as f32,
+            landform_m: lf.dh as f32,
             // A cliff has no beach up it (a coarse voxel keeps its sand by a voxel's height).
             beach: shore.beach && h < coast::BEACH_SAND_TOP_M + voxel_m,
             dither,
@@ -427,6 +477,138 @@ impl Generator {
             river: river as f32,
         };
         (col, dh, lf.local)
+    }
+
+    /// The distance from the coastline a column reads (m, positive at sea):
+    /// through the coast's warp near it (`boundary.rs`). `coast` is the bake's
+    /// own at the column.
+    #[inline]
+    fn coast_m(&self, dir: DVec3, coast: f64, voxel_m: f64) -> f64 {
+        let r = self.planet.radius;
+        if (coast * r).abs() >= coast::band_m(r) {
+            return coast * r;
+        }
+        let rough = self.bake.coast(self.coast_warp.at(dir, voxel_m.max(coast::ROUGH_VOXEL_M))) * r;
+        if rough.abs() >= coast::ROUGH_CLEAR_M || voxel_m >= coast::ROUGH_VOXEL_M {
+            return rough;
+        }
+        self.bake.coast(self.coast_warp.at(dir, voxel_m)) * r
+    }
+
+    /// The climate through the warp, with no lapse: what a map draws.
+    pub fn climate_of(&self, dir: DVec3, voxel_m: f64) -> (f64, f64) {
+        self.bake.climate(self.warp.at(dir, voxel_m))
+    }
+
+    /// Whether a column lies on the sea's side of the shoreline.
+    pub fn at_sea(&self, dir: DVec3) -> bool {
+        self.coast_m(dir, self.bake.coast(dir), self.planet.block_size) > 0.0
+    }
+
+    /// The temperature (C) and precipitation (mm) a column reads: the bake at
+    /// its warped position (`boundary.rs`), less the lapse on the landform's
+    /// long features, of which `lapse_share` applies. Only the long features:
+    /// a column's own bumps would scatter the snow line over every hummock.
+    /// `landform_m` is the landform at this column: a voxel of `LAPSE_VOXEL_M`
+    /// or more sees what the lapse sees, so it needs no second look.
+    fn climate_at(&self, dir: DVec3, voxel_m: f64, lapse_share: f64, landform_m: f64) -> (f64, f64) {
+        let (r, q) = self.warp.split_at(dir, voxel_m, LAPSE_WARP_TOP_M);
+        let (t, p) = self.bake.climate(q);
+        if lapse_share <= 0.0 {
+            return (t, p);
+        }
+        if voxel_m >= LAPSE_VOXEL_M {
+            return (t - self.lapse_c(lapse_share * landform_m), p);
+        }
+        (t - self.lapse_at(r, voxel_m, lapse_share), p)
+    }
+
+    /// The lapse (C) of a height added to the bake's (m).
+    #[inline]
+    fn lapse_c(&self, dh: f64) -> f64 {
+        // Lapse rate on the landform's own height, in Earth-equivalent km.
+        (LAPSE_C_PER_KM * dh / self.vscale / 1000.0).clamp(-12.0, 12.0)
+    }
+
+    /// The lapse (C) at a position that has been through the short octaves.
+    fn lapse_at(&self, r: DVec3, voxel_m: f64, share: f64) -> f64 {
+        self.lapse_c(share * self.lf.sample(r, &self.bake.sample(r), voxel_m.max(LAPSE_VOXEL_M), 0.0).dh)
+    }
+
+    /// Finish a chunk's climate (`dirs` the columns' directions, `cols` the
+    /// columns, both padded). Reading the warp and the bake per column is the
+    /// dearest thing the generator could do here, and nearly every chunk
+    /// holds no climate threshold, so it is done only where one can be: a 5 x 5
+    /// sample of the climate over the padded chunk, widened by half its own
+    /// spread, says whether every column lies on the same side of every
+    /// threshold. If so, the columns are interpolated from the sample, which
+    /// gives every class the exact path would (`far_chunks_hold_no_boundary`).
+    fn settle_climate(&self, key: ChunkKey, dirs: &[DVec3], cols: &mut [Column]) {
+        let (nodes, near) = self.climate_nodes(key, cols.iter().all(|c| c.ocean));
+        let voxel_m = self.planet.voxel_m(key.lod);
+        for x in 0..PAD {
+            for y in 0..PAD {
+                let c = &mut cols[x * PAD + y];
+                let (t, p) = if near {
+                    self.climate_at(dirs[x * PAD + y], voxel_m, c.lapse_share as f64, c.landform_m as f64)
+                } else {
+                    let (u, v) = (x as f64 / NODE_STEP, y as f64 / NODE_STEP);
+                    let (ua, va) = ((u as usize).min(CLIMATE_NODES - 2), (v as usize).min(CLIMATE_NODES - 2));
+                    let (fu, fv) = (u - ua as f64, v - va as f64);
+                    let at = |a: usize, b: usize| nodes[a * CLIMATE_NODES + b];
+                    let (n00, n10, n01, n11) = (at(ua, va), at(ua + 1, va), at(ua, va + 1), at(ua + 1, va + 1));
+                    let mix = |a: f64, b: f64, c: f64, d: f64| (a * (1.0 - fu) + b * fu) * (1.0 - fv) + (c * (1.0 - fu) + d * fu) * fv;
+                    (mix(n00.0, n10.0, n01.0, n11.0), mix(n00.1, n10.1, n01.1, n11.1))
+                };
+                c.temp_c = t as f32;
+                c.precip = p as f32;
+            }
+        }
+    }
+
+    /// Whether a chunk takes the exact path (`settle_climate`).
+    #[cfg(test)]
+    pub fn chunk_holds_a_threshold(&self, key: ChunkKey) -> bool {
+        self.climate_nodes(key, self.chunk_columns(key).iter().all(|c| c.ocean)).1
+    }
+
+    /// The climate at a chunk's sample nodes, (temperature, precipitation),
+    /// and whether a threshold can lie in the chunk. Over open sea, `sea`, only
+    /// the ice line counts, and the temperature has no lapse in it.
+    fn climate_nodes(&self, key: ChunkKey, sea: bool) -> ([(f64, f64); CLIMATE_NODES * CLIMATE_NODES], bool) {
+        const N: usize = CLIMATE_NODES;
+        let planet = &self.planet;
+        let vb = key.voxel_blocks() as f64;
+        let voxel_m = planet.voxel_m(key.lod);
+        let (i0, j0, _) = key.origin_blocks();
+        let mut nodes = [(0f64, 0f64); N * N];
+        let (mut tlo, mut thi, mut plo, mut phi) = (f64::MAX, f64::MIN, f64::MAX, f64::MIN);
+        for a in 0..N {
+            for b in 0..N {
+                let (x, y) = (a as f64 * NODE_STEP - 0.5, b as f64 * NODE_STEP - 0.5);
+                let dir = planet.dir(key.face, i0 as f64 + x * vb, j0 as f64 + y * vb);
+                // The octaves a node can see; what it leaves out is small and in the margin.
+                let (r, q) = self.warp.split_at(dir, 4.0 * voxel_m, LAPSE_WARP_TOP_M);
+                let (t, p) = self.bake.climate(q);
+                // Land takes the lapse, the sea none of it, a lake's shore some.
+                let dry = if sea { t } else { t - self.lapse_at(r, 4.0 * voxel_m, 1.0) };
+                tlo = tlo.min(t).min(dry);
+                thi = thi.max(t).max(dry);
+                plo = plo.min(p);
+                phi = phi.max(p);
+                nodes[a * N + b] = (dry, p);
+            }
+        }
+        let (dt, dp) = (0.5 * (thi - tlo) + 0.05, 0.5 * (phi - plo) + 1.0);
+        let holds = |v: f32, lo: f64, hi: f64, pad: f64| v as f64 > lo - pad && (v as f64) < hi + pad;
+        // Over land, nodes over 500 m apart can't see the fields' own detail (a
+        // planetgen cell).
+        let near = if sea {
+            holds(ICE_C, tlo, thi, dt)
+        } else {
+            NODE_STEP * voxel_m > 500.0 || [SNOW_C, ICE_C, DESERT_C].iter().any(|v| holds(*v, tlo, thi, dt)) || [DESERT_MM, DRY_MM].iter().any(|v| holds(*v, plo, phi, dp))
+        };
+        (nodes, near)
     }
 
     /// Ground height (m above sea level) under a direction; water counts as
@@ -569,12 +751,13 @@ impl Generator {
         // coast it moves toward the shore's own profile, from sea level up
         // to the beach's top. Every column is within half a sample diagonal
         // of a sample, and the distance from the coast changes by about 1 m
-        // per m (1.5 allows for its interpolation), plus the wiggle.
-        let margin = coast::WIGGLE_MAX_M + 1.5 * std::f64::consts::FRAC_1_SQRT_2 * step * voxel_m;
+        // per m (1.5 allows for its interpolation), plus the warp's reach.
+        let near = 1.5 * std::f64::consts::FRAC_1_SQRT_2 * step * voxel_m;
+        let margin = coast::WARP_REACH_RADII * planet.radius + near;
         if cmax > -margin {
             hmin = hmin.min(-coast::SEA_DEPTH_M);
         }
-        if cmax > -(coast::BAND_M + margin) && cmin < margin {
+        if cmax > -(coast::band_m(planet.radius) + near) && cmin < margin {
             hmin = hmin.min(0.0);
             hmax = hmax.max(coast::BEACH_TOP_M);
         }
@@ -656,8 +839,7 @@ impl Generator {
         let b = &self.blocks;
         let d = c.dither;
         let s = self.planet.block_size as f32;
-        let t = c.temp_c + 1.5 * d;
-        let pr = c.precip + 40.0 * d;
+        let (t, pr) = (c.temp_c, c.precip);
         // Soil thickness in blocks: 2.5 base, +1 wet, +0.5 warm, -2 per unit of slope.
         let base = if c.soil_km > 0.0 {
             // planetgen's sediment depth (0..0.2 km) maps onto 1..4 blocks.
@@ -679,29 +861,30 @@ impl Generator {
         }
         if c.wet() && c.water_kind == WaterKind::Lake {
             // A lake bed: sand in the shallows, gravel deeper. (The middle of
-            // a lake is about 3.3 m deep: the line stays well short of that,
-            // or the dither strews sand over the whole bed.)
-            let deep = c.water_m - c.height_m as f64 > (1.6 + 0.4 * d as f64) * s as f64;
+            // a lake is about 3.3 m deep: the line stays well short of that.)
+            let deep = c.water_m - c.height_m as f64 > 1.6 * s as f64;
             let floor = if deep { b.gravel } else { b.sand };
             return Surface { top: floor, soil: b.sand, soil_m: 2.0 * s };
         }
-        if c.lake_sand {
+        // Snow lies on a lake's shore as it does on a beach: a ring of sand
+        // round every frozen lake would break the snow line.
+        if c.lake_sand && t >= SNOW_C {
             return Surface { top: b.sand, soil: b.sand, soil_m: soil_m.max(2.0 * s) };
         }
         if slope > 0.95 + 0.25 * d && !c.river_bank {
             return Surface { top: b.stone, soil: b.stone, soil_m: 0.0 };
         }
-        if t < -3.0 {
+        if t < SNOW_C {
             return Surface { top: b.snow, soil: b.dirt, soil_m };
         }
         if c.beach {
             return Surface { top: b.sand, soil: b.sand, soil_m: soil_m.max(2.0 * s) };
         }
-        if pr < 130.0 && t > 8.0 {
+        if pr < DESERT_MM && t > DESERT_C {
             // Desert: a sand skin over real sandstone.
             return Surface { top: b.sand, soil: b.sandstone, soil_m: soil_m.max(2.0 * s) };
         }
-        if pr < 320.0 {
+        if pr < DRY_MM {
             Surface { top: b.dry_grass, soil: b.dirt, soil_m }
         } else {
             Surface { top: b.grass, soil: b.dirt, soil_m }
@@ -721,7 +904,7 @@ impl Generator {
         let w = if self.hide_water { f64::NEG_INFINITY } else { c.water_m };
         let wet = w > h;
         // The top water voxel freezes in the cold.
-        let cold = c.temp_c + 1.5 * c.dither < -4.0;
+        let cold = c.temp_c < ICE_C;
         // LOD 0: the column's water is one integer of levels, T = round(255 W / s),
         // spread over its cells (a cell holds T - 255 k, clamped to 0..255).
         let lod0 = |kz: i64| -> (u8, bool) {
@@ -820,6 +1003,7 @@ impl Generator {
         let size = key.extent_blocks() as f64;
         let cands = self.hydro_cands(planet.dir(key.face, i0 + 0.5 * size, j0 + 0.5 * size), Self::footprint_radius_m(planet, size)).unwrap_or_default();
         let mut cols = vec![Column::default(); PAD * PAD];
+        let mut dirs = vec![DVec3::ZERO; PAD * PAD];
         for x in -1..=CHUNK as i32 {
             for y in -1..=CHUNK as i32 {
                 let (coarse, off) = match grid.as_ref() {
@@ -829,9 +1013,12 @@ impl Generator {
                     }
                     None => (None, None),
                 };
-                cols[((x + 1) as usize) * PAD + (y + 1) as usize] = self.column_from(col_dir(x, y), voxel_m, coarse, off, Some(&cands)).0;
+                let p = ((x + 1) as usize) * PAD + (y + 1) as usize;
+                dirs[p] = col_dir(x, y);
+                cols[p] = self.column_from(dirs[p], voxel_m, coarse, off, Some(&cands), false).0;
             }
         }
+        self.settle_climate(key, &dirs, &mut cols);
         cols
     }
 
@@ -1064,3 +1251,6 @@ mod hydro_tests;
 
 #[cfg(test)]
 mod shore_tests;
+
+#[cfg(test)]
+mod boundary_tests;

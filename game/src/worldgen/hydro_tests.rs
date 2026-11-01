@@ -587,10 +587,12 @@ fn water_agrees_across_lods() {
                     }
                 }
             }
-            // Every LOD-0 column under it holds water at least three quarters
-            // of a voxel deep: the coarse column must hold water too.
-            let deep = under.iter().filter(|u| u.0.is_some_and(|x| x.1 >= 0.75 * vm)).count();
-            if deep == under.len() {
+            // Every LOD-0 column under it, and a voxel around it, holds water
+            // at least three quarters of a voxel deep: the coarse column must
+            // hold water too. (Around it: a shore's line differs between LODs
+            // by a voxel or so, `a_line_is_the_same_line_at_every_lod`.)
+            let deep = around.iter().filter(|u| u.is_some_and(|x| x.1 >= 0.75 * vm)).count();
+            if deep == around.len() {
                 deep_cols += 1;
                 if c.is_none() {
                     miss_bad.push(format!("{}: all {} LOD-0 columns hold water over 3/4 of a voxel deep, coarse dry", here(), under.len()));
