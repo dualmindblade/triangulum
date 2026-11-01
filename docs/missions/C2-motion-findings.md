@@ -286,6 +286,20 @@ chunk border and over a cube face edge, and at Andrew's own pose
 (`film-*.jpg`): a faint blue square at 2 and 8 m, a dot at 50 m, nothing at
 200 m where a cell is under a pixel; no shimmer and no wedges in any of them.
 
+## Proposed wording for DESIGN.md (not edited)
+
+> **Water.** ... Level-1 water with nowhere to go dries, unless it is the
+> edge of a large body or of water fed from beyond the loaded area. Water
+> evaporates (Andrew confirmed it, 2026-10-31). A sheet of level-1 water is
+> one thing: a film cell with water beside it neither runs nor goes over a
+> ledge; thicker water drains through the sheet to a drop, and the sheet
+> dries where it lies. Nothing spreads onto a cell over a drop (C2, 2026-10-31).
+
+> **Things that move, 1. Falling blocks.** ... The picture of a slide is the
+> renderer's: a block is drawn travelling from the cell it left over 0.2 s,
+> and where a chunk's mesh is late the block is drawn where the mesh shows
+> it. None of that is state (C2, 2026-10-31).
+
 ## Verification
 
 - `cargo test --release`: **373 passed, 1 failed, 25 ignored** (B4's
