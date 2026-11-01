@@ -13,9 +13,12 @@
 
 # ---- 10. orbit, then down through the atmosphere into the highest range ----
 # The highest summit (lat 69.11 lon 122.16) at golden hour. The approach line
-# A (69.26, 116.10) -> peak runs east along the range.
+# A (69.26, 116.10) -> peak runs east along the range. T2 made the ranges
+# real (the ground along the line is 340-420 m from lon 114 to 116 and a
+# 793 m crest at lon 117.4), so the last three keys fly 200-250 m over it
+# instead of the old 340-600 m, which is now inside the mountain.
 mode fly
-at 69.26 116.10 360
+at 69.26 116.10 650
 sun 5
 at 66.07003 83.42356 320000
 look 78 -80
@@ -28,9 +31,9 @@ caption +15.5 Over the highest range (vertical scale 1/70)
 key 5 67.45373 90.63977 160000 - -76
 key 10 68.63641 100.29988 30000 - -52
 key 14 69.16336 108.97137 3500 - -22
-key 17 69.26193 113.95610 600 - -10
-key 19.5 69.26 116.10 360 - -7
-key 22.5 69.23489 118.06273 340 - -6
+key 17 69.26193 113.95610 700 - -10
+key 19.5 69.26 116.10 650 - -7
+key 22.5 69.23489 118.06273 1050 - -6
 fly path
 stop
 
@@ -50,16 +53,25 @@ stop
 skyspeed 0
 
 # ---- 30. walk, dig a trench, bridge it, dig down and tunnel ----------------
-# Face 2, row J = 57519, on flat hills: ground top layer 1068 (feet 1069) for
-# i 107161..107172. Trench: i 107166..107168, j 57518..57520, layers 1068
-# and 1067. Bridge: snow blocks (white, so it reads from far away) at layer
-# 1068, j = J, i 107166..107168, placed by sneaking backwards to the edge.
-# Shaft at i 107164 (layers 1068..1066), then
-# a tunnel along -i (i 107163..107161, layers 1066-1067, roof 1068 untouched).
+# Face 2, row J = 57519, on the hills. T2: the ground here is no longer level
+# (it is at layer 1076 now, and T3 may dither it by a block), so the scene
+# stands on a tray laid flush with it: eight layers of stone under a grass
+# top at layer 1076, 29 blocks square, the air above cleared. Ground top
+# layer 1076 (feet 1077) for i 107161..107172. Trench: i 107166..107168,
+# j 57518..57520, layers 1076 and 1075. Bridge: snow blocks (white, so it
+# reads from far away) at layer 1076, j = J, i 107166..107168, placed by
+# sneaking backwards to the edge. Shaft at i 107164 (layers 1076..1074),
+# then a tunnel along -i (i 107163..107161, layers 1074-1075, roof 1076
+# untouched).
+mode fly
+atblock 2 107162 57519 1076
+fill -14 -14 -9 14 14 -2 stone
+fill -14 -14 -1 14 14 -1 grass
+fill -14 -14 0 14 14 24 air
 mode walk
 atblock 2 107162 57519 2512
 assert block_rel[0,0,-1] == grass
-assert k == 1069
+assert k == 1077
 column 4 0
 column 6 0
 column 8 0
@@ -77,7 +89,7 @@ pan 1.6 turn 40 2
 hold w 0.767
 wait 0.15
 assert fi ~ 107165.5 0.2
-assert k == 1069
+assert k == 1077
 assert on_ground == true
 # -- the trench: top layer, near to far
 caption Dig a trench
@@ -179,14 +191,14 @@ caption Dig down, then tunnel
 pan 0.5 aim 0 0 -0.5
 tap break
 wait 0.45
-assert k == 1068
+assert k == 1076
 pan 0.2 aim 0 0 -0.5
 tap break
 wait 0.45
 pan 0.2 aim 0 0 -0.5
 tap break
 wait 0.45
-assert k == 1066
+assert k == 1074
 assert on_ground == true
 pan 0.4 aim -1 0 1.5
 tap break
@@ -221,7 +233,7 @@ pan 0.7 lookaxis +i 0
 hold w 0.75
 wait 0.1
 assert i == 107164
-assert k == 1066
+assert k == 1074
 pan 1.2 lookaxis +i 80
 wait 0.8
 stop
@@ -232,15 +244,17 @@ save
 assert dirty == 0
 reload
 assert edits >= 1
-assert block[2,107166,57519,1068] == snow
-assert block[2,107167,57519,1068] == snow
-assert block[2,107168,57519,1068] == snow
-assert block[2,107167,57518,1067] == air
-assert block[2,107162,57519,1066] == air
+assert block[2,107166,57519,1076] == snow
+assert block[2,107167,57519,1076] == snow
+assert block[2,107168,57519,1076] == snow
+assert block[2,107167,57518,1075] == air
+assert block[2,107162,57519,1074] == air
 recmode settle
 mode fly
-target 2 107167 57519 1068
-keyrel 0.0167 7 -j 3.5
+target 2 107167 57519 1076
+# (6 m up, not 3.5: the flight's ground clearance is read from the natural
+# ground, which the tray cut into and which rises a block or two to the south)
+keyrel 0.0167 7 -j 6
 fly none target
 sun 9
 skyspeed 3

@@ -716,7 +716,6 @@ fn every_ocean_column_is_opaque_underneath() {
 /// every LOD over high ground: classification agrees with the contents.
 #[test]
 fn world_ceiling_exposes_clipped_terrain() {
-    let reg = registry();
     let g = generator_with(Some(0.125), 512, 256);
     let p = g.planet;
     let ceiling = (p.height - p.sea_level) as f64 * p.block_size;

@@ -2,10 +2,37 @@
 # and down the far side, digs in it, and does it all again from a replay.
 # Everything here is player input: place, break, the walking keys.
 #   triangulum --play scripts/b7-walk.play --out out/b7/walk
+#
+# T2: the beach here is no longer flat (the land falls towards the water, a
+# block every three or four columns inland), and a pile poured on a slope
+# runs downhill. So the pour and the walk up it stand on a sand sheet laid
+# over the beach: sand at layers 1023..1025 (the sand block the assert
+# below names is the sheet's as much as the beach's) from the player's
+# column eight columns inland and eight across, the air above cleared, and
+# a sandstone kerb at layer 1024 along the two sides where the beach drops
+# away, so nothing slides off the sheet. The box cuts no natural sand, so
+# nothing ravels. alt_agl is measured against the natural ground, which the
+# sheet stands a block over at the pour, as the old beach's surface stood
+# over its own height; past the sheet the walk goes on up the natural
+# beach. The poured blocks fall onto what came before and spread as they
+# land (the levels rule), which is what makes a pile of them. Editing this
+# chunk wakes the sea along its sides when the region is built (the shore
+# is not at rest as generated): about 4,200 units move and settle inside
+# 200 ticks, and the films they leave dry in patches over the next
+# thousand, so the sheet gets 1,200 ticks (an even number: the pour keeps
+# its tick parity) before the recording starts.
 sim powder levels 35
 sun 35
 mode fly
 atblock 1 1911 59004 1025
+sim off
+fill 0 -3 -3 7 4 -1 sand
+fill -1 -4 -2 7 -4 -2 sandstone
+fill -1 -3 -2 -1 4 -2 sandstone
+fill 0 -3 0 7 4 10 air
+sim on
+tick 1200
+assert queued == 0
 assert block[1,1911,59004,1023] == sand
 mode walk
 hotbar sand,gravel,stone,dirt

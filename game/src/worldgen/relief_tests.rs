@@ -35,7 +35,7 @@ fn relief_survey() {
             (s.uplift, s.rough_km, s.elev_km, s.erodibility, s.soil_km, l.relief, lf.dh, c.height_m as f64, s.temp_c)
         })
         .collect();
-    let mut col = |f: &dyn Fn(&(f64, f64, f64, f64, f64, f64, f64, f64, f64)) -> f64| rows.iter().map(f).collect::<Vec<f64>>();
+    let col = |f: &dyn Fn(&(f64, f64, f64, f64, f64, f64, f64, f64, f64)) -> f64| rows.iter().map(f).collect::<Vec<f64>>();
     println!("{}", fmt_q("uplift", &mut col(&|r| r.0)));
     println!("{}", fmt_q("rough_km", &mut col(&|r| r.1)));
     println!("{}", fmt_q("elev_km", &mut col(&|r| r.2)));
@@ -234,10 +234,6 @@ fn relief_places() {
     let h: &hydro::Hydro = g.hydro.as_deref().unwrap();
     let p = &g.planet;
     let r = p.radius;
-    let heading = |at: DVec3, v: DVec3| {
-        let (north, east, _) = crate::camera::Camera::local_frame(at);
-        v.dot(east).atan2(v.dot(north)).to_degrees()
-    };
     let step = |at: DVec3, v: DVec3, d: f64| (at * r + v * d).normalize();
     let ground = |d: DVec3| g.ground_height_m(d);
     let dry_ground = |d: DVec3| g.column(d, p.block_size).height_m as f64;

@@ -7,8 +7,11 @@
 # where the player stands (block_rel, dk 0 = the feet block) and every check
 # is about what the edits and the simulation did. The site is the flat patch
 # east of the m1-done bridge: row J = 57531 (and 57525), columns 107153..
-# 107159, whose ground is level (probed 2026-10-25; a gentler or steeper
-# neighbour would move one aim by a block, nothing else).
+# 107159. T2: its ground is no longer level (the hills are real now), so
+# both scenes stand on a stone tray laid over it: ten layers of stone under
+# the feet, 25 blocks square, the air above cleared. The shafts, tunnels and
+# towers then meet the level ground the script describes whatever the
+# terrain does next.
 #
 # The trick for "a tower over a gap" without seeing under it: dig a shaft
 # three deep in the neighbouring column S, tunnel one cell along +i into
@@ -32,6 +35,17 @@ atblock 2 107155 57531 2512
 assert mode == walk
 assert on_ground == true
 assert sim_enabled == true
+assert falling == 0
+# the tray (T2), with the simulation paused while it is laid, then an even
+# number of ticks so the scenes keep their tick parity
+sim off
+fill -12 -12 -10 12 12 -1 stone
+fill -12 -12 0 12 12 8 air
+sim on
+wait 1
+assert on_ground == true
+tick 4
+assert queued == 0
 assert falling == 0
 # the shaft: three blocks straight down
 aim 0 0 -0.5

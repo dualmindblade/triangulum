@@ -1,13 +1,16 @@
 # B4, Andrew's #9: "When the water level drops in an area, water voxels of
 # level 1 will stick around on top of the entire surface."
 #
-# Scenes A to C are built in the air over the flat patch of m2a-sand.play so
-# that no terrain decides anything:
+# All four scenes are built in the air over the flat patch of m2a-sand.play
+# so that no terrain decides anything:
 #   A. a terraced bowl, full, drained through a plug in its floor: a lake
 #      whose level has dropped;
 #   B. a film on a wide table with no edge in reach: nowhere to go;
 #   C. one block of water poured on a table: the 4 mm sheet;
-#   D. four blocks poured on real ground, which steps down as it goes.
+#   D. four blocks poured on ground that steps down as it goes: a walled
+#      stair of four terraces a block apart (T2: it used to be the real
+#      hills, which now fall so gently and smoothly that the film ran far
+#      and was still drying in patches when the script's clock ran out).
 #
 # It prints what is left (`levels`, and the counts in the transcript) and
 # asserts only what holds under every rule: the accounting, and that nothing
@@ -109,11 +112,21 @@ levels -12 -12 12 12 -7
 aim 8 0 -7
 shot C_180s
 
-# ---- D. on real ground -----------------------------------------------------
-# Four blocks poured at one spot on the hills, which step down a block every
-# few metres. The old rule leaves them clinging where they spread.
+# ---- D. ground that steps down ----------------------------------------------
+# Four blocks poured at one spot on a stair that steps down a block every
+# few metres, as the hills did: terraces 12, 6, 4 and 3 cells long inside a
+# walled box 27 square. The old rule leaves them clinging where they spread.
+mode fly
+atblock 2 107095 57531 1137
+fill -13 -13 -9 13 13 -3 stone
+fill -12 -12 -4 12 12 -3 air
+fill 0 -12 -5 12 12 -5 air
+fill 6 -12 -6 12 12 -6 air
+fill 10 -12 -7 12 12 -7 air
+tick 2
+assert queued == 0
 mode walk
-atblock 2 107095 57531 2512
+atblock 2 107089 57531 2512
 assert on_ground == true
 aim 2 0 -0.5
 tap place
