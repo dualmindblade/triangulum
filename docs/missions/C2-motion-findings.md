@@ -10,7 +10,7 @@ not blink"). Sim rules are **4** (the water changed; the powder rule did not).
 1. **Place a block of sand or snow on a slope.** It should move sideways out of
    its cell, drop as it goes, and fall, as one block. There should never be
    two of it, and a landed block should never blink out and back.
-   `slide-plate-edge.png` is this, frame by frame, before and after.
+   `slide-plate-edge-before.png` and `-after.png` are this, frame by frame.
 2. **Knock a wall out from behind a sand cliff** or drop a cube of sand on a
    plate: the whole slope pours, each block sliding over its edge
    (`c2-slide-C.mp4`, a heap over a cube corner; `c2-slide-E.mp4`, 5,760 blocks).
@@ -63,7 +63,7 @@ left (`Falling::from`, a `Trail`), and `Sim::view` hands the renderer a
   `a_slide_over_a_cube_edge_names_the_cell_on_the_other_face_and_its_way_is_a_block_long`
   (the way is level and 0.8 to 1.4 m long: cell centres across an edge are
   not exactly a metre apart) and scene B of `c2-slide.play`
-  (`slide-cube-edge.png`); scene C is a heap over a cube corner on video.
+  (`slide-cube-edge-after.png`); scene C is a heap over a cube corner on video.
 
 **Why purely visual, and why it is honest.** Nothing the rule does changed:
 same cells, same ticks, same landings. The trail is neither hashed
@@ -94,7 +94,7 @@ it a frame or more later. Meanwhile the chunk's mesh still shows the block in
 the cell it left and the entity is drawn in the next column: two copies, for
 as long as the mesh is late. The straight fall hides it (the entity starts in
 the same cell and has dropped 6 cm after a tick); the slide, which moves a
-whole cell in one tick, does not. `slide-plate-edge.png` shows it in the
+whole cell in one tick, does not. `slide-plate-edge-before.png` shows it in the
 frozen build: frame 3 is the meshed block and the entity side by side as one
 stretched shape, frame 4 the jump. `ghosts` was the other half of the same
 problem, solved by a timer: a landed block was drawn as a cube for 5 ticks
@@ -359,14 +359,14 @@ there are the commands and fields that build does not have (`sim trace`,
 `flips`, `motion`, `water_flickers`, `motion_gaps_max`); every assert about
 the world passes on both.
 
-**Evidence** (`docs/missions/C2-motion-evidence/`): `slide-plate-edge.png`
-and `slide-cube-edge.png` (live frames each 60 Hz step, before and after),
+**Evidence** (`docs/missions/C2-motion-evidence/`): `slide-plate-edge-*.png`
+and `slide-cube-edge-*.png` (live frames each 60 Hz step, before and after),
 `c2-slide-A/B/C/E.mp4` (the plate edge, the cube edge, the heap over a cube
 corner, the 5,760-block collapse) and `replay-192516-c2-draw.mp4` (Andrew's
 pile on this draw); `puddle-ledge.jpg`, `film-stone.jpg`,
 `film-sand-border-edge.jpg`, `film-andrews-pose.jpg`; the rules-3 traces and
 analyses, `flicker-test-before-after.txt`, `replay-192516-motion.log`,
-`real-recording-refused.log`, `scripts.txt`.
+`real-recording-refused.log`, `scripts-first-run.txt`.
 
 ## What changed in existing tests and scripts
 
