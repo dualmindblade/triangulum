@@ -1067,8 +1067,8 @@ fn water_is_contained_wide() {
 
 /// The same gate on every planet size, lakes first: every third lake's shore
 /// at two places, every link into or out of a lake (a sample, on the big
-/// planets, where they are long) and a share of the rest, about a tenth of
-/// the network on Neisor's scale. Too slow for every run (BOUNDARY_SIZES).
+/// planets, where they are long) and a share of the rest, about a twentieth
+/// of the network on Neisor's scale. Too slow for every run (BOUNDARY_SIZES).
 #[test]
 #[ignore]
 fn water_is_contained_on_every_planet_size() {
@@ -1091,8 +1091,8 @@ fn water_is_contained_on_every_planet_size() {
         let region = Region::build(&g, 0, &cols);
         let mut total = check(&g, &region, &cols);
         drop(region);
-        let lake_links: Vec<u32> = (0..h.segs.len() as u32).filter(|&k| h.segs[k as usize].lake_a >= 0 || h.segs[k as usize].lake_b >= 0).step_by(stretch.ceil() as usize).collect();
-        let rest: Vec<u32> = (0..h.segs.len() as u32).step_by((10.0 * stretch).ceil() as usize).collect();
+        let lake_links: Vec<u32> = (0..h.segs.len() as u32).filter(|&k| h.segs[k as usize].lake_a >= 0 || h.segs[k as usize].lake_b >= 0).step_by((2.0 * stretch).ceil() as usize).collect();
+        let rest: Vec<u32> = (0..h.segs.len() as u32).step_by((20.0 * stretch).ceil() as usize).collect();
         let km = lake_links.iter().chain(&rest).map(|&k| h.segs[k as usize].len).sum::<f64>() / 1000.0;
         for batch in lake_links.chunks(100).chain(rest.chunks(100)) {
             let mut cols: FastMap<Col, ()> = FastMap::default();

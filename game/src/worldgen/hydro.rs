@@ -806,7 +806,7 @@ impl Hydro {
             .collect();
         phase("courses", &mut phases);
         // The lake field cells, and a lake's share of the field at a point
-        // (no wiggle): the ground inside a lake's apron band is the lake's
+        // (not through the outline's warp): the ground inside a lake's apron band is the lake's
         // own (its bed), not a level a river can hold.
         // The network and lake field stretch with R. Keep the lookup grids
         // at that scale too (T1): fixed metre bins cost millions of empty
@@ -1144,17 +1144,8 @@ impl Hydro {
                         let c = self.cands(d, reach);
                         let l = self.lake_at(d, &c.cells, 4.0);
                         // Inside: in the lake's band, or the channel's edge
-                        // (and its banks) within reach of the lake's water. A
-                        // bent shore can reach the channel's edge from a field
-                        // that says otherwise here, so look there too.
-                        let along = s.point((x + STEP).min(s.len)) - s.point((x - STEP).max(0.0));
-                        let side = d.cross(along).normalize_or_zero() * (reach / self.radius);
-                        let (l1, l2) = (self.lake_at((d + side).normalize(), &c.cells, 4.0), self.lake_at((d - side).normalize(), &c.cells, 4.0));
-                        let near = |k: i32| {
-                            k >= 0
-                                && (l.iter().any(|lf| lf.lake == k && lf.off_shore(self.lake_zone) < if lf.field > LAKE_APRON { LAKE_APRON_M.max(reach) } else { reach })
-                                    || [&l1, &l2].iter().any(|e| e.iter().any(|lf| lf.lake == k && lf.field > self.lake_zone)))
-                        };
+                        // (and its banks) within reach of the lake's water.
+                        let near = |k: i32| k >= 0 && l.iter().any(|lf| lf.lake == k && lf.off_shore(self.lake_zone) < if lf.field > LAKE_APRON { LAKE_APRON_M.max(reach) } else { reach });
                         (near(s.lake_a), near(s.lake_b))
                     })
                     .collect();
@@ -1467,25 +1458,6 @@ impl Hydro {
         }
         out.items[..out.n].sort_by(|a, b| b.field.total_cmp(&a.field).then(a.lake.cmp(&b.lake)));
         out
-    }
-
-    /// A lake bent over a river that stands above it stops short of the river
-    /// and its bank. (The other way round, the river yields: `shape`, step 4.)
-    /// Two waters at different levels are parted by ground either way.
-    pub fn lake_yields(&self, lake: &mut LakeAt, rivers: &[RiverAt], voxel: f64, lod: u8) {
-        let eps = 0.5 / 255.0 * self.block;
-        let bank = self.bank_w(voxel);
-        let zone = self.lake_zone;
-        for lf in lake.items[..lake.n].iter_mut().filter(|l| l.field > zone) {
-            let w = self.lakes[lf.lake as usize].w;
-            let over = rivers.iter().any(|r| {
-                let s = &self.segs[r.seg as usize];
-                self.has_channel(s, lod, voxel) && r.d < self.half_width(s, voxel) + bank && self.w_water(r.seg, &r.prof, r.s_near) > w + eps
-            });
-            if over {
-                lf.field = zone;
-            }
-        }
     }
 
     /// Land falls towards water: how much of the local relief stands at a

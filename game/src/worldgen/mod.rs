@@ -53,7 +53,7 @@ pub mod noise;
 pub mod scale;
 pub mod strata;
 
-use crate::grid::{CHUNK, ChunkKey, FastMap, FootprintKey, Planet};
+use crate::grid::{CHUNK, ChunkKey, FootprintKey, Planet};
 use crate::world::chunk::VOXELS;
 use crate::world::{BlockId, Chunk, Registry};
 use bake::{Bake, BakeSample};
@@ -64,6 +64,7 @@ use landform::{Landform, Local};
 use noise::gradient_noise;
 use scale::Scale;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use strata::{GeoHint, RockCache, Strata};
 
 /// Padded voxel grid edge (one voxel border on every side).
@@ -102,12 +103,14 @@ const LAPSE_WARP_TOP_M: f64 = 512.0;
 /// Bare rock (`rock_map`): ground steeper than `ROCK_SLOPE` (rise over run)
 /// as a voxel of `ROCK_VOXEL_M` sees it, and any column whose own slope is
 /// over `ROCK_CLIFF_SLOPE` (a cliff or a terrace's riser, too narrow for that
-/// voxel). `ROCK_WARP_M` is the furthest the rock warp is read (m): it moves a
-/// column under half this nearly everywhere, and a read past it holds at it.
+/// voxel). `ROCK_WARP_M` is the furthest the rock warp is read (m), and a read
+/// past it holds at it; it moves a column under `ROCK_SIGHT_M` nearly everywhere
+/// (8 m is typical), so a column with no line that near isn't warped at all.
 const ROCK_SLOPE: f32 = 0.85;
 const ROCK_CLIFF_SLOPE: f32 = 2.5;
 const ROCK_VOXEL_M: f64 = 16.0;
 pub(crate) const ROCK_WARP_M: f64 = 48.0;
+const ROCK_SIGHT_M: f64 = 20.0;
 
 /// Block ids the generator places, resolved from the registry by name.
 #[derive(Clone, Copy, Debug)]
@@ -290,6 +293,7 @@ pub struct Generator {
     pub warp: Warp,
     /// Bends the bare-rock line (`rock_map`).
     rock_warp: Warp,
+    rock_nodes: RockNodes,
     coast_warp: Warp,
 }
 
@@ -342,7 +346,7 @@ impl Generator {
         let elev_max = (0..6u8).map(|f| bake.elev_range_km(f, -1.0, -1.0, 1.0, 1.0).1).fold(f32::MIN, f32::max) as f64;
         let max_relief_m = lf.bound_m(lf.relief_bound_m(bake.rough_max_km() as f64, elev_max));
         let rock_warp = Warp::rock(planet.radius, planet.block_size, seed);
-        Ok(Self { planet, bake, seed, vscale, scale, hydro_build_s, roughness, landform, lf, blocks, strata, skirt: 2, markers: Vec::new(), hide_water: false, hydro, max_relief_m, warp, coast_warp, rock_warp })
+        Ok(Self { planet, bake, seed, vscale, scale, hydro_build_s, roughness, landform, lf, blocks, strata, skirt: 2, markers: Vec::new(), hide_water: false, hydro, max_relief_m, warp, coast_warp, rock_warp, rock_nodes: RockNodes::new() })
     }
 
     /// The hydrology model for a bake, built from the generator's own pure
@@ -462,9 +466,7 @@ impl Generator {
         let lake = match hx {
             Some((h, c)) if !c.is_empty() => {
                 h.rivers_at(dir, c, voxel_m, &mut rivers);
-                let mut l = h.lake_at(dir, &c.cells, voxel_m);
-                h.lake_yields(&mut l, &rivers, voxel_m, self.lod_of(voxel_m));
-                l
+                h.lake_at(dir, &c.cells, voxel_m)
             }
             _ => LakeAt::default(),
         };
@@ -1111,7 +1113,7 @@ impl Generator {
     ///
     /// Chunks at that voxel or coarser use their own columns. Finer ones read
     /// the columns those chunks would have, on the same lattice, and only
-    /// where one is in reach: a little more of the chunk's own cost, once.
+    /// where one is in reach, and only until a neighbour has read them.
     /// So the line is one line across those LODs. Slope is the steeper side of
     /// each column on each axis: a ridge's crest is as bare as its faces.
     fn rock_map(&self, key: ChunkKey, cols: &[Column]) -> Vec<bool> {
@@ -1148,24 +1150,22 @@ impl Generator {
         let (ni, nj) = (first(i0), first(j0));
         let m = ((size + 2.0 * (vb + reach)) / g).ceil() as usize + 2;
         let centre = planet.dir(key.face, i0 + 0.5 * size, j0 + 0.5 * size);
-        let cands = self.hydro_cands(centre, Self::footprint_radius_m(planet, size + 2.0 * (vb + reach + 2.0 * g))).unwrap_or_default();
+        let r = Self::footprint_radius_m(planet, size + 2.0 * (vb + reach + 2.0 * g));
+        let mut cands = None;
         let w = m + 2;
         let mut h = vec![0f32; w * w];
         for a in 0..w {
             for b in 0..w {
-                let dir = planet.dir(key.face, (ni + a as f64 - 0.5) * g, (nj + b as f64 - 0.5) * g);
-                h[a * w + b] = self.column_from(dir, ROCK_VOXEL_M, None, None, Some(&cands), false).0.height_m;
+                let (n, q) = (ni as i64 + a as i64 - 1, nj as i64 + b as i64 - 1);
+                h[a * w + b] = self.rock_nodes.height(key.face, n, q, || {
+                    let c = cands.get_or_insert_with(|| self.hydro_cands(centre, r).unwrap_or_default());
+                    let dir = planet.dir(key.face, (n as f64 + 0.5) * g, (q as f64 + 0.5) * g);
+                    self.column_from(dir, ROCK_VOXEL_M, None, None, Some(c), false).0.height_m
+                });
             }
         }
         let nodes = |x: usize, y: usize| h[x * w + y];
         let s: Vec<f32> = (0..m * m).map(|p| steepest_slope(&nodes, p / m + 1, p % m + 1, w, ROCK_VOXEL_M as f32)).collect();
-        // Where the warp can't change the answer it is not read.
-        let cells = (ROCK_WARP_M / ROCK_VOXEL_M).ceil() as usize + 1;
-        let mixed = |a: usize, b: usize| {
-            let (a0, a1, b0, b1) = (a.saturating_sub(cells), (a + 1 + cells).min(m - 1), b.saturating_sub(cells), (b + 1 + cells).min(m - 1));
-            let side = s[a0 * m + b0] > ROCK_SLOPE;
-            (a0..=a1).any(|p| (b0..=b1).any(|q| (s[p * m + q] > ROCK_SLOPE) != side))
-        };
         let top = (m - 1) as f64 - 1e-9;
         let read = |i: f64, j: f64| {
             let (u, v) = ((i / g - 0.5 - ni).clamp(0.0, top), (j / g - 0.5 - nj).clamp(0.0, top));
@@ -1180,21 +1180,22 @@ impl Generator {
         let (e1, e2) = (0.5 * (d(1.0, 0.0) - d(-1.0, 0.0)), 0.5 * (d(0.0, 1.0) - d(0.0, -1.0)));
         let (e11, e12, e22) = (e1.dot(e1), e1.dot(e2), e2.dot(e2));
         let det = e11 * e22 - e12 * e12;
-        let mut memo: FastMap<u32, bool> = FastMap::default();
+        // The warp is the dear part, and most columns are further from a line
+        // than it moves them: it is read only with the line in sight.
+        let sight = ROCK_SIGHT_M / planet.block_size;
+        let ring = [(1.0, 0.0), (-1.0, 0.0), (0.0, 1.0), (0.0, -1.0), (0.7, 0.7), (0.7, -0.7), (-0.7, 0.7), (-0.7, -0.7)];
         for x in 0..N {
             for y in 0..N {
                 let (i, j) = (i0 + (x as f64 - 0.5) * vb, j0 + (y as f64 - 0.5) * vb);
-                let (a, b) = (((i / g - 0.5 - ni).clamp(0.0, top)) as usize, ((j / g - 0.5 - nj).clamp(0.0, top)) as usize);
-                let near = *memo.entry((a * m + b) as u32).or_insert_with(|| mixed(a, b));
-                let (qi, qj) = if near {
+                let here = read(i, j) > ROCK_SLOPE;
+                rock[x * N + y] |= if ring.iter().any(|(u, v)| (read(i + u * sight, j + v * sight) > ROCK_SLOPE) != here) {
                     let dir = planet.dir(key.face, i, j);
                     let q = self.rock_warp.at(dir, voxel_m) - dir;
                     let (r1, r2) = (q.dot(e1), q.dot(e2));
-                    (i + (e22 * r1 - e12 * r2) / det, j + (e11 * r2 - e12 * r1) / det)
+                    read(i + (e22 * r1 - e12 * r2) / det, j + (e11 * r2 - e12 * r1) / det) > ROCK_SLOPE
                 } else {
-                    (i, j)
+                    here
                 };
-                rock[x * N + y] |= read(qi, qj) > ROCK_SLOPE;
             }
         }
         rock
@@ -1399,6 +1400,41 @@ fn dominant_face(d: DVec3) -> u8 {
         4
     } else {
         5
+    }
+}
+
+/// The heights of the rock lattice's columns (`Generator::rock_map`). A column
+/// is the dearest thing in a rock map and about 16 chunks of LOD 0 read each
+/// one, so they are kept: a table direct-mapped on 4 x 4 km of lattice. Tag and
+/// height are one word, so it takes no lock, and the values are pure, so a miss
+/// costs the column again and nothing else.
+struct RockNodes {
+    slots: Box<[AtomicU64]>,
+}
+
+const ROCK_NODE_BITS: u32 = 8;
+
+impl RockNodes {
+    fn new() -> Self {
+        Self { slots: (0..1usize << (2 * ROCK_NODE_BITS)).map(|_| AtomicU64::new(0)).collect() }
+    }
+
+    /// The height of lattice column (n, q) of a face, from `column` on a miss.
+    #[inline]
+    fn height(&self, face: u8, n: i64, q: i64, column: impl FnOnce() -> f32) -> f32 {
+        // Nodes reach a little past the face's edge; 2^17 nodes a side at most.
+        const OFF: i64 = 1 << 12;
+        let (a, b) = ((n + OFF) as u64, (q + OFF) as u64);
+        let mask = (1u64 << ROCK_NODE_BITS) - 1;
+        let slot = (a & mask | (b & mask) << ROCK_NODE_BITS) as usize;
+        let tag = 1 | (face as u64) << 1 | (a >> ROCK_NODE_BITS) << 4 | (b >> ROCK_NODE_BITS) << 16;
+        let got = self.slots[slot].load(Ordering::Relaxed);
+        if got >> 32 == tag {
+            return f32::from_bits(got as u32);
+        }
+        let h = column();
+        self.slots[slot].store(tag << 32 | h.to_bits() as u64, Ordering::Relaxed);
+        h
     }
 }
 
