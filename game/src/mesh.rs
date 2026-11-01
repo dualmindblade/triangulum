@@ -982,23 +982,26 @@ mod tests {
         }
     }
 
-    /// Andrew's #10, at the `find lake` site. Lake water at rest is flat,
-    /// and none of it may dip where it meets the shore. Every dip here was
-    /// on a chunk border: the generator's skirt lowers border columns, so
-    /// the neighbour's sand read as air, and air counts as height 0.
+    /// Andrew's #10, at a lake with a partial top level. Lake water at rest
+    /// is flat, and none of it may dip where it meets the shore. Every dip
+    /// here was on a chunk border: the generator's skirt lowers border
+    /// columns, so the neighbour's sand read as air, and air counts as
+    /// height 0. (T2: the `find lake` lake this used is at sea level now, a
+    /// full cell; this is lake 419, level 9.39 m, partial level 100 in the
+    /// cell at layer 521, found with `relief_lake_for_mesh`.)
     #[test]
     fn a_resting_lake_does_not_dip_at_chunk_borders() {
         let w = crate::world::tests::test_world();
         let (mut tops, mut shore_tops) = (0, 0);
-        for cx in 3607..=3611 {
-            for cy in 2001..=2005 {
-                let key = ChunkKey::neisor(2, 0, cx, cy, 16);
+        for cx in 743..=747 {
+            for cy in 2757..=2761 {
+                let key = ChunkKey::neisor(0, 0, cx, cy, 16);
                 let (i0, j0, k0) = key.origin_blocks();
                 for ((x, y, z), h) in water_tops(&mesh_of(&w, key)) {
-                    let bp = BlockPos { face: 2, i: i0 as u32 + x, j: j0 as u32 + y, k: k0 as u32 + z };
+                    let bp = BlockPos { face: 0, i: i0 as u32 + x, j: j0 as u32 + y, k: k0 as u32 + z };
                     let level = w.water_level_at(bp) as u32;
-                    if level == 204 {
-                        assert_eq!(h, 204 * 0x0101_0101, "a resting lake cell at {bp:?} is flat at its level");
+                    if level == 100 {
+                        assert_eq!(h, 100 * 0x0101_0101, "a resting lake cell at {bp:?} is flat at its level");
                         tops += 1;
                         // Beside the shore: some lateral neighbour is sand.
                         let sand = |di: i32, dj: i32| w.registry.is_solid(w.block_at(BlockPos { i: (bp.i as i32 + di) as u32, j: (bp.j as i32 + dj) as u32, ..bp }));

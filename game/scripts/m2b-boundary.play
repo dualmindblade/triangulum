@@ -15,6 +15,25 @@
 # ---- 1. Site A: hole, trench, one cell of water, two ticks of flow --------
 atblock 2 107157 57531 2512
 assert mode == walk
+# T2: the ground here is no longer level (the hills are real now), so the
+# scene stands on a stone tray laid over it, as in m2b-water.play: five
+# layers of stone under the feet, air above, a rim at feet level 31 blocks
+# out. The tray is laid and its notifications drained with the full region
+# (its chunks are all active), before the region shrinks to one chunk. The
+# tray's ticks are an even number (20 for the drop, 4 to drain) so the pour's
+# ticks keep the parity the second-tick levels below were written for (the
+# spread pass alternates direction every tick; see m2b-water.play).
+sim off
+fill -34 -34 -6 34 34 -2 stone
+fill -34 -34 -1 34 34 4 air
+fill -31 -31 -1 31 31 -1 stone
+fill -30 -30 -1 30 30 -1 air
+sim on
+wait 1
+assert on_ground == true
+tick 4
+assert queued == 0
+assert frozen == 0
 sim radius 1
 assert sim_radius == 1
 lookaxis +i 0

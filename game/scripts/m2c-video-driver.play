@@ -7,11 +7,18 @@
 # must advance by 20, the sky clock by skyspeed x 1 s, and the written
 # frames must draw the falling block. Needs ffmpeg (as the showcase does).
 #
-# Site: the flat m2a-sand patch, row J = 57531: S = 107155 and T = 107156
-# have level ground.
+# Site: the flat m2a-sand patch, row J = 57531: S = 107155 and T = 107156.
+# T2: the ground there is no longer level, so the two columns stand on a
+# stone tray laid under the feet (no tick passes while it is laid: the
+# sim_tick asserts below count from the first step).
 
 mode walk
 atblock 2 107156 57531 2512
+assert on_ground == true
+sim off
+fill -8 -8 -4 8 8 -1 stone
+fill -8 -8 0 8 8 8 air
+sim on
 assert on_ground == true
 assert block_rel[0,0,-1] != air
 # Two sand blocks on T's ground: one at the feet, one above it.

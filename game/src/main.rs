@@ -533,6 +533,10 @@ near it, by hand:
         }
     }
     let p = engine.planet;
+    if let Some(h) = &engine.generator.hydro {
+        let phases: Vec<String> = h.build_phases.iter().map(|(n, s)| format!("{n} {s:.2}")).collect();
+        println!("hydro: lakes and rivers built in {:.2}s ({}); {} lakes lowered to the river reaching them, at most {:.1} m", engine.generator.hydro_build_s, phases.join(", "), h.lakes_lowered.0, h.lakes_lowered.1);
+    }
     println!(
         "planet {}: s = {} m, H = {} blocks (sea level {}), N = {}, R = {:.3} km, vertical scale {:.5} (1/{:.1}), {}, max LOD {} ({} m voxels), lod factor {}, {} rayon threads",
         engine.config.name,

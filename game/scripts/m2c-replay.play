@@ -6,7 +6,12 @@
 # The session goes to its sites with `find` (deterministic: the asserts
 # pin the sites), so nothing here depends on hand-copied coordinates:
 #   1. flat ground near the start: two sand blocks stacked on the ground in
-#      front, the bottom one knocked out, the top one falls and lands;
+#      front, the bottom one knocked out, the top one falls and lands. T2:
+#      `find flat` lands on ground that is flat to its own test but can
+#      have a lower neighbour a block away, and the slide rule then rolls
+#      the landed block on, so the scene stands on a stone tray laid before
+#      the recording starts (the harness's `fill` is not a player action,
+#      so the replay's snapshot has to hold it already);
 #   2. a river bank: dig at the bank, pour water, swim;
 #   3. sky speed, hiding water, the active region, fly mode, a save, a
 #      sim_hash (both absorb pending changes early: the replay, which does
@@ -14,16 +19,21 @@
 # Play the file yourself:
 #   cargo run --release -- --replay out/play/m2c-replay/m2c-river.replay --shot-at 120 --shot-at end
 
-replay record m2c-river.replay
-assert recording == true
-
 # ---- 1. flat ground: a sand collapse ----------------------------------
 find flat
 assert find_kind == flat
 assert find_face == 2
-assert find_i == 107155
-assert find_j == 57522
-assert find_k == 1067
+assert find_i == 107153
+assert find_j == 57513
+assert find_k == 1077
+sim off
+fill -8 -8 -3 8 8 -1 stone
+fill -8 -8 0 8 8 8 air
+sim on
+tick 2
+assert queued == 0
+replay record m2c-river.replay
+assert recording == true
 assert on_ground == true
 assert block_rel[1,0,0] == air
 assert block_rel[1,0,1] == air

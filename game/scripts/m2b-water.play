@@ -26,6 +26,26 @@ atblock 2 107157 57531 2512
 assert mode == walk
 assert on_ground == true
 assert sim_enabled == true
+# T2: the ground here is no longer level (the hills are real now), so the
+# scene stands on a stone tray laid over it: five layers of stone under the
+# feet, air above, and a rim at feet level 31 blocks out that keeps the
+# poured film inside the box the asserts measure. The player drops one block
+# onto the tray; every height below is relative to the feet, as before.
+# The spread pass alternates direction every tick, and the second-tick
+# levels below (64 / 64 / 63 and 64 in the pit) are the even-tick order,
+# the one the scene had when it started at tick 0: the tray's ticks here are
+# an even number (20 for the drop, 4 to drain), so the pour's ticks keep
+# their parity. An odd count gives 96 / 96 / 63 and nothing in the pit yet.
+sim off
+fill -34 -34 -6 34 34 -2 stone
+fill -34 -34 -1 34 34 4 air
+fill -31 -31 -1 31 31 -1 stone
+fill -30 -30 -1 30 30 -1 air
+sim on
+wait 1
+assert on_ground == true
+tick 4
+assert queued == 0
 lookaxis +i 0
 aim 1 0 -0.5
 assert crosshair != none

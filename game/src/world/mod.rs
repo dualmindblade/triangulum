@@ -992,14 +992,22 @@ pub(crate) mod tests {
             let key = ChunkKey::neisor(g.face, lod, fi / e, fj / e, kt / e);
             let (i0, j0, k0) = key.origin_blocks();
             let (vx, vy, vz) = (((fi as u64 - i0) >> lod) as usize, ((fj as u64 - j0) >> lod) as usize, ((kt as u64 - k0) >> lod) as usize);
-            // The edit shows unless a natural column inside the voxel rises above it.
+            // The edit shows unless a natural column inside the voxel rises
+            // above it; then the voxel keeps the generator's own coarse
+            // value, whatever that is. A coarse column is band-limited, so
+            // on steep ground (the T2 hills at the spawn) it can stand below
+            // the highest LOD-0 column inside its voxel and that value is
+            // air: the far view is the same with or without the edit, and
+            // lifting such voxels to the LOD-0 maximum in edited chunks only
+            // would bump every dug chunk above its neighbours.
             let v = 1u32 << lod;
             let (ci0, cj0) = (fi & !(v - 1), fj & !(v - 1));
             let kv0 = kt & !(v - 1);
             let higher_natural = (ci0..ci0 + v).any(|i| (cj0..cj0 + v).any(|j| (kt + 1..kv0 + v).any(|k| (i, j) != (fi, fj) && w.registry.is_solid(w.block_at(BlockPos { face: g.face, i, j, k })))));
             let shown = w.generate(key).chunk.get(vx, vy, vz);
             if higher_natural {
-                assert!(w.registry.is_solid(shown), "LOD {lod}: a higher natural block keeps the voxel solid");
+                let natural = w.generator.generate(key).chunk.get(vx, vy, vz);
+                assert_eq!(shown, natural, "LOD {lod}: under a higher natural block the voxel keeps the generator's value");
             } else {
                 assert_eq!(shown, marker, "LOD {lod}: a surface-level edit shows");
             }

@@ -3,21 +3,23 @@
 #
 #   --vscale 0.125 --height 4096 --sea-level 2048 --n 131072
 #
-# (scripts/showcase.py runs it). At 1/8 the range is a plateau at 1.0-1.2 km
-# with a steep western flank down to ~600 m at lon 114; the flight comes in
-# low from the west and climbs over the flank, golden hour behind it.
+# (scripts/showcase.py runs it). At 1/8 the range climbs from ~600 m at lon
+# 112.5 over a 1.0-1.1 km shoulder at lon 114-115 to a 1.65 km crest at lon
+# 117.25 (T2: the ranges are real now, and the old keys at 850-1360 m ran
+# inside them); the flight comes in low from the west and climbs over the
+# flank, golden hour behind it, 200-300 m over the ground all the way.
 mode fly
-at 69.2 117.0 1500
+at 69.2 117.0 1900
 sun 5
-at 69.2 112.5 850
+at 69.2 112.5 800
 look 90 -4
 recmode settle
 hud off
 record 50_vscale8.mp4 30
 caption Vertical scale 1/8 (under consideration): the same highest range
-key 2.5 69.2 115.0 960 92 -5
-key 5.0 69.2 117.0 1170 92 -6
-key 7.5 69.2 119.0 1320 95 -7
-key 9.5 69.2 120.6 1360 98 -8
+key 2.5 69.2 115.0 1250 92 -5
+key 5.0 69.2 117.0 1750 92 -6
+key 7.5 69.2 119.0 1850 95 -7
+key 9.5 69.2 120.6 1850 98 -8
 fly
 stop

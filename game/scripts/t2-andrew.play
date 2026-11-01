@@ -1,0 +1,13 @@
+# T2 (round 2 #1, #6): Andrew's two poses, for before/after frames at the same pose.
+# shot_lat2.110 (biome blobs, river levees) and shot_lat6.960 (a lake with ground
+# sloping up to it). Run from game/ on each build:
+#   triangulum.exe --play scripts/t2-andrew.play --size 1920x1080 --out out/t2/<label>
+#       --bake C:/code/triangulum/game/assets/world/seed42
+# No asserts: the frames are the evidence. The poses are the sidecars' pose.exact.
+mode fly
+pose 83506.62742177336,37561.74944747387,3373.883623219289,0.0,0.0,0.0,5.530802448803383,-1.2705999999999955,fly,0,0,0,5000.0,0
+clock 1278.5416653123384
+photo lat2_rivers
+pose 70652.84842625569,56541.317104372865,11046.693547806999,0.0,0.0,0.0,2.8600024488034066,-1.1628000000000047,fly,0,0,0,2275.830678197541,0
+clock 1203.9749986457396
+photo lat6_lake

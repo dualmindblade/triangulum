@@ -278,7 +278,11 @@ fn a_full_basin_rests_until_touched_and_a_lake_drains_through_a_channel_to_its_s
     assert!(w.set_block(sill, air));
     let ticks = settle(&w, &mut sim, focus, 5000);
     println!("lake drained through the channel and settled in {ticks} ticks, {} units moved", sim.stats.water_moved);
-    assert_eq!(water_total(&w.edits), total, "conserved");
+    // Conserved, counting what evaporated: the drained surface is a film,
+    // and B4 dries a resting level-1 puddle cell on a beat hashed from its
+    // position, which may fall before the queue empties (it did once the T2
+    // terrain moved the scene's layer).
+    assert_eq!(water_total(&w.edits) + sim.stats.water_dried, total, "conserved (dried films counted)");
     // Below the sill the lake is untouched; the surface layer drained to a
     // film that leans one level per cell up from the sill (Andrew's resting
     // lean: the rule leaves the steepest slope it allows).
@@ -300,7 +304,7 @@ fn a_full_basin_rests_until_touched_and_a_lake_drains_through_a_channel_to_its_s
     let lower: Vec<(BlockPos, u8)> = water_cells(&w).into_iter().filter(|(p, _)| p.i > o.i + 6).collect();
     let outside: u64 = lower.iter().map(|(_, l)| *l as u64).sum();
     let surface_left: u64 = water_cells(&w).iter().filter(|(p, _)| p.k == o.k + 3 && p.i <= o.i + 6).map(|(_, l)| *l as u64).sum();
-    assert_eq!(outside + surface_left + 50 * 255, total);
+    assert_eq!(outside + surface_left + 50 * 255 + sim.stats.water_dried, total, "every unit is below the sill, on the surface, outside, or dried");
     assert!(outside >= 24 * 255, "most of the surface layer left: {outside} units outside, {surface_left} on the surface");
     assert!(lower.iter().all(|(p, _)| p.k == ob.k + 1), "on the lower floor");
     assert_eq!(lower.len(), 81, "spread over the whole lower floor");
@@ -867,12 +871,17 @@ fn a_steady_throughflow_at_the_boundary_keeps_flowing() {
     sim.step(&w, near);
     assert!(sim.is_active(ck) && !sim.is_active(World::chunk_of(reservoir).0) && !sim.is_active(World::chunk_of(drain).0));
     assert!(w.set_water(c, w.water_id(), 100));
+    // The ledger from here: in the step above the cell was open air on the
+    // T2 terrain (it lay inside the ground on the old hills), so it pulled
+    // 100 from the reservoir and gave 25 to the drain before `set_water`
+    // overwrote it; that is the test's own overwrite, not a leak.
+    let (in0, out0) = (sim.stats.water_in, sim.stats.water_out);
     for _ in 0..20 {
         sim.step(&w, near);
     }
     // Each tick: 50 in from the reservoir (half of 200 - 100), 50 on to the drain.
     assert_eq!(w.water_level_at(c), 100);
-    assert_eq!((sim.stats.water_in, sim.stats.water_out), (20 * 50, 20 * 50), "a steady throughflow, counted every tick");
+    assert_eq!((sim.stats.water_in - in0, sim.stats.water_out - out0), (20 * 50, 20 * 50), "a steady throughflow, counted every tick");
     assert!(sim.queued() > 0, "still flowing");
 }
 

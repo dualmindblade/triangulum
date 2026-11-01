@@ -2,7 +2,19 @@
 # steps 800 and 1300. Run this same script with baseline-945d544 and the
 # fixed build, using separate --out and --save directories (see findings).
 # Terrain is fresh; the recording's earlier edits are not imported.
+#
+# T2: the hills are real now and the corner's ground stands seven blocks
+# higher than in the recording, so the scene is laid on a stone tray at the
+# recording's own layers (the absolute layers the asserts below already
+# pin): tops at layer 1035 for eight blocks around the vertex and the air
+# above cleared. `at` holds the player at the recording's 13.0 m and
+# nothing here steps him, so the rays, the placements and the body guard
+# meet what they met.
 sim off
+mode fly
+at 35.26398985220677 134.99970599305274 13.000000000014552
+fill -8 -8 -3 8 8 -2 stone
+fill -8 -8 -1 8 8 10 air
 mode walk
 select 1
 at 35.26398985220677 134.99970599305274 13.000000000014552

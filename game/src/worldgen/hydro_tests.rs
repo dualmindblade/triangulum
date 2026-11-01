@@ -87,9 +87,10 @@ impl Region {
                     }
                 }
                 let pad = 16.0 * p.block_size + 3.0 * voxel_m;
-                // Below: also the tallest fall and its plunge pool, which a
-                // sample can straddle.
-                let pad_lo = pad + 28.0 * p.block_size;
+                // Below: also the tallest fall and its plunge pool, a gorge or
+                // a lake lowered to its inflow (T2, up to 20 m at 1/70 and
+                // eight times that at 1/8), which a sample can straddle.
+                let pad_lo = pad + 28.0 * p.block_size + 24.0 * (g.vscale * 70.0) * p.block_size;
                 let k_lo = ((lo - pad_lo) / p.block_size + p.sea_level as f64).max(0.0);
                 let k_hi = ((hi + pad) / p.block_size + p.sea_level as f64).min(p.height as f64 - 1.0);
                 let (z0, z1) = ((k_lo as u64 / per) as u32, (k_hi as u64 / per) as u32);
@@ -772,7 +773,7 @@ fn profile_hydro_parts() {
         h.rivers_at(*d, &cands[i / 1024], 1.0, &mut rivers);
         total_r += rivers.len();
         let l = h.lake_at(*d, &cands[i / 1024].cells, 1.0);
-        black_box(h.shape(*d, 5.0, &l, &rivers, false, 0.5, 1.0, 0));
+        black_box(h.shape(*d, 5.0, 5.0, &l, &rivers, false, 0.5, 1.0, 0));
     }
     let shape_all_ns = t.elapsed().as_nanos() as f64 / n;
     let avg_segs = cands.iter().map(|c| c.segs.len()).sum::<usize>() as f64 / 60.0;
@@ -1086,8 +1087,56 @@ fn hydro_stats() {
     }
     let total = smooth + stepped + falls;
     let t = std::time::Instant::now();
-    let rebuilt = Hydro::new(g.bake.hydro().unwrap(), p.radius, p.block_size, g.vscale, g.seed);
-    println!("building the model from hydro.bin: {:.2} s ({} links)", t.elapsed().as_secs_f64(), rebuilt.segs.len());
+    let rebuilt = g.build_hydro().unwrap();
+    println!("building the model from hydro.bin: {:.2} s ({} links); phases {:?}", t.elapsed().as_secs_f64(), rebuilt.segs.len(), rebuilt.build_phases);
+    // Lakes lowered to the river reaching them (T2): how far.
+    let data = g.bake.hydro().unwrap();
+    let mut drops: Vec<f64> = data.lakes.iter().zip(&h.lakes).map(|(raw, l)| g.scale.soft_ceiling(g.scale.global_m(raw.level_km)) - l.w).collect();
+    drops.sort_by(|a, b| a.total_cmp(b));
+    let n = drops.len();
+    let over = |m: f64| drops.iter().filter(|&&d| d > m).count();
+    println!("lakes lowered: {} of {n} by over 0.1 m, {} over 1 m, {} over 3 m, {} over 10 m; median {:.2} m, p90 {:.2} m, max {:.2} m", over(0.1), over(1.0), over(3.0), over(10.0), drops[n / 2], drops[n * 9 / 10], drops[n - 1]);
+    // The five lowered furthest: which inflow set the level, and where the
+    // lake's own shore stands.
+    let mut by_drop: Vec<(usize, f64)> = data.lakes.iter().zip(&h.lakes).enumerate().map(|(k, (raw, l))| (k, g.scale.soft_ceiling(g.scale.global_m(raw.level_km)) - l.w)).collect();
+    by_drop.sort_by(|a, b| b.1.total_cmp(&a.1));
+    for &(k, drop) in by_drop.iter().take(5) {
+        let shore = shore_point(k as i32, 0).map(|d| g.column(d, p.block_size).height_m);
+        let inflows: Vec<String> = h
+            .segs
+            .iter()
+            .enumerate()
+            .filter(|(_, s)| s.lake_b == k as i32 && s.lake_a != k as i32)
+            .map(|(i, s)| {
+                let (lat, lon) = Planet::lat_lon_deg(h.node_pos[s.a as usize]);
+                format!("link {i} from node {} (kind {}, W {:.2}, flow {:.0}, at lat {lat:.3} lon {lon:.3}) W_b {:.2}", s.a, h.node_kind[s.a as usize], s.w_a, s.flow, s.w_b)
+            })
+            .collect();
+        println!("  lake {k}: bake level {:.2} m, now {:.2} m (down {drop:.2}); ground at a shore point {:?}; inflows: {}", g.scale.global_m(data.lakes[k].level_km), h.lakes[k].w, shore, inflows.join("; "));
+    }
+    // Gorges: how far a river's channel lies below the natural ground beside it, mid-link.
+    let mut depth: Vec<f64> = (0..h.segs.len() as u32)
+        .step_by(7)
+        .filter_map(|k| {
+            let s = &h.segs[k as usize];
+            let at = s.point(0.5 * s.len);
+            let a = s.point((0.5 * s.len - 3.0).max(0.0));
+            let b = s.point((0.5 * s.len + 3.0).min(s.len));
+            let side = (b - a).cross(at).normalize_or_zero();
+            if side == DVec3::ZERO {
+                return None;
+            }
+            let c = g.column(at, p.block_size);
+            if !c.wet() {
+                return None;
+            }
+            let aside = (at * p.radius + side * (s.hw + 25.0)).normalize();
+            Some(g.column(aside, p.block_size).height_m as f64 - c.water_m)
+        })
+        .collect();
+    depth.sort_by(|a, b| a.total_cmp(b));
+    let n = depth.len();
+    println!("river channels below the ground 25 m beside them (every 7th link, mid-link, {n}): median {:.2} m, p90 {:.2} m, p99 {:.2} m, max {:.2} m", depth[n / 2], depth[n * 9 / 10], depth[n * 99 / 100], depth[n - 1]);
     println!(
         "vertical scale 1/{:.1}: {} links, {total:.0} km of river: {:.1}% smooth and at rest, {:.1}% pools with cascades (<= 1 block), {:.1}% with waterfalls; {n_falls} falls, mean {:.1} m, tallest {tallest:.1} m; {} lakes",
         1.0 / g.vscale,

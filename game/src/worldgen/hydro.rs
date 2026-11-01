@@ -78,8 +78,10 @@
 //! half-widths in radius.
 
 use super::noise::{gradient_noise, hash01};
+use super::scale::Scale;
 use crate::grid::FastMap;
 use glam::DVec3;
+use rayon::prelude::*;
 use std::io::{self, Read};
 
 // ---------------------------------------------------------------------------
@@ -261,13 +263,29 @@ const FB_FLOOR_M: f64 = 1.0;
 const S_OUT: f64 = 0.25;
 /// Longest outer slope (m); past it the natural ground takes over.
 const S_OUT_REACH_M: f64 = 40.0;
-/// River valley incision below the fill surface (m): base, per decade of discharge above 100 m^3/s.
+/// River incision below the natural ground (m): base, per decade of
+/// discharge above 100 m^3/s. A river's level is the lowest natural ground
+/// along its course upstream, less this (`Hydro::new`), so it runs below the
+/// land everywhere and never climbs.
 const INC_BASE_M: f64 = 1.5;
 const INC_PER_DECADE_M: f64 = 0.5;
-/// Incision tapers to nothing toward the lake or sea a river drains into
-/// (ALPHA x height above it) and below the lake it leaves (BETA x drop).
-const INC_ALPHA: f64 = 0.5;
+/// Below the lake a river leaves, the incision grows from nothing (BETA x
+/// the drop below the lake), so the outflow leaves at the lake's level.
 const INC_BETA: f64 = 0.5;
+/// Land falls towards water: the local relief ramps up from a river's bank
+/// or a lake's shore over the valley's half-width, which is in proportion
+/// to the relief it cuts through (`valley_half_width`): peaks stand about
+/// 1.5 relief high, and the valley's wall slope runs from VALLEY_SLOPE_LOW
+/// in lowlands to VALLEY_SLOPE_MOUNTAIN on the belts (V-shaped there,
+/// wider and flat-floored in lowlands). Never under VALLEY_MIN_M; a lake's
+/// basin never wider than its field reaches (LAKE_VALLEY_MAX_M).
+const VALLEY_SLOPE_LOW: f64 = 0.35;
+const VALLEY_SLOPE_MOUNTAIN: f64 = 0.6;
+const VALLEY_MIN_M: f64 = 60.0;
+const LAKE_VALLEY_MAX_M: f64 = 500.0;
+/// A lake's basin: where the global surface stands above a lake, it comes
+/// down to the shore at this slope (rise over run), never a step.
+const LAKE_BASIN_SLOPE: f64 = 0.06;
 /// Excess drop (blocks) at or above which a link gets waterfalls instead of cascades.
 const FALL_MIN_BLOCKS: f64 = 3.0;
 const FALL_MAX_BLOCKS: f64 = 24.0;
@@ -414,6 +432,9 @@ pub struct Seg {
     /// channels overlap that far, so the water is flat there.
     pub hw_node_a: f64,
     pub hw_node_b: f64,
+    /// Half-width of the valley the local relief leaves this link (m): the
+    /// widest `valley_half_width` along its course.
+    pub valley_w: f64,
     centre: DVec3,
     /// Bounding radius of the course (m).
     span: f64,
@@ -431,9 +452,14 @@ mod planet_scale_tests {
 
     #[test]
     fn t1_large_river_search_covers_the_whole_course_with_bounded_index_work() {
-        let data = HydroData::load(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/world/seed42/hydro.bin")).unwrap().unwrap();
+        // The bake lives in the main checkout (as `worldgen/tests.rs` reads
+        // it), so this passes in a worktree without a copied bake.
+        let data = HydroData::load("C:/code/triangulum/game/assets/world/seed42/hydro.bin").unwrap().unwrap();
         let p = crate::grid::Planet::new(1.0, 2048, 1024, 1_048_576);
-        let h = Hydro::new(&data, p.radius, 1.0, p.radius / 6_371_000.0, 42);
+        // A flat 10 m ground and 10 m of relief stand in for the generator:
+        // this test is about the index, not the levels.
+        let scale = Scale::new(p.radius / 6_371_000.0, p.radius, 1.0, 2048, 1024);
+        let h = Hydro::new(&data, &scale, 42, &|_d: DVec3| 10.0, &|_d: DVec3| (10.0, 0.0));
         let (k, longest) = h.segs.iter().enumerate().max_by_key(|(_, s)| s.runs.len()).unwrap();
         let bins: i64 = h.seg_grid.range(longest.centre * p.radius, 26_000.0).iter().map(|(a,b)| b-a+1).product();
         println!("1024 half-heights: longest river {k}, {} pieces, {} search runs; coarse query visits {bins} bins; index has {} river / {} lake bins",
@@ -594,7 +620,6 @@ impl Cands {
 pub struct Hydro {
     pub radius: f64,
     pub block: f64,
-    pub vscale: f64,
     pub seed: u64,
     /// Node water levels (m above sea), receivers, links, lakes, kinds.
     pub node_w: Vec<f64>,
@@ -612,6 +637,12 @@ pub struct Hydro {
     cell_grid: SphereGrid,
     /// Largest influence radius of any link (m), for bounds.
     pub max_reach: f64,
+    /// Lakes lowered below the bake's level to the lowest river reaching
+    /// them, and the largest drop (m).
+    pub lakes_lowered: (usize, f64),
+    /// How long each phase of `new` took (s): courses, the ground along
+    /// them, levels, links, lake ends, short drops.
+    pub build_phases: Vec<(&'static str, f64)>,
 }
 
 /// Meanders: wavelength in channel widths (D-12: meandering scales with
@@ -670,50 +701,57 @@ fn meander(base: &[DVec3], radius: f64, hw: f64, flat_a: f64, flat_b: f64, salt:
         .collect()
 }
 
-/// Influence of a link beyond its course (m): valley walls and embankments.
+/// Influence of a link beyond its course (m): its valley (the relief ramps
+/// up over `valley_w`), and at least its floor, walls and embankments.
 #[inline]
-fn seg_reach(hf: f64) -> f64 {
-    hf + 160.0
+fn reach_of(hf: f64, valley_w: f64) -> f64 {
+    (hf + 160.0).max(valley_w + 16.0)
+}
+
+#[inline]
+fn seg_reach(s: &Seg) -> f64 {
+    reach_of(s.hf, s.valley_w)
+}
+
+/// Half-width of the valley the local relief leaves a river or a lake (m),
+/// in proportion to the relief it cuts through: the land's peaks stand
+/// about 1.5 relief high, and the valley wall climbs that at a slope from
+/// `VALLEY_SLOPE_LOW` (lowlands) to `VALLEY_SLOPE_MOUNTAIN` (the belts).
+/// `mountain` is the belt weight (0..1).
+#[inline]
+pub fn valley_half_width(relief: f64, mountain: f64) -> f64 {
+    let slope = VALLEY_SLOPE_LOW + (VALLEY_SLOPE_MOUNTAIN - VALLEY_SLOPE_LOW) * mountain;
+    (1.5 * relief / slope).max(VALLEY_MIN_M)
+}
+
+/// The valley's cross-section as a share of the relief at `t` = distance
+/// from the bank over the half-width: V-shaped (linear) on the belts, a
+/// flat floor rising to the hills (quadratic) in lowlands.
+#[inline]
+fn valley_profile(t: f64, mountain: f64) -> f64 {
+    let t = t.clamp(0.0, 1.0);
+    t.powf(2.0 - mountain)
 }
 
 impl Hydro {
-    pub fn new(data: &HydroData, radius: f64, block: f64, vscale: f64, seed: u64) -> Self {
-        let km = 1000.0 * vscale;
+    /// The model from `hydro.bin`. `ground` is the natural ground (m above
+    /// sea) with no local relief, as the generator makes it at a river's
+    /// channel; `relief` the local relief scale and belt weight at a
+    /// direction (`landform.rs`). Both are pure functions of position, so
+    /// the model is too.
+    pub fn new(data: &HydroData, scale: &Scale, seed: u64, ground: &(dyn Fn(DVec3) -> f64 + Sync), relief: &(dyn Fn(DVec3) -> (f64, f64) + Sync)) -> Self {
+        let (radius, block) = (scale.radius, scale.block_m);
         let nn = data.nodes.len();
-        let mut node_w = vec![0.0f64; nn];
-        for (k, n) in data.nodes.iter().enumerate() {
-            let l = n.level_km * km;
-            let mut w = match n.kind {
-                1 | 3 => 0.0,
-                2 => l,
-                _ => {
-                    let dec = (n.flow.max(1.0).log10() - 2.0).clamp(0.0, 3.0);
-                    let inc0 = INC_BASE_M + INC_PER_DECADE_M * dec;
-                    let to_term = INC_ALPHA * (n.level_km - n.term_km).max(0.0) * km;
-                    let from_src = if n.src_km < 1.0e5 { INC_BETA * (n.src_km - n.level_km).max(0.0) * km } else { f64::INFINITY };
-                    l - inc0.min(to_term).min(from_src).max(0.0)
-                }
-            };
-            if n.rcv >= 0 {
-                w = w.max(node_w[n.rcv as usize]);
-            }
-            node_w[k] = w;
-        }
-        let lakes: Vec<Lake> = data.lakes.iter().map(|l| Lake { w: l.level_km * km, salt: l.salt }).collect();
-        // Lake nodes hold exactly their lake's level.
-        for (k, n) in data.nodes.iter().enumerate() {
-            if n.lake >= 0 {
-                node_w[k] = lakes[n.lake as usize].w;
-            }
-        }
-        let mut segs = Vec::with_capacity(data.segs.len());
-        // The network and lake field stretch with R. Keep the lookup grid
-        // at that scale too: fixed metre bins cost millions of empty probes
-        // per coarse footprint on a large planet. Exact metre distances
-        // still filter candidates, so this changes no channel or shore.
-        let index_scale = (radius / (131_072.0 * (6.0 / (4.0 * std::f64::consts::PI)).sqrt())).max(1.0);
-        let mut seg_grid = SphereGrid::new(512.0 * index_scale);
-        let mut max_reach = 0.0f64;
+        let mut phases: Vec<(&'static str, f64)> = Vec::new();
+        let mut t_phase = std::time::Instant::now();
+        let mut phase = |name: &'static str, phases: &mut Vec<(&'static str, f64)>| {
+            phases.push((name, t_phase.elapsed().as_secs_f64()));
+            t_phase = std::time::Instant::now();
+        };
+        // Global heights, under the world's ceiling: lake levels and the
+        // terminals rivers drain into.
+        let level_m = |km: f64| scale.soft_ceiling(scale.global_m(km));
+        let lakes: Vec<Lake> = data.lakes.iter().map(|l| Lake { w: level_m(l.level_km), salt: l.salt }).collect();
         // Widest channel at each node (LOD 0).
         let mut hw_node = vec![0.0f64; nn];
         for s in &data.segs {
@@ -721,21 +759,191 @@ impl Hydro {
             hw_node[s.a as usize] = hw_node[s.a as usize].max(hw);
             hw_node[s.b as usize] = hw_node[s.b as usize].max(hw);
         }
+        // Courses with their meanders.
+        let courses: Vec<Vec<DVec3>> = data
+            .segs
+            .iter()
+            .enumerate()
+            .map(|(k, s)| {
+                let (na, nb) = (&data.nodes[s.a as usize], &data.nodes[s.b as usize]);
+                let mut base = Vec::with_capacity(s.interior.len() + 2);
+                base.push(na.pos);
+                base.extend_from_slice(&s.interior);
+                base.push(nb.pos);
+                let hw = channel_shape(na.flow).0;
+                // Meanders stay out of the flat water around each node, and out
+                // of lakes (a lake's own links run straight across it).
+                let flat = |hw_n: f64| 4.0 * hw_n + 12.0;
+                if na.lake >= 0 && nb.lake >= 0 { base } else { meander(&base, radius, hw, flat(hw_node[s.a as usize]), flat(hw_node[s.b as usize]), hash01(k as i64, 3, 11, seed ^ 0x3EA)) }
+            })
+            .collect();
+        phase("courses", &mut phases);
+        // The lake field cells, and a lake's share of the field at a point
+        // (no wiggle): the ground inside a lake's apron band is the lake's
+        // own (its bed), not a level a river can hold.
+        // The network and lake field stretch with R. Keep the lookup grids
+        // at that scale too (T1): fixed metre bins cost millions of empty
+        // probes per coarse footprint on a large planet. Exact metre
+        // distances still filter candidates, so this changes no channel or
+        // shore.
+        let index_scale = (radius / (131_072.0 * (6.0 / (4.0 * std::f64::consts::PI)).sqrt())).max(1.0);
+        let r_field = data.lake_r_chord * radius;
+        let mut cell_grid = SphereGrid::new(2048.0 * index_scale);
+        for (k, c) in data.field.iter().enumerate() {
+            cell_grid.insert(c.pos * radius, r_field, k as u32);
+        }
+        let in_band = |dir: DVec3, lakes_here: [i32; 2]| -> bool {
+            let mut cells = Vec::new();
+            cell_grid.query(dir * radius, 0.0, &mut cells);
+            let (mut den, mut num) = (0.0, [0.0f64; 2]);
+            for &k in &cells {
+                let c = &data.field[k as usize];
+                let q = (dir - c.pos).length() / data.lake_r_chord;
+                if q >= 1.0 {
+                    continue;
+                }
+                let w = wendland(q);
+                den += w;
+                for (i, l) in lakes_here.iter().enumerate() {
+                    if *l >= 0 && c.lake == *l {
+                        num[i] += w;
+                    }
+                }
+            }
+            den > 0.0 && (num[0] / den > LAKE_APRON || num[1] / den > LAKE_APRON)
+        };
+        let incision = |flow: f64| INC_BASE_M + INC_PER_DECADE_M * (flow.max(1.0).log10() - 2.0).clamp(0.0, 3.0);
+        // Along every course: the lowest natural ground less the incision
+        // (the level the river can hold there), and the widest valley. Course
+        // points inside the band of a lake the link starts or ends in are
+        // skipped: the ground there is the lake's bed.
+        let per_link: Vec<(f64, f64)> = courses
+            .par_iter()
+            .enumerate()
+            .map(|(k, pts)| {
+                let (na, nb) = (&data.nodes[data.segs[k].a as usize], &data.nodes[data.segs[k].b as usize]);
+                let inc = incision(na.flow);
+                let src = (na.src_km < 1.0e5).then(|| level_m(na.src_km));
+                let (mut lo, mut vw) = (f64::MAX, 0.0f64);
+                let lakes_here = [na.lake, nb.lake];
+                // The ground is the bake's (smooth over 140 m texels) shaped
+                // by the coast: every other course point (4-16 m) is enough;
+                // the relief scale every eighth.
+                for (i, p) in pts.iter().enumerate() {
+                    let last = i + 1 == pts.len();
+                    if i % 2 == 1 && !last {
+                        continue;
+                    }
+                    if (na.lake >= 0 || nb.lake >= 0) && in_band(*p, lakes_here) {
+                        continue;
+                    }
+                    let g = ground(*p);
+                    let inc_here = match src {
+                        Some(w) => inc.min(INC_BETA * (w - g).max(0.0)),
+                        None => inc,
+                    };
+                    lo = lo.min(g - inc_here);
+                    if i % 8 == 0 || last {
+                        let (rl, m) = relief(*p);
+                        vw = vw.max(valley_half_width(rl, m));
+                    }
+                }
+                (lo, vw)
+            })
+            .collect();
+        phase("ground along the courses", &mut phases);
+        // Node levels (m above sea), upstream first (receivers come first in
+        // the list, so the reverse order visits every link's start before its
+        // end): the lowest of the natural ground less the incision over the
+        // node and every course upstream of it, so the river lies below the
+        // land everywhere and never climbs. A lake takes the lowest level any
+        // river reaches it at (the bake's if that is lower), so no river is
+        // held up above its own valley on the way in: the lake sits in its
+        // basin and the rivers fall into it. Levels are then floored at the
+        // lake or sea each node drains into (which can no longer raise a
+        // river above its ground), and lake and sea nodes hold theirs exactly.
+        let mut incoming: Vec<Vec<u32>> = vec![Vec::new(); nn];
         for (k, s) in data.segs.iter().enumerate() {
-            let (na, nb) = (&data.nodes[s.a as usize], &data.nodes[s.b as usize]);
-            let mut base = Vec::with_capacity(s.interior.len() + 2);
-            base.push(na.pos);
-            base.extend_from_slice(&s.interior);
-            base.push(nb.pos);
-            let (hw, depth, hf) = channel_shape(na.flow);
-            // Meanders stay out of the flat water around each node, and out
-            // of lakes (a lake's own links run straight across it).
-            let flat = |hw_n: f64| 4.0 * hw_n + 12.0;
-            let pts = if na.lake >= 0 && nb.lake >= 0 {
-                base
-            } else {
-                meander(&base, radius, hw, flat(hw_node[s.a as usize]), flat(hw_node[s.b as usize]), hash01(k as i64, 3, 11, seed ^ 0x3EA))
+            incoming[s.b as usize].push(k as u32);
+        }
+        // A lake's level is settled at its lowest-indexed node, by when every
+        // inflow (a higher index than the lake node it enters) is known.
+        let mut lake_last = vec![usize::MAX; lakes.len()];
+        for (k, n) in data.nodes.iter().enumerate() {
+            if n.lake >= 0 {
+                lake_last[n.lake as usize] = k;
+            }
+        }
+        let mut inflows: Vec<Vec<u32>> = vec![Vec::new(); lakes.len()];
+        for (i, s) in data.segs.iter().enumerate() {
+            let (la, lb) = (data.nodes[s.a as usize].lake, data.nodes[s.b as usize].lake);
+            if lb >= 0 && la != lb {
+                inflows[lb as usize].push(i as u32);
+            }
+        }
+        let mut lakes = lakes;
+        let mut lowered = (0usize, 0.0f64);
+        let mut free = vec![0.0f64; nn];
+        for k in (0..nn).rev() {
+            let n = &data.nodes[k];
+            free[k] = match n.kind {
+                1 | 3 => 0.0,
+                2 => {
+                    let l = n.lake as usize;
+                    if lake_last[l] == k {
+                        let mut w = lakes[l].w;
+                        for &i in &inflows[l] {
+                            w = w.min(free[data.segs[i as usize].a as usize]).min(per_link[i as usize].0);
+                        }
+                        if w < lakes[l].w {
+                            lowered = (lowered.0 + 1, lowered.1.max(lakes[l].w - w));
+                            lakes[l].w = w;
+                        }
+                    }
+                    lakes[l].w
+                }
+                _ => {
+                    // The node's own ground, unless it sits in the band of
+                    // the lake it drains into (that ground is the lake's).
+                    let rl = if n.rcv >= 0 { data.nodes[n.rcv as usize].lake } else { -1 };
+                    let mut w = if rl >= 0 && in_band(n.pos, [rl, -1]) { f64::MAX } else { ground(n.pos) - incision(n.flow) };
+                    for &i in &incoming[k] {
+                        w = w.min(free[data.segs[i as usize].a as usize]).min(per_link[i as usize].0);
+                    }
+                    if w == f64::MAX {
+                        w = ground(n.pos) - incision(n.flow);
+                    }
+                    w
+                }
             };
+        }
+        // The terminal of every node: the lake it drains into, or the sea.
+        let mut term: Vec<i32> = vec![-1; nn];
+        for k in 0..nn {
+            let n = &data.nodes[k];
+            term[k] = if n.kind == 2 {
+                n.lake
+            } else if n.rcv >= 0 {
+                let r = n.rcv as usize;
+                if data.nodes[r].kind == 2 { data.nodes[r].lake } else { term[r] }
+            } else {
+                -1
+            };
+        }
+        let node_w: Vec<f64> = (0..nn)
+            .map(|k| match data.nodes[k].kind {
+                1 | 3 => 0.0,
+                2 => lakes[data.nodes[k].lake as usize].w,
+                _ => free[k].max(if term[k] >= 0 { lakes[term[k] as usize].w } else { 0.0 }),
+            })
+            .collect();
+        phase("levels", &mut phases);
+        let mut segs = Vec::with_capacity(data.segs.len());
+        let mut seg_grid = SphereGrid::new(512.0 * index_scale);
+        let mut max_reach = 0.0f64;
+        for (k, (s, pts)) in data.segs.iter().zip(courses).enumerate() {
+            let (na, nb) = (&data.nodes[s.a as usize], &data.nodes[s.b as usize]);
+            let (hw, depth, hf) = channel_shape(na.flow);
             let mut cum = Vec::with_capacity(pts.len());
             let mut acc = 0.0;
             cum.push(0.0);
@@ -758,7 +966,8 @@ impl Hydro {
                     (c, r)
                 })
                 .collect();
-            let reach = seg_reach(hf);
+            let valley_w = per_link[k].1;
+            let reach = reach_of(hf, valley_w);
             max_reach = max_reach.max(reach);
             seg_grid.insert(centre * radius, span + reach, k as u32);
             segs.push(Seg {
@@ -779,20 +988,16 @@ impl Hydro {
                 s_hi: acc,
                 hw_node_a: hw_node[s.a as usize],
                 hw_node_b: hw_node[s.b as usize],
+                valley_w,
                 centre,
                 span,
                 runs,
             });
         }
-        let r_field = data.lake_r_chord * radius;
-        let mut cell_grid = SphereGrid::new(2048.0 * index_scale);
-        for (k, c) in data.field.iter().enumerate() {
-            cell_grid.insert(c.pos * radius, r_field, k as u32);
-        }
+        phase("links", &mut phases);
         let mut hydro = Self {
             radius,
             block,
-            vscale,
             seed: seed ^ 0x48D_2A70,
             node_w,
             node_rcv: data.nodes.iter().map(|n| n.rcv).collect(),
@@ -808,9 +1013,15 @@ impl Hydro {
             seg_grid,
             cell_grid,
             max_reach,
+            lakes_lowered: lowered,
+            build_phases: Vec::new(),
         };
+        phase("grids", &mut phases);
         hydro.lake_ends();
+        phase("lake ends", &mut phases);
         hydro.pass_on_short_drops();
+        phase("short drops", &mut phases);
+        hydro.build_phases = phases;
         hydro
     }
 
@@ -896,15 +1107,22 @@ impl Hydro {
                         (near(s.lake_a), near(s.lake_b))
                     })
                     .collect();
+                // An outflow holds the lake's level until its course is clear
+                // of the band for good (the last point inside it), an inflow
+                // from the first point inside the band on: a course that
+                // weaves in and out of the band never carries water above
+                // the lake's level beside the lake's own (T2: a lake lowered
+                // to its inflow put such a weave's water a film above the
+                // lake, 205 walls in the wide sweep).
                 let mut lo = 0.0;
                 if s.lake_a >= 0 {
-                    let first_out = inside.iter().position(|b| !b.0).unwrap_or(n);
-                    lo = s.len * first_out as f64 / n as f64;
+                    let last_in = inside.iter().rposition(|b| b.0).map_or(0, |i| i + 1);
+                    lo = s.len * last_in.min(n) as f64 / n as f64;
                 }
                 let mut hi = s.len;
                 if s.lake_b >= 0 {
-                    let last_out = inside.iter().rposition(|b| !b.1).map_or(0, |i| i + 1);
-                    hi = s.len * last_out as f64 / n as f64;
+                    let first_in = inside.iter().position(|b| b.1).unwrap_or(n);
+                    hi = s.len * first_in as f64 / n as f64;
                 }
                 // Keep a stretch to change level in (both ends in lakes: flat anyway).
                 if hi - lo < MIN_ACTIVE.min(s.len) {
@@ -933,7 +1151,7 @@ impl Hydro {
         let mut runs = Vec::with_capacity(all.len());
         for k in all {
             let s = &self.segs[k as usize];
-            if (s.centre - dir).length() * self.radius > s.span + seg_reach(s.hf) + r {
+            if (s.centre - dir).length() * self.radius > s.span + seg_reach(s) + r {
                 continue;
             }
             // Every column within rho of `dir` has its nearest course point
@@ -945,7 +1163,7 @@ impl Hydro {
             }).collect();
             let m = near.iter().map(|x| x.1).fold(f64::MAX, f64::min);
             let lb = near.iter().map(|x| x.0).fold(f64::MAX, f64::min);
-            if (lb - rho) * self.radius > seg_reach(s.hf) {
+            if (lb - rho) * self.radius > seg_reach(s) {
                 continue;
             }
             let mut mask = 0u128;
@@ -1068,7 +1286,7 @@ impl Hydro {
         for (&k, &mask) in cands.segs.iter().zip(&cands.runs) {
             let s = &self.segs[k as usize];
             let search_run = (s.pts.len() - 1).div_ceil(128).max(SEARCH_RUN);
-            if (s.centre - dir).length() * self.radius > s.span + seg_reach(s.hf) {
+            if (s.centre - dir).length() * self.radius > s.span + seg_reach(s) {
                 continue;
             }
             let mut best = (f64::MAX, 0.0, DVec3::ZERO);
@@ -1096,7 +1314,7 @@ impl Hydro {
                 }
             }
             let d = best.0.sqrt() * self.radius;
-            if d > seg_reach(s.hf) {
+            if d > seg_reach(s) {
                 continue;
             }
             // Beside the channel: the most upstream course point within the
@@ -1193,18 +1411,41 @@ impl Hydro {
         out
     }
 
-    /// Landform damping near lakes (1 = full landform).
-    #[inline]
-    pub fn lake_damp(&self, lake: &LakeAt) -> f64 {
-        1.0 - smoothstep(0.05, 0.25, lake.max_field())
+    /// Land falls towards water: how much of the local relief stands at a
+    /// column (0 at a river's bank or a lake's shore, 1 beyond the valley),
+    /// for the column's relief scale and belt weight. A river's valley is
+    /// the narrower of the column's own and the link's widest (so the ramp
+    /// always ends inside the link's reach); a lake's basin is capped by how
+    /// far its field is seen. Several waters: the lowest ramp.
+    pub fn relief_ramp(&self, lake: &LakeAt, rivers: &[RiverAt], relief: f64, mountain: f64, voxel: f64) -> f64 {
+        let dv = valley_half_width(relief, mountain);
+        let mut ramp = 1.0f64;
+        for r in rivers {
+            let s = &self.segs[r.seg as usize];
+            let d0 = self.half_width(s, voxel) + self.bank_w(voxel);
+            ramp = ramp.min(valley_profile((r.d - d0) / dv.min(s.valley_w), mountain));
+        }
+        let zone = self.lake_zone;
+        for lf in lake.iter() {
+            if lf.field >= zone {
+                return 0.0;
+            }
+            if lf.grad > 1e-9 {
+                let d = (zone - lf.field) / lf.grad;
+                ramp = ramp.min(valley_profile(d / dv.min(LAKE_VALLEY_MAX_M), mountain));
+            }
+        }
+        ramp
     }
 
-    /// Shape one column: valleys, lake beds and aprons, banks, channels; and
-    /// its water surface. `h` is the natural ground (m above sea), `sea`
-    /// whether the column lies on the sea's side of the shoreline, `rugged`
-    /// the landform's ruggedness.
+    /// Shape one column: valleys, lake beds, basins and aprons, banks,
+    /// channels; and its water surface. `h` is the natural ground (m above
+    /// sea), `h_floor` the same with no local relief (the global surface as
+    /// the generator shapes it at a channel), `sea` whether the column lies
+    /// on the sea's side of the shoreline, `rugged` the landform's
+    /// ruggedness.
     #[allow(clippy::too_many_arguments)]
-    pub fn shape(&self, dir: DVec3, h: f64, lake: &LakeAt, rivers: &[RiverAt], sea: bool, rugged: f64, voxel: f64, lod: u8) -> Shaped {
+    pub fn shape(&self, dir: DVec3, h: f64, h_floor: f64, lake: &LakeAt, rivers: &[RiverAt], sea: bool, rugged: f64, voxel: f64, lod: u8) -> Shaped {
         let mut h = h;
         let fb = FB_BANK_BLOCKS * self.block;
         let zone = self.lake_zone;
@@ -1237,19 +1478,30 @@ impl Hydro {
             let k = 2.0;
             let rise = if x > 8.0 * k { x } else { k * (x / k).exp().ln_1p() };
             let target = floor + wall * rise;
-            let reach = seg_reach(s.hf);
+            let reach = seg_reach(s);
             let wv = 1.0 - smoothstep(0.75 * reach, reach, r.d);
             h += wv * (smin(h, target, 3.0) - h);
         }
         // 2. Lake beds (lowering): inside the zone, at least the shore depth
-        // below the surface, deepening inward.
+        // below the surface, deepening inward. Outside it, the basin: where
+        // the global surface stands above the lake (a lake lowered to the
+        // river that reaches it), the ground comes down to the shore at
+        // LAKE_BASIN_SLOPE, the local relief riding on it unchanged.
         let mut lake_floor = false;
         let mut lake_shore = false;
-        for lf in lake.iter().filter(|l| l.field > zone) {
+        for lf in lake.iter() {
             let l = self.lakes[lf.lake as usize];
-            let depth = LAKE_SHORE_DEPTH_BLOCKS * self.block + LAKE_DEPTH_M * smoothstep(zone, zone + 0.3, lf.field);
-            h = h.min(l.w - depth);
-            lake_floor = true;
+            if lf.field > zone {
+                let depth = LAKE_SHORE_DEPTH_BLOCKS * self.block + LAKE_DEPTH_M * smoothstep(zone, zone + 0.3, lf.field);
+                h = h.min(l.w - depth);
+                lake_floor = true;
+            } else if lf.grad > 1e-9 {
+                let d = (zone - lf.field) / lf.grad;
+                let basin = l.w + fb + LAKE_BASIN_SLOPE * d;
+                if h_floor > basin {
+                    h -= h_floor - basin;
+                }
+            }
         }
         // 3. Raises: lake aprons (every lake in reach whose zone this column
         // is not in) and river banks.
@@ -1268,16 +1520,21 @@ impl Hydro {
             lake_shore |= lf.field >= zone - 0.07 && h < l.w + fb + 0.6 * self.block;
         }
         let mut bank = false;
+        // Inside a lake its water is the bank, unless the river stands above
+        // the lake (a river crossing the zone of a lake it does not drain
+        // into, lowered below it: T2): then the river keeps its banks
+        // through the lake, so its water never stands over the lake's.
+        let lake_top = lake.iter().filter(|l| l.field > zone).map(|l| self.lakes[l.lake as usize].w).fold(f64::NEG_INFINITY, f64::max);
         for r in rivers {
             let s = &self.segs[r.seg as usize];
-            if in_lake {
-                continue; // inside a lake: its water is the bank
-            }
             if !self.has_channel(s, lod, voxel) {
                 continue;
             }
             let p = r.prof;
             let wb = self.w_water(r.seg, &p, r.s_near);
+            if in_lake && wb <= lake_top + 0.5 / 255.0 * self.block {
+                continue; // inside a lake: its water is the bank
+            }
             if wb <= 0.0 && sea {
                 continue; // at sea level, on the sea's side, the sea holds it
             }
