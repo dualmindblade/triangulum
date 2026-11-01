@@ -92,7 +92,7 @@ Round 2, from Andrew's second list (`docs/missions/2026-10-31-round2.md`):
 | C2 | Powder that slides, no double copies, water that spreads without flicker, no film Z-fighting | Fable | done; Andrew to OK `sim_rules` 4 |
 | T1 | Sea level in the middle, coarsest voxel H/2, planet size in half-heights, a slider up to an Earth analogue | Astra | done; the slider still to try by hand |
 | T2 | Real mountains, the split between local and global features, rivers and lakes carved down into the land | Fable | done; nobody has walked them yet |
-| T3 | Boundaries rough at every scale: lakes, biomes, snow, polar ice | Opus | running |
+| T3 | Boundaries rough at every scale: lakes, biomes, snow, polar ice, coasts, bare rock | Opus | done; nobody has walked a line yet |
 
 ## M4 — Things that move
 

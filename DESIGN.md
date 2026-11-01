@@ -81,8 +81,12 @@ with their OK; record the change here with the date.
   flattening into a cap. **For Andrew to judge:** on the 90 km planet this changes
   nothing, but at 832 half-heights the highest belts carry about 190 m of relief.
 - Sampling is smooth everywhere: no visible raster texels or noise seams.
-- The coast is a smooth curve from the bake's coastline with bounded detail;
-  noise never decides where the sea ends (2026-10-31).
+- Every boundary (coast, lake outlines, snow, ice, biomes, bare rock) is a
+  contour of a smooth field, read through a one-to-one warp of the sphere with
+  octaves of uniformly decreasing size: rough at every scale, in only the pieces
+  the planet has. Noise is never added to a value to decide a long edge, and
+  never decides where the sea ends (Andrew, 2026-10-31). Octaves over 1 km are
+  global and stretch with the planet; 1 km down to a block are local.
 - Keep the old world's character: geological strata (now as real blocks),
   biome surfaces, trees, rocks, caves, rivers, lakes, shores, ice.
   See `docs/feature-inventory.md`.
