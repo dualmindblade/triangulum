@@ -498,7 +498,7 @@ impl Generator {
         let ocean = water_kind == WaterKind::Ocean && h < water_m;
         let river = if self.hydro.is_some() { channel } else { lf.river };
         // Land falls towards water, and so does the height the lapse reads.
-        let lapse_share = if shore.sea { 0.0 } else { ramp };
+        let lapse_share = if shore.sea { 0.0 } else { ramp * coast::relief_share(shore.d) };
         let (temp_c, precip) = if climate { self.climate_at(dir, voxel_m, lapse_share, dh) } else { (0.0, 0.0) };
         let dither = gradient_noise(p / 41.0 + DVec3::splat(3.1), self.seed ^ 0xD17) as f32;
         let col = Column {
@@ -926,7 +926,8 @@ impl Generator {
         if c.lake_sand && t >= SNOW_C {
             return Surface { top: b.sand, soil: b.sand, soil_m: soil_m.max(2.0 * s) };
         }
-        if rock && !c.river_bank {
+        // (A 16 m voxel's slope reaches a little past a cliff's foot; a beach stays.)
+        if rock && !c.river_bank && !(c.beach && slope < 0.5) {
             return Surface { top: b.stone, soil: b.stone, soil_m: 0.0 };
         }
         if t < SNOW_C {
@@ -1411,8 +1412,8 @@ fn rock_slope_at(voxel_m: f64) -> f32 {
         ..=0 => ROCK_SLOPE,
         1 | 2 => 0.74,
         3 => 0.71,
-        4 => 0.42,
-        _ => 0.30,
+        4 => 0.53,
+        _ => 0.21,
     }
 }
 

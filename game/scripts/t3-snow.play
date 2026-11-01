@@ -1,0 +1,39 @@
+# Round 2 #4 (T3, boundaries): the snow line on T2's ranges, from a valley floor and
+# from 2 km, and the rock line on foot. Written by the `boundary_places` tool. Not a
+# gate; nothing is asserted.
+#
+#   <exe> --bake DIR --no-save --size 1920x1080 --play scripts/t3-snow.play --out OUT
+#
+# Heights are metres above sea level, not layers: nothing here moves with sea level.
+mode fly
+skytime 11:00
+
+# window 28% snow, peak 774 m, valley 0 m
+at 1.808998 97.278371 3.0
+look 100.1 15.0
+photo snow_valley_0
+at 1.847140 97.064783 606.0
+look 100.1 -6.8
+photo snow_2km_0
+# window 74% snow, peak 777 m, valley 40 m
+at 3.806988 104.264042 42.8
+look 173.8 9.7
+photo snow_valley_1
+at 3.571873 104.289577 363.9
+look 173.8 0.6
+photo snow_2km_1
+# window 58% snow, peak 777 m, valley 106 m
+at -30.293692 71.967975 109.4
+look -180.0 7.0
+photo snow_valley_2
+at -30.849712 71.967975 569.7
+look 180.0 -4.3
+photo snow_2km_2
+# belt: the rock line
+at 65.876352 134.702980 684.5
+look -132.4 -20.6
+photo rock_foot_belt
+# range a: the rock line
+at 60.063572 -59.365222 558.8
+look 31.6 -47.7
+photo rock_foot_range_a

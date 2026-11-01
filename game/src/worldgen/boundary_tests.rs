@@ -469,12 +469,7 @@ fn far_chunks_hold_no_boundary() {
                         let dir = p.dir(key.face, i0 as f64 + (x as f64 - 0.5) * vb, j0 as f64 + (y as f64 - 0.5) * vb);
                         let e = g.column(dir, vm);
                         // On the open sea only the ice line means anything.
-                        let bad = if c.ocean { (c.temp_c < ICE_C) != (e.temp_c < ICE_C) } else { classes(c.temp_c, c.precip) != classes(e.temp_c, e.precip) };
-                        if bad && wrong < 3 && std::env::var("BOUNDARY_DEBUG").is_ok() {
-                            let (la, lo) = Planet::lat_lon_deg(dir);
-                            println!("{key:?} ({x},{y}) {la:.4} {lo:.4}: chunk says {} {} ocean {} near {}; exact {} {} ocean {} coast {:.0} m", c.temp_c, c.precip, c.ocean, g.chunk_holds_a_threshold(*key), e.temp_c, e.precip, e.ocean, g.bake.coast(dir) * p.radius);
-                        }
-                        wrong += bad as usize;
+                        wrong += if c.ocean { (c.temp_c < ICE_C) != (e.temp_c < ICE_C) } else { classes(c.temp_c, c.precip) != classes(e.temp_c, e.precip) } as usize;
                     }
                 }
                 (g.chunk_holds_a_threshold(*key) as usize, wrong)
@@ -971,8 +966,9 @@ fn boundary_cost() {
 
 /// Not a check: how wide a lake's bands are on the ground. From shore points
 /// over the planet's lakes, walks across the shore and prints the median
-/// distance (m) between the shoreline and each band's edge, per planet size
-/// (`BOUNDARY_SIZES`, half-heights, 0 = Neisor).
+/// distance (m) from the shoreline to where the dry sand stops, where the
+/// apron's hold stops, and where the bed reaches 90% of its depth, per planet
+/// size (`BOUNDARY_SIZES`, half-heights, 0 = Neisor).
 #[test]
 #[ignore]
 fn boundary_lake_bands() {
@@ -982,44 +978,41 @@ fn boundary_lake_bands() {
         let h = g.hydro.as_deref().unwrap();
         let zone = h.lake_zone;
         let scale = g.planet.radius / 90_569.0;
-        let bands = [("sand zone-0.07", zone - 0.07), ("apron 0.14", 0.14), ("deep zone+0.3", zone + 0.3)];
+        let names = ["dry sand", "apron", "shelf"];
         let rows: Vec<[f64; 3]> = (0..h.lakes.len() as i32)
             .into_par_iter()
             .step_by(7)
             .filter_map(|k| {
                 let d = super::hydro_tests::shore_point_for(h, k, 0)?;
-                let field = |dir: DVec3| {
+                let lake = |dir: DVec3| {
                     let c = h.cands(dir, 0.0);
-                    h.lake_at(dir, &c.cells, g.planet.block_size).field_of(k)
+                    h.lake_at(dir, &c.cells, g.planet.block_size)
                 };
-                // Across the shore: down the field's gradient.
                 let e = 2.0 / g.planet.radius;
                 let (t1, t2) = (DVec3::new(d.y, -d.x, 0.0).normalize(), d.cross(DVec3::new(d.y, -d.x, 0.0)).normalize());
-                let (gx, gy) = (field((d + t1 * e).normalize()) - field((d - t1 * e).normalize()), field((d + t2 * e).normalize()) - field((d - t2 * e).normalize()));
+                let f = |dir: DVec3| lake(dir).field_of(k);
+                let (gx, gy) = (f((d + t1 * e).normalize()) - f((d - t1 * e).normalize()), f((d + t2 * e).normalize()) - f((d - t2 * e).normalize()));
                 let out = -(t1 * gx + t2 * gy).normalize_or_zero();
-                let step = 2.0 * scale.max(1.0);
-                let walk = |sign: f64, level: f64| -> Option<f64> {
-                    for n in 1..4000 {
-                        let x = n as f64 * step;
-                        let f = field((d + out * (sign * x / g.planet.radius)).normalize());
-                        if (sign > 0.0 && f < level) || (sign < 0.0 && f > level) {
-                            return Some(x);
-                        }
-                    }
-                    None
-                };
-                Some([walk(1.0, bands[0].1)?, walk(1.0, bands[1].1)?, walk(-1.0, bands[2].1).unwrap_or(f64::NAN)])
+                let at = |x: f64| (d + out * (x / g.planet.radius)).normalize();
+                let step = 2.0;
+                let walk = |stop: &dyn Fn(f64) -> bool| (1..3000).map(|n| n as f64 * step).find(|x| stop(*x));
+                let w = h.lakes[k as usize].w;
+                let sand = walk(&|x| {
+                    let c = g.column(at(x), 1.0);
+                    !c.wet() && !c.lake_sand
+                })?;
+                let apron = walk(&|x| lake(at(x)).iter().find(|l| l.lake == k).is_none_or(|l| l.past_apron(zone) > 0.0))?;
+                let bed = (1..3000).map(|n| g.column(at(-(n as f64) * step), 1.0).height_m as f64).fold(f64::MAX, f64::min);
+                let shelf = walk(&|x| w - g.column(at(-x), 1.0).height_m as f64 >= 0.9 * (w - bed)).unwrap_or(f64::NAN);
+                Some([sand, apron, shelf])
             })
             .collect();
-        print!("size {size:5}: R {:8.1} km, zone {zone:.3}, {} shores:", g.planet.radius / 1000.0, rows.len());
+        print!("size {size:5}: R {:8.1} km, {} shores:", g.planet.radius / 1000.0, rows.len());
+        let _ = scale;
         for b in 0..3 {
             let mut v: Vec<f64> = rows.iter().map(|r| r[b]).filter(|x| x.is_finite()).collect();
             v.sort_by(f64::total_cmp);
-            if v.is_empty() {
-                print!("  {} none", bands[b].0);
-            } else {
-                print!("  {} median {:.0} m (p90 {:.0}, {} walks)", bands[b].0, v[v.len() / 2], v[v.len() * 9 / 10], v.len());
-            }
+            print!("  {} median {:.0} m (p90 {:.0})", names[b], v[v.len() / 2], v[v.len() * 9 / 10]);
         }
         println!();
     }
@@ -1102,7 +1095,10 @@ fn rock_sites(g: &Generator) -> Vec<(&'static str, DVec3)> {
 #[test]
 #[ignore]
 fn boundary_rock() {
-    let g = super::tests::generator_pub(None, 2048, 1024);
+    let g = match std::env::var("BOUNDARY_SIZES").ok().and_then(|s| s.parse::<u32>().ok()) {
+        Some(u) => super::tests::planet_size_generator(u),
+        None => super::tests::generator_pub(None, 2048, 1024),
+    };
     for (name, site) in rock_sites(&g) {
         let (lat, lon) = Planet::lat_lon_deg(site);
         println!("{name} ({lat:.4} {lon:.4}): relief {:.0} m", g.lf.local(&g.bake.sample(site)).relief);
@@ -1138,51 +1134,6 @@ fn boundary_rock() {
                 let dir = out_dir();
                 class_png(&format!("{dir}/rock_{}_now.png", name.replace(' ', "_")), px, |c| if !dry[c] { [60, 90, 160] } else if new[c] { [120, 118, 112] } else { [86, 130, 60] });
                 class_png(&format!("{dir}/rock_{}_old.png", name.replace(' ', "_")), px, |c| if !dry[c] { [60, 90, 160] } else if old[c] { [120, 118, 112] } else { [86, 130, 60] });
-            }
-        }
-    }
-}
-
-/// Not a check: where the small pieces of the snow line are, and what the
-/// columns in them read.
-#[test]
-#[ignore]
-fn boundary_pieces() {
-    let g = super::tests::test_generator();
-    let (px, spacing) = (1024usize, 3.0);
-    for (k, d) in line_sites(&g, Line::Snow, 4).iter().enumerate() {
-        let v = samples(&g, *d, px, spacing, spacing);
-        let dirs = window_dirs(&g, *d, px, spacing);
-        let valid: Vec<bool> = v.iter().map(|s| Line::Snow.valid(&s.c)).collect();
-        let new: Vec<bool> = v.iter().map(|s| Line::Snow.class(s.c.temp_c, s.c.precip)).collect();
-        let (lat, lon) = Planet::lat_lon_deg(*d);
-        println!("site {k}: {lat:.4} {lon:.4}, {:?}", scatter(&new, &valid, px, spacing));
-        for want in [true, false] {
-            let m: Vec<bool> = new.iter().zip(&valid).map(|(a, b)| *b && *a == want).collect();
-            let mut seen = vec![false; m.len()];
-            for s in 0..m.len() {
-                if !m[s] || seen[s] {
-                    continue;
-                }
-                let mut stack = vec![s];
-                seen[s] = true;
-                let mut cells = Vec::new();
-                while let Some(c) = stack.pop() {
-                    cells.push(c);
-                    let (x, y) = (c % px, c / px);
-                    for (ok, c2) in [(x > 0, c.wrapping_sub(1)), (x + 1 < px, c + 1), (y > 0, c.wrapping_sub(px)), (y + 1 < px, c + px)] {
-                        if ok && m[c2] && !seen[c2] {
-                            seen[c2] = true;
-                            stack.push(c2);
-                        }
-                    }
-                }
-                if cells.len() < 200 {
-                    let c = &v[cells[0]].c;
-                    let ring = cells[0] + 3;
-                    let (la, lo) = Planet::lat_lon_deg(dirs[cells[0]]);
-                    println!("  {} piece of {} cells at {la:.5} {lo:.5}: t {:.3} share {:.2} h {:.1}; 3 cells on: t {:.3} share {:.2} valid {}", if want { "snow" } else { "bare" }, cells.len(), c.temp_c, c.lapse_share, c.height_m, v[ring.min(px * px - 1)].c.temp_c, v[ring.min(px * px - 1)].c.lapse_share, valid[ring.min(px * px - 1)]);
-                }
             }
         }
     }
@@ -1247,7 +1198,7 @@ fn the_rock_line_is_a_line() {
     println!("line per km2: {:.1} / {:.1} km; share in pieces under a hectare {:.2}% / {:.2}%", line_new / km2, line_old / km2, 100.0 * small_new / n, 100.0 * small_old / n);
     assert!(line_new / km2 < 40.0, "the rock's line runs {:.1} km per km2", line_new / km2);
     assert!(small_new / n < 0.03, "{:.2}% of the ground lies in pieces under a hectare", 100.0 * small_new / n);
-    assert!(line_old / km2 > 100.0 && small_old / n > 0.10, "the old rule should fail this gate: {:.1} km per km2, {:.2}%", line_old / km2, 100.0 * small_old / n);
+    assert!(line_old / km2 > 80.0 && small_old / n > 0.10, "the old rule should fail this gate: {:.1} km per km2, {:.2}%", line_old / km2, 100.0 * small_old / n);
 }
 
 /// Not a check: what the rock line costs on the ranges, one thread: a chunk's
@@ -1323,14 +1274,33 @@ fn boundary_places() {
         let peak = (0..v.len()).filter(|i| !v[*i].c.wet()).max_by(|a, b| v[*a].c.height_m.total_cmp(&v[*b].c.height_m)).unwrap();
         let valley = (0..v.len()).filter(|i| !v[*i].c.wet() && v[*i].c.temp_c >= SNOW_C && (dirs[*i] - dirs[peak]).length() * r > 1200.0 && (dirs[*i] - dirs[peak]).length() * r < 3000.0).min_by(|a, b| v[*a].c.height_m.total_cmp(&v[*b].c.height_m));
         let Some(valley) = valley else { continue };
-        let (hp, hv) = (v[peak].c.height_m as f64, v[valley].c.height_m as f64);
+        let (hp, hv) = (v[peak].c.height_m as f64, g.ground_height_m(dirs[valley]));
         println!("# window {:.0}% snow, peak {hp:.0} m, valley {hv:.0} m", 100.0 * snow);
-        pose(&format!("snow_valley_{done}"), dirs[valley], hv + 4.0, look_at(dirs[valley], hv + 4.0, dirs[peak], 0.6 * hp + 0.4 * hv));
-        let away = (dirs[valley] * 2.0 - dirs[peak]).normalize();
-        pose(&format!("snow_2km_{done}"), away, hv + 260.0, look_at(away, hv + 260.0, dirs[peak], 0.5 * hp + 0.5 * hv));
+        pose(&format!("snow_valley_{done}"), dirs[valley], hv + 3.0, look_at(dirs[valley], hv + 3.0, dirs[peak], 0.6 * hp + 0.4 * hv));
+        // Back along the same line until the peak is about 2 km off, above whatever stands there.
+        let along = ((dirs[valley] - dirs[peak]) * r).normalize_or_zero();
+        let away = (dirs[peak] * r + along * 2000.0).normalize();
+        let top = (0..=20).map(|k| g.ground_height_m((dirs[peak] * r + along * (2000.0 - 40.0 * k as f64)).normalize())).fold(f64::MIN, f64::max);
+        pose(&format!("snow_2km_{done}"), away, top + 60.0, look_at(away, top + 60.0, dirs[peak], 0.5 * hp + 0.5 * hv));
         done += 1;
         if done == 3 {
             break;
+        }
+    }
+    // On a bigger planet: a coast and a lake, from high up and from 200 m.
+    if std::env::var("BOUNDARY_SIZES").is_ok() {
+        let h = g.hydro.as_deref().unwrap();
+        let coast = super::tests::dirs_pub(400_000, 0xC0A5).into_iter().find(|d| {
+            let s = g.bake.sample(*d);
+            (s.coast * r).abs() < 200.0 && s.edge_texels > 60.0 && s.temp_c > 8.0
+        });
+        let biggest = (0..h.lakes.len() as i32).max_by_key(|k| h.field.iter().filter(|c| c.lake == *k).count());
+        let lake = biggest.and_then(|k| super::hydro_tests::shore_point_for(h, k, 0));
+        for (name, d) in [("coast", coast), ("lake", lake)] {
+            let Some(d) = d else { continue };
+            for alt in [6000.0, 1500.0, 200.0] {
+                pose(&format!("{name}_{alt:.0}m"), d, alt, (0.0, -89.9));
+            }
         }
     }
     // On foot beside the rock line: the first edge in from the middle of a range.

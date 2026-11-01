@@ -17,15 +17,15 @@ photo frame_sand_falling
 tick 60
 photo frame_sand_settled
 state settled
-atblock 1 1926 59004 1028
+atblock 1 1921 59004 1028
 lookaxis -i 0
 aim -5 0 -5
 photo frame_beach
-atblock 1 1921 59004 1025
+atblock 1 1916 59004 1025
 aim 0 0 -1.5
 tap break
 tick 30
-atblock 1 1926 59004 1028
+atblock 1 1921 59004 1028
 lookaxis -i 0
 aim -5 0 -5
 photo frame_beach_dug

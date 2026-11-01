@@ -75,6 +75,9 @@ pub fn band_m(radius: f64) -> f64 {
 pub const ROUGH_VOXEL_M: f64 = 64.0;
 pub const ROUGH_CLEAR_M: f64 = RIDGE_END_M + 150.0;
 
+/// How high `held` holds dry ground (m).
+const HELD_TOP_M: f64 = 0.3;
+
 /// A column's place relative to the shore.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Shore {
@@ -113,10 +116,17 @@ pub fn shore_at(d: f64, p: DVec3, voxel_m: f64, seed: u64) -> Shore {
 }
 
 /// Dry ground near the shoreline stands at least this high (a river's valley
-/// can pull it down past the sea otherwise, and leave the sea a wall).
+/// can pull it down past the sea otherwise, and leave the sea a wall). A foot
+/// of it is enough: the whole beach here would be a levee beside the river.
 #[inline]
 pub fn held(h: f64, d: f64) -> f64 {
-    if d < 0.0 && d > -RIDGE_START_M { h.max(BEACH_TOP_M * (1.0 - (d * BEACH_SLOPE / BEACH_TOP_M).exp())) } else { h }
+    if d < 0.0 && d > -RIDGE_START_M { h.max((BEACH_TOP_M * (1.0 - (d * BEACH_SLOPE / BEACH_TOP_M).exp())).min(HELD_TOP_M)) } else { h }
+}
+
+/// How much of the natural relief stands at distance `d` from the shoreline.
+#[inline]
+pub fn relief_share(d: f64) -> f64 {
+    smoothstep(0.0, REACH_M, -d)
 }
 
 /// The ground at distance `d` from the shoreline, given the natural height.

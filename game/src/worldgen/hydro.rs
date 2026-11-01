@@ -587,6 +587,12 @@ impl LakeField {
     pub fn off_shore(&self, zone: f64) -> f64 {
         (zone - self.field) / self.grad.max(1e-9)
     }
+
+    /// How far past the apron's outer edge (m), whichever edge is nearer.
+    #[inline]
+    pub fn past_apron(&self, zone: f64) -> f64 {
+        (self.off_shore(zone) - LAKE_APRON_M).max((LAKE_APRON - self.field) / self.grad.max(1e-9))
+    }
 }
 
 /// What kind of water a column's surface belongs to.
@@ -1579,8 +1585,7 @@ impl Hydro {
             let l = self.lakes[lf.lake as usize];
             let top = l.w + fb;
             let d = lf.off_shore(zone);
-            // How far past the apron's outer edge, whichever edge is nearer.
-            let dist = (d - LAKE_APRON_M).max((LAKE_APRON - lf.field) / lf.grad.max(1e-9));
+            let dist = lf.past_apron(zone);
             let bound = if dist <= 0.0 {
                 top
             } else if dist < S_OUT_REACH_M {

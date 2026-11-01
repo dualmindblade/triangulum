@@ -770,14 +770,20 @@ fn coast_places(g: &Generator) -> Vec<(String, DVec3)> {
 /// Bug round #5: a coast is one coherent line at every vertical scale and at
 /// half-metre blocks, on foot and from altitude: hardly a piece of land or sea
 /// too small for the planet to know about, hardly a sliver, and no more closed
-/// pieces than the bake's own coastline has, give or take a stray block or two.
+/// pieces than the bake's own coastline has, give or take `COAST_STRAYS` per km.
 /// Before: 18-22 blobs and slivers per km on most coasts, and ten or more
 /// times the bake's pieces. (The warp is one-to-one, so a piece here is the
 /// raster's: a thread of land a block wide, sampled as a dotted line.)
 #[test]
 fn coasts_are_coherent() {
+    // Just over the worst window there is: 0.35 stray pieces per km of coast on
+    // foot, none at LOD 5, and 0.79 blobs and slivers per km at worst. A warp a
+    // quarter too strong (`STEP_AMP` 0.215) draws 0.94 strays per km, which an
+    // allowance of one per km let through; two metres of noise on the distance, 2.
+    const COAST_STRAYS: f64 = 0.4;
+    const COAST_SLIVERS: f64 = 0.85;
     let worlds = [("1/70", super::tests::test_generator()), ("1/8", super::tests::generator_pub(Some(0.125), 4096, 1536)), ("half-metre blocks", super::tests::half_metre_generator())];
-    let mut measured = 0.0;
+    let (mut measured, mut worst, mut slivers_most) = (0.0, 0.0f64, 0.0f64);
     for (world, g) in &worlds {
         let coarse = 32.0 * g.planet.block_size;
         for (name, d) in coast_places(g) {
@@ -787,12 +793,16 @@ fn coasts_are_coherent() {
                 println!("{world} {name} {view}: {:.1} km of coast, {} blobs, {} slivers, {} closed pieces (bake {})", s.coast_km, s.land_blobs + s.sea_blobs, s.land_slivers + s.sea_slivers, s.pieces, s.bake_pieces);
                 measured += s.coast_km;
                 let at = format!("{world} {name} {view}");
-                assert!(s.land_blobs + s.sea_blobs <= s.bake_blobs + 1 + s.coast_km as u32, "{at}: pieces smaller than a bake texel the bake doesn't have: {s:?}");
-                assert!(s.per_km() < 2.0, "{at}: {:.2} slivers per km of coast: {s:?}", s.per_km());
-                assert!(s.pieces <= s.bake_pieces + 1 + s.coast_km as u32, "{at}: more pieces than the planet has: {s:?}");
+                let strays = |n: u32, bake: u32| n.saturating_sub(bake) as f64 / s.coast_km.max(1e-3);
+                worst = worst.max(strays(s.land_blobs + s.sea_blobs, s.bake_blobs)).max(strays(s.pieces, s.bake_pieces));
+                slivers_most = slivers_most.max(s.per_km());
+                assert!(strays(s.land_blobs + s.sea_blobs, s.bake_blobs) <= COAST_STRAYS, "{at}: pieces smaller than a bake texel the bake doesn't have: {s:?}");
+                assert!(s.per_km() < COAST_SLIVERS, "{at}: {:.2} slivers per km of coast: {s:?}", s.per_km());
+                assert!(strays(s.pieces, s.bake_pieces) <= COAST_STRAYS, "{at}: more pieces than the planet has: {s:?}");
             }
         }
     }
+    println!("over {measured:.0} km of coast: worst window {worst:.2} strays per km, {slivers_most:.2} blobs and slivers per km");
     assert!(measured > 100.0, "the windows found almost no coast ({measured:.1} km)");
 }
 
@@ -816,8 +826,10 @@ fn the_coast_meets_itself_across_cube_edges() {
                 };
                 let (sa, sb) = (g.bake.sample(p.dir(face, a.0, a.1)), g.bake.sample(p.dir(face, b.0, b.1)));
                 let (ca, cb) = (sa.coast * p.radius, sb.coast * p.radius);
-                // Past this nothing depends on the distance but the warp's
-                // reach, and the field is holding its cap.
+                // The ground reads the distance only inside 320 m of the shore
+                // (`coast::shape`), wherever the warp sends a column to read it, and
+                // past that only its sign counts. This is the band the gate had before
+                // the warp; nearer the field's cap of 8 texels the two sides differ.
                 if ca.abs().min(cb.abs()) < 450.0 {
                     crossed += 1;
                     worst = worst.max((ca - cb).abs());

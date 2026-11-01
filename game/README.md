@@ -887,10 +887,21 @@ can't make a piece that isn't in the bake.
   shortest, which it does by moving the line under a voxel. There is no noise
   value for a coarse voxel to alias: the line from orbit is the line you walk
   along.
-- **Height.** The lapse sees the landform as a 128 m voxel does, hills and
-  mountains and not hummocks, bent by the octaves up to 512 m. On a slope the
-  snow line follows the contours, roughly; on the sea there is no lapse at all
-  (it used to read the sea floor).
+- **Height.** The temperature falls 6.5 degrees per real km of what stands above
+  the global surface: the local relief as a 128 m voxel sees it, hills and
+  mountains and not hummocks, as much of it as `Scale::headroom` and the ceiling
+  leave standing, ramped down to the water as the land is, bent by the octaves
+  up to 512 m. On a range the snow line follows the contours, roughly; on the
+  sea there is no lapse at all (it used to read the sea floor).
+- **Rock.** Bare rock is a contour of the slope as a 16 m voxel sees it, read
+  through its own warp (`Generator::rock_map`). A column's own slope has every
+  hummock in it, and a threshold on that draws streaks down every gully, 400 km
+  of line in a 3.9 km2 window of range where this draws 45. Chunks finer than
+  16 m read the columns a 16 m chunk would have, on the same lattice, so the
+  line is the same from LOD 0 to 4; coarser voxels see the mountain less steep
+  and take a lower slope for the same rock (`rock_slope_at`). Rock on a chunk's
+  surface costs a lattice of columns where the ground is steep, nothing on
+  gentle ground. Real cliffs, too narrow for 16 m, are rock by their own slope.
 - **Cost.** A chunk samples the climate at 25 nodes. If no threshold can lie in
   it, its columns interpolate them and skip the warp; only chunks with a line
   in them pay per column. `far_chunks_hold_no_boundary` proves that changes no
@@ -900,18 +911,26 @@ The dials are constants, and they change the terrain, so they need a generator
 version bump: `STEP_AMP` (strength; at 0.19 a very rare step already folds),
 `CLIMATE_TOP_RADII` and `LAKE_TOP_SHARE` (longest octave of the climate and of
 a lake), `WARP_TOP_RADII` in `coast.rs` (of the coast), `LAPSE_VOXEL_M` (how
-small a hill the snow notices).
+small a hill the snow notices), `ROCK_SLOPE` (how much of a range is bare),
+`ROCK_VOXEL_M` (how small a face is rock of its own).
 
 The gates are `cargo test --release boundaries_are_lines_not_scatter`,
 `lines_are_rough_at_every_scale`, `a_line_is_the_same_line_at_every_lod`,
 `boundaries_cross_cube_edges_without_a_seam`,
-`on_a_slope_the_snow_line_follows_the_contours` and
-`far_chunks_hold_no_boundary`. The measuring tools are the ignored `boundary_*`
-tests in `src/worldgen/boundary_tests.rs`: `boundary_map` and `boundary_zoom`
-draw plan maps (`BOUNDARY_AT="lat lon"`, `BOUNDARY_SIZE` km, `BOUNDARY_PX`,
-`BOUNDARY_NAME`), and `boundary_cost` times chunks. `scripts/t3-poses.play` and
-`scripts/t3-ladder.play` shoot Andrew's four photos and the same lines from orbit
-down to the ground, on any two builds; `scripts/t3_sheets.py` pairs the frames up.
+`on_a_slope_the_snow_line_follows_the_contours`,
+`the_lapse_reads_the_ground_that_stands`, `the_rock_line_is_a_line`,
+`boundaries_are_lines_on_every_planet_size` and `far_chunks_hold_no_boundary`;
+`water_is_contained_on_every_planet_size` (ignored, minutes) is the lakes and
+rivers on every size. The measuring tools are the ignored `boundary_*` tests in
+`src/worldgen/boundary_tests.rs`: `boundary_map` and `boundary_zoom` draw plan
+maps (`BOUNDARY_AT="lat lon"`, `BOUNDARY_SIZE` km, `BOUNDARY_PX`,
+`BOUNDARY_NAME`), `boundary_rock` measures the rock on the ranges at every LOD
+and draws it, `boundary_places` writes poses for the snow and the rock on the
+ranges, `boundary_lake_bands` measures a lake's bands on each planet size and
+`boundary_cost` and `boundary_rock_cost` time chunks. `scripts/t3-poses.play`,
+`scripts/t3-ladder.play` and `scripts/t3-rock.play` shoot Andrew's four photos,
+the same lines from orbit down to the ground, and the ranges, on any two builds;
+`scripts/t3_sheets.py` pairs the frames up.
 
 ## Water (M2b)
 
