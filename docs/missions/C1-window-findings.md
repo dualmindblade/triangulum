@@ -88,11 +88,12 @@ measurable in 5 s; visible it was 95% of a core.
 
 ### The capture state
 
-Before: after focus loss `captured` stayed true, so the first click back was game
-input (it broke a block), and the pointer stayed hidden over the window. Evidence:
-the frame at the end of a focus-lost, focus-regained run says "mouse captured" on the
-old build (`capture-before-focus-lost.png`) and "click to capture mouse" on the new
-one (`capture-after-focus-lost.png`). Held keys and the held mouse button were already
+Before: after focus loss `captured` stayed true. From the code, that makes the first
+click back game input, so it would break a block, and leaves the pointer hidden over
+the window; I saw the flag, not those. The frame at the end of a focus-lost,
+focus-regained run says "mouse captured" on the old build
+(`capture-before-focus-lost.png`) and "click to capture mouse" on the new one
+(`capture-after-focus-lost.png`). Held keys and the held mouse button were already
 released, and still are. Going back doesn't take the mouse by itself: the first click
 does, and that click does nothing else.
 
@@ -134,8 +135,9 @@ So the build that recorded it had snow falling. It doesn't crash anything.
 `crash.rs`, installed first thing in `main`: every panic on any thread writes
 `game/out/crash/panic-<UTC>.txt` with the message, the place, the thread, the command
 line, the build and a backtrace, and then prints as ever. `--crash-test` panics on
-purpose. `crash-file-sample.txt` is one from the real window, with symbols. (The panics
-above have no symbols only because I had renamed that exe.)
+purpose. `crash-file-sample.txt` is one from the real window, with symbols. (The panic
+above has none in its console backtrace, I think because I was running a renamed copy
+of the exe.)
 
 ### The tool
 
@@ -154,7 +156,7 @@ always closes the game in a `finally`, and it didn't happen again in more than 3
 launches.
 
 It also waits now for the game to run frames: the window exists long before the game
-listens to it, and on a busy machine that gap was 20 s. Two of my early runs were
+listens to it, and on a busy machine that gap reached about 20 s. Two of my early runs were
 invalid for that reason, and `window-runs.txt` is the whole set again with the wait.
 
 ## 2. Unbound fly speed
@@ -224,7 +226,7 @@ Walking north, you bounced at the pole and never got past it: the fixed build's 
 ends on the far side, on the real snow, with the same 7 s of W and jumping. South pole
 likewise, on the sea ice.
 
-**Tests** (`src/player/great_circle_tests.rs`, 22 tests). I ran them on the old code
+**Tests** (`src/player/great_circle_tests.rs`). I ran the first 22 on the old code
 with a shim that adds names only: **17 fail** (`before-great-circle-tests.txt`), one
 hangs (the far `pick`), and 4 pass:
 
@@ -257,19 +259,32 @@ New recordings reproduce exactly: a flight over the pole with looks and scrolls 
 144 fps (`a_flight_over_the_pole_replays_exactly`), the far flight, and the recordings
 made through minimises in the real window. The fixed-step test passes.
 
-No `.play` script depended on rhumb movement. The scripts did not need changing.
+No `.play` script I ran depended on rhumb movement, so none needed changing. Not run:
+`b4-oldsave-load` and `-make` (they need an old build), `m1-showcase`,
+`m1-showcase-vscale8` and `m3a-look-vscale8` (long renders; their camera moves by keys,
+not by steps, and `pin` sets the compass heading each frame as before).
 
 ## Verified
 
-- `cargo test --release`: see the numbers in my report to the lead; the run on the final
-  commit is the one that counts. `great_circle_tests`, `window_tests` (the app's event
-  path with synthetic events) and the new replay tests are in it.
+- `cargo test --release` on cef0835: 398 passed, 0 failed, 25 ignored. An earlier run had
+  one failure in `annotate` (timing, below) and one in a new test of mine, which depended
+  on the clock and is fixed. `great_circle_tests` (23),
+  `window_tests` (the app's event path with synthetic events, 7), `crash` (2) and the new
+  replay tests (4) are in it.
+- `window_tests` can't compile on the old code, so for their failing half I took the
+  fixes back out of `app.rs` (the release of the mouse, the quit, the exit time, the
+  photo): 4 of the 7 fail, and the other 3 don't depend on those lines. The crash itself
+  is what the real window shows: `window-runs.txt`, the old build on the same scene.
 - Every `.play` script bar the five that need an old build or are long renders:
   `plays-summary.txt` is the first pass, on a loaded machine. Of its six failures,
   `b5-menu`, `b5-menu-scale` and `b6-report` wanted `--interchange` and `--replays`, which
   my runner didn't pass, and pass with them. `m1-done` and `m2b-river` failed one timing
   assert each (`bench_fps > 60`, `tick_ms_avg < 2`) and pass on a quieter machine.
-  `b7-close` fails the same way on the old build. `m1-done.play`: 94 asserts, none failed.
+  `b7-close` fails the same way on the old build.
+- `m1-done.play`: 94 asserts, none failed, on a run with the machine quieter. On the
+  commit itself, with other agents rendering, 93 pass and `bench_fps > 60` fails at
+  14 fps (GPU 1.85 ms, so the time was going elsewhere). That is the only assert it has
+  failed, and only under load: it wants an idle machine to mean anything.
 - The real window, every row in the first table, on both builds where the row says so.
 
 ## Not verified
