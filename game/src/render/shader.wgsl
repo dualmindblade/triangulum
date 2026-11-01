@@ -446,12 +446,17 @@ fn fs_sky(in: SkyOut) -> @location(0) vec4<f32> {
     let toward = pow(max(d, 0.0), 6.0);
     let low = 1.0 - smoothstep(0.05, 0.35, sunh);
     let night = sky.horizon.w;
-    var c = mix(sky.horizon.rgb, sky.zenith.rgb, pow(clamp(h, 0.0, 1.0), 0.55)) * (night + (1.0 - night) * day);
+    // Where the planet really ends: eye level is the horizon only at sea level.
+    // From height the edge lies acos(1 / r) below it, and keying the sky to eye
+    // level draws a hard line across it, with a dark band beneath.
+    let r = max(length(sky.eye.xyz), 1.0);
+    let rim = -sqrt(1.0 - 1.0 / (r * r));
+    var c = mix(sky.horizon.rgb, sky.zenith.rgb, pow(clamp((h - rim) / (1.0 - rim), 0.0, 1.0), 0.55)) * (night + (1.0 - night) * day);
     c = mix(c, sky.sunset.rgb, toward * low * sky.sunset.w * day);
     let tint = vec3<f32>(1.0, 0.96, 0.86);
     c += tint * pow(max(d, 0.0), 800.0) * 0.50 * day;
     let atm = air_density();
-    c *= smoothstep(-0.10, 0.03, h) * atm;
+    c *= smoothstep(rim - 0.10, rim + 0.03, h) * atm;
 
     // July limb, with optical lengths relative to the smaller planet.
     let center = -sky.eye.xyz;
@@ -460,7 +465,11 @@ fn fs_sky(in: SkyOut) -> @location(0) vec4<f32> {
         let miss = dir * along - center;
         let b = length(miss);
         let lit = smoothstep(-0.15, 0.35, dot(normalize(miss), sky.sun.xyz));
-        let shell = exp(-max(b - 1.0, 0.0) * sky.eye.w * sky.atmosphere.y) * smoothstep(0.6, 1.0, b);
+        // The glow is of the air seen against the planet: it goes from full at the
+        // rim to nothing at eye level, where this branch ends, or it stops dead
+        // there in a hard line.
+        let below = smoothstep(0.0, 1.0, h / min(rim, -0.0001));
+        let shell = exp(-max(b - 1.0, 0.0) * sky.eye.w * sky.atmosphere.y) * smoothstep(0.6, 1.0, b) * below;
         c += vec3<f32>(0.30, 0.50, 0.90) * shell * lit * (1.0 - atm) * 0.8;
     }
     let sky_lum = dot(c, vec3<f32>(0.35, 0.45, 0.20));

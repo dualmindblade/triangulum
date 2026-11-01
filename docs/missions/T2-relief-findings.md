@@ -640,10 +640,24 @@ Each of the 12 was run through `scripts/t1_play_suite.py` on this build
 after its re-site and passed with every assert (`b3-corner` 52 of 52,
 `b7-walk` 25 of 25 with the replay matching 17 of 17 checks,
 `m1-showcase` 63 asserts and no flight error, `m1-showcase-vscale8` no
-flight error, the rest as before), and the four tests above pass. The
-whole `cargo test --release` and the whole play suite, on a fresh build of
-the final commit into `game/target/`, are reported in the commit that
-follows this one.
+flight error, the rest as before), and the four tests above pass.
+
+**The whole suites, on a fresh build of 2ab49f4 into `game/target/`**
+(`rm -rf target`, `cargo build --release --target-dir target`; the exe
+reports build `2ab49f4e4`): `cargo test --release --target-dir target` in
+one run, **428 passed, 0 failed, 33 ignored** (602 s; the only build
+warning is the old `mut drain` in `stream.rs`). `python
+scripts/t1_play_suite.py` on that exe, all 45 scripts
+(`out/t1/plays/20261101-030221/`): **43 pass, 2 fail**, both scripts I did
+not touch, both timing asserts, both while another agent's `rustc` was
+running (every script took two to four times as long as in the earlier
+run): `m1-done` at `bench_fps > 60` (25 fps) and `c2-slide` at
+`motion_gaps_max == 0` (10: the falling-block draw missed frames). Run
+again alone afterwards (`out/t1/plays/20261101-043817/`) both pass,
+`m1-done` 94 of 94 in 75.7 s with `bench_fps` 280 and `c2-slide` 31 of 31
+with no motion gap, as both had in the earlier full run. So no script
+fails on this build; the two frame-time asserts are provisional while
+other agents run, as every timing here is.
 
 ## For the lead
 
