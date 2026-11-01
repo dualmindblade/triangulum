@@ -1,0 +1,38 @@
+# Andrew's recording 210239, as a script: the same start and the same keys on the
+# same steps, because a recording from before great circles refuses to play. At
+# 13.6 km, sprinting at 5000 m/s, looking straight down near the south pole: he
+# strafes left and right, and the recording's longitude swings from 132 to 104
+# through 150. Strafing is a straight line now, so the same keys go back and forth
+# along one great circle.
+#   triangulum --play scripts/c1-andrew-210239.play --out out/c1/andrew
+pose -4122.512957060431,-6422.827337954854,-103895.18046144852,0.0,0.0,0.0,-3.2559975511965993,-1.55,fly,0,0,0,5000.0,0
+clock 1179.274998645762
+state start
+wait 0.316667
+hold shift 0.033333
+hold d,shift 0.650000
+state step60
+hold d,shift 0.383333
+hold shift 0.033333
+hold a,shift 0.450000
+hold d,shift 0.133333
+state step120
+shot andrew_step120
+hold d,shift 0.183333
+hold d 0.016667
+wait 0.350000
+hold shift 0.050000
+hold a,shift 0.400000
+state step180
+hold a,shift 0.083333
+hold shift 0.016667
+hold d,shift 0.366667
+hold d 0.066667
+hold a 0.383333
+hold a,d 0.016667
+hold d 0.066667
+state step240
+hold d 0.300000
+wait 0.083333
+state end
+shot andrew_end

@@ -1,0 +1,85 @@
+# C1, Andrew's #10: WASD follows great circles, in the real world, over both
+# poles, on foot and in the air. The same script runs on a build from before
+# (`--play` on the old exe): its frames are the "before" of the same poses, and
+# its asserts fail there. No absolute layers: everything is lat, lon and metres
+# above the sea.
+#   triangulum --play scripts/c1-great-circle.play --out out/c1/great-circle
+sun 40
+mode fly
+speed 5000
+
+log ---- 150 km along a great circle, from three starts and headings -----------
+at 40 -30 3000
+look 45 0
+hold w 30
+assert lat ~ 31.375 0.02
+assert lon ~ 94.129 0.02
+assert alt ~ 3000 1
+at -70 100 3000
+look 200 0
+hold w 30
+assert lat ~ -16.911 0.02
+assert lon ~ -59.066 0.02
+assert alt ~ 3000 1
+at 10 0 3000
+look 300 0
+hold w 60
+assert lat ~ -11.834 0.02
+assert lon ~ 176.726 0.02
+assert alt ~ 3000 1
+
+log ---- straight over the north pole, in the air ------------------------------
+speed 400
+at 89.5 0 2000
+look 0 -30
+state pole_n_start
+shot pole_n_1_start
+hold w 2.2
+shot pole_n_2_just_before
+hold w 0.3
+shot pole_n_3_just_after
+hold w 1.6
+shot pole_n_4_beyond
+state pole_n_end
+assert lat ~ 89.617 0.003
+assert lon ~ 180 0.01
+
+log ---- straight over the south pole, along a strafe ---------------------------
+at -89.5 90 2000
+look 90 -30
+hold d 1.9
+shot pole_s_1_just_before
+hold d 0.3
+shot pole_s_2_just_after
+hold d 1.9
+assert lat ~ -89.5 0.03
+assert lon ~ -90 0.01
+
+log ---- on foot over the north pole, on the snow -------------------------------
+mode walk
+at 89.99 0
+look 0 0
+wait 0.5
+assert block_below == snow
+assert on_ground == true
+shot walk_n_1_start
+hold w,space 3
+shot walk_n_2_at_the_pole
+hold w,space 4
+shot walk_n_3_past_it
+state walk_n_end
+assert lat > 89.98
+assert lat < 89.9999
+assert lon ~ 180 2
+
+log ---- on foot over the south pole, on the sea ice -----------------------------
+at -89.99 0
+look 180 0
+wait 0.5
+assert block_below == ice
+assert on_ground == true
+hold w,space 7
+state walk_s_end
+assert lat < -89.98
+assert lat > -89.9999
+assert lon ~ 180 2

@@ -507,7 +507,7 @@ impl Run {
     }
 
     fn parse_angles(&self, heading: Option<&str>, pitch: Option<&str>) -> Result<(f64, f64), String> {
-        let prev = self.video.keys.last().map_or((self.session.player.heading, self.session.player.pitch), |k| (k.heading, k.pitch));
+        let prev = self.video.keys.last().map_or((self.session.player.heading(), self.session.player.pitch), |k| (k.heading, k.pitch));
         let angle = |s: Option<&str>, prev: f64| -> Result<f64, String> {
             match s {
                 None | Some("-") => Ok(prev),
@@ -576,7 +576,7 @@ impl Run {
         let planet = self.session.engine.planet;
         let eye = self.session.player.eye();
         let p = &self.session.player;
-        let mut keys = vec![Key { t: 0.0, dir: eye.normalize(), alt: eye.length() - planet.radius, heading: p.heading, pitch: p.pitch }];
+        let mut keys = vec![Key { t: 0.0, dir: eye.normalize(), alt: eye.length() - planet.radius, heading: p.heading(), pitch: p.pitch }];
         keys.append(&mut self.video.keys);
         // Unwrap headings so each key turns the short way from the last.
         for i in 1..keys.len() {
@@ -596,7 +596,7 @@ impl Run {
         let engine = self.session.engine.clone();
         let _ = self.session.apply(crate::session::Action::SetMode(Mode::Fly));
         let mut min_agl = f64::MAX;
-        let mut prev_path_heading = self.session.player.heading;
+        let mut prev_path_heading = self.session.player.heading();
         for step in 1..=n {
             let t = step as f64 / 60.0;
             let eye = pos_at(t);
@@ -623,7 +623,7 @@ impl Run {
             let pin = |pl: &mut crate::player::Player| {
                 pl.pos = eye - up * EYE_M;
                 pl.vel = DVec3::ZERO;
-                pl.heading = heading;
+                pl.set_heading(heading);
                 pl.pitch = pitch.clamp(-1.55, 1.55);
             };
             pin(&mut self.session.player);
@@ -645,7 +645,7 @@ impl Run {
         let num = |i: usize| -> Option<f64> { cmd.get(i).and_then(|s| s.parse::<f64>().ok()) };
         let planet = self.session.engine.planet;
         let p = &self.session.player;
-        let (h0, p0) = (p.heading, p.pitch);
+        let (h0, p0) = (p.heading(), p.pitch);
         let (h1, p1) = match cmd[0] {
             "look" => match (num(1), num(2)) {
                 (Some(h), Some(pt)) => (h.to_radians(), pt.to_radians()),
@@ -690,7 +690,7 @@ impl Run {
         let n = (secs * 60.0).round().max(1.0) as usize;
         for step in 1..=n {
             let s = smooth(step as f64 / n as f64);
-            self.session.player.heading = h0 + dh * s;
+            self.session.player.set_heading(h0 + dh * s);
             self.session.player.pitch = p0 + (p1 - p0) * s;
             self.session.step(&Input::default(), STEP);
             self.video_tick();

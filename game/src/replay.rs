@@ -33,8 +33,10 @@
 //!   scroll LINES          the wheel (fly speed)
 //!   sky SECONDS SPEED     the sky clock ([ and ], or a harness seek)
 //!   sim on|off   simradius M   waterperiod N
-//!   pose X,Y,Z,VX,VY,VZ,HEADING,PITCH,MODE,GROUND,WATER,HEAD,FLYSPEED,SLOT
-//!                         the player put exactly there (harness teleports)
+//!   pose X,Y,Z,VX,VY,VZ,FX,FY,FZ,PITCH,MODE,GROUND,WATER,HEAD,FLYSPEED,SLOT
+//!                         the player put exactly there (harness teleports);
+//!                         F is the way it faces (a pose in a photo from
+//!                         before great circles has HEADING there instead)
 //!   reload                save, then rebuild from the save
 //!   note TEXT             something the recorder could not capture
 //!   note marker {JSON}    F9: a moment marked by the player (`report::Marker`:
@@ -253,14 +255,16 @@ fn parse_mode(s: &str) -> Result<Mode, String> {
 /// The player's whole state, exactly.
 pub fn pose_text(p: &Player) -> String {
     format!(
-        "{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
+        "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
         f(p.pos.x),
         f(p.pos.y),
         f(p.pos.z),
         f(p.vel.x),
         f(p.vel.y),
         f(p.vel.z),
-        f(p.heading),
+        f(p.facing.x),
+        f(p.facing.y),
+        f(p.facing.z),
         f(p.pitch),
         mode_text(p.mode),
         p.on_ground as u8,
@@ -272,30 +276,42 @@ pub fn pose_text(p: &Player) -> String {
 }
 
 pub fn parse_pose(s: &str, block_size: f64) -> Result<Player, String> {
-    let v: Vec<&str> = s.split(',').collect();
-    if v.len() != 14 {
-        return Err(format!("a pose has 14 fields, not {}: {s:?}", v.len()));
+    let mut v: Vec<&str> = s.split(',').collect();
+    // A photo keeps its pose for ever, and one from before great circles says
+    // HEADING where a pose now says FX,FY,FZ: where it looked is as good as ever.
+    let heading = if v.len() == 14 {
+        let h = pf(v[6])?;
+        v.splice(6..7, ["0", "0", "0"]);
+        Some(h)
+    } else {
+        None
+    };
+    if v.len() != 16 {
+        return Err(format!("a pose has 16 fields, not {}: {s:?}", v.len()));
     }
     let flag = |x: &str| match x {
         "0" => Ok(false),
         "1" => Ok(true),
         _ => Err(format!("bad flag {x:?}")),
     };
-    let mut p = Player::new(DVec3::new(pf(v[0])?, pf(v[1])?, pf(v[2])?), 0.0, 0.0, parse_mode(v[8])?, block_size);
+    let mut p = Player::new(DVec3::new(pf(v[0])?, pf(v[1])?, pf(v[2])?), 0.0, 0.0, parse_mode(v[10])?, block_size);
     p.vel = DVec3::new(pf(v[3])?, pf(v[4])?, pf(v[5])?);
-    p.heading = pf(v[6])?;
-    p.pitch = pf(v[7])?;
-    p.on_ground = flag(v[9])?;
-    p.in_water = flag(v[10])?;
-    p.head_in_water = flag(v[11])?;
-    p.fly_speed = pf(v[12])?;
-    p.selected = v[13].parse().map_err(|_| format!("bad hotbar slot {:?}", v[13]))?;
+    match heading {
+        Some(h) => p.set_heading(h),
+        None => p.facing = DVec3::new(pf(v[6])?, pf(v[7])?, pf(v[8])?),
+    }
+    p.pitch = pf(v[9])?;
+    p.on_ground = flag(v[11])?;
+    p.in_water = flag(v[12])?;
+    p.head_in_water = flag(v[13])?;
+    p.fly_speed = pf(v[14])?;
+    p.selected = v[15].parse().map_err(|_| format!("bad hotbar slot {:?}", v[15]))?;
     Ok(p)
 }
 
 fn pose_digest(p: &Player) -> u64 {
     let mut d = Digest::new(b"player");
-    for x in [p.pos.x, p.pos.y, p.pos.z, p.vel.x, p.vel.y, p.vel.z, p.heading, p.pitch, p.fly_speed, p.block_size] {
+    for x in [p.pos.x, p.pos.y, p.pos.z, p.vel.x, p.vel.y, p.vel.z, p.facing.x, p.facing.y, p.facing.z, p.pitch, p.fly_speed, p.block_size] {
         d.u64(x.to_bits());
     }
     d.u64((p.mode == Mode::Walk) as u64);
@@ -539,8 +555,8 @@ fn compare(rec: &Check, got: &Check, rec_map: &BTreeMap<ChunkKey, u64>, got_map:
                 if a.vel != b.vel {
                     parts.push(format!("velocity recorded {:.4} m/s, replayed {:.4} m/s", a.vel.length(), b.vel.length()));
                 }
-                if a.heading != b.heading || a.pitch != b.pitch {
-                    parts.push(format!("look recorded {:.4} / {:.4} deg, replayed {:.4} / {:.4} deg", a.heading.to_degrees(), a.pitch.to_degrees(), b.heading.to_degrees(), b.pitch.to_degrees()));
+                if a.facing != b.facing || a.pitch != b.pitch {
+                    parts.push(format!("look recorded {:.4} / {:.4} deg, replayed {:.4} / {:.4} deg", a.heading().to_degrees(), a.pitch.to_degrees(), b.heading().to_degrees(), b.pitch.to_degrees()));
                 }
                 if a.mode != b.mode {
                     parts.push(format!("mode recorded {}, replayed {}", mode_text(a.mode), mode_text(b.mode)));
@@ -626,6 +642,11 @@ pub struct Header {
     /// would not reproduce the session, so another version is refused.
     #[serde(default = "rules_v1")]
     pub sim_rules: u32,
+    /// `player::MOVE_RULES` of the recording build (absent: 1). The same keys
+    /// move the player somewhere else under other rules, so another version
+    /// is refused.
+    #[serde(default = "rules_v1")]
+    pub move_rules: u32,
     pub bake_sha256: String,
     pub hotbar: Vec<String>,
     pub hide_water: bool,
@@ -866,6 +887,7 @@ impl Recorder {
             world: save::Identity::of(&s.engine.config),
             generator_version: save::GENERATOR_VERSION,
             sim_rules: crate::sim::RULES_VERSION,
+            move_rules: crate::player::MOVE_RULES,
             bake_sha256: s.bake_sha256.clone(),
             hotbar: s.engine.hotbar.iter().map(|&id| reg.def(id).name.clone()).collect(),
             hide_water: s.engine.hide_water,
@@ -1272,6 +1294,15 @@ pub fn compatibility(template: &Session, h: &Header) -> Result<(), String> {
             crate::sim::RULES_VERSION,
             if h.sim_rules < crate::sim::RULES_VERSION { "it was recorded before sand and water learned to slide off ledges" } else { "it was recorded by a newer build" },
             h.sim_rules
+        ));
+    }
+    if h.move_rules != crate::player::MOVE_RULES {
+        bad.push(format!(
+            "movement rules version {} vs {}: {} (the same keys would take the player somewhere else, so it will not play here. Your world and saves are fine, and its markers and its report still stand; to watch this recording, use the build that made it{})",
+            h.move_rules,
+            crate::player::MOVE_RULES,
+            if h.move_rules < crate::player::MOVE_RULES { "it was recorded before W followed great circles" } else { "it was recorded by a newer build" },
+            if h.build.is_empty() { String::new() } else { format!(", {}", h.build) }
         ));
     }
     if h.bake_sha256 != template.bake_sha256 {

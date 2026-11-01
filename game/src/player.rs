@@ -9,8 +9,9 @@
 //! each step converts in and out, so crossing a face edge only changes
 //! which lattice the next step is computed in.
 
-use crate::camera::Camera;
+use crate::camera::{Camera, carried, facing_of, heading_of, level, turned};
 use crate::grid::{BlockPos, Planet};
+use crate::session::PITCH_MAX;
 use crate::world::{BlockId, Voxels};
 use glam::{DMat3, DVec3, IVec3};
 
@@ -20,9 +21,27 @@ mod picking_tests;
 #[cfg(test)]
 #[path = "player/slope_tests.rs"]
 mod slope_tests;
+#[cfg(test)]
+#[path = "player/great_circle_tests.rs"]
+mod great_circle_tests;
 
 /// Fixed simulation step (the harness and the app both use it).
 pub const STEP: f64 = 1.0 / 60.0;
+/// How the keys move the player, as far as a replay is concerned: another
+/// version takes the same keys somewhere else, so its replays refuse.
+/// 1: a fixed compass heading (a rhumb line). 2: great circles, with the fly
+/// step measured around the planet.
+pub const MOVE_RULES: u32 = 2;
+/// The slowest the wheel goes: a centimetre a second, for creeping up on
+/// something, still far above the rounding of a position.
+pub const MIN_FLY_SPEED: f64 = 0.01;
+/// Not a speed limit, the end of the arithmetic: squares of anything faster
+/// overflow. Nobody reaches it by hand (1,300 lines of the wheel from 20 m/s).
+pub const MAX_FLY_SPEED: f64 = 1e150;
+/// As far from the planet's centre as a flight goes, m: a tenth of a light
+/// year, 900,000 times the distance to the sun, with the planet long since too
+/// small to see. It keeps the squares of camera-relative f32s finite.
+pub const MAX_RADIUS_M: f64 = 1e15;
 pub const WIDTH_M: f64 = 0.6;
 pub const HEIGHT_M: f64 = 1.8;
 pub const EYE_M: f64 = 1.62;
@@ -166,7 +185,12 @@ pub struct Player {
     pub pos: DVec3,
     /// World velocity (m/s).
     pub vel: DVec3,
-    pub heading: f64,
+    /// The way the body faces, level: a unit vector in the tangent plane at
+    /// `pos`. Every step carries it along the move (`camera::carried`), so a
+    /// held key follows a great circle and a pole is a place like any other.
+    /// Set it with `set_heading` or `face`; moving the player anywhere but a
+    /// little goes through `place`.
+    pub facing: DVec3,
     pub pitch: f64,
     pub mode: Mode,
     pub on_ground: bool,
@@ -180,7 +204,37 @@ pub struct Player {
 
 impl Player {
     pub fn new(pos: DVec3, heading_deg: f64, pitch_deg: f64, mode: Mode, block_size: f64) -> Self {
-        Self { pos, vel: DVec3::ZERO, heading: heading_deg.to_radians(), pitch: pitch_deg.to_radians(), mode, on_ground: false, in_water: false, head_in_water: false, fly_speed: 20.0, selected: 0, block_size }
+        Self { pos, vel: DVec3::ZERO, facing: facing_of(pos, heading_deg.to_radians()), pitch: pitch_deg.to_radians(), mode, on_ground: false, in_water: false, head_in_water: false, fly_speed: 20.0, selected: 0, block_size }
+    }
+
+    /// The compass heading it faces, radians (0 = north, positive = east).
+    /// For people and scripts: nothing in a step reads it.
+    pub fn heading(&self) -> f64 {
+        heading_of(self.pos, self.facing)
+    }
+
+    pub fn set_heading(&mut self, heading: f64) {
+        self.facing = facing_of(self.pos, heading);
+    }
+
+    /// Face along `dir`, level.
+    pub fn face(&mut self, dir: DVec3) {
+        self.facing = level(self.pos.normalize(), dir);
+    }
+
+    /// Turn the view, radians: `right` about the vertical, `down` towards the feet.
+    pub fn look(&mut self, right: f64, down: f64) {
+        self.facing = turned(self.pos.normalize(), self.facing, right);
+        self.pitch = (self.pitch - down).clamp(-PITCH_MAX, PITCH_MAX);
+    }
+
+    /// A teleport: the body is at `pos` now and faces the same compass heading
+    /// (its north and east components), wherever that is.
+    pub fn place(&mut self, pos: DVec3) {
+        let (from_north, from_east, _) = Camera::local_frame(self.pos);
+        let (north, east, _) = Camera::local_frame(pos);
+        self.facing = north * self.facing.dot(from_north) + east * self.facing.dot(from_east);
+        self.pos = pos;
     }
 
     pub fn eye(&self) -> DVec3 {
@@ -188,7 +242,7 @@ impl Player {
     }
 
     pub fn camera(&self) -> Camera {
-        Camera { pos: self.eye(), heading: self.heading, pitch: self.pitch, fov_y: 60f64.to_radians() }
+        Camera { pos: self.eye(), facing: self.facing, pitch: self.pitch, fov_y: 60f64.to_radians() }
     }
 
     /// Camera forward direction.
@@ -244,12 +298,17 @@ impl Player {
         (DVec3::new(f.i - hi, f.j - hj, f.k), DVec3::new(f.i + hi, f.j + hj, f.k + hk))
     }
 
-    /// One fixed step.
+    /// One fixed step. However it moved, the way the body faces moves with it.
     pub fn step(&mut self, vox: &dyn Voxels, planet: &Planet, input: &Input, dt: f64) {
+        let from = self.pos.normalize();
         match self.mode {
             Mode::Fly => self.step_fly(planet, input, dt),
             Mode::Walk if vox.has_slopes() => self.step_on_slopes(vox, planet, input, dt),
             Mode::Walk => self.step_walk(vox, planet, input, dt, true),
+        }
+        let to = self.pos.normalize();
+        if to != from {
+            self.facing = level(to, carried(from, to, self.facing));
         }
     }
 
@@ -292,35 +351,52 @@ impl Player {
         }
     }
 
+    /// The step is measured around the planet: along the ground at this
+    /// height, and up or down from it, kept apart from the start. So flying
+    /// level stays level at any speed, a move along the ground stays in the
+    /// plane of its great circle, straight down goes straight down even when a
+    /// step is so long that rounding it is longer than the planet, and the
+    /// height alone meets `min_r`: however long the step, it can't come out on
+    /// the far side.
     fn step_fly(&mut self, planet: &Planet, input: &Input, dt: f64) {
-        let cam = self.camera();
-        let (fwd, _, up) = cam.vectors();
-        let right = cam.right();
-        let mut mv = DVec3::ZERO;
+        let up = self.pos.normalize();
+        let ahead = level(up, self.facing);
+        let right = ahead.cross(up).normalize();
+        let (sin, cos) = (self.pitch.sin(), self.pitch.cos());
+        let (mut along, mut rise) = (DVec3::ZERO, 0.0);
         if input.forward {
-            mv += fwd;
+            along += ahead * cos;
+            rise += sin;
         }
         if input.back {
-            mv -= fwd;
+            along -= ahead * cos;
+            rise -= sin;
         }
         if input.left {
-            mv -= right;
+            along -= right;
         }
         if input.right {
-            mv += right;
+            along += right;
         }
         if input.jump {
-            mv += up;
+            rise += 1.0;
         }
         if input.down {
-            mv -= up;
+            rise -= 1.0;
         }
         let speed = if input.sprint { self.fly_speed * 4.0 } else { self.fly_speed };
-        self.vel = if mv != DVec3::ZERO { mv.normalize() * speed } else { DVec3::ZERO };
-        self.pos += self.vel * dt;
+        let keys = (along.length_squared() + rise * rise).sqrt();
+        let r = self.pos.length();
         let min_r = planet.bottom_radius() + 2.0;
-        if self.pos.length() < min_r {
-            self.pos = self.pos.normalize() * min_r;
+        if keys > 0.0 {
+            let (along, rise) = (along * (speed / keys), rise * (speed / keys));
+            self.vel = along + up * rise;
+            self.pos = (self.pos + along * dt).normalize() * (r + rise * dt).clamp(min_r, MAX_RADIUS_M);
+        } else {
+            self.vel = DVec3::ZERO;
+            if r < min_r {
+                self.pos = up * min_r;
+            }
         }
         self.on_ground = false;
         self.in_water = false;
@@ -356,8 +432,8 @@ impl Player {
         }
 
         // Desired horizontal velocity in the tangent plane.
-        let (north, east, up) = Camera::local_frame(self.pos);
-        let fwd = north * self.heading.cos() + east * self.heading.sin();
+        let up = self.pos.normalize();
+        let fwd = level(up, self.facing);
         let right = fwd.cross(up).normalize();
         let mut wish = DVec3::ZERO;
         if input.forward {
@@ -516,7 +592,7 @@ impl Player {
         while k > 0 && !solid(k - 1) {
             k -= 1;
         }
-        self.pos = planet.dir(f, i, j) * planet.radius_at(k as f64 + EPS);
+        self.place(planet.dir(f, i, j) * planet.radius_at(k as f64 + EPS));
         self.vel = DVec3::ZERO;
         self.on_ground = true;
     }
@@ -939,9 +1015,7 @@ mod tests {
         // Corner: start near (N, N) of face 0 and walk diagonally through it.
         let mut pl = standing(&p, 0, n - 2.5, n - 2.5, 600);
         let f0 = Frame::at(&p, pl.pos);
-        let (north, east, _) = Camera::local_frame(pl.pos);
-        let diag = (f0.ei + f0.ej).normalize();
-        pl.heading = diag.dot(east).atan2(diag.dot(north));
+        pl.face(f0.ei + f0.ej);
         let start = pl.pos;
         let mut faces = std::collections::BTreeSet::new();
         for _ in 0..240 {

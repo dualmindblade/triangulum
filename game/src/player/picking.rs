@@ -133,6 +133,10 @@ impl Ray<'_> {
 /// First solid (or bucket liquid) on the true world ray, for the entire reach.
 pub fn pick(vox: &dyn Voxels, planet: &Planet, eye: DVec3, dir: DVec3, reach_m: f64, liquids: bool) -> Option<Hit> {
     if !eye.is_finite() || !dir.is_finite() || eye.length_squared() == 0.0 || dir.length_squared() == 0.0 || !reach_m.is_finite() || reach_m < 0.0 { return None; }
+    // Above the top of the world there is nothing to hit, and far enough out a
+    // metre is below the rounding of a radius: the walk would be through layers
+    // that are not there.
+    if eye.length() - reach_m > planet.radius_at(planet.height as f64) { return None; }
     let dir = dir.normalize();
     let (f, i, j, k) = planet.lattice_of_pos(eye);
     let n = planet.n as i64;

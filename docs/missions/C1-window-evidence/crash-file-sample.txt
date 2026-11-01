@@ -1,0 +1,32 @@
+Triangulum panicked, 20261101-010257 UTC
+build 18d69c755-dirty
+command line: E:\triangulum-build\C1\release\triangulum.exe --no-focus --size 640x360 --bake C:/code/triangulum/game/assets/world/seed42 --no-save --no-sim --crash-test
+thread main
+at src\app.rs:820:9
+
+--crash-test: a panic on purpose, to see the crash file
+
+backtrace:
+   0:     0x7ff62385221e - std::backtrace_rs::backtrace::win64::trace
+                               at /rustc/e408947bfd200af42db322daf0fadfe7e26d3bd1/library\std\src\..\..\backtrace\src\backtrace\win64.rs:85
+   1:     0x7ff62385221e - std::backtrace_rs::backtrace::trace_unsynchronized
+                               at /rustc/e408947bfd200af42db322daf0fadfe7e26d3bd1/library\std\src\..\..\backtrace\src\backtrace\mod.rs:66
+   2:     0x7ff62385221e - std::backtrace::Backtrace::create
+                               at /rustc/e408947bfd200af42db322daf0fadfe7e26d3bd1/library\std\src\backtrace.rs:331
+   3:     0x7ff62385215a - std::backtrace::Backtrace::force_capture
+                               at /rustc/e408947bfd200af42db322daf0fadfe7e26d3bd1/library\std\src\backtrace.rs:312
+   4:     0x7ff622f5fe41 - triangulum::crash::report
+                               at C:\code\triangulum\.claude\worktrees\agent-a60ba3785e1a85de9\game\src\crash.rs:57
+   5:     0x7ff622f5fe41 - triangulum::crash::write
+                               at C:\code\triangulum\.claude\worktrees\agent-a60ba3785e1a85de9\game\src\crash.rs:31
+   6:     0x7ff622f5fe41 - triangulum::crash::install::closure$0
+                               at C:\code\triangulum\.claude\worktrees\agent-a60ba3785e1a85de9\game\src\crash.rs:21
+   7:     0x7ff623852bd1 - std::panicking::panic_with_hook
+                               at /rustc/e408947bfd200af42db322daf0fadfe7e26d3bd1/library\std\src\panicking.rs:833
+   8:     0x7ff623852969 - std::panicking::panic_handler::closure$0
+                               at /rustc/e408947bfd200af42db322daf0fadfe7e26d3bd1/library\std\src\panicking.rs:691
+   9:     0x7ff62384c80f - std::sys::backtrace::__rust_end_short_backtrace<std::panicking::panic_handler::closure_env$0,never$>
+                               at /rustc/e408947bfd200af42db322daf0fadfe7e26d3bd1/library\std\src\sys\backtrace.rs:182
+  10:     0x7ff623838d6e - std::panicking::panic_handler
+                               at /rustc/e408947bfd200af42db322daf0fadfe7e26d3bd1/library\std\src\panicking.rs:689
+  11:     0x7ff6238d415d - core::panicking::panic_fmt
