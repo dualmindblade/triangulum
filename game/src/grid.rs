@@ -7,7 +7,8 @@
 //!
 //! Chunks are 32^3 voxels at every LOD. A voxel at LOD L is 2^L blocks, so a
 //! chunk at LOD L spans 32 * 2^L blocks on every axis and tiles the face
-//! exactly because N and H are powers of two multiples of 32.
+//! exactly because N is a multiple of the coarsest chunk edge. N need not
+//! be a power of two (the Earth analogue has 832 half-heights).
 
 use cubesphere::{self as cs, Projection};
 use glam::DVec3;
@@ -82,7 +83,98 @@ fn one() -> f64 {
 impl WorldConfig {
     pub fn load(path: &str) -> Result<Self, String> {
         let text = std::fs::read_to_string(path).map_err(|e| format!("read {path}: {e}"))?;
-        serde_json::from_str(&text).map_err(|e| format!("parse {path}: {e}"))
+        Self::parse(&text).map_err(|e| format!("parse {path}: {e}"))
+    }
+
+    /// The human-edited file uses half-heights; snapshots/replays retain N
+    /// so older recordings can still be inspected without changing identity.
+    pub fn parse(text: &str) -> Result<Self, String> {
+        let mut doc: serde_json::Value = serde_json::from_str(text).map_err(|e| e.to_string())?;
+        if let Some(size) = doc.get("planet_size_half_heights") {
+            if doc.get("columns_per_face").is_some() {
+                return Err("use planet_size_half_heights alone, not columns_per_face as well (N = planet_size_half_heights * H/2)".into());
+            }
+            let size = size.as_u64().and_then(|n| u32::try_from(n).ok())
+                .ok_or("planet_size_half_heights must be a whole number in steps of 32")?;
+            let h = doc["world_height"].as_u64().and_then(|n| u32::try_from(n).ok())
+                .ok_or("world_height must be a power of two, 32 to 65536")?;
+            let n = Self::columns_for_half_heights(size, h)?;
+            if let Some(sea) = doc.get("sea_level") {
+                if sea.as_u64() != Some((h / 2) as u64) {
+                    return Err(format!("sea_level must be H/2 = {} for a planet measured in half-heights; change sea_level to {}", h / 2, h / 2));
+                }
+            }
+            doc["sea_level"] = (h / 2).into();
+            doc["columns_per_face"] = n.into();
+            doc.as_object_mut().unwrap().remove("planet_size_half_heights");
+        }
+        let c: Self = serde_json::from_value(doc).map_err(|e| e.to_string())?;
+        Planet::try_new(c.block_size_m, c.world_height, c.sea_level, c.columns_per_face)?;
+        Ok(c)
+    }
+
+    pub fn columns_for_half_heights(size: u32, height: u32) -> Result<u32, String> {
+        if !height.is_power_of_two() || !(32..=crate::sim::PosKey::MAX_H).contains(&height) {
+            return Err("world_height must be a power of two, 32 to 65536 (the simulation stores layers in 16 bits)".into());
+        }
+        let max = (crate::sim::PosKey::MAX_N / (height / 2)).min(1024);
+        if size < 32 || size % 32 != 0 {
+            return Err(format!("planet_size_half_heights = {size} must be a positive multiple of 32 (32, 64, 96, ...): a coarsest chunk spans 32 half-heights, and must tile every face exactly"));
+        }
+        if size > max {
+            return Err(format!("planet_size_half_heights = {size} exceeds the limit {max} at H = {height}: N = size * H/2 must fit 1048576 columns (sim::PosKey stores i and j in 20 bits); the size dial is also capped at 1024"));
+        }
+        Ok(size * (height / 2))
+    }
+}
+
+#[cfg(test)]
+mod planet_scale_tests {
+    use super::*;
+
+    #[test]
+    fn t1_every_slider_step_tiles_and_extreme_positions_round_trip() {
+        for units in (128..=1024).step_by(32) {
+            let n = WorldConfig::columns_for_half_heights(units, 2048).unwrap();
+            let p = Planet::new(1.0, 2048, 1024, n);
+            assert_eq!(p.max_lod, 10);
+            assert_eq!(p.chunks_per_edge(10) * (CHUNK_U32 << 10), n);
+            for face in 0..6 {
+                for (i,j) in [(0,0), (n-1,n-1), (n/2,n/2)] {
+                    let bp = BlockPos { face, i, j, k: 2047 };
+                    assert_eq!(crate::sim::PosKey::of(bp).pos(), bp);
+                    let (f, a, b, k) = p.lattice_of_pos(p.dir(face, i as f64+0.5, j as f64+0.5) * p.radius_at(2047.5));
+                    assert_eq!(f, face);
+                    assert!((a-i as f64-0.5).abs() < 1e-5 && (b-j as f64-0.5).abs() < 1e-5 && (k-2047.5).abs() < 1e-5);
+                }
+            }
+        }
+        assert!(WorldConfig::columns_for_half_heights(129, 2048).unwrap_err().contains("32"));
+        assert!(WorldConfig::columns_for_half_heights(1056, 2048).unwrap_err().contains("20 bits"));
+        assert!(WorldConfig::columns_for_half_heights(832, 4096).unwrap_err().contains("512"));
+    }
+
+    #[test]
+    fn t1_shipped_world_has_two_half_height_voxels() {
+        let c = WorldConfig::load(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/world.json")).unwrap();
+        assert_eq!(c.sea_level, c.world_height / 2);
+        let p = Planet::new(c.block_size_m, c.world_height, c.sea_level, c.columns_per_face);
+        assert_eq!(p.voxel_m(p.max_lod), 1024.0);
+        assert_eq!(p.n / (p.height / 2), 128);
+    }
+
+    #[test]
+    fn t1_world_file_accepts_half_heights() {
+        let mut v: serde_json::Value = serde_json::from_str(include_str!("../assets/world.json")).unwrap();
+        v.as_object_mut().unwrap().remove("columns_per_face");
+        v["planet_size_half_heights"] = 832.into();
+        v["sea_level"] = 1024.into();
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("out/t1-config-test.json");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, v.to_string()).unwrap();
+        let c = WorldConfig::load(&path.to_string_lossy()).unwrap();
+        assert_eq!(c.columns_per_face, 851_968);
+        std::fs::remove_file(path).unwrap();
     }
 }
 
@@ -197,11 +289,12 @@ impl Planet {
         if height > max_h {
             return Err(format!("H = {height} layers is more than the simulation's position key holds: at most {max_h} (2^16; sim::PosKey packs k in 16 bits)"));
         }
-        // The coarsest voxel is H blocks (the cap). A voxel grid can only
+        // Centred sea allows a coarsest voxel of H/2 blocks. A voxel grid can only
         // place sea level exactly when the voxel size divides the sea level,
         // so LODs coarser than the largest power of two dividing sea_level
         // would show the sea either a voxel too high or not at all; they are
-        // left out. With the defaults (H 2048, sea 512) this is LOD 9 (512 m).
+        // left out. With sea = H/2 (2048/2) this is LOD 10 (1024 m).
+        // Legacy sea levels remain available to tests and --sea-level.
         // A sea level like 513 would leave only LOD 0 and billions of root
         // chunks, so the sea level must be a multiple of H / 8 at least.
         let sea_lod = (height.trailing_zeros().min(sea_level.trailing_zeros())) as u8;

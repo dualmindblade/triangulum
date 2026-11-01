@@ -27,7 +27,7 @@ shot golden_hills
 skytime 12:00
 
 # ---- water: the sea from its shore (face 1, the sea at i < 1800) and from 300 m
-atblock 1 1806 59003 511
+atblock 1 1806 59003 1023
 mode fly
 hold space 0.3
 lookaxis -i -20

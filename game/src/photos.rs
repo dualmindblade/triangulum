@@ -154,7 +154,7 @@ pub fn sidecar(session: &Session, cam: &Camera, settings: &Settings, look: &Look
     // The camera can be ahead of the player by mouse motion not yet stepped
     // (`Controls::camera`): the exact pose is the one the photo saw.
     let mut seen = session.player.clone();
-    seen.heading = cam.heading;
+    seen.facing = cam.facing;
     seen.pitch = cam.pitch;
     let state = settings.at(session.sky.seconds);
     let (edit_hash, chunks) = edit_state(&engine.edits, digests);
@@ -172,7 +172,7 @@ pub fn sidecar(session: &Session, cam: &Camera, settings: &Settings, look: &Look
         "pose": {
             "lat": lat, "lon": lon, "alt_m": alt_m,
             "ground_m": ground_m, "alt_agl_m": alt_m - ground_m,
-            "heading_deg": cam.heading.to_degrees(), "pitch_deg": cam.pitch.to_degrees(),
+            "heading_deg": cam.heading().to_degrees(), "pitch_deg": cam.pitch.to_degrees(),
             "mode": if session.player.mode == crate::player::Mode::Walk { "walk" } else { "fly" },
             "exact": pose_text(&seen),
         },

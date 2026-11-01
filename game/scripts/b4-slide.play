@@ -20,7 +20,7 @@ mode fly
 sim radius 112
 
 # ---- A. a tower falls apart ----------------------------------------------
-atblock 2 107147 57531 612
+atblock 2 107147 57531 1124
 fill -5 -12 -8 21 12 -8 stone
 tick 2
 assert queued == 0
@@ -47,7 +47,7 @@ tick 40
 assert queued == 0
 
 # ---- B. a cube of sand dropped on a table: the pile and its slope --------
-atblock 2 107187 57531 612
+atblock 2 107187 57531 1124
 fill -5 -20 -8 29 20 -8 stone
 tick 2
 assert queued == 0
@@ -70,7 +70,7 @@ tick 40
 assert queued == 0
 
 # ---- C. a sand cliff, its wall removed, a save in the middle ---------------
-atblock 2 107227 57531 612
+atblock 2 107227 57531 1124
 fill -5 -20 -8 33 20 -8 stone
 fill 14 -7 -7 21 -7 2 stone
 fill 14 7 -7 21 7 2 stone
@@ -109,7 +109,7 @@ tick 40
 assert queued == 0
 
 # ---- D. water on a shelf: the cell at the ledge goes over ------------------
-atblock 2 107277 57531 612
+atblock 2 107277 57531 1124
 fill -2 -3 -8 12 3 -7 stone
 fill -2 -3 -6 12 -3 -4 stone
 fill -2 3 -6 12 3 -4 stone
@@ -133,15 +133,15 @@ assert queued == 0
 # ---- E. a pit in a real beach: its walls slump ------------------------------
 mode fly
 select 1
-assert block[1,1921,59004,511] == sand
-assert block[1,1921,59004,512] == sand
-atblock 1 1926 59004 516
+assert block[1,1921,59004,1023] == sand
+assert block[1,1921,59004,1024] == sand
+atblock 1 1926 59004 1028
 lookaxis -i 0
 aim -5 0 -5
 shot E_beach_0_before
 # a shaft four deep, dug from straight above: a slanted ray would take the
 # neighbouring column's top instead
-atblock 1 1921 59004 513
+atblock 1 1921 59004 1025
 aim 0 0 -1.5
 assert crosshair == sand
 tap break
@@ -160,14 +160,14 @@ assert queued == 0
 state E_pit
 log the beach around the shaft: under the old rule one column four deep, all else 5
 heights -5 -4 5 4 -7 0
-atblock 1 1926 59004 516
+atblock 1 1926 59004 1028
 lookaxis -i 0
 aim -5 0 -5
 shot E_beach_1_after_digging_four_deep
 
 # ---- F. a heap over a cube corner -------------------------------------------
 mode fly
-atblock 0 131071 131071 760
+atblock 0 131071 131071 1272
 fill -8 -8 -8 8 8 -8 stone
 tick 3
 assert queued == 0
@@ -184,12 +184,12 @@ tick 40
 assert queued == 0
 
 # ---- G. the edge of the active region --------------------------------------
-# One chunk is simulated: i 107136..107167, j 57504..57535, k 608..639, the
+# One chunk is simulated: i 107136..107167, j 57504..57535, k 1120..1151, the
 # player at its centre. A plate reaches the chunk's +i side, a sand block sits
 # on its last cell, and the drop beside it is in the next chunk: it waits,
 # at no cost, and goes the tick the region reaches that chunk.
 sim radius 1
-atblock 2 107152 57520 623
+atblock 2 107152 57520 1135
 tick 2
 fill 11 -2 0 15 2 0 stone
 tick 2

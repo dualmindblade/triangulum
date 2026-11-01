@@ -1,9 +1,12 @@
-//! Generator v2: a pure function of (seed, position, LOD voxel size).
+//! Generator v3: a pure function of (seed, position, LOD voxel size).
 //!
-//! Height = the smooth bake surface times the vertical scale, plus the
-//! engine's landforms (`landform.rs`: ridges, valley networks, mesas and a
-//! fine roughness), band-limited to the voxel size so every LOD samples the
-//! same surface. Materials come from climate; strata are real blocks.
+//! Height = the global surface (the bake times the vertical scale,
+//! `scale.rs`) plus the local relief in metres (`landform.rs`: peaks,
+//! ridges, valleys, hills, gullies, roughness, mesas), eased under the
+//! world's ceiling, band-limited to the voxel size so every LOD samples the
+//! same surface. The relief ramps to nothing at rivers and lakes, so land
+//! falls towards water (`Hydro::relief_ramp`). Materials come from climate;
+//! strata are real blocks.
 //! A chunk is generated directly at its LOD from the column samples at its
 //! voxel centres, with a one-voxel border so the mesher can cull and shade
 //! faces against the neighbours without loading them.
@@ -47,17 +50,19 @@ pub mod hydro;
 pub mod inspect;
 pub mod landform;
 pub mod noise;
+pub mod scale;
 pub mod strata;
 
-use crate::grid::{CHUNK, ChunkKey, FootprintKey, Planet};
+use crate::grid::{CHUNK, ChunkKey, FastMap, FootprintKey, Planet};
 use crate::world::chunk::VOXELS;
 use crate::world::{BlockId, Chunk, Registry};
-use bake::Bake;
+use bake::{Bake, BakeSample};
 use boundary::Warp;
 use glam::DVec3;
 use hydro::{Cands, Hydro, LakeAt, WaterKind};
 use landform::{Landform, Local};
 use noise::gradient_noise;
+use scale::Scale;
 use std::sync::Arc;
 use strata::{GeoHint, RockCache, Strata};
 
@@ -72,7 +77,7 @@ pub fn pidx(x: i32, y: i32, z: i32) -> usize {
 }
 
 /// Low land away from the sea is held at this height, so no dry pit opens
-/// where the landform dips below sea level.
+/// where the global surface dips below sea level.
 const LAND_FLOOR_M: f64 = 0.3;
 /// The climate's thresholds: snow on land, ice on water, hot deserts (C),
 /// deserts and dry grass (mm of rain a year). `settle_climate` must know them all.
@@ -85,13 +90,24 @@ const DRY_MM: f32 = 320.0;
 /// between them.
 const CLIMATE_NODES: usize = 5;
 const NODE_STEP: f64 = (PAD - 1) as f64 / (CLIMATE_NODES - 1) as f64;
-/// Lapse rate applied to the landform's height (deg C per Earth km).
+/// Lapse rate on the local relief's height (deg C per km of real metres):
+/// a peak 800 m up is about 5 degrees colder than the bake's valley floor.
+/// (Local: the bake's own temperature already holds the global surface's lapse.)
 const LAPSE_C_PER_KM: f64 = 6.5;
 /// The lapse sees the landform as a voxel of this size sees it (m): the hills,
 /// not the hummocks. Their contours are rough enough at that scale, so only
 /// octaves up to `LAPSE_WARP_TOP_M` bend them.
 const LAPSE_VOXEL_M: f64 = 128.0;
 const LAPSE_WARP_TOP_M: f64 = 512.0;
+/// Bare rock (`rock_map`): ground steeper than `ROCK_SLOPE` (rise over run)
+/// as a voxel of `ROCK_VOXEL_M` sees it, and any column whose own slope is
+/// over `ROCK_CLIFF_SLOPE` (a cliff or a terrace's riser, too narrow for that
+/// voxel). `ROCK_WARP_M` is the furthest the rock warp is read (m): it moves a
+/// column under half this nearly everywhere, and a read past it holds at it.
+const ROCK_SLOPE: f32 = 0.85;
+const ROCK_CLIFF_SLOPE: f32 = 2.5;
+const ROCK_VOXEL_M: f64 = 16.0;
+pub(crate) const ROCK_WARP_M: f64 = 48.0;
 
 /// Block ids the generator places, resolved from the registry by name.
 #[derive(Clone, Copy, Debug)]
@@ -172,13 +188,13 @@ pub struct Column {
     /// How much of the landform's lapse applies here: none on the sea, whose
     /// surface has no height whatever its floor does, fading out over a lake.
     pub lapse_share: f32,
-    /// What the landform adds here, before anything shapes it (m).
-    pub landform_m: f32,
+    /// What stands above the global surface here (m), before the hydrology.
+    pub stands_m: f32,
     /// On the beach: dry sand above the waterline, sand under the shallows.
     pub beach: bool,
     /// Dither noise in [-1, 1] at ~40 m scale, for small soft thresholds
-    /// (soil depth, river beds, bare rock). Not for anything with a long
-    /// edge: across a gentle gradient a dither is scatter (`boundary.rs`).
+    /// (soil depth, river beds). Not for anything with a long edge: across a
+    /// gentle gradient a dither is scatter (`boundary.rs`).
     pub dither: f32,
     /// Strata column offset (m).
     pub strata_off: f32,
@@ -202,7 +218,7 @@ impl Default for Column {
             temp_c: 0.0,
             precip: 0.0,
             lapse_share: 0.0,
-            landform_m: 0.0,
+            stands_m: 0.0,
             beach: false,
             dither: 0.0,
             strata_off: 0.0,
@@ -245,8 +261,12 @@ pub struct Generator {
     pub planet: Planet,
     pub bake: Arc<dyn Bake>,
     pub seed: u64,
-    /// Metres of terrain per metre of bake elevation.
+    /// Metres of terrain per metre of bake elevation (also in `scale`).
     pub vscale: f64,
+    /// The local/global split: every global height goes through `scale.global_m`.
+    pub scale: Scale,
+    /// Seconds `Hydro::new` took (it samples the natural ground along every river).
+    pub hydro_build_s: f64,
     /// Andrew's fine-relief dial (1.0 = default).
     pub roughness: f64,
     /// Andrew's landform dial (1.0 = default).
@@ -268,6 +288,8 @@ pub struct Generator {
     max_relief_m: f64,
     /// Where a column reads the climate and the coast (`boundary.rs`).
     pub warp: Warp,
+    /// Bends the bare-rock line (`rock_map`).
+    rock_warp: Warp,
     coast_warp: Warp,
 }
 
@@ -310,13 +332,39 @@ impl Generator {
             .map(|n| registry.id(n))
             .collect::<Result<Vec<_>, _>>()?;
         let strata = Strata::new(beds, planet.block_size, planet.radius, seed);
-        let hydro = bake.hydro().map(|d| Arc::new(Hydro::new(d, planet.radius, planet.block_size, vscale, seed)));
-        let lf = Landform { seed: seed ^ 0x1A4D_F0E1, radius: planet.radius, vscale, landform, roughness, valleys: hydro.is_none() };
-        let elev_max = (0..6u8).map(|f| bake.elev_range_km(f, -1.0, -1.0, 1.0, 1.0).1).fold(f32::MIN, f32::max) as f64;
-        let max_relief_m = lf.bound_m(lf.relief_bound_m(bake.rough_max_km() as f64, elev_max));
+        let scale = Scale::new(vscale, planet.radius, planet.block_size, planet.height, planet.sea_level);
+        let lf = Landform { seed: seed ^ 0x1A4D_F0E1, radius: planet.radius, scale, landform, roughness, valleys: bake.hydro().is_none() };
         let warp = Warp::climate(planet.radius, planet.block_size, seed);
         let coast_warp = Warp::coast(planet.radius, planet.block_size, seed);
-        Ok(Self { planet, bake, seed, vscale, roughness, landform, lf, blocks, strata, skirt: 2, markers: Vec::new(), hide_water: false, hydro, max_relief_m, warp, coast_warp })
+        let t0 = std::time::Instant::now();
+        let hydro = Self::hydro_for(&planet, bake.as_ref(), seed, &scale, &lf, &coast_warp).map(Arc::new);
+        let hydro_build_s = t0.elapsed().as_secs_f64();
+        let elev_max = (0..6u8).map(|f| bake.elev_range_km(f, -1.0, -1.0, 1.0, 1.0).1).fold(f32::MIN, f32::max) as f64;
+        let max_relief_m = lf.bound_m(lf.relief_bound_m(bake.rough_max_km() as f64, elev_max));
+        let rock_warp = Warp::rock(planet.radius, planet.block_size, seed);
+        Ok(Self { planet, bake, seed, vscale, scale, hydro_build_s, roughness, landform, lf, blocks, strata, skirt: 2, markers: Vec::new(), hide_water: false, hydro, max_relief_m, warp, coast_warp, rock_warp })
+    }
+
+    /// The hydrology model for a bake, built from the generator's own pure
+    /// functions: the natural ground with no relief (what stands at a
+    /// river's channel) and the local relief scale, both along every course.
+    fn hydro_for(planet: &Planet, bake: &dyn Bake, seed: u64, scale: &Scale, lf: &Landform, coast_warp: &Warp) -> Option<Hydro> {
+        let d = bake.hydro()?;
+        let ground = |dir: DVec3| {
+            let s = bake.sample(dir);
+            let coast = coast_read(bake, coast_warp, planet.radius, dir, s.coast, planet.block_size);
+            natural_ground(scale, seed, &s, coast, dir * planet.radius, 0.0, planet.block_size).0
+        };
+        let relief = |dir: DVec3| {
+            let l = lf.local(&bake.sample(dir));
+            (l.relief, l.mountain)
+        };
+        Some(Hydro::new(d, scale, seed, &ground, &relief))
+    }
+
+    /// Build the hydrology model again (timing it, `hydro_stats`).
+    pub fn build_hydro(&self) -> Option<Hydro> {
+        Self::hydro_for(&self.planet, self.bake.as_ref(), self.seed, &self.scale, &self.lf, &self.coast_warp)
     }
 
     /// The highest block id this generator places (M3b: the simulation's
@@ -372,7 +420,7 @@ impl Generator {
 
     /// One line naming the relief model and its dials (captions, logs).
     pub fn describe_relief(&self) -> String {
-        format!("landforms v2, roughness {}, landform {}", self.lf.roughness, self.lf.landform)
+        format!("landforms v3 (local relief in metres, ceiling {:.0} m), roughness {}, landform {}", self.scale.ceiling_m, self.lf.roughness, self.lf.landform)
     }
 
     /// Conservative padding (m) above and below the bake's height range,
@@ -397,7 +445,7 @@ impl Generator {
     /// `climate` off the column's climate is left for `settle_climate`.
     fn column_from(&self, dir: DVec3, voxel_m: f64, coarse: Option<(f64, f64, f64, f64)>, strata_off: Option<f64>, cands: Option<&Cands>, climate: bool) -> (Column, f64, Local) {
         let s = self.bake.sample(dir);
-        let base = s.elev_km * 1000.0 * self.vscale;
+        let base = self.scale.global_m(s.elev_km);
         let strata_off = strata_off.unwrap_or_else(|| self.strata.column_offset_m(dir));
         let lf = self.lf.sample_with(dir, &s, voxel_m, strata_off, coarse);
         // Lakes and rivers near this column.
@@ -420,24 +468,27 @@ impl Generator {
             }
             _ => LakeAt::default(),
         };
-        // The landform fades out over lakes (their beds and shores are the bake's).
-        let dh = match hx {
-            Some((h, _)) if !lake.is_empty() => lf.dh * h.lake_damp(&lake),
-            _ => lf.dh,
+        // Land falls towards water: the relief ramps up from a river's bank
+        // or a lake's shore over the valley it leaves (`Hydro::relief_ramp`);
+        // and it gives way where the global surface leaves it no room under
+        // the ceiling (`Scale::headroom`: 1 on the 90 km planet).
+        let ramp = match hx {
+            Some((h, _)) if !lake.is_empty() || !rivers.is_empty() => h.relief_ramp(&lake, &rivers, lf.local.relief, lf.local.mountain, voxel_m),
+            _ => 1.0,
         };
-        let mut h = base + dh;
-        // The shoreline first; the ground follows it (`coast.rs`).
+        let dh = lf.dh * self.scale.headroom(base, lf.local.relief) * ramp;
+        // The global surface plus the relief, under the ceiling; then the
+        // shoreline, which the ground follows (`coast.rs`).
         let p = dir * self.planet.radius;
-        let shore = coast::shore_at(self.coast_m(dir, s.coast, voxel_m), p, voxel_m, self.seed);
-        // Land the landform pushes below sea level is held just above it, and
-        // so is land the warp lays over the bake's sea floor.
-        if !shore.sea && (base >= -1.0 || s.coast > 0.0) && h < LAND_FLOOR_M + 1.0 {
-            h = soft_floor(h, LAND_FLOOR_M, 1.0);
-        }
-        h = coast::shape(h, shore.d);
+        let coast_m = self.coast_m(dir, s.coast, voxel_m);
+        let (mut h, shore) = natural_ground(&self.scale, self.seed, &s, coast_m, p, dh, voxel_m);
+        // What stands above the global surface here, for the lapse.
+        let dh = h - base;
         let (water_m, water_kind, channel, lake_sand, river_bank) = match hx {
             Some((hy, _)) if !lake.is_empty() || !rivers.is_empty() => {
-                let sh = hy.shape(dir, h, &lake, &rivers, shore.sea, lf.local.rugged, voxel_m, self.lod_of(voxel_m));
+                // The global surface alone, as a lake's basin is carved into it.
+                let h_floor = if lake.is_empty() { h } else { natural_ground(&self.scale, self.seed, &s, coast_m, p, 0.0, voxel_m).0 };
+                let sh = hy.shape(dir, h, h_floor, &lake, &rivers, shore.sea, lf.local.rugged, voxel_m, self.lod_of(voxel_m));
                 h = if sh.water == f64::NEG_INFINITY { coast::held(sh.h, shore.d) } else { sh.h };
                 (sh.water, sh.kind, sh.channel, sh.lake_floor || sh.lake_shore, sh.bank)
             }
@@ -446,12 +497,9 @@ impl Generator {
         };
         let ocean = water_kind == WaterKind::Ocean && h < water_m;
         let river = if self.hydro.is_some() { channel } else { lf.river };
-        let lapse_share = match hx {
-            _ if shore.sea => 0.0,
-            Some((h, _)) if !lake.is_empty() => h.lake_damp(&lake),
-            _ => 1.0,
-        };
-        let (temp_c, precip) = if climate { self.climate_at(dir, voxel_m, lapse_share, lf.dh) } else { (0.0, 0.0) };
+        // Land falls towards water, and so does the height the lapse reads.
+        let lapse_share = if shore.sea { 0.0 } else { ramp };
+        let (temp_c, precip) = if climate { self.climate_at(dir, voxel_m, lapse_share, dh) } else { (0.0, 0.0) };
         let dither = gradient_noise(p / 41.0 + DVec3::splat(3.1), self.seed ^ 0xD17) as f32;
         let col = Column {
             height_m: h as f32,
@@ -463,7 +511,7 @@ impl Generator {
             temp_c: temp_c as f32,
             precip: precip as f32,
             lapse_share: lapse_share as f32,
-            landform_m: lf.dh as f32,
+            stands_m: dh as f32,
             // A cliff has no beach up it (a coarse voxel keeps its sand by a voxel's height).
             beach: shore.beach && h < coast::BEACH_SAND_TOP_M + voxel_m,
             dither,
@@ -479,20 +527,10 @@ impl Generator {
         (col, dh, lf.local)
     }
 
-    /// The distance from the coastline a column reads (m, positive at sea):
-    /// through the coast's warp near it (`boundary.rs`). `coast` is the bake's
-    /// own at the column.
+    /// The distance from the coastline a column reads (`coast_read`).
     #[inline]
     fn coast_m(&self, dir: DVec3, coast: f64, voxel_m: f64) -> f64 {
-        let r = self.planet.radius;
-        if (coast * r).abs() >= coast::band_m(r) {
-            return coast * r;
-        }
-        let rough = self.bake.coast(self.coast_warp.at(dir, voxel_m.max(coast::ROUGH_VOXEL_M))) * r;
-        if rough.abs() >= coast::ROUGH_CLEAR_M || voxel_m >= coast::ROUGH_VOXEL_M {
-            return rough;
-        }
-        self.bake.coast(self.coast_warp.at(dir, voxel_m)) * r
+        coast_read(self.bake.as_ref(), &self.coast_warp, self.planet.radius, dir, coast, voxel_m)
     }
 
     /// The climate through the warp, with no lapse: what a map draws.
@@ -509,30 +547,36 @@ impl Generator {
     /// its warped position (`boundary.rs`), less the lapse on the landform's
     /// long features, of which `lapse_share` applies. Only the long features:
     /// a column's own bumps would scatter the snow line over every hummock.
-    /// `landform_m` is the landform at this column: a voxel of `LAPSE_VOXEL_M`
-    /// or more sees what the lapse sees, so it needs no second look.
-    fn climate_at(&self, dir: DVec3, voxel_m: f64, lapse_share: f64, landform_m: f64) -> (f64, f64) {
+    /// `stands_m` is what stands above the global surface at this column: a
+    /// voxel of `LAPSE_VOXEL_M` or more sees what the lapse sees, so it needs
+    /// no second look.
+    fn climate_at(&self, dir: DVec3, voxel_m: f64, lapse_share: f64, stands_m: f64) -> (f64, f64) {
         let (r, q) = self.warp.split_at(dir, voxel_m, LAPSE_WARP_TOP_M);
         let (t, p) = self.bake.climate(q);
         if lapse_share <= 0.0 {
             return (t, p);
         }
         if voxel_m >= LAPSE_VOXEL_M {
-            return (t - self.lapse_c(lapse_share * landform_m), p);
+            return (t - self.lapse_c(stands_m), p);
         }
         (t - self.lapse_at(r, voxel_m, lapse_share), p)
     }
 
-    /// The lapse (C) of a height added to the bake's (m).
+    /// The lapse (C) of a height over the global surface (m).
     #[inline]
     fn lapse_c(&self, dh: f64) -> f64 {
-        // Lapse rate on the landform's own height, in Earth-equivalent km.
-        (LAPSE_C_PER_KM * dh / self.vscale / 1000.0).clamp(-12.0, 12.0)
+        (LAPSE_C_PER_KM * dh / 1000.0).clamp(-12.0, 12.0)
     }
 
-    /// The lapse (C) at a position that has been through the short octaves.
+    /// The lapse (C) at a position that has been through the short octaves:
+    /// the local relief a voxel of `LAPSE_VOXEL_M` sees there, as much of it
+    /// as stands (`Scale::headroom`, the ceiling).
     fn lapse_at(&self, r: DVec3, voxel_m: f64, share: f64) -> f64 {
-        self.lapse_c(share * self.lf.sample(r, &self.bake.sample(r), voxel_m.max(LAPSE_VOXEL_M), 0.0).dh)
+        let s = self.bake.sample(r);
+        let base = self.scale.global_m(s.elev_km);
+        let l = self.lf.sample(r, &s, voxel_m.max(LAPSE_VOXEL_M), 0.0);
+        let stands = self.scale.soft_ceiling(base + l.dh * self.scale.headroom(base, l.local.relief)) - base;
+        self.lapse_c(share * stands)
     }
 
     /// Finish a chunk's climate (`dirs` the columns' directions, `cols` the
@@ -550,7 +594,7 @@ impl Generator {
             for y in 0..PAD {
                 let c = &mut cols[x * PAD + y];
                 let (t, p) = if near {
-                    self.climate_at(dirs[x * PAD + y], voxel_m, c.lapse_share as f64, c.landform_m as f64)
+                    self.climate_at(dirs[x * PAD + y], voxel_m, c.lapse_share as f64, c.stands_m as f64)
                 } else {
                     let (u, v) = (x as f64 / NODE_STEP, y as f64 / NODE_STEP);
                     let (ua, va) = ((u as usize).min(CLIMATE_NODES - 2), (v as usize).min(CLIMATE_NODES - 2));
@@ -615,7 +659,12 @@ impl Generator {
     /// its surface.
     pub fn ground_height_m(&self, dir: DVec3) -> f64 {
         let c = self.column(dir, self.planet.block_size);
-        if c.wet() && !self.hide_water { c.water_m } else { c.height_m as f64 }
+        let h = if c.wet() && !self.hide_water { c.water_m } else { c.height_m as f64 };
+        // Teleport, spawn and ground-relative cameras must use the surface
+        // that exists: layer 0 is bedrock and terrain is clipped at H.
+        let p = &self.planet;
+        h.clamp((1.0 - p.sea_level as f64) * p.block_size,
+            (p.height - p.sea_level) as f64 * p.block_size)
     }
 
     /// Conservative (min, max) of the bake elevation (km) over the columns a
@@ -737,12 +786,16 @@ impl Generator {
             let damped = !c.cells.is_empty();
             h.height_range(&c).map(|r| (r, damped))
         });
+        // The relief is scaled toward zero near water (the valley ramp) and
+        // under a low ceiling (`Scale::headroom`), so zero is always in range.
+        lo = lo.min(0.0);
         if let Some((_, true)) = hyd {
-            lo = lo.min(0.0);
             hi = hi.max(0.0);
         }
-        let mut hmin = emin * 1000.0 * self.vscale + lo - margin;
-        let mut hmax = emax * 1000.0 * self.vscale + hi + margin;
+        // The global surface plus the relief's range, eased under the
+        // ceiling as every column is (the easing is monotone).
+        let mut hmin = self.scale.soft_ceiling(self.scale.global_m(emin) + lo - margin);
+        let mut hmax = self.scale.soft_ceiling(self.scale.global_m(emax) + hi + margin);
         if let Some(((a, b), _)) = hyd {
             hmin = hmin.min(a);
             hmax = hmax.max(b);
@@ -835,7 +888,7 @@ impl Generator {
     /// Surface block and the soil under it. Soil is 1-4 blocks measured
     /// from the natural ground: thicker on flat, warm, wet ground, thinner
     /// on steep rock.
-    fn surface(&self, c: &Column, slope: f32) -> Surface {
+    fn surface(&self, c: &Column, slope: f32, rock: bool) -> Surface {
         let b = &self.blocks;
         let d = c.dither;
         let s = self.planet.block_size as f32;
@@ -848,7 +901,9 @@ impl Generator {
             2.5 + if pr > 600.0 { 1.0 } else { 0.0 } + if t > 10.0 { 0.5 } else { 0.0 }
         };
         let soil_blocks = (base + 0.6 * d - 2.5 * slope.min(1.2)).clamp(1.0, 4.0);
-        let soil_m = soil_blocks.round() * s;
+        // Ground this steep at this voxel shows its sides, and they are rock
+        // whether the top is or not: bare dirt there is a speck in the snow.
+        let soil_m = if slope > 0.95 { 0.0 } else { soil_blocks.round() * s };
         if c.ocean {
             // Sand under the shallows, gravel past them. (Sand under water
             // reads grey: a whole shelf of it would turn the sea grey.)
@@ -871,7 +926,7 @@ impl Generator {
         if c.lake_sand && t >= SNOW_C {
             return Surface { top: b.sand, soil: b.sand, soil_m: soil_m.max(2.0 * s) };
         }
-        if slope > 0.95 + 0.25 * d && !c.river_bank {
+        if rock && !c.river_bank {
             return Surface { top: b.stone, soil: b.stone, soil_m: 0.0 };
         }
         if t < SNOW_C {
@@ -934,7 +989,7 @@ impl Generator {
                     return (b.ice, 0);
                 }
                 // When it is also the world's bottom voxel (it spans everything
-                // below sea level: L9 at sea level 512), nothing opaque lies
+                // below sea level: L10 at sea level H/2 = 1024), nothing opaque lies
                 // under it and translucent water would show the sky through the
                 // planet (review 2 #12). It is opaque deep ocean instead, coloured
                 // like the next finer LOD's water over its gravel floor. Below this
@@ -1043,6 +1098,115 @@ impl Generator {
         Some(nodes)
     }
 
+    /// The bare-rock line: which columns of a padded chunk (`cols`) show rock.
+    ///
+    /// A column's own slope has every hummock in it, so a threshold on it (or
+    /// a dither on the threshold) draws a speck per hummock. The line here is
+    /// a contour of the slope as a voxel of `ROCK_VOXEL_M` sees it, which has
+    /// the mountain's faces, spurs and gullies in it and none of the rest,
+    /// read through `Warp::rock`: a smooth field and a warp, as every other
+    /// boundary (`boundary.rs`), so it is rough to the last block and has only
+    /// the pieces the terrain's faces have.
+    ///
+    /// Chunks at that voxel or coarser use their own columns. Finer ones read
+    /// the columns those chunks would have, on the same lattice, and only
+    /// where one is in reach: a little more of the chunk's own cost, once.
+    /// So the line is one line across those LODs. Slope is the steeper side of
+    /// each column on each axis: a ridge's crest is as bare as its faces.
+    fn rock_map(&self, key: ChunkKey, cols: &[Column]) -> Vec<bool> {
+        const N: usize = PAD;
+        let planet = &self.planet;
+        let voxel_m = planet.voxel_m(key.lod);
+        let height = |x: usize, y: usize| cols[x * N + y].height_m;
+        let own: Vec<f32> = (0..N * N).map(|p| steepest_slope(&height, p / N, p % N, N, voxel_m as f32)).collect();
+        // A cliff is steep over more than the one column a hummock is.
+        let cliff = |p: usize| own[p] > ROCK_CLIFF_SLOPE && p % N > 0 && p % N < N - 1 && p >= N && p < N * (N - 1) && [p - 1, p + 1, p - N, p + N].iter().all(|q| own[*q] > ROCK_CLIFF_SLOPE);
+        let mut rock: Vec<bool> = (0..N * N).map(cliff).collect();
+        let rock_lod = self.lod_of(ROCK_VOXEL_M);
+        if key.lod >= rock_lod {
+            let t = rock_slope_at(voxel_m);
+            for (r, s) in rock.iter_mut().zip(&own) {
+                *r |= *s > t;
+            }
+            return rock;
+        }
+        // Gentle ground, here and just past the chunk's edge: nothing to find.
+        if own.iter().all(|s| *s < 0.6 * ROCK_SLOPE) {
+            return rock;
+        }
+        // The lattice of a `rock_lod` chunk's columns, wide enough to read at
+        // every column's warped position. `m` nodes a side have a slope, and
+        // the rim round them only feeds it.
+        let g = (1u64 << rock_lod) as f64;
+        let vb = key.voxel_blocks() as f64;
+        let (i0, j0, _) = key.origin_blocks();
+        let (i0, j0) = (i0 as f64, j0 as f64);
+        let size = key.extent_blocks() as f64;
+        let reach = ROCK_WARP_M / planet.block_size;
+        let first = |o: f64| ((o - vb - reach) / g - 0.5).floor();
+        let (ni, nj) = (first(i0), first(j0));
+        let m = ((size + 2.0 * (vb + reach)) / g).ceil() as usize + 2;
+        let centre = planet.dir(key.face, i0 + 0.5 * size, j0 + 0.5 * size);
+        let cands = self.hydro_cands(centre, Self::footprint_radius_m(planet, size + 2.0 * (vb + reach + 2.0 * g))).unwrap_or_default();
+        let w = m + 2;
+        let mut h = vec![0f32; w * w];
+        for a in 0..w {
+            for b in 0..w {
+                let dir = planet.dir(key.face, (ni + a as f64 - 0.5) * g, (nj + b as f64 - 0.5) * g);
+                h[a * w + b] = self.column_from(dir, ROCK_VOXEL_M, None, None, Some(&cands), false).0.height_m;
+            }
+        }
+        let nodes = |x: usize, y: usize| h[x * w + y];
+        let s: Vec<f32> = (0..m * m).map(|p| steepest_slope(&nodes, p / m + 1, p % m + 1, w, ROCK_VOXEL_M as f32)).collect();
+        // Where the warp can't change the answer it is not read.
+        let cells = (ROCK_WARP_M / ROCK_VOXEL_M).ceil() as usize + 1;
+        let mixed = |a: usize, b: usize| {
+            let (a0, a1, b0, b1) = (a.saturating_sub(cells), (a + 1 + cells).min(m - 1), b.saturating_sub(cells), (b + 1 + cells).min(m - 1));
+            let side = s[a0 * m + b0] > ROCK_SLOPE;
+            (a0..=a1).any(|p| (b0..=b1).any(|q| (s[p * m + q] > ROCK_SLOPE) != side))
+        };
+        let top = (m - 1) as f64 - 1e-9;
+        let read = |i: f64, j: f64| {
+            let (u, v) = ((i / g - 0.5 - ni).clamp(0.0, top), (j / g - 0.5 - nj).clamp(0.0, top));
+            let (a, b) = (u as usize, v as usize);
+            let (fu, fv) = ((u - a as f64) as f32, (v - b as f64) as f32);
+            let at = |p: usize, q: usize| s[p * m + q];
+            (at(a, b) * (1.0 - fu) + at(a + 1, b) * fu) * (1.0 - fv) + (at(a, b + 1) * (1.0 - fu) + at(a + 1, b + 1) * fu) * fv
+        };
+        // Directions per lattice step at the chunk, to turn the warp's move into
+        // lattice steps (the lattice shears towards a cube's corners).
+        let d = |di: f64, dj: f64| planet.dir(key.face, i0 + 0.5 * size + di, j0 + 0.5 * size + dj);
+        let (e1, e2) = (0.5 * (d(1.0, 0.0) - d(-1.0, 0.0)), 0.5 * (d(0.0, 1.0) - d(0.0, -1.0)));
+        let (e11, e12, e22) = (e1.dot(e1), e1.dot(e2), e2.dot(e2));
+        let det = e11 * e22 - e12 * e12;
+        let mut memo: FastMap<u32, bool> = FastMap::default();
+        for x in 0..N {
+            for y in 0..N {
+                let (i, j) = (i0 + (x as f64 - 0.5) * vb, j0 + (y as f64 - 0.5) * vb);
+                let (a, b) = (((i / g - 0.5 - ni).clamp(0.0, top)) as usize, ((j / g - 0.5 - nj).clamp(0.0, top)) as usize);
+                let near = *memo.entry((a * m + b) as u32).or_insert_with(|| mixed(a, b));
+                let (qi, qj) = if near {
+                    let dir = planet.dir(key.face, i, j);
+                    let q = self.rock_warp.at(dir, voxel_m) - dir;
+                    let (r1, r2) = (q.dot(e1), q.dot(e2));
+                    (i + (e22 * r1 - e12 * r2) / det, j + (e11 * r2 - e12 * r1) / det)
+                } else {
+                    (i, j)
+                };
+                rock[x * N + y] |= read(qi, qj) > ROCK_SLOPE;
+            }
+        }
+        rock
+    }
+
+    /// `rock_map` of a chunk, for the tests.
+    #[cfg(test)]
+    pub fn chunk_rock(&self, key: ChunkKey) -> (Vec<Column>, Vec<bool>) {
+        let cols = self.chunk_columns(key);
+        let rock = self.rock_map(key, &cols);
+        (cols, rock)
+    }
+
     /// Generate one chunk at its own LOD: always the full contents.
     pub fn generate(&self, key: ChunkKey) -> Generated {
         let t0 = std::time::Instant::now();
@@ -1069,6 +1233,7 @@ impl Generator {
             // Surface material per column from the local slope (rise over run),
             // classified on the true heights before the skirt lowers the border.
             let mut surf = vec![Surface { top: self.blocks.stone, soil: self.blocks.stone, soil_m: 0.0 }; PAD * PAD];
+            let rock = self.rock_map(key, &cols);
             for x in -1..=CHUNK as i32 {
                 for y in -1..=CHUNK as i32 {
                     let at = |xx: i32, yy: i32| cols[((xx.clamp(-1, CHUNK as i32) + 1) as usize) * PAD + (yy.clamp(-1, CHUNK as i32) + 1) as usize].height_m;
@@ -1076,7 +1241,7 @@ impl Generator {
                     let dhy = at(x, y + 1) - at(x, y - 1);
                     let slope = (dhx * dhx + dhy * dhy).sqrt() / (2.0 * voxel_m as f32);
                     let p = ((x + 1) as usize) * PAD + (y + 1) as usize;
-                    surf[p] = self.surface(&cols[p], slope);
+                    surf[p] = self.surface(&cols[p], slope, rock[p]);
                 }
             }
             // Skirt: border columns pretend to be lower, so the chunk's edge
@@ -1236,11 +1401,72 @@ fn dominant_face(d: DVec3) -> u8 {
     }
 }
 
+/// The slope that is bare rock to a voxel of `voxel_m`. A coarse voxel sees
+/// the same mountain less steep, so it takes less: these are the slopes the
+/// same share of a range's columns exceed at each voxel size (`boundary_rock`).
+/// Without them the rock thinned out with distance, to a third by 64 m.
+#[inline]
+fn rock_slope_at(voxel_m: f64) -> f32 {
+    match (voxel_m / ROCK_VOXEL_M).log2().round() as i32 {
+        ..=0 => ROCK_SLOPE,
+        1 | 2 => 0.74,
+        3 => 0.71,
+        4 => 0.42,
+        _ => 0.30,
+    }
+}
+
+/// Slope at (x, y) of an `n` x `n` grid of heights `step` m apart (rise over
+/// run): the steeper side on each axis, so a ridge's crest is as steep as the
+/// faces it joins (the two sides of a plain difference cancel on it).
+#[inline]
+fn steepest_slope(h: &dyn Fn(usize, usize) -> f32, x: usize, y: usize, n: usize, step: f32) -> f32 {
+    let (xa, xb, ya, yb) = (x.saturating_sub(1), (x + 1).min(n - 1), y.saturating_sub(1), (y + 1).min(n - 1));
+    let c = h(x, y);
+    let gx = (h(xb, y) - c).abs().max((c - h(xa, y)).abs());
+    let gy = (h(x, yb) - c).abs().max((c - h(x, ya)).abs());
+    (gx * gx + gy * gy).sqrt() / step
+}
+
 /// C1 soft floor: `h` above `floor + k` is unchanged; below, it eases
 /// toward `floor` and never reaches it.
 #[inline]
 fn soft_floor(h: f64, floor: f64, k: f64) -> f64 {
     if h >= floor + k { h } else { floor + k * ((h - floor) / k - 1.0).exp() }
+}
+
+/// The distance from the coastline a column reads (m, positive at sea):
+/// through the coast's warp near it (`boundary.rs`). `coast` is the bake's
+/// own at the column (radians).
+#[inline]
+fn coast_read(bake: &dyn Bake, warp: &Warp, radius: f64, dir: DVec3, coast: f64, voxel_m: f64) -> f64 {
+    if (coast * radius).abs() >= coast::band_m(radius) {
+        return coast * radius;
+    }
+    let rough = bake.coast(warp.at(dir, voxel_m.max(coast::ROUGH_VOXEL_M))) * radius;
+    if rough.abs() >= coast::ROUGH_CLEAR_M || voxel_m >= coast::ROUGH_VOXEL_M {
+        return rough;
+    }
+    bake.coast(warp.at(dir, voxel_m)) * radius
+}
+
+/// The natural ground of a column before the hydrology shapes it (m above
+/// sea), and its place against the shore: the global surface plus the local
+/// relief `dh`, eased under the world's ceiling, the land floor, then the
+/// shore's own profile. `coast_m` is the column's `coast_read`. The
+/// generator's columns and `Hydro::new` share it:
+/// the hydrology samples it with `dh = 0` along every river course, which
+/// is what stands at a channel (the relief ramps to nothing there).
+fn natural_ground(scale: &Scale, seed: u64, s: &BakeSample, coast_m: f64, p: DVec3, dh: f64, voxel_m: f64) -> (f64, coast::Shore) {
+    let base = scale.global_m(s.elev_km);
+    let mut h = scale.soft_ceiling(base + dh);
+    let shore = coast::shore_at(coast_m, p, voxel_m, seed);
+    // Land below sea level away from the sea is held just above it, and so
+    // is land the warp lays over the bake's sea floor.
+    if !shore.sea && (base >= -1.0 || s.coast > 0.0) && h < LAND_FLOOR_M + 1.0 {
+        h = soft_floor(h, LAND_FLOOR_M, 1.0);
+    }
+    (coast::shape(h, shore.d), shore)
 }
 
 #[cfg(test)]
@@ -1254,3 +1480,6 @@ mod shore_tests;
 
 #[cfg(test)]
 mod boundary_tests;
+
+#[cfg(test)]
+mod relief_tests;

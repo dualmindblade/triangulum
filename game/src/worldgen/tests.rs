@@ -34,6 +34,43 @@ pub fn test_generator() -> Generator {
     generator_with(None, 2048, 512)
 }
 
+pub(super) fn planet_size_generator(units: u32) -> Generator {
+    let p = Planet::new(1.0, 2048, 1024, units * 1024);
+    Generator::new(p, shared_bake(), 42, p.radius / 6_371_000.0, 1.0, 1.0, &registry()).unwrap()
+}
+
+#[test]
+fn t1_two_coarse_voxels_and_clipped_ground_at_every_size() {
+    for size in [128, 256, 512, 832, 1024] {
+        let mut g = planet_size_generator(size);
+        let p = g.planet;
+        let places = crate::engine::find_places(g.bake.as_ref());
+        let key = key_at(&g, places.trench.0, p.max_lod, -1.0);
+        let coarse = g.generate(key);
+        let cols = g.chunk_columns(key);
+        let mut wet = 0;
+        for x in 0..CHUNK as i32 {
+            for y in 0..CHUNK as i32 {
+                if cols[(x+1) as usize * PAD + (y+1) as usize].ocean {
+                    let bottom = coarse.ids[pidx(x,y,0)];
+                    assert!(bottom == g.blocks.deep_ocean || bottom == g.blocks.ice);
+                    assert_eq!(coarse.ids[pidx(x,y,1)], g.blocks.air, "{size}: air above sea");
+                    wet += 1;
+                }
+            }
+        }
+        assert!(wet > 100);
+        g.hide_water = true;
+        let raw_floor = g.column(places.trench.0, 1.0).height_m;
+        let raw_peak = g.column(places.peak.0, 1.0).height_m;
+        let floor = g.ground_height_m(places.trench.0);
+        let peak = g.ground_height_m(places.peak.0);
+        assert!(floor >= -1023.0 && peak <= 1024.0, "camera/teleport hint must name the real bedrock floor or clipped ceiling");
+        println!("{size}: R {:.3} km, vscale 1/{:.4}, {wet} coarse ocean/air columns; trench {raw_floor:.2} -> {floor:.2} m, peak {raw_peak:.2} -> {peak:.2} m",
+            p.radius/1000.0, 1.0/g.vscale);
+    }
+}
+
 /// The half-metre world of the README: the same planet in blocks of 0.5 m,
 /// at vertical scale 1/20.
 pub fn half_metre_generator() -> Generator {
@@ -193,7 +230,10 @@ fn chunk_grid_matches_direct_columns() {
             println!("vscale {vs:?} LOD {lod} ({vm} m voxels): grid vs direct mean {mean:.4} m, p99 {p99:.3} m, worst off mesas {worst_plain:.3} m, worst {:.3} m", errs[errs.len() - 1]);
             assert!(mean < 0.05 * vm, "vscale {vs:?} LOD {lod}: mean {mean:.4} m");
             assert!(p99 < 0.5 * vm, "vscale {vs:?} LOD {lod}: p99 {p99:.3} m");
-            assert!(worst_plain < 1.0 * vm, "vscale {vs:?} LOD {lod}: worst off mesas {worst_plain:.3} m");
+            // The worst column: 1.15 m at 1/8 on the belts (T2: 64 m gully
+            // stripes with a v^2 profile interpolated from 4 m nodes), one
+            // block at most across a chunk border there.
+            assert!(worst_plain < 1.25 * vm, "vscale {vs:?} LOD {lod}: worst off mesas {worst_plain:.3} m");
         }
         assert!(used_grid > 20, "the grid path should be taken ({used_grid})");
     }
@@ -293,18 +333,19 @@ fn landform_height_is_deterministic() {
     let b = test_generator();
     let planet = Planet::new(1.0, 2048, 512, 131072);
     let other = Generator::new(planet, shared_bake(), 43, a.vscale, 1.0, 1.0, &registry()).unwrap();
-    let mut differs = 0;
     for d in stress_dirs(&a) {
         for v in [1.0, 4.0, 64.0] {
             let h1 = a.column(d, v).height_m;
             assert_eq!(h1.to_bits(), a.column(d, v).height_m.to_bits());
             assert_eq!(h1.to_bits(), b.column(d, v).height_m.to_bits());
-            if other.column(d, v).height_m != h1 {
-                differs += 1;
-            }
         }
     }
-    assert!(differs > 50, "the seed must matter ({differs} of 75 differ)");
+    // The seed must matter: over random land at 1 m, most columns differ
+    // (those on the floor, in a valley's ramp or on a beach are the bake's
+    // and the same for every seed).
+    let land: Vec<DVec3> = dirs(1200, 5).into_iter().filter(|d| a.bake.sample(*d).ocean < 0.5).take(300).collect();
+    let differs = land.iter().filter(|d| other.column(**d, 1.0).height_m != a.column(**d, 1.0).height_m).count();
+    assert!(differs > land.len() * 6 / 10, "the seed must matter ({differs} of {} differ)", land.len());
 }
 
 /// LOD consistency: a coarse voxel's column height agrees with the mean of
@@ -351,20 +392,39 @@ fn landform_height_is_lod_consistent() {
     }
 }
 
-/// Large-scale fidelity: over 12 km windows the landform averages out to
-/// the bake (mean offset small against the bake's own relief).
+/// Large-scale fidelity (landforms v3): the bake's surface is the floor of
+/// the land. Over 12 km windows the surface never averages below the bake
+/// (the shore, lake beds and river channels aside), and stands above it by
+/// less than the local relief in the window: hills by about a third of
+/// theirs, mountains by more, never by more than their peaks.
 #[test]
-fn landform_averages_out_over_kilometres() {
+fn landform_stands_on_the_bake() {
     let g = generator_with(Some(0.125), 4096, 1536);
-    let mut worst: f64 = 0.0;
     for (k, d) in stress_dirs(&g).into_iter().take(12).enumerate() {
-        let (h, _, b) = inspect::sample_grid(&g, d, 40, 300.0, 1.0);
-        let n = h.len() as f64;
-        let diff = h.iter().zip(&b).map(|(a, c)| (*a - *c) as f64).sum::<f64>() / n;
-        println!("place {k}: 12 km window mean offset {diff:.2} m");
-        worst = worst.max(diff.abs());
+        let (h, o, b) = inspect::sample_grid(&g, d, 40, 300.0, 1.0);
+        // Land only: the sea floor is the coast's.
+        let land: Vec<(f32, f32)> = h.iter().zip(&b).zip(&o).filter(|(_, oc)| !**oc).map(|((a, c), _)| (*a, *c)).collect();
+        if land.len() < 100 {
+            continue;
+        }
+        let n = land.len() as f64;
+        let diff = land.iter().map(|(a, c)| (*a - *c) as f64).sum::<f64>() / n;
+        // The largest relief scale in the window (its peaks reach about 1.5x).
+        let face = g.bake.sample(d).face;
+        let (u0, v0) = bake::chart_uv(face, d);
+        let mut relief: f64 = 0.0;
+        for a in -20..20 {
+            for bb in -20..20 {
+                let dd = inspect::chart_dir(face, u0 + a as f64 * 300.0 / g.planet.radius, v0 + bb as f64 * 300.0 / g.planet.radius);
+                relief = relief.max(g.lf.local(&g.bake.sample(dd)).relief);
+            }
+        }
+        println!("place {k}: 12 km window mean offset {diff:.1} m, largest relief scale {relief:.0} m");
+        // Below: only the hydrology carves (river valleys, lake basins), and
+        // at 1/8 a lake lowered to its inflow carves a wide one.
+        assert!(diff > -25.0, "place {k}: the land averages {diff:.1} m below the bake");
+        assert!(diff < 1.5 * relief + 10.0, "place {k}: the land averages {diff:.1} m above the bake with {relief:.0} m of relief");
     }
-    assert!(worst < 20.0, "12 km window mean offset {worst:.1} m at 1/8");
 }
 
 /// Coordinator finding 1: at coarse LODs a voxel's centre can sit below the
@@ -645,55 +705,56 @@ fn every_ocean_column_is_opaque_underneath() {
     }
 }
 
-/// Review 2 #13: the world ceiling is an air boundary. H 512, sea 256 (the
-/// ceiling is 256 m above sea level), 1/8 so the highest range stands far
-/// above it: the L0 chunk at cz 15 (layers 480..512, padded 479..513) under
-/// that range has its top exposed, because layer 512 is air. It must not be
-/// classified Enclosed (the streamer would never draw it and the range
-/// would vanish as it refines), and the footprint bounds keep the clipped
-/// surface. Then, for the top chunk at every LOD over high ground:
-/// classification agrees with the generated contents.
+/// Review 2 #13 and T2: the world ceiling is an air boundary, and the
+/// terrain is eased under it. H 512, sea 256 (the ceiling is 256 m above sea
+/// level), 1/8 so the highest range would stand far above it: a chunk
+/// reaching the ceiling is never classified Enclosed (the streamer would
+/// never draw it and the range would vanish as it refines), the bounds never
+/// put a surface above the ceiling, and the range itself rounds off under
+/// it: its highest column stands between 90% and 98.5% of the ceiling, with
+/// the top layer of the world air everywhere. Then, for the top chunk at
+/// every LOD over high ground: classification agrees with the contents.
 #[test]
 fn world_ceiling_exposes_clipped_terrain() {
     let reg = registry();
     let g = generator_with(Some(0.125), 512, 256);
     let p = g.planet;
     let ceiling = (p.height - p.sea_level) as f64 * p.block_size;
+    assert_eq!(g.scale.ceiling_m, ceiling);
     let peak = inspect::find_land_places(g.bake.as_ref()).peak;
-    assert!(g.column(peak, p.block_size).height_m as f64 > 600.0, "the range should stand above 600 m at 1/8");
+    // The range eases toward the ceiling and never reaches it: the highest
+    // column in 2 km around the peak.
+    let (h, _, _) = inspect::sample_grid(&g, peak, 64, 32.0, 1.0);
+    let top = h.iter().copied().fold(f32::MIN, f32::max) as f64;
+    assert!(top > 0.9 * ceiling && top < 0.99 * ceiling, "the range rounds off under the {ceiling} m ceiling: highest column {top:.1} m");
     let key = key_at(&g, peak, 0, ceiling - 1.0);
     assert_eq!(key.cz, 15);
     // The review's numbers: a footprint minimum of 600 m above sea level.
     assert_ne!(g.classify_in(key, (600.0, 700.0)), ChunkClass::Enclosed, "a chunk reaching the ceiling is never enclosed");
-    // The real bounds and contents.
+    // The real bounds: nothing above the ceiling, and the top chunk under
+    // the range holds its surface (Mixed), with layer 512 air.
     let (hmin, hmax) = g.footprint_height_range_m(key.footprint());
-    assert!(hmin <= ceiling && hmin <= hmax, "bounds [{hmin:.1}, {hmax:.1}] must keep the surface clipped at {ceiling} m");
+    assert!(hmin <= ceiling && hmin <= hmax, "bounds [{hmin:.1}, {hmax:.1}] stay under the ceiling at {ceiling} m");
     assert_eq!(g.classify(key), ChunkClass::Mixed);
     let out = g.generate(key);
     for x in 0..CHUNK as i32 {
         for y in 0..CHUNK as i32 {
-            assert!(reg.is_solid(out.ids[pidx(x, y, 31)]), "layer 511 at ({x},{y}) is solid under the range");
             assert_eq!(out.ids[pidx(x, y, 32)], g.blocks.air, "layer 512 is above the world");
         }
     }
-    let m = crate::mesh::mesh_chunk(&out, &reg, &p, crate::mesh::MeshOptions::default());
-    assert_eq!(opaque_up_area(&m), (CHUNK * CHUNK) as u32, "the clipped top shows on every column");
-    // The chunk under it is still enclosed: only the top one is exposed.
-    let below = ChunkKey { cz: 14, ..key };
-    assert_eq!(g.classify(below), ChunkClass::Enclosed);
-    assert!(crate::mesh::mesh_chunk(&g.generate(below), &reg, &p, crate::mesh::MeshOptions::default()).opaque.is_empty());
     // Every LOD, the top chunk over high ground: Enclosed only if every
-    // padded voxel is solid, Air only if every one is air.
-    let mut exposed = 0;
+    // padded voxel is solid, Air only if every one is air; and never
+    // Enclosed, since its padded extent reaches the world's top.
+    let mut mixed = 0;
     for d in stress_dirs(&g).into_iter().take(8) {
         for lod in 0..=p.max_lod {
             let top = ChunkKey { cz: p.chunks_per_column(lod) - 1, ..key_at(&g, d, lod, 0.0) };
             let class = g.classify(top);
             let ids = g.generate(top).ids;
-            assert!(class != ChunkClass::Enclosed || ids.iter().all(|&b| reg.is_solid(b)), "{top:?} classified Enclosed holds non-solid voxels");
+            assert_ne!(class, ChunkClass::Enclosed, "{top:?} reaches the ceiling and is never Enclosed");
             assert!(class != ChunkClass::Air || ids.iter().all(|&b| b == g.blocks.air), "{top:?} classified Air holds blocks");
-            exposed += (g.column(d, p.voxel_m(lod)).height_m as f64 > ceiling) as usize;
+            mixed += (class == ChunkClass::Mixed) as usize;
         }
     }
-    assert!(exposed > 5, "too few top chunks under ground above the ceiling ({exposed})");
+    assert!(mixed > 5, "too few top chunks with ground in them ({mixed})");
 }

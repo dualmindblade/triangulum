@@ -87,9 +87,10 @@ impl Region {
                     }
                 }
                 let pad = 16.0 * p.block_size + 3.0 * voxel_m;
-                // Below: also the tallest fall and its plunge pool, which a
-                // sample can straddle.
-                let pad_lo = pad + 28.0 * p.block_size;
+                // Below: also the tallest fall and its plunge pool, a gorge or
+                // a lake lowered to its inflow (T2, up to 20 m at 1/70 and
+                // eight times that at 1/8), which a sample can straddle.
+                let pad_lo = pad + 28.0 * p.block_size + 24.0 * (g.vscale * 70.0) * p.block_size;
                 let k_lo = ((lo - pad_lo) / p.block_size + p.sea_level as f64).max(0.0);
                 let k_hi = ((hi + pad) / p.block_size + p.sea_level as f64).min(p.height as f64 - 1.0);
                 let (z0, z1) = ((k_lo as u64 / per) as u32, (k_hi as u64 / per) as u32);
@@ -167,7 +168,7 @@ impl Report {
 
 /// Whether a drop from column a to column b (LOD 0) is designated.
 fn designated(g: &Generator, a: DVec3, b: DVec3) -> bool {
-    let h = hydro();
+    let h = g.hydro.as_deref().unwrap();
     let ca = g.channels_at(a, g.planet.block_size);
     let cb = g.channels_at(b, g.planet.block_size);
     ca.iter().any(|&(sa, xa)| cb.iter().any(|&(sb, xb)| (sa == sb && xb > xa) || (sa != sb && h.downstream(sa, sb, 12))))
@@ -276,7 +277,10 @@ fn square(p: &Planet, dir: DVec3, r: i64, out: &mut FastMap<Col, ()>) {
 /// A point on lake `k`'s shore (field = zone) between one of its cells and
 /// the nearest field cell outside it, if any.
 pub(super) fn shore_point(k: i32, nth: usize) -> Option<DVec3> {
-    let h = hydro();
+    shore_point_for(hydro(), k, nth)
+}
+
+pub(super) fn shore_point_for(h: &Hydro, k: i32, nth: usize) -> Option<DVec3> {
     let inside: Vec<DVec3> = h.field.iter().filter(|c| c.lake == k).map(|c| c.pos).collect();
     if inside.is_empty() {
         return None;
@@ -307,8 +311,10 @@ pub(super) fn shore_point(k: i32, nth: usize) -> Option<DVec3> {
 /// Columns along `links` river links: everything within the channel, its
 /// banks and a margin of the course.
 pub(super) fn along(links: &[u32], out: &mut FastMap<Col, ()>) {
-    let g = world_gen();
-    let h = hydro();
+    along_on(world_gen(), hydro(), links, out);
+}
+
+fn along_on(g: &Generator, h: &Hydro, links: &[u32], out: &mut FastMap<Col, ()>) {
     let p = &g.planet;
     for &k in links {
         let s = &h.segs[k as usize];
@@ -468,6 +474,38 @@ fn water_is_contained() {
         assert_eq!(rep.missing, 0, "{name}: cells outside the generated region");
         assert!(rep.walls.is_empty(), "{name}: {} water walls, e.g. {}", rep.walls.len(), rep.walls[0]);
         assert!(rep.perched.is_empty(), "{name}: {} perched water cells, e.g. {}", rep.perched.len(), rep.perched[0]);
+    }
+}
+
+/// A fixed sample of the same global river links and lake shores at every
+/// planet size. Local patches are measured in blocks, not angles.
+#[test]
+fn t1_water_containment_at_every_planet_size() {
+    for size in [128, 256, 512, 832, 1024] {
+        let g = super::tests::planet_size_generator(size);
+        let h = g.hydro.as_deref().unwrap();
+        let mut cols = FastMap::default();
+        let mut lakes = 0;
+        for k in (0..h.lakes.len()).step_by(79) {
+            if let Some(d) = shore_point_for(h, k as i32, 0) {
+                square(&g.planet, d, 8, &mut cols);
+                lakes += 1;
+            }
+        }
+        for s in h.segs.iter().step_by(2048) {
+            for part in [1, 2, 3] {
+                let d = s.pts[(s.pts.len()-1)*part/4];
+                square(&g.planet, d, (s.hw + 3.0).ceil() as i64, &mut cols);
+            }
+        }
+        let cols: Vec<_> = cols.into_keys().collect();
+        let region = Region::build(&g, 0, &cols);
+        let rep = check(&g, &region, &cols);
+        report(&format!("T1 size {size}, {lakes} lake shores + 33 river sites"), &rep);
+        assert!(lakes >= 5 && rep.water_cells > 100);
+        assert_eq!(rep.missing, 0);
+        assert!(rep.walls.is_empty(), "{size}: {} walls: {:?}", rep.walls.len(), rep.walls.first());
+        assert!(rep.perched.is_empty(), "{size}: {} perched: {:?}", rep.perched.len(), rep.perched.first());
     }
 }
 
@@ -739,7 +777,7 @@ fn profile_hydro_parts() {
         h.rivers_at(*d, &cands[i / 1024], 1.0, &mut rivers);
         total_r += rivers.len();
         let l = h.lake_at(*d, &cands[i / 1024].cells, 1.0);
-        black_box(h.shape(*d, 5.0, &l, &rivers, false, 0.5, 1.0, 0));
+        black_box(h.shape(*d, 5.0, 5.0, &l, &rivers, false, 0.5, 1.0, 0));
     }
     let shape_all_ns = t.elapsed().as_nanos() as f64 / n;
     let avg_segs = cands.iter().map(|c| c.segs.len()).sum::<usize>() as f64 / 60.0;
@@ -1027,6 +1065,49 @@ fn water_is_contained_wide() {
     assert!(total.perched.is_empty(), "{} perched, e.g. {}", total.perched.len(), total.perched[0]);
 }
 
+/// The same gate on every planet size, lakes first: every third lake's shore
+/// at two places, every link into or out of a lake (a sample, on the big
+/// planets, where they are long) and a share of the rest, about a tenth of
+/// the network on Neisor's scale. Too slow for every run (BOUNDARY_SIZES).
+#[test]
+#[ignore]
+fn water_is_contained_on_every_planet_size() {
+    let sizes = std::env::var("BOUNDARY_SIZES").unwrap_or_else(|_| "128 256 512 832 1024".into());
+    for size in sizes.split_whitespace().map(|s| s.parse::<u32>().unwrap()) {
+        let g = super::tests::planet_size_generator(size);
+        let h = g.hydro.as_deref().unwrap();
+        let p = &g.planet;
+        let stretch = (p.radius / 90_569.0).max(1.0);
+        let (mut cols, mut lakes) = (FastMap::default(), 0);
+        for k in (0..h.lakes.len() as i32).step_by(3) {
+            for nth in [0, 1] {
+                if let Some(d) = shore_point_for(h, k, nth) {
+                    square(p, d, 24, &mut cols);
+                    lakes += 1;
+                }
+            }
+        }
+        let cols: Vec<Col> = cols.into_keys().collect();
+        let region = Region::build(&g, 0, &cols);
+        let mut total = check(&g, &region, &cols);
+        drop(region);
+        let lake_links: Vec<u32> = (0..h.segs.len() as u32).filter(|&k| h.segs[k as usize].lake_a >= 0 || h.segs[k as usize].lake_b >= 0).step_by(stretch.ceil() as usize).collect();
+        let rest: Vec<u32> = (0..h.segs.len() as u32).step_by((10.0 * stretch).ceil() as usize).collect();
+        let km = lake_links.iter().chain(&rest).map(|&k| h.segs[k as usize].len).sum::<f64>() / 1000.0;
+        for batch in lake_links.chunks(100).chain(rest.chunks(100)) {
+            let mut cols: FastMap<Col, ()> = FastMap::default();
+            along_on(&g, h, batch, &mut cols);
+            let cols: Vec<Col> = cols.into_keys().collect();
+            let region = Region::build(&g, 0, &cols);
+            total = total.merge(check(&g, &region, &cols));
+        }
+        report(&format!("size {size}: {lakes} lake shores, {} links into or out of lakes, {} others, {km:.0} km of course", lake_links.len(), rest.len()), &total);
+        assert_eq!(total.missing, 0);
+        assert!(total.walls.is_empty(), "{size}: {} walls, e.g. {}", total.walls.len(), total.walls[0]);
+        assert!(total.perched.is_empty(), "{size}: {} perched, e.g. {}", total.perched.len(), total.perched[0]);
+    }
+}
+
 /// Not a check: how much of the river network is at rest, stepped, or has
 /// falls at this scale (HYDRO_VSCALE to change it).
 #[test]
@@ -1053,8 +1134,56 @@ fn hydro_stats() {
     }
     let total = smooth + stepped + falls;
     let t = std::time::Instant::now();
-    let rebuilt = Hydro::new(g.bake.hydro().unwrap(), p.radius, p.block_size, g.vscale, g.seed);
-    println!("building the model from hydro.bin: {:.2} s ({} links)", t.elapsed().as_secs_f64(), rebuilt.segs.len());
+    let rebuilt = g.build_hydro().unwrap();
+    println!("building the model from hydro.bin: {:.2} s ({} links); phases {:?}", t.elapsed().as_secs_f64(), rebuilt.segs.len(), rebuilt.build_phases);
+    // Lakes lowered to the river reaching them (T2): how far.
+    let data = g.bake.hydro().unwrap();
+    let mut drops: Vec<f64> = data.lakes.iter().zip(&h.lakes).map(|(raw, l)| g.scale.soft_ceiling(g.scale.global_m(raw.level_km)) - l.w).collect();
+    drops.sort_by(|a, b| a.total_cmp(b));
+    let n = drops.len();
+    let over = |m: f64| drops.iter().filter(|&&d| d > m).count();
+    println!("lakes lowered: {} of {n} by over 0.1 m, {} over 1 m, {} over 3 m, {} over 10 m; median {:.2} m, p90 {:.2} m, max {:.2} m", over(0.1), over(1.0), over(3.0), over(10.0), drops[n / 2], drops[n * 9 / 10], drops[n - 1]);
+    // The five lowered furthest: which inflow set the level, and where the
+    // lake's own shore stands.
+    let mut by_drop: Vec<(usize, f64)> = data.lakes.iter().zip(&h.lakes).enumerate().map(|(k, (raw, l))| (k, g.scale.soft_ceiling(g.scale.global_m(raw.level_km)) - l.w)).collect();
+    by_drop.sort_by(|a, b| b.1.total_cmp(&a.1));
+    for &(k, drop) in by_drop.iter().take(5) {
+        let shore = shore_point(k as i32, 0).map(|d| g.column(d, p.block_size).height_m);
+        let inflows: Vec<String> = h
+            .segs
+            .iter()
+            .enumerate()
+            .filter(|(_, s)| s.lake_b == k as i32 && s.lake_a != k as i32)
+            .map(|(i, s)| {
+                let (lat, lon) = Planet::lat_lon_deg(h.node_pos[s.a as usize]);
+                format!("link {i} from node {} (kind {}, W {:.2}, flow {:.0}, at lat {lat:.3} lon {lon:.3}) W_b {:.2}", s.a, h.node_kind[s.a as usize], s.w_a, s.flow, s.w_b)
+            })
+            .collect();
+        println!("  lake {k}: bake level {:.2} m, now {:.2} m (down {drop:.2}); ground at a shore point {:?}; inflows: {}", g.scale.global_m(data.lakes[k].level_km), h.lakes[k].w, shore, inflows.join("; "));
+    }
+    // Gorges: how far a river's channel lies below the natural ground beside it, mid-link.
+    let mut depth: Vec<f64> = (0..h.segs.len() as u32)
+        .step_by(7)
+        .filter_map(|k| {
+            let s = &h.segs[k as usize];
+            let at = s.point(0.5 * s.len);
+            let a = s.point((0.5 * s.len - 3.0).max(0.0));
+            let b = s.point((0.5 * s.len + 3.0).min(s.len));
+            let side = (b - a).cross(at).normalize_or_zero();
+            if side == DVec3::ZERO {
+                return None;
+            }
+            let c = g.column(at, p.block_size);
+            if !c.wet() {
+                return None;
+            }
+            let aside = (at * p.radius + side * (s.hw + 25.0)).normalize();
+            Some(g.column(aside, p.block_size).height_m as f64 - c.water_m)
+        })
+        .collect();
+    depth.sort_by(|a, b| a.total_cmp(b));
+    let n = depth.len();
+    println!("river channels below the ground 25 m beside them (every 7th link, mid-link, {n}): median {:.2} m, p90 {:.2} m, p99 {:.2} m, max {:.2} m", depth[n / 2], depth[n * 9 / 10], depth[n * 99 / 100], depth[n - 1]);
     println!(
         "vertical scale 1/{:.1}: {} links, {total:.0} km of river: {:.1}% smooth and at rest, {:.1}% pools with cascades (<= 1 block), {:.1}% with waterfalls; {n_falls} falls, mean {:.1} m, tallest {tallest:.1} m; {} lakes",
         1.0 / g.vscale,

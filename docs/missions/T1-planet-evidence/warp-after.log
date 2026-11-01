@@ -1,0 +1,28 @@
+cargo :    Compiling triangulum v0.1.0 (E:\triangulum-work\T1\game)
+At line:2 char:1
++ cargo test --offline --release t1_coarsest_warp -- --nocapture > out/ ...
++ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (   Compiling tr...m-work\T1\game):String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+warning: variable does not need to be mutable
+    --> src\stream.rs:1792:13
+     |
+1792 |         let mut drain = |c: &mut Coverage, gpu: &mut FakeGpu, wants: &mut Vec<Want>| {
+     |             ----^^^^^
+     |             |
+     |             help: remove this `mut`
+     |
+     = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: `triangulum` (bin "triangulum" test) generated 1 warning (run `cargo fix --bin "triangulum" -p triangulum 
+--tests` to apply 1 suggestion)
+    Finished `release` profile [optimized + debuginfo] target(s) in 3m 18s
+     Running unittests src\main.rs (target\release\deps\triangulum-7d877ee1b0401067.exe)
+
+running 1 test
+T1 L10 sea warp vs exact lattice: 2.1379 m worst
+test mesh::tests::t1_coarsest_warp_stays_close_to_the_lattice ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 397 filtered out; finished in 8.57s
+

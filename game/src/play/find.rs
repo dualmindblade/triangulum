@@ -216,17 +216,21 @@ fn seeds(s: &Session, kind: &str, here: DVec3) -> Result<Vec<(u8, i64, i64)>, St
         "river" | "waterfall" | "lake" => {
             let hy = g.hydro.as_ref().ok_or("this bake has no hydro.bin (no lakes or rivers)")?;
             let falls = kind == "waterfall";
-            for r in [300.0, 1200.0, 5000.0, 20000.0, 80000.0] {
-                let c = hy.cands(here, r);
+            // These are global candidate areas. Keep the same angular reach
+            // as on the original planet; the final bank search stays local.
+            let scale = (planet.radius / (131_072.0 * (6.0 / (4.0 * std::f64::consts::PI)).sqrt())).max(1.0);
+            for r in [300.0, 1200.0, 5000.0, 20000.0, 80000.0].map(|r| r * scale) {
                 let mut best: Vec<(f64, DVec3)> = Vec::new();
                 if kind == "lake" {
-                    for &k in &c.cells {
-                        let cell = &hy.field[k as usize];
-                        if cell.lake >= 0 {
+                    // At global distances, scanning the small baked field
+                    // avoids probing millions of empty spatial-index bins.
+                    for cell in &hy.field {
+                        if cell.lake >= 0 && (cell.pos - here).length() * planet.radius <= r + hy.lake_r_chord * planet.radius {
                             best.push(((cell.pos - here).length() * planet.radius, cell.pos));
                         }
                     }
                 } else {
+                    let c = hy.cands(here, r);
                     for &k in &c.segs {
                         let seg = &hy.segs[k as usize];
                         if falls {
@@ -286,7 +290,7 @@ fn seeds(s: &Session, kind: &str, here: DVec3) -> Result<Vec<(u8, i64, i64)>, St
                 }
                 return Ok(out);
             }
-            Err(format!("no {kind} within 80 km"))
+            Err(format!("no {kind} within {:.0} km", 80.0 * scale))
         }
         "shore" => {
             // The shoreline: the first sample, ring by ring at a 16-block
@@ -365,7 +369,6 @@ pub fn find(s: &mut Session, kind: &str) -> Result<Site, String> {
     // Look at the target cell's top centre (flat: along +i, level; a
     // fall: down at the water below its lip).
     let eye = s.player.eye();
-    let (north, east, up) = crate::camera::Camera::local_frame(eye);
     let aim = if kind == "flat" {
         let (f, wi, wj) = planet.wrap_cell(face, i + 4, j);
         planet.pos(f, wi as f64 + 0.5, wj as f64 + 0.5, stand.k as f64 + 1.0 + crate::player::EYE_M / planet.block_size)
@@ -377,8 +380,8 @@ pub fn find(s: &mut Session, kind: &str) -> Result<Site, String> {
         planet.pos(target.face, target.i as f64 + 0.5, target.j as f64 + 0.5, target.k as f64 + 1.0)
     };
     let d = (aim - eye).normalize();
-    s.player.heading = d.dot(east).atan2(d.dot(north));
-    s.player.pitch = d.dot(up).clamp(-1.0, 1.0).asin().clamp(-1.55, 1.55);
+    s.player.face(d);
+    s.player.pitch = d.dot(eye.normalize()).clamp(-1.0, 1.0).asin().clamp(-1.55, 1.55);
     let dist_m = (s.player.pos.normalize() - here).length() * planet.radius;
     Ok(Site { kind, stand, target, axis, gap, dist_m, columns, drop })
 }

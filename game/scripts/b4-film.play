@@ -21,7 +21,7 @@ sim radius 112
 # ---- A. the terraced bowl ------------------------------------------------
 # A 5 x 5 pool, two terraces four cells wide around it, all full, over a
 # 13 x 13 x 8 sump.
-atblock 2 107155 57531 620
+atblock 2 107155 57531 1132
 assert mode == fly
 fill -14 -14 -23 14 14 -14 stone
 fill -6 -6 -22 6 6 -15 air
@@ -60,7 +60,7 @@ shot A_terraces_6min
 
 # ---- B. a film with nowhere to go -----------------------------------------
 # A 41 x 41 table, its edges 18 cells beyond a 5 x 5 film at level 1.
-atblock 2 107215 57531 620
+atblock 2 107215 57531 1132
 fill -20 -20 -6 20 20 -6 stone
 tick 2
 fill -2 -2 -5 2 2 -5 water 1
@@ -80,16 +80,16 @@ aim 3 0 -5
 shot B_late
 
 # ---- C. one poured block: the 4 mm sheet -----------------------------------
-atblock 2 107275 57531 625
+atblock 2 107275 57531 1137
 fill -24 -24 -8 24 24 -8 stone
 tick 2
 # from three blocks up (reach is 6 m), then back up to look
-atblock 2 107275 57531 620
+atblock 2 107275 57531 1132
 select 9
 aim 0 0 -2.5
 tap place
 assert level_rel[0,0,-2] == 255
-atblock 2 107275 57531 625
+atblock 2 107275 57531 1137
 tick 20
 aim 8 0 -7
 shot C_spreading_1s
@@ -113,7 +113,7 @@ shot C_180s
 # Four blocks poured at one spot on the hills, which step down a block every
 # few metres. The old rule leaves them clinging where they spread.
 mode walk
-atblock 2 107095 57531 2000
+atblock 2 107095 57531 2512
 assert on_ground == true
 aim 2 0 -0.5
 tap place
@@ -134,10 +134,13 @@ state D_100s
 shot D_ground_100s
 
 # ---- the accounting holds, and nothing is left running -----------------------
-# Five minutes more: under the drying rules the last of the film finishes on
-# its own schedule, so this is the proof that everything comes to rest.
-tick 6000
+# Ten minutes more: moving the absolute layers changes position-hashed film
+# choices and drying times. The old five-minute checkpoint can catch either
+# a quiet interval or a few updates; even its old "queued == 0" left drying
+# timers armed. Wait for the long tail and check those timers too.
+tick 12000
 assert queued == 0
+assert drying == 0
 assert falling == 0
 assert water_lost == 0
 state final

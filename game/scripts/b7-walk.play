@@ -5,8 +5,8 @@
 sim powder levels 35
 sun 35
 mode fly
-atblock 1 1911 59004 513
-assert block[1,1911,59004,511] == sand
+atblock 1 1911 59004 1025
+assert block[1,1911,59004,1023] == sand
 mode walk
 hotbar sand,gravel,stone,dirt
 select 1

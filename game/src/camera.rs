@@ -1,5 +1,13 @@
 //! Free-fly camera in planet-centred f64 coordinates; the GPU sees
 //! camera-relative f32.
+//!
+//! The way a body faces is a vector, not a compass heading: `facing`, a unit
+//! vector level with the ground. A heading is measured from north, and north
+//! turns under you as you move, so holding a heading walks a rhumb line that
+//! spirals into the pole, and at the pole it means nothing at all. A vector
+//! moves with you (`carried`) and has no pole. A heading is still how people
+//! and scripts say a direction, so `heading` and `facing_of` turn one into the
+//! other at this one place.
 
 use crate::grid::Planet;
 use crate::render::CameraUniform;
@@ -8,14 +16,64 @@ use glam::{DVec3, Mat4, Vec3};
 #[derive(Clone, Copy, Debug)]
 pub struct Camera {
     pub pos: DVec3,
-    /// Radians; 0 = local north (world +Z projected onto the tangent plane), positive = east.
-    pub heading: f64,
+    /// The way it faces, level: a unit vector in the tangent plane at `pos`.
+    pub facing: DVec3,
     /// Radians; positive looks up.
     pub pitch: f64,
     pub fov_y: f64,
 }
 
+/// `v` laid level at `up`, as a unit vector. If it stands straight up there is
+/// no level part to keep, and it faces north.
+pub fn level(up: DVec3, v: DVec3) -> DVec3 {
+    let flat = v - up * v.dot(up);
+    if flat.length_squared() > 1e-20 { flat.normalize() } else { Camera::local_frame(up).0 }
+}
+
+/// A unit vector at `pos` in the direction of a compass heading (radians, 0 =
+/// north, positive = east).
+pub fn facing_of(pos: DVec3, heading: f64) -> DVec3 {
+    let (north, east, _) = Camera::local_frame(pos);
+    north * heading.cos() + east * heading.sin()
+}
+
+/// The compass heading of a direction at `pos`, radians. At the exact pole,
+/// where no north exists, it is measured from `local_frame`'s stand-in.
+pub fn heading_of(pos: DVec3, facing: DVec3) -> f64 {
+    let (north, east, _) = Camera::local_frame(pos);
+    facing.dot(east).atan2(facing.dot(north))
+}
+
+/// Parallel transport: `v` carried along the great circle from unit `a` to
+/// unit `b`, which is the rotation that takes `a` to `b` the short way. Plain
+/// arithmetic, no trigonometry, so it does the same thing on every machine.
+/// Exactly opposite points have no short way, and `v` stays as it is.
+pub fn carried(a: DVec3, b: DVec3, v: DVec3) -> DVec3 {
+    let d = 1.0 + a.dot(b);
+    if d < 1e-12 {
+        return v;
+    }
+    let s = a + b;
+    v - s * (s.dot(v) / d) + b * (2.0 * a.dot(v))
+}
+
+/// `facing` turned to the right by `angle` radians about `up`.
+pub fn turned(up: DVec3, facing: DVec3, angle: f64) -> DVec3 {
+    let f = level(up, facing);
+    (f * angle.cos() + f.cross(up) * angle.sin()).normalize()
+}
+
 impl Camera {
+    pub fn new(pos: DVec3, heading: f64, pitch: f64, fov_y: f64) -> Self {
+        Self { pos, facing: facing_of(pos, heading), pitch, fov_y }
+    }
+
+    /// The compass heading it faces, radians: 0 = local north (world +Z
+    /// projected onto the tangent plane), positive = east.
+    pub fn heading(&self) -> f64 {
+        heading_of(self.pos, self.facing)
+    }
+
     /// Local tangent frame: (north, east, up).
     pub fn local_frame(pos: DVec3) -> (DVec3, DVec3, DVec3) {
         let up = pos.normalize();
@@ -30,8 +88,8 @@ impl Camera {
 
     /// (forward, level forward, up)
     pub fn vectors(&self) -> (DVec3, DVec3, DVec3) {
-        let (north, east, up) = Self::local_frame(self.pos);
-        let fwd_h = north * self.heading.cos() + east * self.heading.sin();
+        let up = self.pos.normalize();
+        let fwd_h = level(up, self.facing);
         let fwd = fwd_h * self.pitch.cos() + up * self.pitch.sin();
         (fwd.normalize(), fwd_h, up)
     }

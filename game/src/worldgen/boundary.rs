@@ -67,6 +67,9 @@ const SHORT_STEPS: u32 = 3;
 const FINEST_BLOCKS: f64 = 2.0;
 /// Longest octave of a lake outline, as a share of the lake field's reach.
 const LAKE_TOP_SHARE: f64 = 0.6;
+/// Longest octave of the bare-rock line (m): the slope it bends has nothing
+/// shorter than about this in it (`Generator::rock_map`). Local: rock is ground.
+const ROCK_TOP_M: f64 = 64.0;
 /// Largest length of `vector_noise` (measured: `vector_noise_is_bounded`).
 pub const NOISE_MAX: f64 = 1.8;
 
@@ -152,6 +155,11 @@ impl Warp {
     /// lake's whole shape and can't carry it off its rivers.
     pub fn shore(radius: f64, block_m: f64, r_field: f64, seed: u64) -> Self {
         Self::new(radius, block_m, LAKE_TOP_SHARE * r_field, STEP_AMP, seed ^ 0x5A0E)
+    }
+
+    /// The warp of the bare-rock line.
+    pub fn rock(radius: f64, block_m: f64, seed: u64) -> Self {
+        Self::new(radius, block_m, ROCK_TOP_M, STEP_AMP, seed ^ 0x90C4)
     }
 
     /// Where the column at `dir` reads its fields, for voxels of `voxel_m`.
@@ -307,6 +315,17 @@ mod tests {
         }
         println!("largest move {worst:.0} m, bound {reach:.0} m");
         assert!(worst < reach && worst > 0.2 * reach, "moved {worst}, bound {reach}");
+    }
+
+    /// `Generator::rock_map` reads a lattice wide enough for `ROCK_WARP_M`.
+    #[test]
+    fn the_rock_warp_stays_inside_the_lattice_it_reads() {
+        use rayon::prelude::*;
+        let w = Warp::rock(R, 1.0, 42);
+        let pts: Vec<DVec3> = sphere_points(4_000_000).collect();
+        let worst = pts.par_iter().map(|d| (w.at(*d, 1.0) - *d).length() * R).reduce(|| 0.0, f64::max);
+        println!("largest move of 4 million columns {worst:.1} m (bound {:.1} m)", w.reach_m(R));
+        assert!(worst < crate::worldgen::ROCK_WARP_M, "moved {worst}");
     }
 
     /// Band limit: the octaves a voxel leaves out come first in the chain, so a

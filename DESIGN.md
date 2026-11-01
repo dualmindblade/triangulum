@@ -74,6 +74,12 @@ with their OK; record the change here with the date.
 - Level-1 water with nowhere to go dries, unless it is the edge of a large
   body or of water fed from beyond the loaded area (2026-10-31, `--film`).
   Water evaporates (Andrew confirmed it, 2026-10-31).
+- **Waiting for Andrew's OK (`sim_rules` 4, 2026-10-31):** to stop water blinking
+  as it spreads (his #9), the game now narrows his ledge rule. A sheet of level-1
+  water is one thing: a film cell with water beside it neither runs nor goes over
+  a ledge, only a lone film cell does; thicker water drains through the sheet to a
+  drop, and the sheet dries where it lies. Nothing spreads onto a cell over a drop,
+  so a waterfall's lip is dry. If he says no, this goes and the rule above stands.
 - Generated lakes, rivers and oceans start at rest. Simulation runs only
   where something changed.
 - At the edge of the loaded area, cells take their values from the
@@ -86,14 +92,26 @@ with their OK; record the change here with the date.
    collapses). A block at rest with a free cell beside it and a free cell
    below that one moves into that column and falls (Andrew's request,
    2026-10-30), so powder rests with neighbouring columns at most one block
-   apart. Columns keep their shape, so nothing needs converting. Powder with
-   levels (`--powder levels`) stays an experiment and stays out of terrain
-   generation for now (Andrew, 2026-10-31).
+   apart. Columns keep their shape, so nothing needs converting. The picture of
+   a slide is the renderer's: a block is drawn travelling from the cell it left
+   over 0.2 s, and where a chunk's mesh is late the block is drawn where the mesh
+   shows it. None of that is state (2026-10-31). Powder with levels
+   (`--powder levels`) stays an experiment and stays out of terrain generation
+   for now (Andrew, 2026-10-31).
 2. **Local contraptions** (doors, drawbridges, elevators, felled trees) keep
    the warped shape of where they were built and snap back when they come to
    rest nearby.
 3. **Vehicles** are built on their own perfect-cube grid from a frame block
    and never merge into the planet.
+
+## Moving the player
+
+- Holding a movement key follows a great circle, walking or flying (Andrew,
+  2026-10-31). A body faces a direction carried along each move, not a compass
+  heading; a heading is how people and scripts say a direction.
+- The fly speed has no ceiling (Andrew, 2026-10-31).
+- Leaving the window never stops the game: minimised it draws nothing and keeps
+  stepping, and losing focus lets go of the mouse.
 
 ## Saves and replays
 

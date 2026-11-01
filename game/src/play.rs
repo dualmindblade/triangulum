@@ -64,11 +64,15 @@
 //!   sim powder blocks       the game's powder: whole blocks that slide
 //!   sim powder levels [DEG] powder that holds a level and rests at DEG (35)
 //!                           degrees (--powder levels, --powder-angle)
+//!   sim trace on|off        every cell that goes wet or dry, tick by tick, in
+//!                           the transcript (C2); "FLICKER" marks the third
+//!                           flip within a second
+//!   motion reset            zero the falling-block draw's counters (motion_*)
 //!   select N                hotbar slot 1-9
 //!   hotbar A,B,...          what keys 1-9 hold, by block name (M3b; the
 //!                           harness otherwise keeps the default hotbar,
 //!                           whatever blocks.json says)
-//!   speed M_PER_S           fly speed (scroll wheel), 1..5000
+//!   speed M_PER_S           fly speed (scroll wheel), 0.01 and up, unbounded
 //!   travel SECONDS [KEYS]   like hold (default "w"), but every step also
 //!                           streams and renders a frame and checks the
 //!                           coverage tree (no overlapping draws, no
@@ -140,6 +144,9 @@
 //!                           print a map of one layer near the feet: ###
 //!                           solid, ... air, a number is that cell's water
 //!                           level (+i to the right, +j up)
+//!   flips DI0 DI1 DJ0 DJ1 DK
+//!                           the same map with how many times each cell went
+//!                           wet or dry in the last second (C2)
 //!   assert FIELD [OP] VALUE [TOL]
 //!                           OP: == != < <= > >= ~ (approx, TOL default
 //!                           0.01); omitted means ==. VALUE: number,
@@ -159,7 +166,13 @@
 //!                             water_moved water_writes water_in water_out
 //!                             water_placed water_removed water_displaced
 //!                             water_lost water_dried drying water_balance
-//!                             water_updates_last
+//!                             water_updates_last water_flips water_flickers
+//!                             motion_frames motion_doubles_max motion_held_max
+//!                             motion_ghosts_max motion_gaps_max
+//!                             motion_stale_max_ticks motion_emit_max_ms
+//!                             motion_emit_avg_ms (what the falling-block draw
+//!                             held back since `motion reset`, and its cost
+//!                             per frame that drew something, C2)
 //!                             water_period flow sim_radius (units: 255 = a cell)
 //!                             sky_seconds sky_speed (the session's sky
 //!                             clock) steps recording
@@ -444,11 +457,29 @@ impl Run {
 
     fn record_stream(&mut self) {
         let st = &self.harness.streamer.stats;
+        let m = self.harness.motion();
         self.last_stream = serde_json::json!({
             "loaded": st.loaded, "inflight": st.inflight, "drawn": st.drawn, "pending": st.pending,
             "fallback_draws": st.fallback_draws, "awaiting_upload": st.awaiting_upload, "remeshed": st.remeshed,
             "stale_results": st.stale_results, "alloc_failures": st.alloc_failures,
+            // What the falling-block draw found since `motion reset` (C2).
+            "motion_frames": m.frames, "motion_doubles_max": m.doubles_max, "motion_held_max": m.held_max,
+            "motion_ghosts_max": m.ghosts_max, "motion_gaps_max": m.gaps_max, "motion_stale_max_ticks": m.stale_max_ticks,
+            "motion_emit_max_ms": m.emit_us_max as f64 / 1e3,
+            "motion_emit_avg_ms": m.emit_us_sum as f64 / 1e3 / m.emit_frames.max(1) as f64,
         });
+    }
+
+    /// Lines the simulation's flip trace wrote (`sim trace on`), into the transcript.
+    fn drain_trace(&mut self) {
+        let lines = self.session.sim.take_trace();
+        let n = lines.len();
+        for l in lines.into_iter().take(2000) {
+            self.say(format!("  trace {l}"));
+        }
+        if n > 2000 {
+            self.say(format!("  trace ... {} more lines", n - 2000));
+        }
     }
 
     fn write_state(&mut self, name: &str) {
@@ -1171,7 +1202,7 @@ pub fn run_play(session: Session, opts: PlayOptions) -> i32 {
             },
             "look" => match (num(0), num(1)) {
                 (Some(h), Some(p)) => {
-                    run.session.player.heading = h.to_radians();
+                    run.session.player.set_heading(h.to_radians());
                     run.session.player.pitch = p.to_radians().clamp(-1.55, 1.55);
                 }
                 _ => bad(&mut run, "look HEADING PITCH"),
@@ -1189,8 +1220,7 @@ pub fn run_play(session: Session, opts: PlayOptions) -> i32 {
                             continue;
                         }
                     };
-                    let (north, east, _) = crate::camera::Camera::local_frame(run.session.player.pos);
-                    run.session.player.heading = v.dot(east).atan2(v.dot(north));
+                    run.session.player.face(v);
                     run.session.player.pitch = p.to_radians().clamp(-1.55, 1.55);
                 }
                 _ => bad(&mut run, "lookaxis AXIS PITCH"),
@@ -1203,9 +1233,8 @@ pub fn run_play(session: Session, opts: PlayOptions) -> i32 {
                     let target = planet.pos(f.face, ci as f64 + 0.5 + di, cj as f64 + 0.5 + dj, ck as f64 + dk);
                     let eye = run.session.player.eye();
                     let d = (target - eye).normalize();
-                    let (north, east, up) = crate::camera::Camera::local_frame(eye);
-                    run.session.player.heading = d.dot(east).atan2(d.dot(north));
-                    run.session.player.pitch = d.dot(up).clamp(-1.0, 1.0).asin().clamp(-1.55, 1.55);
+                    run.session.player.face(d);
+                    run.session.player.pitch = d.dot(eye.normalize()).clamp(-1.0, 1.0).asin().clamp(-1.55, 1.55);
                 }
                 _ => bad(&mut run, "aim DI DJ DK"),
             },
@@ -1318,8 +1347,7 @@ pub fn run_play(session: Session, opts: PlayOptions) -> i32 {
             },
             "turn" => match (num(0), num(1)) {
                 (Some(h), Some(p)) => {
-                    run.session.player.heading += h.to_radians();
-                    run.session.player.pitch = (run.session.player.pitch + p.to_radians()).clamp(-1.55, 1.55);
+                    run.session.player.look(h.to_radians(), -p.to_radians());
                 }
                 _ => bad(&mut run, "turn DH DP"),
             },
@@ -1397,6 +1425,10 @@ pub fn run_play(session: Session, opts: PlayOptions) -> i32 {
                     let _ = run.session.apply(Action::Flow(flow));
                     run.say(format!("  {}", flow.text()));
                 }
+                (Some("trace"), _) if matches!(args.get(1).copied(), Some("on" | "off")) => {
+                    run.session.sim.trace = args[1] == "on";
+                    run.say(format!("  flip trace {}", args[1]));
+                }
                 (Some("powder"), _) if matches!(args.get(1).copied(), Some("blocks" | "levels")) => {
                     let powder = if args[1] == "blocks" {
                         Ok(crate::sim::Powder::Blocks)
@@ -1412,11 +1444,40 @@ pub fn run_play(session: Session, opts: PlayOptions) -> i32 {
                         Err(e) => bad(&mut run, &e),
                     }
                 }
-                _ => bad(&mut run, "sim on|off | sim radius M | sim period N | sim slide on|off | sim film keep|seek|merge|dry|seek+dry | sim reach N | sim dry SECONDS | sim powder blocks | sim powder levels [ANGLE]"),
+                _ => bad(&mut run, "sim on|off | sim radius M | sim period N | sim slide on|off | sim film keep|seek|merge|dry|seek+dry | sim reach N | sim dry SECONDS | sim powder blocks | sim powder levels [ANGLE] | sim trace on|off"),
+            },
+            "flips" => match (num(0), num(1), num(2), num(3), num(4)) {
+                (Some(i0), Some(i1), Some(j0), Some(j1), Some(dk)) => {
+                    let f = crate::player::Frame::at(&run.session.engine.planet, run.session.player.pos);
+                    let (fi, fj, ck) = f.feet_cell();
+                    let k = ck + dk as i64;
+                    let st = &run.session.sim.stats;
+                    run.say(format!("  wet/dry flips in the last {} ticks, face {} layer {k} (. none), rows j, columns i from {}; {} flips and {} flickers so far", crate::sim::FLICKER_WINDOW, f.face, fi + i0 as i64, st.water_flips, st.water_flickers));
+                    for dj in (j0 as i64..=j1 as i64).rev() {
+                        let row: Vec<String> = (i0 as i64..=i1 as i64)
+                            .map(|di| {
+                                let (i, j) = (fi + di, fj + dj);
+                                match run.session.engine.world.resolve_block(f.face, i, j, k).map(|bp| run.session.sim.flips_at(bp)) {
+                                    Some(0) | None => "  .".to_string(),
+                                    Some(n) => format!("{n:3}"),
+                                }
+                            })
+                            .collect();
+                        run.say(format!("  j {:7} {}", fj + dj, row.join(" ")));
+                    }
+                }
+                _ => bad(&mut run, "flips DI0 DI1 DJ0 DJ1 DK"),
+            },
+            "motion" => match args.first().copied() {
+                Some("reset") => {
+                    run.harness.motion_reset();
+                    run.say("  motion counters reset");
+                }
+                _ => bad(&mut run, "motion reset"),
             },
             "speed" => match num(0) {
-                Some(v) if (1.0..=5000.0).contains(&v) => run.session.player.fly_speed = v,
-                _ => bad(&mut run, "speed M_PER_S (1..5000)"),
+                Some(v) if (crate::player::MIN_FLY_SPEED..=crate::player::MAX_FLY_SPEED).contains(&v) => run.session.player.fly_speed = v,
+                _ => bad(&mut run, "speed M_PER_S (positive; 1e6 and far beyond is fine)"),
             },
             "travel" => match num(0) {
                 Some(secs) => match parse_keys(args.get(1).copied().unwrap_or("w")) {
@@ -1552,6 +1613,7 @@ pub fn run_play(session: Session, opts: PlayOptions) -> i32 {
                 None => bad(&mut run, &format!("unknown command {other}")),
             },
         }
+        run.drain_trace();
     }
     match run.session.save_now() {
         Ok(n) if n > 0 => run.say(format!("saved {n} chunk(s) at exit")),
@@ -1583,8 +1645,14 @@ pub struct ReplayOptions {
     /// With `watch`: save a frame and quit after this many seconds.
     pub screenshot: Option<String>,
     pub exit_after: Option<f64>,
+    pub no_focus: bool,
     /// What this run draws with, to hold against the recording's.
     pub here: Visual,
+    /// `--record-video FILE`: an mp4 of the replay, live frames at 30 fps
+    /// through the player's camera, as `record` / `recmode live` do.
+    pub video: Option<String>,
+    /// `--water-trace`: every cell that goes wet or dry, into run.log.
+    pub trace: bool,
 }
 
 /// How far a settled shot of a marker is from the frame he marked: (pixels that
@@ -1651,13 +1719,13 @@ pub fn run_replay(template: Session, rep: Replay, opts: ReplayOptions) -> i32 {
         }
     }
     if opts.watch {
-        return crate::app::run_replay(session, rep, crate::app::AppOptions { width: opts.width, height: opts.height, vsync: opts.vsync, backend: opts.backend, screenshot: opts.screenshot, exit_after: opts.exit_after, record: None }, verdict);
+        return crate::app::run_replay(session, rep, crate::app::AppOptions { width: opts.width, height: opts.height, vsync: opts.vsync, backend: opts.backend, screenshot: opts.screenshot, exit_after: opts.exit_after, record: None, no_focus: opts.no_focus, captured: false, crash_test: false }, verdict);
     }
     let t0 = Instant::now();
     let mut log = String::new();
     // What each marker's settled shot came to: (name, recorded vs replayed).
     let mut taken: Vec<Option<(String, Option<(u64, u8, u64)>)>> = vec![None; markers.len()];
-    let report = if shots.is_empty() && !shot_end && markers.is_empty() {
+    let report = if shots.is_empty() && !shot_end && markers.is_empty() && opts.video.is_none() && !opts.trace {
         let mut s = session;
         replay::Runner::new(&rep, &s).run(&mut s)
     } else {
@@ -1668,6 +1736,13 @@ pub fn run_replay(template: Session, rep: Replay, opts: ReplayOptions) -> i32 {
         let mut runner = replay::Runner::new(&rep, &run.session);
         let ticker = Ticker::new(markers.clone());
         let block = run.session.engine.planet.block_size;
+        run.session.sim.trace = opts.trace;
+        if let Some(file) = &opts.video {
+            run.video_live(true);
+            if let Err(e) = run.record_start(file, 30.0) {
+                run.say(format!("  no video: {e}"));
+            }
+        }
         loop {
             if !Arc::ptr_eq(&seen, &run.session.engine) {
                 // A reload or a water toggle made a new engine: draw from it.
@@ -1694,10 +1769,22 @@ pub fn run_replay(template: Session, rep: Replay, opts: ReplayOptions) -> i32 {
             if !runner.advance(&mut run.session) {
                 break;
             }
+            run.video_tick();
+            if opts.trace {
+                run.drain_trace();
+            }
         }
         run.marker_line = None;
         if !Arc::ptr_eq(&seen, &run.session.engine) {
             run.harness.set_engine(run.session.engine.clone());
+        }
+        if opts.video.is_some() {
+            if let Err(e) = run.record_stop() {
+                run.say(format!("  video: {e}"));
+            }
+            run.record_stream();
+            let m = run.harness.motion();
+            run.say(format!("  motion over {} frames: doubles max {} (blocks held instead), held max {}, ghosts max {}, gaps max {} (landed blocks kept instead), mesh at most {:.2} ticks behind a block, draw at most {:.2} ms", m.frames, m.doubles_max, m.held_max, m.ghosts_max, m.gaps_max, m.stale_max_ticks, m.emit_us_max as f64 / 1e3));
         }
         if shot_end {
             run.shot(&format!("end_step{:06}", runner.step()));

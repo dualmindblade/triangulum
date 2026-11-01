@@ -254,6 +254,10 @@ struct Inner {
     /// Every block that changed, in write order, whoever changed it: the
     /// simulation drains this each tick to notify the neighbours.
     changed: Vec<BlockPos>,
+    /// Every cell that went from dry to wet or back (level 0 to more, or
+    /// more to 0), with the levels before and after, whoever wrote it: the
+    /// simulation drains this each tick for its flicker count (C2).
+    flips: Vec<(BlockPos, u8, u8)>,
     last_edit: Option<Instant>,
     first_dirty: Option<Instant>,
     /// Bumps on every change (cheap "anything new?" check).
@@ -301,6 +305,10 @@ impl Inner {
             }
             if e.wet == 0 {
                 e.water = None;
+            }
+            if (had_level == 0) != (level == 0) {
+                let (i0, j0, k0) = w.key.origin_blocks();
+                self.flips.push((BlockPos { face: w.key.face, i: (i0 + w.x as u64) as u32, j: (j0 + w.y as u64) as u32, k: (k0 + w.z as u64) as u32 }, had_level, level));
             }
         }
         e.rev += 1;
@@ -538,6 +546,12 @@ impl EditStore {
         std::mem::take(&mut self.inner.write().unwrap().changed)
     }
 
+    /// The cells that went wet or dry since the last call, with their
+    /// levels before and after (`Inner::flips`).
+    pub fn take_flips(&self) -> Vec<(BlockPos, u8, u8)> {
+        std::mem::take(&mut self.inner.write().unwrap().flips)
+    }
+
     pub fn pending_changes(&self) -> usize {
         self.inner.read().unwrap().changed.len()
     }
@@ -652,6 +666,23 @@ mod tests {
         s.push_invalidated([key, key, ChunkKey { lod: 1, ..key }]);
         assert_eq!(s.take_invalidated().len(), 2);
         assert!(s.take_invalidated().is_empty());
+    }
+
+    /// C2: every cell that goes wet or dry is logged with its levels, for
+    /// the simulation's flicker count; a change of level that stays wet is not.
+    #[test]
+    fn wet_and_dry_flips_are_logged_with_their_levels() {
+        let s = EditStore::new();
+        let key = ChunkKey::neisor(2, 0, 1, 1, 1);
+        let (water, stone): (BlockId, BlockId) = (8, 1);
+        let natural = |_: ChunkKey| (vec![0u16; VOXELS], None);
+        let w = |x: usize, id: BlockId, level: Option<u8>| Write { key, x, y: 2, z: 3, id, level };
+        s.commit(&[w(0, water, Some(17)), w(1, stone, None)], natural, |id| id == water);
+        s.commit(&[w(0, water, Some(20)), w(0, water, Some(0)), w(2, water, None)], natural, |id| id == water);
+        let (i0, j0, k0) = key.origin_blocks();
+        let at = |x: u32| BlockPos { face: 2, i: i0 as u32 + x, j: j0 as u32 + 2, k: k0 as u32 + 3 };
+        assert_eq!(s.take_flips(), vec![(at(0), 0, 17), (at(0), 20, 0), (at(2), 0, WATER_FULL)]);
+        assert!(s.take_flips().is_empty(), "drained");
     }
 
     /// Review #2: a chunk edited while a save is in flight stays dirty, and

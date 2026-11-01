@@ -32,6 +32,10 @@ pub struct Look {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SkyLook {
+    /// Radius at which the metre dials were authored. Loading on another
+    /// planet scales atmosphere height by R and fog density by 1/R.
+    #[serde(default = "reference_radius")]
+    pub reference_radius_m: f64,
     /// Scale height of the air (m): the sky has faded to about a third of
     /// its brightness this high up, and to space a few times higher.
     pub atmosphere_height_m: f64,
@@ -98,12 +102,30 @@ pub struct DetailLook {
     pub lod_factor: f64,
 }
 
+fn reference_radius() -> f64 {
+    131_072.0 * (6.0 / (4.0 * std::f64::consts::PI)).sqrt()
+}
+
 impl Look {
+    /// Keep the authored optical proportions when a planet changes size.
+    /// Dials still show actual metres and fog per km at the current radius.
+    pub fn on_planet(&mut self, radius: f64) {
+        let ratio = radius / self.sky.reference_radius_m;
+        // JSON parsing can round a radius by an ulp. A save/reload on the
+        // same planet must not slowly change its authored metre values.
+        if (ratio - 1.0).abs() > 1e-12 {
+            self.sky.atmosphere_height_m *= ratio;
+            self.sky.fog_density_per_km /= ratio;
+        }
+        self.sky.reference_radius_m = radius;
+    }
+
     /// The M1 look on a planet of `radius` metres with these sky settings.
     pub fn defaults(settings: &Settings, radius: f64) -> Look {
         Look {
             comment: COMMENT.into(),
             sky: SkyLook {
+                reference_radius_m: radius,
                 atmosphere_height_m: settings.atmosphere_height_radii * radius,
                 fog_density_per_km: settings.fog_per_radius / radius * 1000.0,
                 fog_strength: 0.7,
@@ -144,7 +166,9 @@ impl Look {
         let file: Value = serde_json::from_str(text).map_err(|e| format!("parse: {e}"))?;
         let mut v = serde_json::to_value(defaults).map_err(|e| e.to_string())?;
         overlay(&mut v, file);
-        let look: Look = serde_json::from_value(v).map_err(|e| e.to_string())?;
+        let mut look: Look = serde_json::from_value(v).map_err(|e| e.to_string())?;
+        look.validate()?;
+        look.on_planet(defaults.sky.reference_radius_m);
         look.validate()?;
         Ok(look)
     }
@@ -248,6 +272,9 @@ impl Look {
             if c.iter().any(|x| !x.is_finite() || *x < 0.0) {
                 return Err(format!("{name} must be three numbers of at least 0"));
             }
+        }
+        if !s.reference_radius_m.is_finite() || s.reference_radius_m <= 0.0 {
+            return Err("sky.reference_radius_m must be a finite positive radius in metres".into());
         }
         if s.atmosphere_height_m < 1.0 {
             return Err("sky.atmosphere_height_m must be at least 1 m".into());
@@ -386,7 +413,7 @@ impl FileWatch {
 
 // ------------------------------------------------------------ world.json
 
-/// The three terrain dials the panel exposes. They change what the
+/// The terrain dials the panel exposes. They change what the
 /// generator makes, so they are part of a save's identity.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Terrain {
@@ -394,11 +421,26 @@ pub struct Terrain {
     pub landform: f64,
     /// Resolved: R / 6,371,000 when world.json says null.
     pub vscale: f64,
+    pub half_heights: u32,
+    /// Preserve world.json's null, rather than losing it to a resolved number.
+    pub follow_radius: bool,
 }
 
 impl Terrain {
+    pub fn from_config(c: &crate::grid::WorldConfig) -> Self {
+        let radius = c.block_size_m * c.columns_per_face as f64 * (6.0 / (4.0 * std::f64::consts::PI)).sqrt();
+        Self { roughness: c.roughness, landform: c.landform,
+            vscale: c.vertical_scale.unwrap_or(radius / 6_371_000.0),
+            half_heights: c.columns_per_face / (c.world_height / 2), follow_radius: c.vertical_scale.is_none() }
+    }
+
+    pub fn resize(&mut self, half_heights: u32) {
+        if self.follow_radius { self.vscale *= half_heights as f64 / self.half_heights as f64; }
+        self.half_heights = half_heights;
+    }
+
     pub fn same(&self, o: &Terrain) -> bool {
-        (self.roughness - o.roughness).abs() < 1e-9 && (self.landform - o.landform).abs() < 1e-9 && (self.vscale - o.vscale).abs() < 1e-9
+        self.half_heights == o.half_heights && self.follow_radius == o.follow_radius && (self.roughness - o.roughness).abs() < 1e-9 && (self.landform - o.landform).abs() < 1e-9 && (self.vscale - o.vscale).abs() < 1e-9
     }
 }
 
@@ -415,16 +457,25 @@ pub fn set_json_value(text: &str, key: &str, value: &str) -> Result<String, Stri
     Ok(format!("{}{}{}", &text[..vstart], value, &text[vend..]))
 }
 
-/// Write the terrain dials into world.json as the new default. `earth`
-/// is the vertical scale that world.json spells `null` (Earth's slopes).
-pub fn save_terrain_default(path: &Path, t: &Terrain, earth_vscale: f64) -> Result<(), String> {
+/// Write the size and terrain dials into world.json as the new default.
+/// Automatic vertical scale stays `null`, preserving the intent to follow R.
+pub fn save_terrain_default(path: &Path, t: &Terrain) -> Result<(), String> {
     let text = std::fs::read_to_string(path).map_err(|e| format!("read {}: {e}", path.display()))?;
     // serde_json spells 1.0 as "1.0", as the file does.
     let num = |x: f64, d: i32| serde_json::to_string(&round_sig(x, d)).unwrap_or_else(|_| x.to_string());
-    let vs = if (t.vscale - earth_vscale).abs() < 1e-7 { "null".to_string() } else { num(t.vscale, 5) };
+    let vs = if t.follow_radius { "null".to_string() } else { num(t.vscale, 5) };
     let mut new = set_json_value(&text, "vertical_scale", &vs)?;
     new = set_json_value(&new, "roughness", &num(t.roughness, 4))?;
     new = set_json_value(&new, "landform", &num(t.landform, 4))?;
+    if new.contains("\"planet_size_half_heights\"") {
+        new = set_json_value(&new, "planet_size_half_heights", &t.half_heights.to_string())?;
+    } else {
+        // An older local world.json can be upgraded without rewriting its style.
+        new = set_json_value(&new, "columns_per_face", &t.half_heights.to_string())?
+            .replace("\"columns_per_face\"", "\"planet_size_half_heights\"");
+    }
+    // Refuse incompatible height/sea/size before replacing a working file.
+    crate::grid::WorldConfig::parse(&new)?;
     let tmp = path.with_extension("json.saving");
     std::fs::write(&tmp, new).map_err(|e| format!("write {}: {e}", tmp.display()))?;
     std::fs::rename(&tmp, path).map_err(|e| format!("replace {}: {e}", path.display()))
@@ -434,7 +485,40 @@ pub fn save_terrain_default(path: &Path, t: &Terrain, earth_vscale: f64) -> Resu
 mod tests {
     use super::*;
 
-    const R: f64 = 90_569.6;
+    #[test]
+    fn t1_size_and_automatic_relief_survive_save_and_restart() {
+        let c = crate::grid::WorldConfig::parse(include_str!("../assets/world.json")).unwrap();
+        let mut t = Terrain::from_config(&c);
+        let start = t.vscale;
+        t.resize(832);
+        assert!((t.vscale / start - 6.5).abs() < 1e-12);
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("out/t1-terrain-test.json");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, include_str!("../assets/world.json")).unwrap();
+        save_terrain_default(&path, &t).unwrap();
+        let loaded = crate::grid::WorldConfig::load(&path.to_string_lossy()).unwrap();
+        assert_eq!(loaded.columns_per_face, 851_968);
+        assert_eq!(loaded.vertical_scale, None);
+        assert!(Terrain::from_config(&loaded).same(&t));
+        t.follow_radius = false;
+        t.vscale = 0.05;
+        t.resize(1024);
+        assert_eq!(t.vscale, 0.05);
+        save_terrain_default(&path, &t).unwrap();
+        assert_eq!(crate::grid::WorldConfig::load(&path.to_string_lossy()).unwrap().vertical_scale, Some(0.05));
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn t1_shipped_atmosphere_and_fog_follow_radius() {
+        let text = include_str!("../assets/look.json");
+        let a = Look::parse(text, &Look::defaults(&Settings::default(), R)).unwrap();
+        let b = Look::parse(text, &Look::defaults(&Settings::default(), R * 8.0)).unwrap();
+        assert!((b.sky.atmosphere_height_m / a.sky.atmosphere_height_m - 8.0).abs() < 1e-8);
+        assert!((b.sky.fog_density_per_km / a.sky.fog_density_per_km - 0.125).abs() < 1e-8);
+    }
+
+    const R: f64 = 90_569.21831901377;
 
     fn defaults() -> Look {
         Look::defaults(&Settings::default(), R)

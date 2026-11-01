@@ -551,7 +551,7 @@ fn a_move_waits_at_the_edge_of_the_active_region() {
 fn digging_a_real_beach_does_not_set_it_flowing() {
     let w = test_world();
     let (air, _, sand, _) = ids(&w);
-    let c = BlockPos { face: 1, i: 1912, j: 59004, k: 511 };
+    let c = BlockPos { face: 1, i: 1912, j: 59004, k: 1023 };
     assert_eq!(w.block_at(c), sand, "the beach of b4-slide.play");
     let focus = w.planet.pos(c.face, c.i as f64 + 0.5, c.j as f64 + 0.5, c.k as f64 + 2.0);
     let mut sim = Sim::new(levels(20.0));

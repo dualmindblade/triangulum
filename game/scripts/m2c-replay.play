@@ -23,7 +23,7 @@ assert find_kind == flat
 assert find_face == 2
 assert find_i == 107155
 assert find_j == 57522
-assert find_k == 555
+assert find_k == 1067
 assert on_ground == true
 assert block_rel[1,0,0] == air
 assert block_rel[1,0,1] == air
@@ -50,7 +50,7 @@ find river
 assert find_kind == river
 assert find_i == 108271
 assert find_j == 55925
-assert find_k == 535
+assert find_k == 1047
 select 1
 tap break
 wait 0.3

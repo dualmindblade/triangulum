@@ -1,0 +1,8 @@
+final {'queued': 12, 'drying': 50, 'water_moved': 4064839, 'water_dried': 1228, 'water_in': 0, 'water_out': 0, 'falling': 0, 'sim_tick': 20862}
+tail_10s {'queued': 0, 'drying': 48, 'water_moved': 4064883, 'water_dried': 1248, 'water_in': 0, 'water_out': 0, 'falling': 0, 'sim_tick': 21062}
+tail_120s {'queued': 0, 'drying': 47, 'water_moved': 4065213, 'water_dried': 1406, 'water_in': 0, 'water_out': 0, 'falling': 0, 'sim_tick': 23262}
+tail_300s {'queued': 0, 'drying': 0, 'water_moved': 4065380, 'water_dried': 1559, 'water_in': 0, 'water_out': 0, 'falling': 0, 'sim_tick': 26862}
+tail_30s {'queued': 0, 'drying': 48, 'water_moved': 4064964, 'water_dried': 1281, 'water_in': 0, 'water_out': 0, 'falling': 0, 'sim_tick': 21462}
+tail_5s {'queued': 0, 'drying': 51, 'water_moved': 4064867, 'water_dried': 1240, 'water_in': 0, 'water_out': 0, 'falling': 0, 'sim_tick': 20962}
+tail_60s {'queued': 12, 'drying': 61, 'water_moved': 4065051, 'water_dried': 1321, 'water_in': 0, 'water_out': 0, 'falling': 0, 'sim_tick': 22062}
+exit 1 (the original queued assertion is retained as a checkpoint)

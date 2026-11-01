@@ -12,6 +12,7 @@
 //!   cargo run --release -- --terrain-stats --out out/stats # slope, fidelity, anisotropy, LOD checks
 //!
 //! World settings come from `assets/world.json`; every one can be overridden:
+//!   --planet-size U (N in half-heights: 128..1024 in steps of 32; Earth analogue 832)
 //!   --seed N --block-size S --height H --sea-level K --n N --bake DIR --vscale F --roughness F --landform F
 //! (a relative "bake" in world.json is resolved against the game/ directory)
 //! Saves: --save DIR (default saves/<world name>)  --no-save  --keep-save (harness: keep its save)
@@ -32,6 +33,10 @@
 //!   --look-file FILE (default assets/look.json; the panel saves to it, and to --blocks and --world)
 //! Other options: --lod-factor F (look.json's, 5) --threads N --no-ao --no-split --skirt N
 //!   --no-vsync --size WxH --hide-water --markers --backend vulkan|dx12
+//!   --no-focus (the window opens inactive, at the bottom of the z-order, and takes no focus:
+//!     for testing the real window on a machine somebody is using; see tools/quiet-window.ps1)
+//!   --captured (start with the mouse captured, as the first click does)
+//!   --crash-test (panic on the first frame, to see that a crash leaves its file in out/crash/)
 //!   --frames N --skip-flight --only pose,pose --label TEXT --which a,b --map-px N
 //!   --screenshot PATH --exit-after SECS   (app: save a frame with the HUD, then quit)
 //! Sky: --time HH:MM (or decimal hours, local solar time at spawn; default 12:00)
@@ -51,6 +56,10 @@
 //!                         markers and takes a settled shot at each; says separately whether the
 //!                         simulation reproduced and whether the look was the same
 //!   --shot-at STEP        (with --replay, repeatable; STEP or "end") a settled shot there
+//!   --record-video FILE   (with --replay) an mp4 of it under out/replay/<name>/: live frames, 30 fps,
+//!                         through the player's camera; run.log then says what the falling-block
+//!                         draw held back (C2)
+//!   --water-trace         (with --replay) every cell that goes wet or dry, tick by tick, in run.log
 //!   --watch               (with --replay) play it in the window at real time instead; a marker's
 //!                         text shows as it passes
 //!   --record-replay FILE  (the game) start recording at launch, as F10 does; Q, closing or --exit-after stops it
@@ -60,6 +69,7 @@ pub mod app;
 pub mod bench;
 pub mod camera;
 pub mod controls;
+pub mod crash;
 pub mod engine;
 pub mod grid;
 pub mod landform_shots;
@@ -113,6 +123,7 @@ struct Args {
     height: Option<u32>,
     sea_level: Option<u32>,
     n: Option<u32>,
+    planet_size: Option<u32>,
     bake: Option<String>,
     vscale: Option<f64>,
     roughness: Option<f64>,
@@ -162,10 +173,15 @@ struct Args {
     replay: Option<String>,
     shot_at: Vec<String>,
     watch: bool,
+    record_video: Option<String>,
+    water_trace: bool,
     record_replay: Option<String>,
     interchange: Option<String>,
     replays: Option<String>,
     repro: Option<String>,
+    no_focus: bool,
+    captured: bool,
+    crash_test: bool,
 }
 
 fn parse_args() -> Args {
@@ -185,6 +201,7 @@ fn parse_args() -> Args {
         height: None,
         sea_level: None,
         n: None,
+        planet_size: None,
         bake: None,
         vscale: None,
         roughness: None,
@@ -234,14 +251,19 @@ fn parse_args() -> Args {
         replay: None,
         shot_at: Vec::new(),
         watch: false,
+        record_video: None,
+        water_trace: false,
         record_replay: None,
         interchange: None,
         replays: None,
         repro: None,
+        no_focus: false,
+        captured: false,
+        crash_test: false,
     };
     let mut it = std::env::args().skip(1);
     while let Some(k) = it.next() {
-        let mut val = || it.next().unwrap_or_else(|| panic!("missing value after {k}"));
+        let mut val = || it.next().unwrap_or_else(|| fail(&format!("missing value after {k}")));
         match k.as_str() {
             "--sky-reel" => a.sky_reel = true,
             "--time" => a.time = sky::parse_hour(&val()).unwrap_or_else(|e| fail(&e)),
@@ -257,6 +279,7 @@ fn parse_args() -> Args {
             "--height" => a.height = Some(val().parse().unwrap()),
             "--sea-level" => a.sea_level = Some(val().parse().unwrap()),
             "--n" => a.n = Some(val().parse().unwrap()),
+            "--planet-size" => a.planet_size = Some(val().parse().unwrap()),
             "--bake" => a.bake = Some(val()),
             "--vscale" => a.vscale = Some(val().parse().unwrap()),
             "--roughness" => a.roughness = Some(val().parse().unwrap()),
@@ -333,26 +356,36 @@ fn parse_args() -> Args {
             "--replay" => a.replay = Some(val()),
             "--shot-at" => a.shot_at.push(val()),
             "--watch" => a.watch = true,
+            "--record-video" => a.record_video = Some(val()),
+            "--water-trace" => a.water_trace = true,
             "--record-replay" => a.record_replay = Some(val()),
             "--interchange" => a.interchange = Some(val()),
             "--replays" => a.replays = Some(val()),
             "--repro" => a.repro = Some(val()),
+            "--no-focus" => a.no_focus = true,
+            "--captured" => a.captured = true,
+            "--crash-test" => a.crash_test = true,
             "--help" | "-h" => {
                 println!("{}", include_str!("main.rs").lines().take_while(|l| l.starts_with("//!")).map(|l| l.trim_start_matches("//!").trim_start_matches(' ')).collect::<Vec<_>>().join("\n"));
                 std::process::exit(0);
             }
-            other => panic!("unknown argument {other} (try --help)"),
+            other => fail(&format!("unknown argument {other} (try --help)")),
         }
     }
     a
 }
 
+/// Why the game won't start. Somebody who started it without a console, or
+/// whose console goes when the game does, must see this too, or a refused save
+/// is a game that crashes on launch.
 fn fail(msg: &str) -> ! {
     eprintln!("error: {msg}");
+    crash::tell_the_player(msg);
     std::process::exit(2)
 }
 
 fn main() {
+    crash::install();
     let args = parse_args();
     let root = env!("CARGO_MANIFEST_DIR");
     if let Some(d) = &args.interchange {
@@ -392,8 +425,20 @@ near it, by hand:
     }
     if let Some(v) = args.seed { config.seed = v; }
     if let Some(v) = args.block_size { config.block_size_m = v; }
-    if let Some(v) = args.height { config.world_height = v; }
+    let half_heights = config.columns_per_face / (config.world_height / 2);
+    if let Some(v) = args.height {
+        config.world_height = v;
+        config.sea_level = v / 2;
+        if args.n.is_none() {
+            config.columns_per_face = WorldConfig::columns_for_half_heights(args.planet_size.unwrap_or(half_heights), v)
+                .unwrap_or_else(|e| fail(&e));
+        }
+    }
     if let Some(v) = args.sea_level { config.sea_level = v; }
+    if let Some(v) = args.planet_size {
+        if args.n.is_some() { fail("choose --planet-size (half-heights) or --n (raw columns), not both"); }
+        config.columns_per_face = WorldConfig::columns_for_half_heights(v, config.world_height).unwrap_or_else(|e| fail(&e));
+    }
     if let Some(v) = args.n { config.columns_per_face = v; }
     if let Some(v) = &args.bake { config.bake = v.clone(); }
     if let Some(v) = args.vscale { config.vertical_scale = Some(v); }
@@ -488,6 +533,10 @@ near it, by hand:
         }
     }
     let p = engine.planet;
+    if let Some(h) = &engine.generator.hydro {
+        let phases: Vec<String> = h.build_phases.iter().map(|(n, s)| format!("{n} {s:.2}")).collect();
+        println!("hydro: lakes and rivers built in {:.2}s ({}); {} lakes lowered to the river reaching them, at most {:.1} m", engine.generator.hydro_build_s, phases.join(", "), h.lakes_lowered.0, h.lakes_lowered.1);
+    }
     println!(
         "planet {}: s = {} m, H = {} blocks (sea level {}), N = {}, R = {:.3} km, vertical scale {:.5} (1/{:.1}), {}, max LOD {} ({} m voxels), lod factor {}, {} rayon threads",
         engine.config.name,
@@ -646,7 +695,7 @@ near it, by hand:
         let mut here_look = start_look.clone();
         here_look.detail.lod_factor = engine.lod.factor;
         let here = visual::Visual::of(&here_look, &registry, visual::startup_textures(), "normal", engine.mesh_opts.ao, engine.mesh_opts.split, engine.skirt);
-        let opts = play::ReplayOptions { out: out(&format!("out/replay/{stem}")), name: stem, shots: args.shot_at, watch: args.watch, width: args.width, height: args.win_height, backend: args.backend, vsync: args.vsync, screenshot: args.screenshot.clone(), exit_after: args.exit_after, here };
+        let opts = play::ReplayOptions { out: out(&format!("out/replay/{stem}")), name: stem, shots: args.shot_at, watch: args.watch, width: args.width, height: args.win_height, backend: args.backend, vsync: args.vsync, screenshot: args.screenshot.clone(), exit_after: args.exit_after, here, no_focus: args.no_focus, video: args.record_video, trace: args.water_trace };
         std::process::exit(play::run_replay(session, r, opts));
     }
 
@@ -655,5 +704,5 @@ near it, by hand:
         let code = play::run_play(session, play::PlayOptions { script, out: out(&format!("out/play/{stem}")), width: args.width, height: args.win_height, backend: args.backend });
         std::process::exit(code);
     }
-    app::run(session, app::AppOptions { width: args.width, height: args.win_height, vsync: args.vsync, backend: args.backend, screenshot: args.screenshot, exit_after: args.exit_after, record: args.record_replay });
+    app::run(session, app::AppOptions { width: args.width, height: args.win_height, vsync: args.vsync, backend: args.backend, screenshot: args.screenshot, exit_after: args.exit_after, record: args.record_replay, no_focus: args.no_focus, captured: args.captured, crash_test: args.crash_test });
 }

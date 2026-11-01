@@ -1,14 +1,26 @@
-//! Landforms v2: the relief between the bake's scale (~1 km here) and the
-//! metre scale, invented by the engine but driven by the bake's geology.
+//! Landforms v3: the local relief, in metres, standing on the bake's global
+//! surface (`scale.rs` has the split).
 //!
 //! The bake knows where ranges, plateaus, basins and rivers are; it does
-//! not know their ridges and valleys. This module adds them as a height
-//! displacement `dh` (metres) on top of `bake elevation x vertical scale`:
+//! not know their ridges and valleys, and at the planet's vertical scale its
+//! own relief is a few metres per kilometre. This module adds the relief
+//! people see, as a height displacement `dh` (metres) on top of
+//! `bake elevation x vertical scale`, sized the way real hills and mountains
+//! are and the same on any planet (T2, round 2 #1):
 //!
-//! 1. **Massif** (ridges and spurs): a few octaves of 2D gradient noise
-//!    around a dominant wavelength, domain-warped, folded into a ridge
-//!    network (1 - |n|) where the terrain is rugged and left rounded where
-//!    it is gentle. Zero mean.
+//! 1. **Massif** (peaks, ridges and spurs): octaves of 2D gradient noise
+//!    from 8 km down to 64 m, domain-warped, folded into a ridge network
+//!    (1 - |n|) where the terrain is rugged and left rounded where it is
+//!    gentle, with a 1/f spectrum below the dominant wavelength and the
+//!    finer octaves weaker in the valleys of the coarser ones (a
+//!    multifractal: craggy crests, smooth valley floors). The relief in
+//!    metres comes from the bake's global fields: hills everywhere from its
+//!    local-relief field, mountains on its belts (active uplift, rough
+//!    highlands), so a belt reads as mountains, a plain stays a plain and
+//!    hills roll. **The bake's surface is the floor:** the massif and the
+//!    gullies are summed and eased above zero (`FLOOR_V`), so valley floors
+//!    lie on the bake and peaks stand above it, never below. The planet's
+//!    ceiling is applied by the generator (`Scale::soft_ceiling`).
 //! 2. **Gullies** (drainage): slope-aligned stripe noise (see
 //!    `noise::gully2d`) whose crests and troughs run downhill along the
 //!    slope of the bake and the massif; where neighbouring cells' stripes
@@ -23,18 +35,20 @@
 //! 4. **Fine roughness** (the roughness dial): a little 2D fBm from ~24 m
 //!    down, stronger on steep ground.
 //!
-//! Scales are chosen like real hillslopes: relief R comes from the bake
-//! (roughness, uplift times elevation, plus a floor so plains roll), and
-//! the dominant wavelength grows with relief so slopes approach a
-//! threshold (~0.75) in big mountains and stay gentle in lowlands. That
-//! keeps the landforms believable at any vertical scale: at 1/70 a range
-//! is rugged hills, at 1/8 it is mountains with kilometre valleys.
+//! Scales are chosen like real hillslopes: the dominant wavelength grows
+//! with the relief so slopes approach a threshold (~0.75) in big mountains
+//! and stay gentle in lowlands: 850 m peaks stand about 3 km apart with
+//! kilometre valleys, 30 m hills roll at 500 m. None of it changes with the
+//! vertical scale or the radius: only *where* it is (the belts) does.
 //!
 //! Purity and LOD: everything is a function of (seed, direction) and the
 //! bake. Each octave is faded out when its wavelength is under ~4 voxels,
 //! and finer octaves are steered by the *unfaded* gradient of coarser ones,
-//! so an octave's value never depends on the LOD, only its weight does.
-//! Every term has zero mean, so averages over kilometres match the bake.
+//! so an octave's value never depends on the LOD, only its weight does
+//! (the multifractal weight reads only octaves that are fully visible
+//! wherever the octave it weights is visible at all). The massif's floor
+//! and the fine terms are per column; the hills average to the bake plus
+//! about a third of their relief, the mountains stand on it.
 //!
 //! Domain: each cube face has its own equal-angle chart (u, v) =
 //! (atan a, atan b) in metres (R u, R v); it extends smoothly past the
@@ -43,6 +57,7 @@
 
 use super::bake::{BakeSample, chart_uv};
 use super::noise::{gully2d, noise2d};
+use super::scale::Scale;
 use cubesphere::FACES;
 use glam::DVec3;
 
@@ -50,29 +65,76 @@ use glam::DVec3;
 /// units (|d_a| - |d_b|); 0.04 is about +-2.6 km on Neisor.
 const CHART_BLEND: f64 = 0.04;
 
-/// Relief: metres of landform per metre of bake roughness (both at the
-/// vertical scale), per metre of uplifted elevation, and the floor.
-const C_ROUGH: f64 = 0.5;
-const C_UPLIFT: f64 = 0.3;
-const RELIEF_FLOOR_M: f64 = 8.0;
-/// Threshold hillslope and the relief at which slopes reach half of it.
+// --- Local relief (metres, the same on any planet; Andrew's dials). The
+// *where* comes from the bake's Earth-scale fields, which stretch with the
+// planet; the metres do not.
+/// Hills: the gentlest plain still rolls this much, and the bake's
+/// local-relief field (km, Earth scale) adds up to `HILL_ROUGH_M` by
+/// `HILL_ROUGH_KM`.
+const HILL_FLOOR_M: f64 = 10.0;
+const HILL_ROUGH_M: f64 = 60.0;
+const HILL_ROUGH_KM: f64 = 0.25;
+/// Hills vary in size from place to place: the relief is modulated by
+/// +-`HILL_VARY` on `HILL_VARY_WL_M`.
+const HILL_VARY: f64 = 0.55;
+const HILL_VARY_WL_M: f64 = 7000.0;
+/// Mountains: the relief scale of the strongest belt (peaks reach about
+/// 1.5x it above the bake's surface, see `FLOOR_V`), and the belt weight
+/// from active uplift (0..1.2) and the bake's local relief (km).
+const MOUNT_M: f64 = 640.0;
+/// Mesa country raises its hills by this share (tablelands), and no
+/// terrace step is taller than STEP_MAX_M (a riser is a cliff).
+const MESA_RAISE: f64 = 0.8;
+const STEP_MAX_M: f64 = 40.0;
+const MOUNT_UPLIFT_LO: f64 = 0.05;
+const MOUNT_UPLIFT_HI: f64 = 0.6;
+const MOUNT_ROUGH_LO_KM: f64 = 0.15;
+const MOUNT_ROUGH_HI_KM: f64 = 0.9;
+/// The floor: the massif and gullies, in units of the relief, are eased
+/// above `FLOOR_V` (a smooth maximum of width `FLOOR_K`) and shifted so the
+/// floor is the bake's surface. About a tenth of the land lies on it.
+const FLOOR_V: f64 = -0.5;
+const FLOOR_K: f64 = 0.15;
+/// Spectrum below the dominant wavelength: octave amplitude falls as
+/// (wavelength / dominant)^H.
+const SPECTRUM_H: f64 = 1.3;
+/// Octaves at or above this fraction of the dominant wavelength are the
+/// ridge network (folded); finer ones are rounded bumps on its flanks, so
+/// a range has a few long crests, not ridges at every scale.
+const RIDGED_DOWN_TO: f64 = 0.35;
+/// Largest gully cell (m): gullies are hillslope drainage (rills and
+/// gullies), not valleys; the valleys between the ridges come from the
+/// river network's ramp (`hydro.rs`) and the fold itself.
+const GULLY_MAX_CELL_M: f64 = 128.0;
+/// Multifractal: a finer octave's weight in the valleys of the coarser ones
+/// (1 on their crests).
+const MF_LO: f64 = 0.25;
+/// Threshold hillslope and the relief at which slopes reach half of it
+/// (the ruggedness: how much of the massif folds into crests).
 const S_MAX: f64 = 0.75;
 const RELIEF_HALF_M: f64 = 100.0;
-/// Dominant wavelength bounds (m).
+/// Dominant (ridge-to-ridge) wavelength: LAM_PER_RELIEF x relief + LAM_BASE_M,
+/// within the bounds (m). 630 m of relief gives 1.8 km: flanks near 0.5.
+const LAM_PER_RELIEF: f64 = 2.5;
+const LAM_BASE_M: f64 = 250.0;
 const LAM_LO: f64 = 200.0;
-const LAM_HI: f64 = 2600.0;
-/// Massif octaves: 4096 m down to 64 m.
-const MASSIF_TOP: f64 = 4096.0;
-const MASSIF_OCTAVES: u32 = 7;
-const MASSIF_TOP_LOG2: f64 = 12.0;
-/// Gully octaves: 1024 m down to 16 m.
-const GULLY_TOP: f64 = 1024.0;
-const GULLY_OCTAVES: u32 = 7;
+const LAM_HI: f64 = 4096.0;
+/// Domain warp of the massif: amplitude as a share of the dominant
+/// wavelength (bends the crests without breaking them into swirls), on two
+/// fixed wavelengths (`WARP_WL_M` and a quarter of it).
+const WARP_AMP: f64 = 0.25;
+const WARP_WL_M: f64 = 4096.0;
+/// Massif octaves: 8192 m down to 64 m.
+const MASSIF_TOP: f64 = 8192.0;
+const MASSIF_OCTAVES: u32 = 8;
+/// Gully octaves: 2048 m down to 16 m.
+const GULLY_TOP: f64 = 2048.0;
+const GULLY_OCTAVES: u32 = 8;
 /// Gully depth = GULLY_BETA x relief x (cell / dominant wavelength)^0.6
 /// (drainage even on gentle ground) + GULLY_ALPHA x cell x slope (deeper
 /// on steep ground; slope capped at GULLY_SLOPE_CAP).
-const GULLY_BETA_LOW: f64 = 0.6;
-const GULLY_BETA_RUGGED: f64 = 0.25;
+const GULLY_BETA_LOW: f64 = 0.4;
+const GULLY_BETA_RUGGED: f64 = 0.12;
 const GULLY_ALPHA: f64 = 0.05;
 const GULLY_SLOPE_CAP: f64 = 0.8;
 /// Fine roughness octaves (m) and base amplitude (m).
@@ -107,8 +169,10 @@ enum Part {
 /// Per-column parameters derived from the bake.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Local {
-    /// Landform relief scale (m, about peak to trough of the massif).
+    /// Landform relief scale (m): peaks stand about 1.5x it above the floor.
     pub relief: f64,
+    /// 0..1: how much this column is on a mountain belt (global: where).
+    pub mountain: f64,
     /// Dominant (ridge-to-ridge) wavelength, m.
     pub lam_d: f64,
     /// 0 rounded hills .. 1 sharp ridge network.
@@ -140,8 +204,10 @@ pub struct LandformSample {
 pub struct Landform {
     pub seed: u64,
     pub radius: f64,
-    pub vscale: f64,
-    /// Andrew's landform dial: scales the massif, gullies and mesas.
+    /// The local/global split: global heights go through `scale.global_m`.
+    pub scale: Scale,
+    /// Andrew's landform dial: scales the relief (peak height, hills), the
+    /// gullies and the mesas.
     pub landform: f64,
     /// Andrew's roughness dial: scales the fine roughness.
     pub roughness: f64,
@@ -175,27 +241,40 @@ fn octave_frame(k: u32, salt: u64) -> (f64, f64, f64, f64) {
 impl Landform {
     /// Per-column parameters from the bake sample.
     pub fn local(&self, s: &BakeSample) -> Local {
-        let vs = self.vscale;
-        let rough_m = s.rough_km.max(0.0) * 1000.0 * vs;
-        let elev_m = s.elev_km.max(0.0) * 1000.0 * vs;
-        let up = (s.uplift / 0.8).clamp(0.0, 1.0);
+        let elev_m = self.scale.global_m(s.elev_km.max(0.0));
         let erod = if s.erodibility > 0.0 { s.erodibility } else { 1.0 };
         // Mesa country: hard flat-lying rock (erodibility under ~0.8), no
         // active uplift, dry, raised above the lowlands, on a gentle
         // regional slope (about 2% of the land on seed 42).
-        let bake_slope = (s.elev_du_km * s.elev_du_km + s.elev_dv_km * s.elev_dv_km).sqrt() * 1000.0 * vs / self.radius;
+        let bake_slope = self.scale.global_slope((s.elev_du_km * s.elev_du_km + s.elev_dv_km * s.elev_dv_km).sqrt());
+        // Where the belts are (global): active uplift, or a rough highland;
+        // a soft OR of the two, with a core (the power) so a belt has a
+        // high heart and lower flanks.
+        let m_up = smoothstep(MOUNT_UPLIFT_LO, MOUNT_UPLIFT_HI, s.uplift);
+        let m_rough = smoothstep(MOUNT_ROUGH_LO_KM, MOUNT_ROUGH_HI_KM, s.rough_km);
+        let mountain = 1.0 - (1.0 - m_up) * (1.0 - m_rough);
+        // Mesa country is tableland, not a range: it keeps out of the belts
+        // (a 700 m mountain cut into 60 m steps is a wedding cake).
         let mesa = if s.erodibility > 0.0 {
-            smoothstep(0.84, 0.74, erod) * (1.0 - smoothstep(0.05, 0.25, s.uplift)) * smoothstep(700.0, 350.0, s.precip_mm) * smoothstep(0.2, 0.6, s.elev_km) * (1.0 - smoothstep(0.05, 0.15, bake_slope))
+            smoothstep(0.84, 0.74, erod) * (1.0 - smoothstep(0.05, 0.25, s.uplift)) * smoothstep(700.0, 350.0, s.precip_mm) * smoothstep(0.2, 0.6, s.elev_km) * (1.0 - smoothstep(0.05, 0.15, bake_slope)) * (1.0 - smoothstep(0.2, 0.5, mountain))
         } else {
             0.0
         };
-        let relief0 = (C_ROUGH * rough_m + C_UPLIFT * up * elev_m + RELIEF_FLOOR_M) * (1.0 + 1.5 * mesa);
+        // The relief in metres (local): hills everywhere, mountains on the belts.
+        let hill_m = HILL_FLOOR_M + HILL_ROUGH_M * smoothstep(0.0, HILL_ROUGH_KM, s.rough_km);
+        let mount_m = MOUNT_M * mountain * mountain.sqrt();
+        // Mesa country raises the hills (its tablelands); mountains stand as they are.
+        let relief0 = hill_m * (1.0 + MESA_RAISE * mesa) + mount_m;
         let s_max = S_MAX * (1.25 - 0.35 * erod).clamp(0.6, 1.1);
-        let lam_d = (std::f64::consts::PI * (relief0 + RELIEF_HALF_M) / s_max).clamp(LAM_LO, LAM_HI);
+        // Ridge-to-ridge wavelength: real mountain flanks (about 0.5) and
+        // gentle hills (about 0.1 on 300 m), harder rock a little steeper.
+        let lam_d = ((LAM_PER_RELIEF * relief0 + LAM_BASE_M) * (S_MAX / s_max)).clamp(LAM_LO, LAM_HI);
         let s_t = s_max * relief0 / (relief0 + RELIEF_HALF_M);
-        // Tablelands are rounded underneath; the terraces make the edges.
-        let rugged = smoothstep(0.12, 0.45, s_t) * (1.0 - mesa);
-        let step_m = (0.45 * relief0).clamp(3.0, 60.0);
+        // Hills under about 150 m of relief stay rounded; mountains fold
+        // into crests. Tablelands are rounded underneath; the terraces make
+        // the edges.
+        let rugged = smoothstep(0.25, 0.55, s_t) * (1.0 - mesa);
+        let step_m = (0.45 * relief0).clamp(3.0, STEP_MAX_M);
         // Coasts: weaker at the shoreline (beaches, low coastal plains), and
         // a third on the sea floor.
         // Continuous across the shoreline: 0.3 on the sea floor and at the
@@ -204,7 +283,7 @@ impl Landform {
         // The discharge on a river's axis can exceed the local value by the
         // ridge's own height; half a decade covers the bake's ridges.
         let valley_m = if self.landform > 0.0 && self.valleys && s.flow_smooth > VALLEY_FLOW_LO - 0.5 { 2.0 + 0.3 * relief0 * self.landform + CHANNEL_DEPTH_M } else { 0.0 };
-        Local { relief: relief0 * self.landform, lam_d, rugged, mesa, step_m, fac, valley_m }
+        Local { relief: relief0 * self.landform, mountain, lam_d, rugged, mesa, step_m, fac, valley_m }
     }
 
     /// The landform displacement at a direction, band-limited for voxels of
@@ -248,10 +327,21 @@ impl Landform {
             // Variance-preserving cross-fade of independent fields.
             (acc_h / acc_w2.sqrt().max(1e-12), acc_s / acc_w)
         };
+        // The floor: the massif and gullies (in relief units) eased above
+        // FLOOR_V and shifted so the bake's surface is the floor. Applied
+        // after the cross-fade, which wants zero-mean fields. The slope
+        // follows the easing's own slope (0 on the floor, 1 above it).
+        let mut slope = slope;
+        if local.relief > 0.0 {
+            let v = dh / local.relief;
+            let (f, df) = floor_ease(v);
+            dh = local.relief * f;
+            slope *= df;
+        }
         dh *= local.fac;
         // Mesas: terrace the total surface at levels that follow the strata.
         if local.mesa > 0.0 && self.landform > 0.0 {
-            let base = s.elev_km * 1000.0 * self.vscale;
+            let base = self.scale.global_m(s.elev_km);
             let fade = local.mesa * (local.step_m / (2.0 * voxel_m) - 1.0).clamp(0.0, 1.0);
             if fade > 0.0 {
                 let h = base + dh + strata_off;
@@ -261,7 +351,7 @@ impl Landform {
         // River valleys along the ridges of planetgen's discharge.
         let mut river = 0.0;
         if self.landform > 0.0 && self.valleys {
-            let base = s.elev_km * 1000.0 * self.vscale;
+            let base = self.scale.global_m(s.elev_km);
             let (h, r) = self.valley(s, &local, base + dh, base);
             dh = h - base;
             river = r;
@@ -311,7 +401,7 @@ impl Landform {
             return (h, 0.0);
         }
         // Bake surface at the axis (first order along the step).
-        let k1 = 1000.0 * self.vscale / r;
+        let k1 = self.scale.global_slope(1.0);
         let axis = base + (s.smooth_du_km * k1 * nx + s.smooth_dv_km * k1 * ny) * step;
         let half_floor = VALLEY_FLOOR_M + VALLEY_FLOOR_PER_FLOW_M * (f_axis - VALLEY_FLOW_LO).clamp(0.0, 2.0);
         let depth = (2.0 + 0.3 * l.relief) * wf;
@@ -332,8 +422,7 @@ impl Landform {
     /// Bake elevation gradient (m per m, at the vertical scale) in the
     /// equal-angle chart of `face`, from the sample's own chart.
     fn bake_gradient_in_chart(&self, face: u8, dir: DVec3, s: &BakeSample) -> (f64, f64) {
-        let k = 1000.0 * self.vscale / self.radius;
-        let (gu, gv) = (s.elev_du_km * k, s.elev_dv_km * k);
+        let (gu, gv) = (self.scale.global_slope(s.elev_du_km), self.scale.global_slope(s.elev_dv_km));
         if face == s.face {
             return (gu, gv);
         }
@@ -383,18 +472,35 @@ impl Landform {
             // --- Massif: warped ridge network around the dominant wavelength.
             // The massif is always per column (its ridge crests are too sharp to
             // interpolate); at a grid node it only steers the coarse gullies.
-            let lw = 2.0 * l.lam_d;
-            let aw = 0.35 * l.lam_d;
-            let (wx, wxx, wxy) = noise2d(x / lw + 5.2, y / lw - 1.3, seed ^ 0xA1);
-            let (wy, wyx, wyy) = noise2d(x / lw - 7.7, y / lw + 3.1, seed ^ 0xA2);
+            // The warp's wavelengths are fixed: a wavelength that followed the
+            // relief would sweep the warp through whole noise cells wherever
+            // the relief changes (x / wl with x tens of kilometres), which
+            // drew stripes along every belt edge. Only its amplitude follows.
+            let aw = WARP_AMP * l.lam_d;
+            let (mut wx, mut wy, mut wxx, mut wxy, mut wyx, mut wyy) = (0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
+            for (lw, share, sx, sy) in [(WARP_WL_M, 0.7, 0xA1u64, 0xA2u64), (0.25 * WARP_WL_M, 0.3, 0xA4, 0xA5)] {
+                let (nx, nxx, nxy) = noise2d(x / lw + 5.2, y / lw - 1.3, seed ^ sx);
+                let (ny, nyx, nyy) = noise2d(x / lw - 7.7, y / lw + 3.1, seed ^ sy);
+                wx += share * nx;
+                wy += share * ny;
+                wxx += share * nxx / lw;
+                wxy += share * nxy / lw;
+                wyx += share * nyx / lw;
+                wyy += share * nyy / lw;
+            }
             let (xw, yw) = (x + aw * wx, y + aw * wy);
             // Jacobian of the warp, d(xw, yw)/d(x, y).
-            let (j00, j01, j10, j11) = (1.0 + aw / lw * wxx, aw / lw * wxy, aw / lw * wyx, 1.0 + aw / lw * wyy);
-            let ld = l.lam_d.log2();
+            let (j00, j01, j10, j11) = (1.0 + aw * wxx, aw * wxy, aw * wyx, 1.0 + aw * wyy);
+            // Hills vary in size from place to place (mountains less so).
+            let (vn, _, _) = noise2d(x / HILL_VARY_WL_M + 2.7, y / HILL_VARY_WL_M - 4.1, seed ^ 0xA3);
+            let vary = 1.0 + HILL_VARY * (1.0 - l.mountain) * vn / NOISE_SD * 0.5;
+            let relief = l.relief * vary.max(0.3);
             let mut wl = MASSIF_TOP;
+            // The running massif value in relief units, from the octaves
+            // above this one (all fully visible wherever this one shows).
+            let mut acc = 0.0;
             for k in 0..MASSIF_OCTAVES {
-                // Triangle in log-wavelength centred half an octave above lam_d.
-                let wgt = 1.0 - (((MASSIF_TOP_LOG2 - k as f64) - ld - 0.5).abs() / 1.5);
+                let wgt = massif_weight(wl, l.lam_d);
                 let fade = band(wl, voxel_m);
                 if fade <= 0.0 {
                     break;
@@ -410,20 +516,26 @@ impl Landform {
                     let sa = (n * n + RIDGE_EPS * RIDGE_EPS).sqrt();
                     let ridged = (RIDGE_MEAN - sa) / RIDGE_SD;
                     // The gullies are steered by a blunter fold (STEER_EPS): a knife-edge
-                    // crest would spin their direction within metres.
-                    let val = l.rugged * ridged + (1.0 - l.rugged) * n / NOISE_SD;
-                    let dval = l.rugged * (-n / (n * n + STEER_EPS * STEER_EPS).sqrt() / RIDGE_SD) + (1.0 - l.rugged) / NOISE_SD;
-                    let amp = 0.25 * l.relief * wgt;
+                    // crest would spin their direction within metres. Only the
+                    // long octaves fold into crests; the finer ones are rounded.
+                    let rugged = l.rugged * smoothstep(0.5 * RIDGED_DOWN_TO * l.lam_d, RIDGED_DOWN_TO * l.lam_d, wl);
+                    let val = rugged * ridged + (1.0 - rugged) * n / NOISE_SD;
+                    let dval = rugged * (-n / (n * n + STEER_EPS * STEER_EPS).sqrt() / RIDGE_SD) + (1.0 - rugged) / NOISE_SD;
+                    // Multifractal: weaker in the valleys of the coarser octaves.
+                    let mf = if k == 0 { 1.0 } else { MF_LO + (1.0 - MF_LO) * smoothstep(-0.6, 0.4, acc) };
+                    let amp = 0.25 * relief * wgt * mf;
                     gx += amp * dval * dnx;
                     gy += amp * dval * dny;
                     if !coarse_only {
                         h += amp * val * fade;
                     }
+                    acc += 0.25 * wgt * mf * val * fade;
                 }
                 wl *= 0.5;
             }
 
             // --- Gullies: downhill stripes, each octave steered by the ones above.
+            let lv = Local { relief, ..*l };
             let mut c = GULLY_TOP;
             for k in 0..GULLY_OCTAVES {
                 let fade = band(c, voxel_m);
@@ -431,7 +543,7 @@ impl Landform {
                     break;
                 }
                 // Octaves from just under the dominant wavelength down.
-                let wgt = gully_weight(l, c);
+                let wgt = gully_weight(&lv, c);
                 let s = (gx * gx + gy * gy).sqrt();
                 if wgt > 0.0 && s > 1e-9 && adds(c) {
                     // Across the slope, unit length on real slopes but
@@ -439,7 +551,7 @@ impl Landform {
                     // phase is measured up to 1.25 cells from a cell point,
                     // so a spinning direction at a hilltop or saddle would
                     // otherwise sweep it through whole cycles in metres.
-                    let s0 = 0.5 * l.relief / l.lam_d + 1e-6;
+                    let s0 = 0.5 * lv.relief / lv.lam_d + 1e-6;
                     let sn = (s * s + s0 * s0).sqrt();
                     let (tx, ty) = (-gy / sn, gx / sn);
                     let (cr, sr, ox, oy) = octave_frame(k, 2);
@@ -453,7 +565,7 @@ impl Landform {
                     let val = (1.0 - l.rugged) * (gv - GULLY_MEAN) - l.rugged * (v * v - GULLY_V2_MEAN) / (1.0 - GULLY_V2_MEAN);
                     let dv = (1.0 - l.rugged) + l.rugged * v / (1.0 - GULLY_V2_MEAN); // d val / d gv
                     let (dgx, dgy) = (dv * (cr * gqx + sr * gqy) / c, dv * (-sr * gqx + cr * gqy) / c);
-                    let depth = wgt * gully_depth(l, c, s);
+                    let depth = wgt * gully_depth(&lv, c, s);
                     h += depth * val * fade;
                     gx += GULLY_BRANCH * depth * dgx;
                     gy += GULLY_BRANCH * depth * dgy;
@@ -494,7 +606,9 @@ impl Landform {
     /// samples per wavelength), the rest per column. None when no octave is
     /// that long.
     pub fn grid_cut(voxel_m: f64) -> Option<f64> {
-        let cut = 32.0 * voxel_m;
+        // 16 samples per cell: 8 left a 1.4 m worst case between the two
+        // paths at 1/8 (the stripes' direction turns between nodes).
+        let cut = 64.0 * voxel_m;
         (cut <= MASSIF_TOP.max(GULLY_TOP)).then_some(cut)
     }
 
@@ -518,23 +632,24 @@ impl Landform {
     /// gully cell) under `wl_max` at a column with parameters `l`, plus the
     /// whole fine roughness and the terrace displacement. Massif values are
     /// bounded by MASSIF_MAX_ABS, gully values by 1, fine noise by 1 / NOISE_SD;
-    /// the chart cross-fade can lift a sum by sqrt 2.
+    /// the chart cross-fade can lift a sum by sqrt 2, the hill variation by
+    /// 1 + HILL_VARY; the floor's easing never steepens anything.
     pub fn sub_amp_bound_m(&self, l: &Local, wl_max: f64) -> f64 {
         let mut b = 0.0;
         if l.relief > 0.0 {
-            let ld = l.lam_d.log2();
+            let lv = Local { relief: l.relief * (1.0 + HILL_VARY), ..*l };
             let mut wl = MASSIF_TOP;
             for _ in 0..MASSIF_OCTAVES {
-                let wgt = 1.0 - ((wl.log2() - ld - 0.5).abs() / 1.5);
+                let wgt = massif_weight(wl, l.lam_d);
                 if wl < wl_max && wgt > 0.0 {
-                    b += 0.25 * l.relief * wgt * MASSIF_MAX_ABS;
+                    b += 0.25 * lv.relief * wgt * MASSIF_MAX_ABS;
                 }
                 wl *= 0.5;
             }
             let mut c = GULLY_TOP;
             for _ in 0..GULLY_OCTAVES {
                 if c < wl_max {
-                    b += gully_weight(l, c) * gully_depth(l, c, GULLY_SLOPE_CAP);
+                    b += gully_weight(&lv, c) * gully_depth(&lv, c, GULLY_SLOPE_CAP);
                 }
                 c *= 0.5;
             }
@@ -547,19 +662,54 @@ impl Landform {
     /// Upper bound (m) on |dh| anywhere for a relief scale (for the horizon
     /// occluder and other global margins).
     pub fn bound_m(&self, relief: f64) -> f64 {
-        let l = Local { relief, lam_d: LAM_LO, rugged: 1.0, mesa: 1.0, step_m: (0.45 * relief / self.landform.max(1e-9)).clamp(3.0, 60.0), fac: 1.0, valley_m: 2.0 + 0.3 * relief + CHANNEL_DEPTH_M };
-        // Every massif octave at full weight (conservative), all gullies.
-        let massif = 0.25 * relief * MASSIF_MAX_ABS * 2.5;
+        let relief = relief * (1.0 + HILL_VARY);
+        let l = Local { relief, mountain: 1.0, lam_d: LAM_LO, rugged: 1.0, mesa: 1.0, step_m: (0.45 * relief / self.landform.max(1e-9)).clamp(3.0, STEP_MAX_M), fac: 1.0, valley_m: 2.0 + 0.3 * relief + CHANNEL_DEPTH_M };
+        // Every massif octave at its largest weight (conservative), all gullies.
+        let massif = 0.25 * relief * MASSIF_MAX_ABS * 3.0;
         let gully: f64 = (0..GULLY_OCTAVES).map(|k| GULLY_BETA_LOW * relief + GULLY_ALPHA * GULLY_TOP * 0.5f64.powi(k as i32) * GULLY_SLOPE_CAP).sum();
         let fine = self.roughness * (FINE_AMP_M + FINE_SLOPE_AMP_M) * 1.75 / NOISE_SD * 0.5;
-        (massif + gully + fine) * 2f64.sqrt() + l.step_m + l.valley_m
+        // The floor lifts everything by up to -FLOOR_V (plus the easing's width).
+        (massif + gully + fine) * 2f64.sqrt() + (FLOOR_K - FLOOR_V) * relief + l.step_m + l.valley_m
     }
 
-    /// The relief scale (m) for given bake roughness / elevation extremes
-    /// with the worst uplift, for bounds.
-    pub fn relief_bound_m(&self, rough_km: f64, elev_km: f64) -> f64 {
-        (C_ROUGH * rough_km.max(0.0) * 1000.0 * self.vscale + C_UPLIFT * elev_km.max(0.0) * 1000.0 * self.vscale + RELIEF_FLOOR_M) * 2.5 * self.landform
+    /// The largest relief scale (m) any column can have where the bake's
+    /// local relief is at most `rough_km` (the belt weight at its worst),
+    /// for bounds.
+    pub fn relief_bound_m(&self, rough_km: f64, _elev_km: f64) -> f64 {
+        (HILL_FLOOR_M + HILL_ROUGH_M * smoothstep(0.0, HILL_ROUGH_KM, rough_km.max(0.0)) + MOUNT_M) * 2.5 * self.landform
     }
+
+    /// How much of this column's relief is a mountain belt's (0..1), for
+    /// the valley widths of `hydro.rs`.
+    pub fn mountain(&self, s: &BakeSample) -> f64 {
+        self.local(s).mountain
+    }
+}
+
+/// Spectrum of the massif: full at the dominant wavelength, 1/f^H below it,
+/// a soft cutoff above it (nothing from three times it up).
+#[inline]
+fn massif_weight(wl: f64, lam_d: f64) -> f64 {
+    let r = wl / lam_d;
+    if r > 1.0 { smoothstep(3.0, 1.0, r) } else { r.powf(SPECTRUM_H) }
+}
+
+/// The floor: a smooth maximum of `v` (the massif and gullies in relief
+/// units) with `FLOOR_V`, shifted so the floor is 0. Returns the value and
+/// its slope d/dv (0 on the floor, 1 well above it, never more).
+#[inline]
+fn floor_ease(v: f64) -> (f64, f64) {
+    let k = FLOOR_K;
+    let x = v - FLOOR_V;
+    if x >= k {
+        return (x, 1.0);
+    }
+    if x <= -k {
+        return (0.0, 0.0);
+    }
+    // Quadratic blend between the two lines over [-k, k]: C1, (x + k)^2 / 4k.
+    let t = (x + k) / (2.0 * k);
+    (k * t * t, t)
 }
 
 /// River valleys: discharge range (log10 m^3/s) over which carving fades in,
@@ -583,11 +733,12 @@ fn smin(a: f64, b: f64, k: f64) -> f64 {
     b + (a - b) * h - k * h * (1.0 - h)
 }
 
-/// Gully octaves run from just under the dominant wavelength down four
-/// octaves.
+/// Gully octaves run from just under the dominant wavelength (at most
+/// `GULLY_MAX_CELL_M`) down three octaves.
 #[inline]
 fn gully_weight(l: &Local, c: f64) -> f64 {
-    smoothstep(0.8 * l.lam_d, 0.4 * l.lam_d, c) * smoothstep(l.lam_d / 24.0, l.lam_d / 12.0, c)
+    let top = (0.4 * l.lam_d).min(GULLY_MAX_CELL_M);
+    smoothstep(2.0 * top, top, c) * smoothstep(top / 16.0, top / 8.0, c)
 }
 
 /// Gully depth (m) for cell size `c` on ground of slope `s`.
@@ -659,8 +810,8 @@ mod tests {
     /// across the slope, hardly along it.
     #[test]
     fn gully_stripes_run_downhill_on_a_plain_slope() {
-        let lf = Landform { seed: 7, radius: 90_569.2, vscale: 0.125, landform: 1.0, roughness: 0.0, valleys: true };
-        let l = Local { relief: 60.0, lam_d: 900.0, rugged: 0.0, mesa: 0.0, step_m: 10.0, fac: 1.0, valley_m: 0.0 };
+        let lf = Landform { seed: 7, radius: 90_569.2, scale: Scale::new(0.125, 90_569.2, 1.0, 4096, 1536), landform: 1.0, roughness: 0.0, valleys: true };
+        let l = Local { relief: 60.0, mountain: 0.0, lam_d: 900.0, rugged: 0.0, mesa: 0.0, step_m: 10.0, fac: 1.0, valley_m: 0.0 };
         let face = 2u8;
         for &(gx0, gy0) in &[(0.3f64, 0.0f64), (0.0, 0.3), (0.21, -0.21)] {
             let g_len = (gx0 * gx0 + gy0 * gy0).sqrt();
@@ -702,6 +853,35 @@ mod tests {
         println!("gully mean {:.4} sd {:.4} E[v^2] {:.4}", s1 / nf, (s2 / nf - (s1 / nf).powi(2)).sqrt(), sv2 / nf);
         assert!((s1 / nf - GULLY_MEAN).abs() < 0.01, "gully mean {}", s1 / nf);
         assert!((sv2 / nf - GULLY_V2_MEAN).abs() < 0.01, "E[v^2] {}", sv2 / nf);
+    }
+
+    /// The floor's easing is continuous in value and slope, never steeper
+    /// than 1, zero on the floor and the identity above it.
+    #[test]
+    fn floor_ease_is_c1_and_never_steepens() {
+        let (mut prev, mut x) = (floor_ease(-3.0), -3.0);
+        while x < 3.0 {
+            x += 1e-3;
+            let (f, df) = floor_ease(x);
+            assert!(f >= 0.0 && f >= prev.0 - 1e-12, "monotone and non-negative at {x}");
+            assert!((f - prev.0) <= 1e-3 + 1e-9, "slope under 1 at {x}");
+            assert!((df - prev.1).abs() < 0.02, "slope continuous at {x}");
+            let fd = (f - prev.0) / 1e-3;
+            assert!((fd - 0.5 * (df + prev.1)).abs() < 0.02, "slope matches at {x}: {fd} vs {df}");
+            prev = (f, df);
+        }
+        assert_eq!(floor_ease(FLOOR_V - FLOOR_K), (0.0, 0.0));
+        assert_eq!(floor_ease(FLOOR_V + 1.0), (1.0, 1.0));
+    }
+
+    /// The massif's spectrum peaks at the dominant wavelength, falls as a
+    /// power below it and is gone three times above it.
+    #[test]
+    fn massif_spectrum_is_a_band_around_the_dominant_wavelength() {
+        assert_eq!(massif_weight(1000.0, 1000.0), 1.0);
+        assert_eq!(massif_weight(3000.0, 1000.0), 0.0);
+        assert!((massif_weight(500.0, 1000.0) - 0.5f64.powf(SPECTRUM_H)).abs() < 1e-12);
+        assert!(massif_weight(1500.0, 1000.0) > 0.5 && massif_weight(1500.0, 1000.0) < 1.0);
     }
 
     #[test]

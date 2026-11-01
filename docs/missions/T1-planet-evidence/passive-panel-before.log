@@ -1,0 +1,30 @@
+   Compiling triangulum v0.1.0 (E:\triangulum-work\T1\game)
+warning: variable does not need to be mutable
+    --> src\stream.rs:1792:13
+     |
+1792 |         let mut drain = |c: &mut Coverage, gpu: &mut FakeGpu, wants: &mut Vec<Want>| {
+     |             ----^^^^^
+     |             |
+     |             help: remove this `mut`
+     |
+     = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: `triangulum` (bin "triangulum" test) generated 1 warning (run `cargo fix --bin "triangulum" -p triangulum --tests` to apply 1 suggestion)
+    Finished `release` profile [optimized + debuginfo] target(s) in 56.96s
+     Running unittests src\main.rs (target\release\deps\triangulum-7d877ee1b0401067.exe)
+
+running 1 test
+
+thread 'workshop::tests::t1_opening_terrain_keeps_custom_startup_sizes_and_automatic_scale' (10892) panicked at src\workshop.rs:1344:13:
+opening a panel must not clamp a custom startup size or a disabled automatic-scale dial: Terrain { roughness: 1.0, landform: 1.0, vscale: 0.007107927979831563, half_heights: 128, follow_radius: true } -> Terrain { roughness: 1.0, landform: 1.0, vscale: 0.01, half_heights: 128, follow_radius: true }
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test workshop::tests::t1_opening_terrain_keeps_custom_startup_sizes_and_automatic_scale ... FAILED
+
+failures:
+
+failures:
+    workshop::tests::t1_opening_terrain_keeps_custom_startup_sizes_and_automatic_scale
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 400 filtered out; finished in 0.05s
+
+error: test failed, to rerun pass `--bin triangulum`

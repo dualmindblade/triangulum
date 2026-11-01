@@ -718,7 +718,7 @@ fn window(g: &Generator, centre: DVec3, px: usize, spacing: f64, voxel_m: f64) -
             let c = g.column(at(x, y), voxel_m);
             let dh = |a: f64, b: f64| (g.column(at(x + a, y + b), voxel_m).height_m - c.height_m) / spacing as f32;
             let slope = (dh(1.0, 0.0).powi(2) + dh(0.0, 1.0).powi(2)).sqrt();
-            g.surface(&c, slope).top == g.blocks.sand
+            g.surface(&c, slope, slope > ROCK_SLOPE).top == g.blocks.sand
         })
         .collect();
     let mut sand_mask = vec![false; px * px];

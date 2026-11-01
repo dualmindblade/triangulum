@@ -1,0 +1,51 @@
+﻿=== far-moon (idle 1151.421 s): --no-save --fly --at 20 40 1300000 --look 0 -60 --exit-after 12 --screenshot out/win/after-far-moon.png
+end: alive False
+--- out
+adapter: NVIDIA GeForce RTX 2060 (Vulkan, DiscreteGpu)
+quad buffer: 512 MB (67 M quads); grid slots 131072
+app: WASD move, Space jump/up, Ctrl sneak (fly: down), Shift sprint, mouse look (click to capture, Esc releases), LMB break, RMB place, 1-9 block, G walk/fly, scroll fly 
+--- err
+=== far-sun (idle 1175.281 s): --no-save --fly --at 20 40 1100000000 --look 0 -60 --exit-after 12 --screenshot out/win/after-far-sun.png
+end: alive False
+--- out
+adapter: NVIDIA GeForce RTX 2060 (Vulkan, DiscreteGpu)
+quad buffer: 512 MB (67 M quads); grid slots 131072
+app: WASD move, Space jump/up, Ctrl sneak (fly: down), Shift sprint, mouse look (click to capture, Esc releases), LMB break, RMB place, 1-9 block, G walk/fly, scroll fly 
+--- err
+=== far-edge (idle 1210.265 s): --no-save --fly --at 20 40 1e15 --look 0 -60 --exit-after 12 --screenshot out/win/after-far-edge.png
+end: alive False
+--- out
+adapter: NVIDIA GeForce RTX 2060 (Vulkan, DiscreteGpu)
+quad buffer: 512 MB (67 M quads); grid slots 131072
+app: WASD move, Space jump/up, Ctrl sneak (fly: down), Shift sprint, mouse look (click to capture, Esc releases), LMB break, RMB place, 1-9 block, G walk/fly, scroll fly 
+--- err
+=== watch-far (idle 1230.046 s): --replay out/win/far-watch/far-watch.replay --watch
+end: alive True
+quiet: foreground 66620 (was 66620), clip 0,0,2560,1440
+closed
+--- out
+replayed 1092 steps (18.2 s), 42 events; 19 of 19 checks matched; the end state hash matches (60b48b4344be5b52..)
+replay OK: the session reproduced exactly
+look: the same as the recording (every look value, block and texture)
+--- err
+=== watch-far-minimised (idle 1297.671 s): --replay out/win/far-watch/far-watch.replay --watch
+minimised mid-flight: alive True
+end: alive True
+quiet: foreground 66620 (was 66620), clip 0,0,2560,1440
+closed
+--- out
+replayed 1092 steps (18.2 s), 42 events; 19 of 19 checks matched; the end state hash matches (60b48b4344be5b52..)
+replay OK: the session reproduced exactly
+look: the same as the recording (every look value, block and texture)
+--- err
+=== powder-minimise (idle 1402.484 s): --powder levels --save saves/pw-plain --at -3.42021 136.5385 1 --walk --look 90 -30
+powder, minimised: alive True
+restored: alive True
+end: alive True
+quiet: foreground 66620 (was 66620), clip 0,0,2560,1440
+closed
+--- out
+adapter: NVIDIA GeForce RTX 2060 (Vulkan, DiscreteGpu)
+quad buffer: 512 MB (67 M quads); grid slots 131072
+app: WASD move, Space jump/up, Ctrl sneak (fly: down), Shift sprint, mouse look (click to capture, Esc releases), LMB break, RMB place, 1-9 block, G walk/fly, scroll fly 
+--- err

@@ -13,9 +13,9 @@
 //!   edits and its simulation set aside untouched until "Back to my world".
 //!
 //! "Save look" writes `look.json` and the colours into `blocks.json` (its
-//! style and ids kept). Terrain reaches `world.json` only through "Make
-//! this the default", which says that existing saves will not load with
-//! it. All three files are watched: an edit in a text editor (or a pull)
+//! style and ids kept), and the preview's terrain and planet size into
+//! `world.json` as defaults for new worlds. All three files are watched:
+//! an edit in a text editor (or a pull)
 //! applies within half a second. The screenshot button takes a photo of the
 //! frame without the panel (`photos.rs`: every look value is in its sidecar).
 //!
@@ -199,9 +199,9 @@ pub struct Workshop {
     terrain_file: Terrain,
     terrain_moved: Option<Instant>,
     terrain_held: bool,
-    earth_vscale: f64,
+    home_planet: crate::grid::Planet,
     home: Option<Home>,
-    confirm_default: bool,
+    save_requested: bool,
     notes: Vec<(Instant, String)>,
     hour_now: f64,
     speed_now: f64,
@@ -231,8 +231,8 @@ impl Workshop {
             let d = Look::defaults(&Settings::default(), engine.planet.radius);
             look::Startup { look: d.clone(), defaults: d, look_path: format!("{root}/assets/look.json").into(), blocks_path: format!("{root}/assets/blocks.json").into(), world_path: format!("{root}/assets/world.json").into(), panel_open: false }
         });
-        let terrain = Terrain { roughness: engine.config.roughness, landform: engine.config.landform, vscale: engine.vscale() };
-        let mut w = Self::from_parts(engine.registry.clone(), st, terrain, engine.planet.radius / 6_371_000.0);
+        let terrain = Terrain::from_config(&engine.config);
+        let mut w = Self::from_parts(engine.registry.clone(), st, terrain, engine.planet);
         // A --lod-factor on the command line wins over the file for this run.
         w.look.detail.lod_factor = engine.lod.factor;
         w.hotbar = engine.hotbar.clone();
@@ -246,7 +246,7 @@ impl Workshop {
     }
 
     /// The workshop over a registry and terrain (no engine: the tests).
-    pub fn from_parts(registry: Arc<Registry>, st: look::Startup, terrain: Terrain, earth_vscale: f64) -> Self {
+    pub fn from_parts(registry: Arc<Registry>, st: look::Startup, terrain: Terrain, home_planet: crate::grid::Planet) -> Self {
         let blocks_list = registry.defs();
         let names: Vec<String> = blocks_list.iter().map(|d| d.name.clone()).collect();
         let colours = registry.colours();
@@ -268,7 +268,7 @@ impl Workshop {
             _ => [0.28, 0.27, 0.25],
         };
         let terrain_file = WorldConfig::load(&st.world_path.to_string_lossy())
-            .map(|c| Terrain { roughness: c.roughness, landform: c.landform, vscale: c.vertical_scale.unwrap_or(earth_vscale) })
+            .map(|c| Terrain::from_config(&c))
             .unwrap_or(terrain);
         let watches = [FileWatch::new(st.look_path.clone()), FileWatch::new(st.blocks_path.clone()), FileWatch::new(st.world_path.clone())];
         let texset = TextureSet::for_registry(&registry, textures::dir_for(&st.blocks_path));
@@ -315,9 +315,9 @@ impl Workshop {
             terrain_file,
             terrain_moved: None,
             terrain_held: false,
-            earth_vscale,
+            home_planet,
             home: None,
-            confirm_default: false,
+            save_requested: false,
             notes: Vec::new(),
             hour_now: 12.0,
             speed_now: 1.0,
@@ -402,6 +402,7 @@ impl Workshop {
         }
         self.apply_textures(gpu);
         if std::mem::take(&mut self.table_dirty) {
+            gpu.sky.set_ocean(&session.engine.registry);
             gpu.set_colours(&self.registry.colour_table());
         }
         // Terrain, once a dial has come to rest.
@@ -410,6 +411,10 @@ impl Workshop {
             if !self.terrain.same(&self.terrain_running) {
                 self.rebuild(session, streamer, falling, gpu);
             }
+        }
+        if self.save_requested && self.terrain_moved.is_none() {
+            self.save_requested = false;
+            self.save_look();
         }
         self.notes.retain(|(t, _)| now.duration_since(*t) < NOTE_LIFE);
         gpu.mesh_view = self.mesh_view;
@@ -751,9 +756,12 @@ impl Workshop {
         if self.watches[2].changed() {
             match WorldConfig::load(&self.world_path.to_string_lossy()) {
                 Ok(c) => {
-                    let t = Terrain { roughness: c.roughness, landform: c.landform, vscale: c.vertical_scale.unwrap_or(self.earth_vscale) };
+                    let mut t = Terrain::from_config(&c);
+                    // Height and block size still need a restart. Resolve the
+                    // size dial in this session's half-height units.
+                    if t.follow_radius { t.vscale = self.earth_scale(t.half_heights); }
                     // Only a change to the terrain dials themselves: other
-                    // world.json fields (size, sky calendar) need a restart.
+                    // world.json fields (height, block size, sky calendar) need a restart.
                     if !t.same(&self.terrain_file) {
                         self.terrain_file = t;
                         if !t.same(&self.terrain_running) {
@@ -783,7 +791,15 @@ impl Workshop {
         let mut config = base.config.clone();
         config.roughness = target.roughness;
         config.landform = target.landform;
-        config.vertical_scale = Some(target.vscale);
+        config.vertical_scale = if target.follow_radius { None } else { Some(target.vscale) };
+        config.columns_per_face = match WorldConfig::columns_for_half_heights(target.half_heights, config.world_height) {
+            Ok(n) => n,
+            Err(e) => {
+                self.terrain = self.terrain_running;
+                self.note(e);
+                return;
+            }
+        };
         let mut lod = base.lod;
         lod.factor = self.look.detail.lod_factor;
         let built = Engine::build(config, base.registry.clone(), base.bake.clone(), Arc::new(EditStore::new()), lod, base.mesh_opts, base.skirt, session.engine.hide_water, base.markers.clone(), base.markers_on);
@@ -813,11 +829,12 @@ impl Workshop {
         } else {
             session.sim = Sim::new(session.sim.config);
         }
+        let old_radius = session.engine.planet.radius;
         session.engine = Arc::new(engine);
-        self.swap_world(session, streamer, falling, gpu);
+        self.swap_world(session, streamer, falling, gpu, old_radius);
         self.terrain_running = target;
         self.note(format!(
-            "Preview world built in {:.1} s: roughness {:.2}, landforms {:.2}, vertical scale 1/{:.0}. Saving is off and your save is untouched; anything you dig here is thrown away.",
+            "Preview world built in {:.1} s: roughness {:.2}, landforms {:.2}, vertical scale 1/{:.1}. Saving is off and your save is untouched; anything you dig here is thrown away.",
             t0.elapsed().as_secs_f64(),
             target.roughness,
             target.landform,
@@ -831,6 +848,7 @@ impl Workshop {
         let Some(h) = self.home.take() else { return };
         self.stop_recording(session);
         let hide_water = session.engine.hide_water;
+        let old_radius = session.engine.planet.radius;
         session.engine = h.engine;
         session.save = h.save;
         session.sim = h.sim;
@@ -838,7 +856,7 @@ impl Workshop {
             // F was pressed in the preview: a view flag, keep it.
             session.set_hide_water(hide_water);
         }
-        self.swap_world(session, streamer, falling, gpu);
+        self.swap_world(session, streamer, falling, gpu, old_radius);
         self.terrain_running = self.terrain_home;
         self.note("Back in your world: saving is on again.");
     }
@@ -856,35 +874,41 @@ impl Workshop {
 
     /// Drop every chunk of the old world and stream the session's engine;
     /// put the player back on (or above) the new ground.
-    fn swap_world(&mut self, session: &mut Session, streamer: &mut Streamer, falling: &mut FallingDraws, gpu: &mut Renderer) {
+    fn swap_world(&mut self, session: &mut Session, streamer: &mut Streamer, falling: &mut FallingDraws, gpu: &mut Renderer, old_radius: f64) {
         falling.clear(gpu);
         streamer.clear(gpu);
         *streamer = session.engine.streamer();
         streamer.params.factor = self.look.detail.lod_factor;
         streamer.cover.factor = self.look.detail.lod_factor;
+        let radius = session.engine.planet.radius;
+        self.look.on_planet(radius);
+        self.saved_look.on_planet(radius);
+        self.defaults.on_planet(radius);
+        self.look_applied = None;
+        gpu.sky.set_planet(&session.engine.planet);
+        gpu.sky.look = self.look.clone();
         let dir = session.player.pos.normalize();
         if session.player.mode == Mode::Walk {
             session.teleport(dir, None);
         } else {
             let ground = session.engine.ground(dir);
-            if session.player.pos.length() - session.engine.planet.radius < ground + 2.0 {
-                session.teleport(dir, Some(ground + 2.0));
-            }
+            let alt = session.player.pos.length() - old_radius;
+            session.teleport(dir, Some(alt.max(ground + 2.0)));
         }
     }
 
-    fn make_default(&mut self) {
-        match look::save_terrain_default(&self.world_path, &self.terrain_running, self.earth_vscale) {
-            Ok(()) => {
-                self.watches[2].mark();
-                self.terrain_file = self.terrain_running;
-                self.note(format!(
-                    "Wrote this terrain to {} as the default. Existing saves will NOT load with it: next time the game starts, a save made with the old terrain is refused. Play it again by putting world.json back (git checkout game/assets/world.json), or start fresh with --save saves/another-name.",
-                    self.world_path.display()
-                ));
-            }
-            Err(e) => self.note(format!("world.json was not written: {e}")),
-        }
+    fn earth_scale(&self, half_heights: u32) -> f64 {
+        let n = half_heights as f64 * (self.home_planet.height / 2) as f64;
+        self.home_planet.block_size * n * (6.0 / (4.0 * std::f64::consts::PI)).sqrt() / 6_371_000.0
+    }
+
+    fn save_terrain(&mut self) -> Result<(), String> {
+        if self.terrain_running.same(&self.terrain_file) { return Ok(()); }
+        look::save_terrain_default(&self.world_path, &self.terrain_running)?;
+        self.watches[2].mark();
+        self.terrain_file = self.terrain_running;
+        self.note("Saved terrain and planet size to world.json for new worlds. Your current save is unchanged. Existing saves need their original terrain settings; use --save saves/another-name to start fresh.");
+        Ok(())
     }
 
     // ------------------------------------------------------- files
@@ -903,8 +927,9 @@ impl Workshop {
         };
         self.watches[1].mark();
         let c = pictures.as_ref().map(|_| ()).map_err(Clone::clone);
-        match (a, b, c) {
-            (Ok(()), Ok(()), Ok(())) => {
+        let d = self.save_terrain();
+        match (a, b, c, d) {
+            (Ok(()), Ok(()), Ok(()), Ok(())) => {
                 self.look = look.clone();
                 self.saved_look = look;
                 self.saved_colours = self.colours.clone();
@@ -917,13 +942,13 @@ impl Workshop {
                     self.blocks_path.display()
                 ))
             }
-            (a, b, c) => self.note(format!("Saving failed: {}", [a.err(), b.err(), c.err()].into_iter().flatten().collect::<Vec<_>>().join("; "))),
+            (a, b, c, d) => self.note(format!("Saving failed: {}", [a.err(), b.err(), c.err(), d.err()].into_iter().flatten().collect::<Vec<_>>().join("; "))),
         }
     }
 
     /// Unsaved changes to the look, the block colours or the textures?
     pub fn unsaved(&self) -> bool {
-        self.look.tidy() != self.saved_look || self.colours != self.saved_colours || self.textures != self.saved_textures || !self.texset.unsaved().is_empty()
+        !self.terrain.same(&self.terrain_file) || self.look.tidy() != self.saved_look.tidy() || self.colours != self.saved_colours || self.textures != self.saved_textures || !self.texset.unsaved().is_empty()
     }
 
     fn revert(&mut self) {
@@ -949,6 +974,15 @@ impl Workshop {
                 self.textures_dirty = true;
             }
             Err(e) => self.note(format!("blocks.json: {e}")),
+        }
+        match WorldConfig::load(&self.world_path.to_string_lossy()) {
+            Ok(c) => {
+                self.terrain_file = Terrain::from_config(&c);
+                if self.terrain_file.follow_radius { self.terrain_file.vscale = self.earth_scale(self.terrain_file.half_heights); }
+                self.terrain = self.terrain_file;
+                self.terrain_moved = Some(Instant::now() - TERRAIN_SETTLE);
+            }
+            Err(e) => self.note(format!("world.json: {e}")),
         }
         self.texset.revert();
         self.bui.editing = None;
@@ -1131,14 +1165,32 @@ impl Workshop {
 
     fn ui_terrain(&mut self, ui: &mut egui::Ui) {
         if self.previewing() {
-            ui.colored_label(egui::Color32::from_rgb(255, 190, 90), "PREVIEW WORLD: saving is off. Your own world and its save are untouched, and anything dug here is thrown away.");
+            ui.colored_label(egui::Color32::from_rgb(255, 190, 90), "PREVIEW WORLD: saving is off. Your own world is kept safe. Anything dug here is thrown away.");
         } else {
-            ui.label(egui::RichText::new("These reshape the land, so the world is rebuilt (a few seconds) and shown as a preview with saving off. Your save is never changed by them.").weak());
+            ui.label("Try a different planet here. These dials rebuild a preview world with saving off; Back to my world brings your own world back.");
         }
         let mut held = false;
         let mut moved = false;
+        let max_size = (crate::sim::PosKey::MAX_N / (self.home_planet.height / 2)).min(1024);
+        let earth_per_unit = self.earth_scale(1);
         egui::Grid::new("terrain").num_columns(2).spacing([14.0, 8.0]).show(ui, |ui| {
             let t = &mut self.terrain;
+            ui.label("Planet size").on_hover_text("Columns along a cube face, in half-world-heights. Larger stretches continents, climate and the river network; local features keep their metre sizes.");
+            let mut size = t.half_heights;
+            let r = ui.add_enabled(max_size >= 128, egui::Slider::new(&mut size, 128..=max_size.max(128)).step_by(32.0).clamping(egui::SliderClamping::Edits).suffix(" half-heights"));
+            if r.changed() { t.resize(size); moved = true; }
+            held |= r.is_pointer_button_down_on() || r.dragged();
+            ui.end_row();
+            ui.label("");
+            ui.horizontal(|ui| {
+                for (size, label) in [(128, "Original (128)"), (832, "Earth analogue (832)")] {
+                    if ui.add_enabled(size <= max_size, egui::Button::new(label)).clicked() { t.resize(size); moved = true; }
+                }
+            });
+            ui.end_row();
+            ui.label("Radius / relief");
+            ui.label(format!("{:.1} km radius; vertical scale 1/{:.1}", earth_per_unit * t.half_heights as f64 * 6371.0, 1.0 / t.vscale));
+            ui.end_row();
             for (label, help, v, range) in [
                 ("Roughness", "The small bumps: metre-to-50-metre texture of the ground.", &mut t.roughness, 0.0..=3.0),
                 ("Landform strength", "Ridges, valleys, cliffs and mesas between the big shapes and the small bumps (0 = none).", &mut t.landform, 0.0..=3.0),
@@ -1149,57 +1201,34 @@ impl Workshop {
                 held |= r.is_pointer_button_down_on() || r.dragged();
                 ui.end_row();
             }
-            ui.label("Vertical scale").on_hover_text("How tall mountains and how deep seas are. 1/70 keeps Earth's slopes; 1/8 gives real mountains (and is usually played in a taller world: --height 4096 --sea-level 1536, a restart setting).");
-            let r = ui.add(egui::Slider::new(&mut t.vscale, 0.01..=0.5).logarithmic(true).custom_formatter(|v, _| format!("1/{:.0}", 1.0 / v)).custom_parser(|s| s.trim().trim_start_matches("1/").parse::<f64>().ok().map(|n| if n > 1.0 { 1.0 / n } else { n })));
+            ui.label("Vertical scale");
+            let r = ui.checkbox(&mut t.follow_radius, "Follow planet radius (Earth's slopes)");
+            if r.changed() {
+                if t.follow_radius { t.vscale = earth_per_unit * t.half_heights as f64; }
+                moved = true;
+            }
+            ui.end_row();
+            ui.label("Custom relief");
+            let r = ui.add_enabled(!t.follow_radius, egui::Slider::new(&mut t.vscale, 0.01..=0.5).logarithmic(true).clamping(egui::SliderClamping::Edits).custom_formatter(|v, _| format!("1/{:.1}", 1.0 / v)).custom_parser(|s| s.trim().trim_start_matches("1/").parse::<f64>().ok().map(|n| if n > 1.0 { 1.0 / n } else { n })));
             moved |= r.changed();
             held |= r.is_pointer_button_down_on() || r.dragged();
             ui.end_row();
-            ui.label("");
-            ui.horizontal(|ui| {
-                for (n, help) in [(70.0, "Earth's slopes (the M1 world)"), (20.0, "in between"), (8.0, "real mountains")] {
-                    if ui.button(format!("1/{n:.0}")).on_hover_text(help).clicked() {
-                        t.vscale = if n == 70.0 { self.earth_vscale } else { 1.0 / n };
-                        moved = true;
-                    }
-                }
-            });
-            ui.end_row();
         });
-        if moved {
-            self.terrain_moved = Some(Instant::now());
-        }
+        ui.label(format!("One half-height is {:.0} m. 832 is Earth reduced until its deepest trench fits this depth. The size limit here is {max_size}; sizes advance by 32 so chunks fit every face.", self.home_planet.height as f64 * self.home_planet.block_size / 2.0));
+        ui.label(format!("Relief fits between {:.0} m below sea level and {:.0} m above. Deeper trenches meet bedrock; higher peaks are clipped.", (self.home_planet.sea_level - 1) as f64 * self.home_planet.block_size, (self.home_planet.height - self.home_planet.sea_level) as f64 * self.home_planet.block_size));
+        ui.label("Save look keeps this planet size and terrain in world.json for new worlds. Existing saves need their original size and terrain.");
+        if moved { self.terrain_moved = Some(Instant::now()); }
         self.terrain_held = held;
-        ui.horizontal(|ui| {
-            if ui.add_enabled(self.previewing(), egui::Button::new("Back to my world")).clicked() {
-                self.terrain = self.terrain_home;
-                self.terrain_moved = Some(Instant::now() - TERRAIN_SETTLE);
-            }
-            let is_default = self.terrain_running.same(&self.terrain_file);
-            if ui.add_enabled(!is_default && !self.confirm_default, egui::Button::new("Make this the default...")).on_hover_text("Write this terrain into world.json, so new worlds start with it.").clicked() {
-                self.confirm_default = true;
-            }
-        });
-        if self.confirm_default {
-            ui.colored_label(
-                egui::Color32::from_rgb(255, 120, 100),
-                "This writes world.json. Existing saves will NOT load with the new terrain: the game refuses them at startup (your current save included). Put world.json back to play them again.",
-            );
-            ui.horizontal(|ui| {
-                if ui.button("Yes, make it the default").clicked() {
-                    self.confirm_default = false;
-                    self.make_default();
-                }
-                if ui.button("Cancel").clicked() {
-                    self.confirm_default = false;
-                }
-            });
+        if ui.add_enabled(self.previewing(), egui::Button::new("Back to my world")).clicked() {
+            self.terrain = self.terrain_home;
+            self.terrain_moved = Some(Instant::now() - TERRAIN_SETTLE);
         }
     }
 
     fn ui_footer(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
-            if ui.button(egui::RichText::new("Save look").strong()).on_hover_text("Write look.json and the block colours into blocks.json.").clicked() {
-                self.save_look();
+            if ui.button(egui::RichText::new("Save look").strong()).on_hover_text("Save the look, blocks and textures, and the preview's planet size and terrain to world.json.").clicked() {
+                self.save_requested = true;
             }
             if ui.button("Revert to saved").on_hover_text("Throw away changes since the last save.").clicked() {
                 self.revert();
@@ -1294,6 +1323,111 @@ mod tests {
     use super::*;
     use std::path::Path;
 
+    #[test]
+    fn t1_opening_terrain_keeps_custom_startup_sizes_and_automatic_scale() {
+        let dir = scratch("t1-passive-terrain");
+        let registry = Arc::new(Registry::load(&dir.join("blocks.json").to_string_lossy()).unwrap());
+        for (block, height) in [(1.0, 4096), (0.5, 2048)] {
+            let mut c = WorldConfig::load(&dir.join("world.json").to_string_lossy()).unwrap();
+            c.block_size_m = block;
+            c.world_height = height;
+            c.sea_level = height / 2;
+            let mut w = workshop(&dir, &registry);
+            w.home_planet = crate::grid::Planet::new(block, height, c.sea_level, c.columns_per_face);
+            w.terrain = Terrain::from_config(&c);
+            let before = w.terrain;
+            let ctx = egui::Context::default();
+            for frame in 0..2 {
+                let raw = egui::RawInput { time: Some(frame as f64), screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1920.0,1080.0))), ..Default::default() };
+                let _ = ctx.run_ui(raw, |ui| w.ui_terrain(ui));
+            }
+            assert!(w.terrain.same(&before), "opening a panel must not clamp a custom startup size or a disabled automatic-scale dial: {before:?} -> {:?}", w.terrain);
+        }
+    }
+
+    /// Real engine/streamer/renderer swaps, headless. Run explicitly so the
+    /// ordinary CPU suite does not contend for the GPU with frame evidence.
+    #[test]
+    #[ignore]
+    fn t1_preview_size_saves_only_the_default_and_restores_home() {
+        use crate::world::Voxels;
+        fn contents(dir: &Path) -> Vec<(PathBuf, Vec<u8>)> {
+            let mut out = Vec::new();
+            for entry in std::fs::read_dir(dir).unwrap().flatten() {
+                let p = entry.path();
+                if p.is_dir() { out.extend(contents(&p)); }
+                else { out.push((p.clone(), std::fs::read(&p).unwrap())); }
+            }
+            out.sort_by(|a,b| a.0.cmp(&b.0));
+            out
+        }
+        let dir = scratch("t1-size-preview");
+        let root = env!("CARGO_MANIFEST_DIR");
+        let out = format!("{root}/out/t1/preview");
+        let registry = Arc::new(Registry::load(&dir.join("blocks.json").to_string_lossy()).unwrap());
+        let mut config = WorldConfig::load(&dir.join("world.json").to_string_lossy()).unwrap();
+        config.bake = format!("{root}/assets/world/seed42");
+        let bake: Arc<dyn crate::worldgen::bake::Bake> = Arc::new(crate::worldgen::bake::open(&config.bake).unwrap());
+        let sha = bake.identity().unwrap().to_string();
+        let engine = Arc::new(Engine::build(config, registry.clone(), bake, Arc::new(EditStore::new()), crate::stream::LodParams { factor: 5.0, max_inflight: 8 }, crate::mesh::MeshOptions::default(), 2, false, Vec::new(), false).unwrap());
+        let p = engine.planet;
+        let dir_at = crate::grid::Planet::dir_of_lat_lon_deg(-4.5654, 117.4744);
+        let player = crate::player::Player::new(dir_at * (p.radius + 2000.0), -60.0, -20.0, Mode::Fly, 1.0);
+        let save = SaveDir::new(dir.join("save"));
+        let mut session = Session::new(engine.clone(), player, Some(save), sha, Sim::new(crate::sim::SimConfig::default()));
+        let bp = crate::grid::BlockPos { face: 0, i: p.n/2, j: p.n/2, k: 1500 };
+        engine.world.set_block(bp, registry.id("stone").unwrap());
+        session.save_now().unwrap();
+        let saved = contents(&dir.join("save"));
+        let mut w = workshop(&dir, &registry);
+        let settings = Settings::default();
+        session.sky = Clock { seconds: seek_hour(&settings, 0.0, dir_at.y.atan2(dir_at.x), 12.0), speed: 0.0 };
+        if crate::sky::installed().is_none() {
+            crate::sky::install(crate::sky::Startup { settings, radius: p.radius, clock: session.sky });
+        }
+        let mut h = crate::bench::Harness::new(engine.clone(), 1920, 1080, &out, Some("vulkan"));
+        h.gpu.sky.clock = session.sky;
+        let mut falling = FallingDraws::default();
+        for size in [256, 512, 832, 1024, 128] {
+            w.terrain.resize(size);
+            w.rebuild(&mut session, &mut h.streamer, &mut falling, &mut h.gpu);
+            h.engine = session.engine.clone();
+            let p = session.engine.planet;
+            assert_eq!(p.n, size * 1024);
+            assert_eq!(w.previewing(), size != 128);
+            assert_eq!(session.save.is_none(), size != 128);
+            assert!((session.player.pos.length() - p.radius - 2000.0).abs() < 1e-7, "fly altitude after resize");
+            assert_eq!(session.engine.config.vertical_scale, None);
+            let cam = session.player.camera();
+            let uni = cam.uniform(16.0/9.0, session.engine.sun_at(cam.pos), &p, 0.62);
+            h.gpu.sky.set_observer(cam.pos, false);
+            let sky = h.gpu.sky.uniform(&uni);
+            assert!((sky.eye[3] as f64 / p.radius - 1.0).abs() < 1e-6, "sky uses the preview radius");
+            if size == 832 {
+                assert!(h.settle(&cam, Duration::from_secs(120)).2);
+                w.open = true;
+                w.focus = Some(("terrain".into(), 30));
+                for frame in 0..24 {
+                    h.frame(&cam);
+                    let raw = egui::RawInput { time: Some(frame as f64 / 30.0), screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1920.0,1080.0))), ..Default::default() };
+                    h.ui_pass(raw, true, &mut |ctx| w.ui(ctx));
+                }
+                h.gpu.save_png(&format!("{out}/panel-832.png"));
+                w.save_look();
+                let c = WorldConfig::load(&dir.join("world.json").to_string_lossy()).unwrap();
+                assert_eq!(c.columns_per_face, 832*1024);
+                assert_eq!(c.vertical_scale, None);
+                assert!(session.save.is_none(), "saving the look never enables preview-world saves");
+                session.engine.world.set_block(bp, registry.id("sand").unwrap());
+                session.save_now().unwrap();
+            }
+            assert_eq!(contents(&dir.join("save")), saved, "preview never writes home save files");
+        }
+        assert!(Arc::ptr_eq(&engine, &session.engine));
+        assert_eq!(session.engine.world.block(bp.face, bp.i as i64, bp.j as i64, bp.k as i64), registry.id("stone").unwrap());
+        println!("five preview sizes, fly altitude, sky radius, Save look, and byte-for-byte home-save preservation verified");
+    }
+
     fn scratch(tag: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("triangulum-workshop-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -1311,9 +1445,12 @@ mod tests {
     }
 
     fn workshop(dir: &Path, registry: &Arc<Registry>) -> Workshop {
-        let d = Look::defaults(&Settings::default(), 90_569.6);
+        let d = Look::defaults(&Settings::default(), 90_569.21831901377);
         let st = look::Startup { look: Look::load(&dir.join("look.json"), &d).unwrap(), defaults: d, look_path: dir.join("look.json"), blocks_path: dir.join("blocks.json"), world_path: dir.join("world.json"), panel_open: false };
-        Workshop::from_parts(registry.clone(), st, Terrain { roughness: 1.0, landform: 1.0, vscale: 0.0142 }, 0.0142)
+        {
+            let c = WorldConfig::load(&dir.join("world.json").to_string_lossy()).unwrap();
+            Workshop::from_parts(registry.clone(), st, Terrain::from_config(&c), crate::grid::Planet::new(c.block_size_m, c.world_height, c.sea_level, c.columns_per_face))
+        }
     }
 
     #[test]
