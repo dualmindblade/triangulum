@@ -317,9 +317,19 @@ and a planet-size slider). Tasks are in `PLAN.md`.
   gone, and so is the black band over the horizon. The sky treated eye level as
   the horizon. Ground and orbit views barely change
   (`docs/missions/2026-10-31-round2-evidence/sky-line-before-after.jpg`).
-- **Not explained:** one test of T1's preview crashed on closing Vulkan once
-  (`0xc0000005`), after everything in it had passed. It hasn't come back in four
-  runs on the merged build, or in two of Astra's.
+- **T2, merged:** real mountains. Peaks stand up to about 800 m on the belts,
+  where the highest ground on the planet was 143 m, with ridges, V-shaped valleys
+  and gorges. Rivers lie in valleys and lakes in basins: banks where the ground
+  rose towards the channel fell from 51.3% to 4.7%. Hills now differ from place
+  to place. Local features stay in metres on any planet, and global ones stretch
+  with it (`DESIGN.md`). Old saves are refused again: generator 6. Nobody has
+  walked this in a real window. Findings: `docs/missions/T2-relief-findings.md`.
+- **A rare crash on exit, not explained:** now and then the program dies with an
+  access violation (`0xC0000005`) as it closes, after everything is finished and
+  saved. It's been seen about four times across this round's hundreds of runs,
+  including on the old build, so it isn't new. All were headless test runs, and
+  nothing was lost in any of them. The cause is unknown, because a crash like this
+  doesn't go through the panic handler and so leaves no file in `game/out/crash/`.
 
 **The first bug round, all merged:** Andrew's first list, 11 items plus
 Austin's annotation tool, matched to his recordings in
@@ -376,6 +386,21 @@ decisions, and underground darkness needs a lighting design.
 - **Andrew's calls from T1:** is 832 what you meant by an Earth analogue? And how
   do the air and fog look at big sizes: they now keep the same proportions as
   today's planet, so at 2 km up a big planet still has a blue sky.
+- **Andrew's calls from T2.** The first one matters most:
+  1. **Mountains on big planets.** At 832 the bake's own heights take up most of
+     the 1,024 m above the sea, so the highest belts become rolling high country
+     with about 190 m of relief, not 800 m peaks. See
+     `docs/missions/T2-relief-evidence/sizes_832_after.jpg`. Without this they
+     were a flat cap with pits in it. A taller world would give them room:
+     `--height 4096 --n 851968` is the same planet with twice the height.
+  2. Peak height (`MOUNT_M`, 640, peaks about 800 m), how sharp (`RIDGED_DOWN_TO`),
+     hills, and valley shape. The names are in the findings.
+  3. **Lakes lowered to their inflow:** 415 of 771 moved, mostly by about a metre,
+     and 42 by over 10 m. The other way is a levee, or a gorge running up to the
+     lake.
+  4. Mesa steps are now 40 m at most, and stay out of the belts.
+  5. High plateaus are frozen at every latitude. That's the bake's climate at
+     that height, not a bug in the snow line.
 - **Austin: Visual Studio needs repairing** when a restart suits you: restart,
   then tick *Desktop development with C++* in the Visual Studio Installer, then
   delete `game/.cargo/config.toml`. Until then the game builds from a linker
