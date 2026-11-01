@@ -726,6 +726,56 @@ LOD, and what shows through it is the column's own floor block. The gates are
 `shore_floor_by_lod`, `shore_coast_stats`, `shore_lod0_digest`), and
 `scripts/b2-shores.play` shoots matching poses on two builds.
 
+## Relief: mountains in metres (T2)
+
+The land has two kinds of thing in it, and `src/worldgen/scale.rs` is where
+the code tells them apart (`DESIGN.md`, "Local and global"):
+
+- **Global** features belong to the planet and stretch with its radius:
+  the bake's rasters (continents, basins, climate, where the belts run),
+  the river network and the lakes. Every height from the bake goes through
+  `Scale::global_m` (bake kilometres times the vertical scale), so `grep
+  global_m` finds them all.
+- **Local** features are metres, the same on any planet: peaks, ridges,
+  valleys, hills, gullies, roughness, river channels and banks, beaches,
+  lake shores, strata. Their constants never multiply by the vertical scale.
+
+The local relief (`src/worldgen/landform.rs`) stands on the global surface:
+**the bake's surface is the floor of the land.** Hills everywhere (10-70 m,
+from the bake's local-relief field, varying from place to place), mountains
+on the belts (active uplift or a rough highland: up to about 850 m above the
+bake, ridges about 1.8 km apart with flanks near 0.5), the massif and
+gullies summed and eased above zero so valley floors lie on the bake and
+nothing dips below it. The sum is eased under the world's ceiling (half the
+world height) so a range rounds off under it instead of flat-topping.
+**Land falls towards water:** the relief ramps up from every river bank and
+lake shore over a valley in proportion to the relief (V-shaped on the belts,
+flat-floored in lowlands, `Hydro::relief_ramp`), river levels are the lowest
+natural ground along each course less an incision (so a river runs below
+the land everywhere, and cuts a gorge through a sill rather than standing
+on a levee), and a lake takes the lowest level any river reaches it at and
+sits in a basin carved to its shore. Temperature falls 6.5 degrees per real
+kilometre of local relief, so high peaks get snow where the climate allows.
+
+Dials: `landform` in `world.json` (the F1 panel's *Landform strength*)
+scales the relief, peaks and hills alike; `roughness` the metre-scale
+texture. The metre constants at the top of `landform.rs` (`MOUNT_M`,
+`HILL_*`, `LAM_*`, `FLOOR_V`) and `hydro.rs` (`VALLEY_*`, `LAKE_BASIN_SLOPE`)
+are Andrew's; they change the terrain, so they need a generator version bump.
+
+Gates: `cargo test --release land_falls_towards_water` (river cross-sections
+and lake shores across the planet: the share with ground rising towards the
+water within 60 m of the bank) and `local_features_keep_their_metres` (the
+same relief in metres and belts in the same places on a planet twice the
+size, `--n 262144`). Tools, all `--ignored --nocapture` in
+`src/worldgen/relief_tests.rs`: `relief_survey` (quantiles of the bake's
+fields, the relief and the heights), `relief_maps` (hillshade maps with
+contours and water at a belt, a rough highland, the highest plateau, a
+lowland river and a plain, `RELIEF_LABEL=name` into `out/relief-maps/`),
+`relief_places` (writes the evidence poses to `out/relief-shots/`) and
+`relief_probe` (a transect at `RELIEF_AT="lat lon"`). Saves and replays from
+before this are refused (generator version 5).
+
 ## Water (M2b)
 
 Andrew's rule (`DESIGN.md`, "Water"; the code and the settling argument are

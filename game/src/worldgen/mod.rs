@@ -1,9 +1,12 @@
-//! Generator v2: a pure function of (seed, position, LOD voxel size).
+//! Generator v3: a pure function of (seed, position, LOD voxel size).
 //!
-//! Height = the smooth bake surface times the vertical scale, plus the
-//! engine's landforms (`landform.rs`: ridges, valley networks, mesas and a
-//! fine roughness), band-limited to the voxel size so every LOD samples the
-//! same surface. Materials come from climate; strata are real blocks.
+//! Height = the global surface (the bake times the vertical scale,
+//! `scale.rs`) plus the local relief in metres (`landform.rs`: peaks,
+//! ridges, valleys, hills, gullies, roughness, mesas), eased under the
+//! world's ceiling, band-limited to the voxel size so every LOD samples the
+//! same surface. The relief ramps to nothing at rivers and lakes, so land
+//! falls towards water (`Hydro::relief_ramp`). Materials come from climate;
+//! strata are real blocks.
 //! A chunk is generated directly at its LOD from the column samples at its
 //! voxel centres, with a one-voxel border so the mesher can cull and shade
 //! faces against the neighbours without loading them.
@@ -41,16 +44,18 @@ pub mod hydro;
 pub mod inspect;
 pub mod landform;
 pub mod noise;
+pub mod scale;
 pub mod strata;
 
 use crate::grid::{CHUNK, ChunkKey, FootprintKey, Planet};
 use crate::world::chunk::VOXELS;
 use crate::world::{BlockId, Chunk, Registry};
-use bake::Bake;
+use bake::{Bake, BakeSample};
 use glam::DVec3;
 use hydro::{Cands, Hydro, LakeAt, WaterKind};
 use landform::{Landform, Local};
 use noise::gradient_noise;
+use scale::Scale;
 use std::sync::Arc;
 use strata::{GeoHint, RockCache, Strata};
 
@@ -65,9 +70,11 @@ pub fn pidx(x: i32, y: i32, z: i32) -> usize {
 }
 
 /// Low land away from the sea is held at this height, so no dry pit opens
-/// where the landform dips below sea level.
+/// where the global surface dips below sea level.
 const LAND_FLOOR_M: f64 = 0.3;
-/// Lapse rate applied to the landform's height (deg C per Earth km).
+/// Lapse rate on the local relief's height (deg C per km of real metres):
+/// a peak 800 m up is about 5 degrees colder than the bake's valley floor.
+/// (Local: the bake's own temperature already holds the global surface's lapse.)
 const LAPSE_C_PER_KM: f64 = 6.5;
 
 /// Block ids the generator places, resolved from the registry by name.
@@ -210,8 +217,12 @@ pub struct Generator {
     pub planet: Planet,
     pub bake: Arc<dyn Bake>,
     pub seed: u64,
-    /// Metres of terrain per metre of bake elevation.
+    /// Metres of terrain per metre of bake elevation (also in `scale`).
     pub vscale: f64,
+    /// The local/global split: every global height goes through `scale.global_m`.
+    pub scale: Scale,
+    /// Seconds `Hydro::new` took (it samples the natural ground along every river).
+    pub hydro_build_s: f64,
     /// Andrew's fine-relief dial (1.0 = default).
     pub roughness: f64,
     /// Andrew's landform dial (1.0 = default).
@@ -272,11 +283,32 @@ impl Generator {
             .map(|n| registry.id(n))
             .collect::<Result<Vec<_>, _>>()?;
         let strata = Strata::new(beds, planet.block_size, planet.radius, seed);
-        let hydro = bake.hydro().map(|d| Arc::new(Hydro::new(d, planet.radius, planet.block_size, vscale, seed)));
-        let lf = Landform { seed: seed ^ 0x1A4D_F0E1, radius: planet.radius, vscale, landform, roughness, valleys: hydro.is_none() };
+        let scale = Scale::new(vscale, planet.radius, planet.block_size, planet.height, planet.sea_level);
+        let lf = Landform { seed: seed ^ 0x1A4D_F0E1, radius: planet.radius, scale, landform, roughness, valleys: bake.hydro().is_none() };
+        let t0 = std::time::Instant::now();
+        let hydro = Self::hydro_for(&planet, bake.as_ref(), seed, &scale, &lf).map(Arc::new);
+        let hydro_build_s = t0.elapsed().as_secs_f64();
         let elev_max = (0..6u8).map(|f| bake.elev_range_km(f, -1.0, -1.0, 1.0, 1.0).1).fold(f32::MIN, f32::max) as f64;
         let max_relief_m = lf.bound_m(lf.relief_bound_m(bake.rough_max_km() as f64, elev_max));
-        Ok(Self { planet, bake, seed, vscale, roughness, landform, lf, blocks, strata, skirt: 2, markers: Vec::new(), hide_water: false, hydro, max_relief_m })
+        Ok(Self { planet, bake, seed, vscale, scale, hydro_build_s, roughness, landform, lf, blocks, strata, skirt: 2, markers: Vec::new(), hide_water: false, hydro, max_relief_m })
+    }
+
+    /// The hydrology model for a bake, built from the generator's own pure
+    /// functions: the natural ground with no relief (what stands at a
+    /// river's channel) and the local relief scale, both along every course.
+    fn hydro_for(planet: &Planet, bake: &dyn Bake, seed: u64, scale: &Scale, lf: &Landform) -> Option<Hydro> {
+        let d = bake.hydro()?;
+        let ground = |dir: DVec3| natural_ground(scale, seed, &bake.sample(dir), dir * planet.radius, 0.0, planet.block_size).0;
+        let relief = |dir: DVec3| {
+            let l = lf.local(&bake.sample(dir));
+            (l.relief, l.mountain)
+        };
+        Some(Hydro::new(d, scale, seed, &ground, &relief))
+    }
+
+    /// Build the hydrology model again (timing it, `hydro_stats`).
+    pub fn build_hydro(&self) -> Option<Hydro> {
+        Self::hydro_for(&self.planet, self.bake.as_ref(), self.seed, &self.scale, &self.lf)
     }
 
     /// The highest block id this generator places (M3b: the simulation's
@@ -332,7 +364,7 @@ impl Generator {
 
     /// One line naming the relief model and its dials (captions, logs).
     pub fn describe_relief(&self) -> String {
-        format!("landforms v2, roughness {}, landform {}", self.lf.roughness, self.lf.landform)
+        format!("landforms v3 (local relief in metres, ceiling {:.0} m), roughness {}, landform {}", self.scale.ceiling_m, self.lf.roughness, self.lf.landform)
     }
 
     /// Conservative padding (m) above and below the bake's height range,
@@ -356,7 +388,7 @@ impl Generator {
     /// hydrology candidates of the chunk (found here when not given).
     fn column_from(&self, dir: DVec3, voxel_m: f64, coarse: Option<(f64, f64, f64, f64)>, strata_off: Option<f64>, cands: Option<&Cands>) -> (Column, f64, Local) {
         let s = self.bake.sample(dir);
-        let base = s.elev_km * 1000.0 * self.vscale;
+        let base = self.scale.global_m(s.elev_km);
         let strata_off = strata_off.unwrap_or_else(|| self.strata.column_offset_m(dir));
         let lf = self.lf.sample_with(dir, &s, voxel_m, strata_off, coarse);
         // Lakes and rivers near this column.
@@ -377,23 +409,23 @@ impl Generator {
             }
             _ => LakeAt::default(),
         };
-        // The landform fades out over lakes (their beds and shores are the bake's).
+        // Land falls towards water: the relief ramps up from a river's bank
+        // or a lake's shore over the valley it leaves (`Hydro::relief_ramp`).
         let dh = match hx {
-            Some((h, _)) if !lake.is_empty() => lf.dh * h.lake_damp(&lake),
+            Some((h, _)) if !lake.is_empty() || !rivers.is_empty() => lf.dh * h.relief_ramp(&lake, &rivers, lf.local.relief, lf.local.mountain, voxel_m),
             _ => lf.dh,
         };
-        let mut h = base + dh;
-        // The shoreline first; the ground follows it (`coast.rs`).
+        // The global surface plus the relief, under the ceiling; then the
+        // shoreline, which the ground follows (`coast.rs`).
         let p = dir * self.planet.radius;
-        let shore = coast::shore_at(s.coast * self.planet.radius, p, voxel_m, self.seed);
-        // Land the landform pushes below sea level is held just above it.
-        if !shore.sea && base >= -1.0 && h < LAND_FLOOR_M + 1.0 {
-            h = soft_floor(h, LAND_FLOOR_M, 1.0);
-        }
-        h = coast::shape(h, shore.d);
+        let (mut h, shore) = natural_ground(&self.scale, self.seed, &s, p, dh, voxel_m);
+        // What stands above the global surface here, for the lapse.
+        let dh = h - base;
         let (water_m, water_kind, channel, lake_sand, river_bank) = match hx {
             Some((hy, _)) if !lake.is_empty() || !rivers.is_empty() => {
-                let sh = hy.shape(dir, h, &lake, &rivers, shore.sea, lf.local.rugged, voxel_m, self.lod_of(voxel_m));
+                // The global surface alone, as a lake's basin is carved into it.
+                let h_floor = if lake.is_empty() { h } else { natural_ground(&self.scale, self.seed, &s, p, 0.0, voxel_m).0 };
+                let sh = hy.shape(dir, h, h_floor, &lake, &rivers, shore.sea, lf.local.rugged, voxel_m, self.lod_of(voxel_m));
                 h = sh.h;
                 (sh.water, sh.kind, sh.channel, sh.lake_floor || sh.lake_shore, sh.bank)
             }
@@ -402,8 +434,8 @@ impl Generator {
         };
         let ocean = water_kind == WaterKind::Ocean && h < water_m;
         let river = if self.hydro.is_some() { channel } else { lf.river };
-        // Lapse rate on the landform's own height, in Earth-equivalent km.
-        let lapse = (LAPSE_C_PER_KM * dh / self.vscale / 1000.0).clamp(-12.0, 12.0);
+        // Lapse rate on the local relief's own height (real metres).
+        let lapse = (LAPSE_C_PER_KM * dh / 1000.0).clamp(-12.0, 12.0);
         let dither = gradient_noise(p / 41.0 + DVec3::splat(3.1), self.seed ^ 0xD17) as f32;
         let col = Column {
             height_m: h as f32,
@@ -559,8 +591,10 @@ impl Generator {
             lo = lo.min(0.0);
             hi = hi.max(0.0);
         }
-        let mut hmin = emin * 1000.0 * self.vscale + lo - margin;
-        let mut hmax = emax * 1000.0 * self.vscale + hi + margin;
+        // The global surface plus the relief's range, eased under the
+        // ceiling as every column is (the easing is monotone).
+        let mut hmin = self.scale.soft_ceiling(self.scale.global_m(emin) + lo - margin);
+        let mut hmax = self.scale.soft_ceiling(self.scale.global_m(emax) + hi + margin);
         if let Some(((a, b), _)) = hyd {
             hmin = hmin.min(a);
             hmax = hmax.max(b);
@@ -1056,6 +1090,23 @@ fn soft_floor(h: f64, floor: f64, k: f64) -> f64 {
     if h >= floor + k { h } else { floor + k * ((h - floor) / k - 1.0).exp() }
 }
 
+/// The natural ground of a column before the hydrology shapes it (m above
+/// sea), and its place against the shore: the global surface plus the local
+/// relief `dh`, eased under the world's ceiling, the land floor, then the
+/// shore's own profile. The generator's columns and `Hydro::new` share it:
+/// the hydrology samples it with `dh = 0` along every river course, which
+/// is what stands at a channel (the relief ramps to nothing there).
+fn natural_ground(scale: &Scale, seed: u64, s: &BakeSample, p: DVec3, dh: f64, voxel_m: f64) -> (f64, coast::Shore) {
+    let base = scale.global_m(s.elev_km);
+    let mut h = scale.soft_ceiling(base + dh);
+    let shore = coast::shore_at(s.coast * scale.radius, p, voxel_m, seed);
+    // Land below sea level away from the sea is held just above it.
+    if !shore.sea && base >= -1.0 && h < LAND_FLOOR_M + 1.0 {
+        h = soft_floor(h, LAND_FLOOR_M, 1.0);
+    }
+    (coast::shape(h, shore.d), shore)
+}
+
 #[cfg(test)]
 mod tests;
 
@@ -1064,3 +1115,6 @@ mod hydro_tests;
 
 #[cfg(test)]
 mod shore_tests;
+
+#[cfg(test)]
+mod relief_tests;
