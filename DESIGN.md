@@ -25,10 +25,16 @@ with their OK; record the change here with the date.
   is exactly in the middle, H/2, so the bottom half-height can be water and
   the top one air (Andrew, 2026-10-31; it was 512 below sea level).
 - Planet size is counted in half-heights: N = u·(H/2) columns per face edge.
-  Default u = 128, N = 131,072. It is meant to be a slider, from today's size
-  up to an Earth analogue (Andrew, 2026-10-31; see
-  `docs/missions/2026-10-31-round2.md`). With equal-area blocks,
-  R = s·N·√(6/4π) ≈ 0.691·s·N, so R ≈ 90.57 km today.
+  Default u = 128, N = 131,072. The F1 terrain panel changes it in steps of 32,
+  up to 1024 (Andrew, 2026-10-31; see `docs/missions/2026-10-31-round2.md`).
+  832 is the Earth analogue: Earth's relief reduced until its deepest trench
+  fits one half-height (the lead's reading of his words; he can correct it).
+  N need not be a power of two. It must tile the coarsest chunks and fit the
+  simulation's 20-bit horizontal coordinates, so taller worlds can have a lower
+  limit. With equal-area blocks, R = s·N·√(6/4π) ≈ 0.691·s·N, so R ≈ 90.57 km
+  today.
+- Resizing uses a preview world with saving off. *Save look* writes the size as
+  the default for new worlds and doesn't touch the open world's saved edits.
 - LOD voxel sizes are 1, 2, 4 … H/2 blocks. The coarsest LOD voxel is half the
   world height (Andrew, 2026-10-31). Chunks are 32³ voxels. Because N is a
   multiple of the coarsest chunk edge, LOD voxels tile every face exactly.
@@ -39,7 +45,8 @@ with their OK; record the change here with the date.
 - planetgen keeps Earth physics at Earth's radius; the shrink happens in the
   bake.
 - Vertical scale: 1/70 (`vertical_scale: null`, Earth's slopes) for now
-  (Andrew, 2026-10-30: keep things where they are). It stays a dial. Earlier
+  (Andrew, 2026-10-30: keep things where they are). `null` means R / Earth's
+  radius and follows a change of planet size. It stays a dial. Earlier
   (2026-10-24) he said large features (mountain ranges, ocean trenches)
   should sit somewhere between Earth-sized at a local scale (vertical scale
   1) and at a planetary scale (1/70), with ≈ 1/8 the middle (peaks ~1 km,
@@ -53,6 +60,9 @@ with their OK; record the change here with the date.
 - Keep the old world's character: geological strata (now as real blocks),
   biome surfaces, trees, rocks, caves, rivers, lakes, shores, ice.
   See `docs/feature-inventory.md`.
+- Atmosphere height and fog distance follow R. The look keeps their metre values
+  with the radius they were set at, so a custom look keeps its proportions when
+  the planet changes size.
 - Clouds are a sky effect above the world height; they do not shrink 1/70.
 - Time: 24-minute days (one game minute per real second), from Andrew's
   October vision. His July calendar (7-day lunar month, 3 months per season,

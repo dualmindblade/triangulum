@@ -267,10 +267,14 @@ Days are 24 minutes: `[` and `]` slow down and speed up time (up to
 Try other worlds (each keeps its own save):
 
 ```
+cargo run --release -- --planet-size 832 --save saves/earth             # the Earth analogue
 cargo run --release -- --vscale 0.05                                    # 1/20
-cargo run --release -- --vscale 0.125 --height 4096 --sea-level 1536    # 1/8
-cargo run --release -- --block-size 0.5 --n 262144 --height 4096 --sea-level 1024 --vscale 0.05 --save saves/half   # half-metre blocks
+cargo run --release -- --vscale 0.125 --height 4096 --n 131072          # 1/8
+cargo run --release -- --block-size 0.5 --n 262144 --height 4096 --vscale 0.05 --save saves/half   # half-metre blocks
 ```
+
+`--height` keeps the planet's size in half-heights and centres the sea, so a
+taller world is a bigger planet unless `--n` says otherwise.
 
 Hold Ctrl while walking to sneak: you won't walk off edges, so you can
 back out over a gap and place blocks under you. Known issues: ripple
@@ -301,6 +305,21 @@ and a planet-size slider). Tasks are in `PLAN.md`.
   the floor. Recordings from before this refuse to play.
   Nobody has watched the slide in a real window yet: harness frames and video
   only. Findings: `docs/missions/C2-motion-findings.md`.
+- **T1, merged:** sea level is in the middle of the world, and the coarsest voxel
+  is half the world height. Planet size is a slider in F1 > Terrain, from 128 to
+  1024 half-heights, with an Earth analogue button at 832 (R 589 km). It builds a
+  preview world, so your own world is safe, and *Save look* keeps the size for new
+  worlds. Walking, digging, water, saves and replays pass at 128, 832 and 1024
+  on this build, and at 256 and 512 in Astra's own runs before the merge. Nobody
+  has moved the slider by hand. Old saves and recordings are refused and left
+  untouched. Findings: `docs/missions/T1-planet-findings.md`.
+- **Sky fixed, merged:** the hard line across the sky when you were high up is
+  gone, and so is the black band over the horizon. The sky treated eye level as
+  the horizon. Ground and orbit views barely change
+  (`docs/missions/2026-10-31-round2-evidence/sky-line-before-after.jpg`).
+- **Not explained:** one test of T1's preview crashed on closing Vulkan once
+  (`0xc0000005`), after everything in it had passed. It hasn't come back in four
+  runs on the merged build, or in two of Astra's.
 
 **The first bug round, all merged:** Andrew's first list, 11 items plus
 Austin's annotation tool, matched to his recordings in
@@ -354,6 +373,9 @@ decisions, and underground darkness needs a lighting design.
   2. The slide's feel: 0.2 s, fast off the edge, then falling. One number.
   3. How faint a film should be: 30% of a lake's opacity below 0.12 of a voxel.
      Both are in the shader, and could be panel dials.
+- **Andrew's calls from T1:** is 832 what you meant by an Earth analogue? And how
+  do the air and fog look at big sizes: they now keep the same proportions as
+  today's planet, so at 2 km up a big planet still has a blue sky.
 - **Austin: Visual Studio needs repairing** when a restart suits you: restart,
   then tick *Desktop development with C++* in the Visual Studio Installer, then
   delete `game/.cargo/config.toml`. Until then the game builds from a linker
