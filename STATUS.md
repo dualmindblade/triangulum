@@ -313,8 +313,10 @@ and a planet-size slider). Tasks are in `PLAN.md`.
   on this build, and at 256 and 512 in Astra's own runs before the merge. Nobody
   has moved the slider by hand. Old saves and recordings are refused and left
   untouched. Findings: `docs/missions/T1-planet-findings.md`.
-- **Known issue:** a hard line across the sky when you're high up, worst on big
-  planets. The sky treats eye level as the horizon. Being fixed.
+- **Sky fixed, merged:** the hard line across the sky when you were high up is
+  gone, and so is the black band over the horizon. The sky treated eye level as
+  the horizon. Ground and orbit views barely change
+  (`docs/missions/2026-10-31-round2-evidence/sky-line-before-after.jpg`).
 - **Not explained:** one test of T1's preview crashed on closing Vulkan once
   (`0xc0000005`), after everything in it had passed. It hasn't come back in four
   runs on the merged build, or in two of Astra's.
