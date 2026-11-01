@@ -313,7 +313,12 @@ impl Run {
         self.video.settle_worst_s = self.video.settle_worst_s.max(secs);
     }
 
-    fn record_start(&mut self, file: &str, fps: f64) -> Result<(), String> {
+    /// `recmode live` or `recmode settle`, for the replay driver.
+    pub(super) fn video_live(&mut self, live: bool) {
+        self.video.settle = !live;
+    }
+
+    pub(super) fn record_start(&mut self, file: &str, fps: f64) -> Result<(), String> {
         if !(1.0..=60.0).contains(&fps) {
             return Err("record: FPS must be 1..60".into());
         }
@@ -352,7 +357,7 @@ impl Run {
         Ok(())
     }
 
-    fn record_stop(&mut self) -> Result<(), String> {
+    pub(super) fn record_stop(&mut self) -> Result<(), String> {
         let Some(mut enc) = self.video.enc.take() else { return Err("stop: not recording".into()) };
         enc.finish()?;
         // Captions as [{start, end, text}] next to the video, for the editor.
@@ -379,6 +384,8 @@ impl Run {
             self.video.settle_timeouts
         );
         self.say(msg);
+        // The stream and motion counters as they stand at the end of the recording.
+        self.record_stream();
         let mut m = match std::mem::take(&mut self.last_stream) {
             serde_json::Value::Object(m) => m,
             _ => Default::default(),

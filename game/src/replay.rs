@@ -1292,7 +1292,11 @@ pub fn compatibility(template: &Session, h: &Header) -> Result<(), String> {
             "simulation rules version {} vs {}: {} (this build's rules would not reproduce it, so it will not play here. Your world and saves are fine; to watch this recording, use a build of the game with simulation rules {})",
             h.sim_rules,
             crate::sim::RULES_VERSION,
-            if h.sim_rules < crate::sim::RULES_VERSION { "it was recorded before sand and water learned to slide off ledges" } else { "it was recorded by a newer build" },
+            match h.sim_rules {
+                v if v < 3 => "it was recorded before sand and water learned to slide off ledges",
+                v if v < crate::sim::RULES_VERSION => "it was recorded before water learned to drain through a film without blinking (C2)",
+                _ => "it was recorded by a newer build",
+            },
             h.sim_rules
         ));
     }

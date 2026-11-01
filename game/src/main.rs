@@ -55,6 +55,10 @@
 //!                         markers and takes a settled shot at each; says separately whether the
 //!                         simulation reproduced and whether the look was the same
 //!   --shot-at STEP        (with --replay, repeatable; STEP or "end") a settled shot there
+//!   --record-video FILE   (with --replay) an mp4 of it under out/replay/<name>/: live frames, 30 fps,
+//!                         through the player's camera; run.log then says what the falling-block
+//!                         draw held back (C2)
+//!   --water-trace         (with --replay) every cell that goes wet or dry, tick by tick, in run.log
 //!   --watch               (with --replay) play it in the window at real time instead; a marker's
 //!                         text shows as it passes
 //!   --record-replay FILE  (the game) start recording at launch, as F10 does; Q, closing or --exit-after stops it
@@ -167,6 +171,8 @@ struct Args {
     replay: Option<String>,
     shot_at: Vec<String>,
     watch: bool,
+    record_video: Option<String>,
+    water_trace: bool,
     record_replay: Option<String>,
     interchange: Option<String>,
     replays: Option<String>,
@@ -242,6 +248,8 @@ fn parse_args() -> Args {
         replay: None,
         shot_at: Vec::new(),
         watch: false,
+        record_video: None,
+        water_trace: false,
         record_replay: None,
         interchange: None,
         replays: None,
@@ -344,6 +352,8 @@ fn parse_args() -> Args {
             "--replay" => a.replay = Some(val()),
             "--shot-at" => a.shot_at.push(val()),
             "--watch" => a.watch = true,
+            "--record-video" => a.record_video = Some(val()),
+            "--water-trace" => a.water_trace = true,
             "--record-replay" => a.record_replay = Some(val()),
             "--interchange" => a.interchange = Some(val()),
             "--replays" => a.replays = Some(val()),
@@ -665,7 +675,7 @@ near it, by hand:
         let mut here_look = start_look.clone();
         here_look.detail.lod_factor = engine.lod.factor;
         let here = visual::Visual::of(&here_look, &registry, visual::startup_textures(), "normal", engine.mesh_opts.ao, engine.mesh_opts.split, engine.skirt);
-        let opts = play::ReplayOptions { out: out(&format!("out/replay/{stem}")), name: stem, shots: args.shot_at, watch: args.watch, width: args.width, height: args.win_height, backend: args.backend, vsync: args.vsync, screenshot: args.screenshot.clone(), exit_after: args.exit_after, here, no_focus: args.no_focus };
+        let opts = play::ReplayOptions { out: out(&format!("out/replay/{stem}")), name: stem, shots: args.shot_at, watch: args.watch, width: args.width, height: args.win_height, backend: args.backend, vsync: args.vsync, screenshot: args.screenshot.clone(), exit_after: args.exit_after, here, no_focus: args.no_focus, video: args.record_video, trace: args.water_trace };
         std::process::exit(play::run_replay(session, r, opts));
     }
 

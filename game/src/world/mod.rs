@@ -386,7 +386,16 @@ impl World {
 
     pub fn commit_levels(&self, writes: &[(BlockPos, BlockId, Option<u8>)]) -> usize {
         let planet = &self.planet;
-        let valid: Vec<(BlockPos, BlockId, Option<u8>)> = writes.iter().copied().filter(|(bp, _, _)| bp.k < planet.height && bp.i < planet.n && bp.j < planet.n && bp.face < 6).collect();
+        let air = self.generator.blocks.air;
+        // A cell is water exactly when its level is at least 1 (water.rs):
+        // a liquid written at level 0 is air (C2, Andrew's "presumably at
+        // level 0": there is no such cell).
+        let valid: Vec<(BlockPos, BlockId, Option<u8>)> = writes
+            .iter()
+            .copied()
+            .filter(|(bp, _, _)| bp.k < planet.height && bp.i < planet.n && bp.j < planet.n && bp.face < 6)
+            .map(|(bp, id, level)| if level == Some(0) && self.registry.is_liquid(id) { (bp, air, None) } else { (bp, id, level) })
+            .collect();
         if valid.is_empty() {
             return 0;
         }
@@ -862,6 +871,27 @@ pub(crate) mod tests {
             k -= 1;
         }
         BlockPos { face: f, i, j, k }
+    }
+
+    /// C2, Andrew's "a lone water voxel, presumably at level 0": no such
+    /// cell can be written. The simulation writes air for level 0 already;
+    /// the one write path everything else uses turns a liquid at level 0
+    /// into air too (the harness's `fill ... water 0` used to store one).
+    #[test]
+    fn a_liquid_written_at_level_0_is_air() {
+        let w = test_world();
+        let g = hills_ground(&w);
+        let water = w.water_id();
+        let air = w.generator.blocks.air;
+        let cell = BlockPos { k: g.k + 2, ..g };
+        assert!(w.set_water(cell, water, 3));
+        assert_eq!(w.block_and_level_at(cell), (water, 3));
+        assert!(w.set_water(cell, water, 0), "a change: the water goes");
+        assert_eq!(w.block_and_level_at(cell), (air, 0), "air, not water at level 0");
+        assert!(!w.set_water(cell, water, 0), "and no change the second time");
+        assert!(w.commit_levels(&[(cell, water, Some(0)), (BlockPos { k: cell.k + 1, ..cell }, water, Some(1))]) == 1);
+        assert_eq!(w.block_and_level_at(cell), (air, 0));
+        assert_eq!(w.block_and_level_at(BlockPos { k: cell.k + 1, ..cell }), (water, 1));
     }
 
     #[test]

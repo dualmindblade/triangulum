@@ -73,7 +73,16 @@ struct VOut {
     // samples (-1: its flat colour).
     @location(6) uv: vec2<f32>,
     @location(7) @interpolate(flat) layer: i32,
+    // Water only (C2): how deep the water is at this vertex, in voxels (the
+    // corner height of a top face, 1 elsewhere). A film a few millimetres
+    // deep draws fainter than a lake (`fs_water`).
+    @location(8) depth: f32,
 };
+
+// Water thinner than FILM_DEPTH voxels fades towards FILM_OPACITY of the
+// look's opacity: a 4 mm sheet is a wet patch, not a lake (C2, Andrew's #9).
+const FILM_DEPTH: f32 = 0.12;
+const FILM_OPACITY: f32 = 0.3;
 
 // Lagrange weights of the five grid corners (at 0, 1, 2, 3, 4) for t in [0, 4].
 fn lagrange5(t: f32) -> array<f32, 5> {
@@ -150,11 +159,13 @@ fn vertex(vi: u32, ii: u32, water: bool, slope: bool) -> VOut {
     // A water surface sits at its corner height inside the voxel: the top
     // face's four corners and a side face's two top corners drop from the
     // voxel top by (255 - height) / 255 voxels; bottoms and full water stay.
+    var depth = 1.0;
     if (water) {
         let top = (axis == 2u && sign == 1u) || (axis != 2u && cv == 1u);
         if (top) {
             let hc = f32((heights >> (8u * ao_corner)) & 0xFFu);
             lp.z += (hc - 255.0) / 255.0;
+            depth = hc / 255.0;
         }
     }
     // A slope's vertices stand at their own heights, on every face of it. A
@@ -272,6 +283,7 @@ fn vertex(vi: u32, ii: u32, water: bool, slope: bool) -> VOut {
     out.side = select(1.0, 0.0, axis == 2u);
     out.view = world;
     out.normal = n;
+    out.depth = depth;
     return out;
 }
 
@@ -366,7 +378,9 @@ fn fs_water(in: VOut) -> @location(0) vec4<f32> {
     let facing = abs(dot(v, n));
     // Fresnel-ish: more opaque and brighter at grazing angles; a sun glint
     // (the look's water opacity, edge opacity, glint and its sharpness).
-    let alpha = mix(sky.water.x, sky.water.y, pow(1.0 - facing, 3.0));
+    // Thin water is fainter: a film is a wet patch, a puddle's middle a pool.
+    let thin = mix(FILM_OPACITY, 1.0, smoothstep(0.0, FILM_DEPTH, in.depth));
+    let alpha = mix(sky.water.x, sky.water.y, pow(1.0 - facing, 3.0)) * thin;
     let r = reflect(-v, n);
     let sun = normalize(sky.sun_position.xyz);
     let day = smoothstep(-0.08, 0.15, dot(sun, up));

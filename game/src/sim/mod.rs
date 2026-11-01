@@ -73,6 +73,22 @@
 //! notified, and an empty cell with room below wakes the water and the
 //! powder beside it (`Sim::wake_beside_drop`), so the news travels one tick
 //! later without four more neighbours on every change.
+//!
+//! What the renderer draws (C2, Andrew's #5). The rule moves a sliding
+//! block into the next column in one tick; the picture does not. Every
+//! block in flight remembers the cell it left (`Falling::from`, a `Trail`)
+//! and `Sim::view` hands the renderer a `Drawn` per block: its position
+//! part way from where the last tick left it to where this one did (the
+//! session sets `phase`, the fraction of the tick its 60 Hz steps have
+//! covered), and, for `SLIDE_TICKS` after a slide, how far along the way
+//! from the cell it left it is, eased so it clears the edge fast and drops
+//! as it goes. None of that is state: the trail is neither hashed nor in a
+//! replay's digest, the rule never reads it, and a save carries only the
+//! cell and the age so a reload mid-slide draws on. The trail also names
+//! the edit revision of the chunk the block left (or, for a landed block,
+//! took), so the renderer can tell whether the chunk's mesh has caught up
+//! with the move (`draw.rs`): until it has, the mesh still shows the block
+//! where it was, which is the second copy Andrew saw.
 
 pub mod draw;
 pub mod powder;
@@ -94,15 +110,18 @@ pub use water::Boundary;
 /// in (#3), a steady throughflow at the boundary stays scheduled (#9), and
 /// falling blocks wait at the region's edge (#7). 3: B4 (Andrew's #7 and #9):
 /// powder and water slide off a ledge, and what becomes of a level-1 film.
-pub const RULES_VERSION: u32 = 3;
+/// 4: C2 (Andrew's #9 again): water drains through a film instead of
+/// pumping it dry and wet, and nothing spreads onto a cell over a drop
+/// (water.rs, steps 3 and 4).
+pub const RULES_VERSION: u32 = 4;
 
-/// Rules 1 and 2 have the same stored cell/queue/entity meanings as 3.
+/// Rules 1 to 3 have the same stored cell/queue/entity meanings as 4.
 /// Continuing those saves is safe: scheduled work follows today's rules;
 /// resting cells stay asleep until touched (including B4's quiet load).
 pub fn check_saved_rules(version: Option<u32>) -> Result<Option<String>, String> {
     match version {
         Some(RULES_VERSION) => Ok(None),
-        None | Some(1 | 2) => Ok(Some(format!(
+        None | Some(1 | 2 | 3) => Ok(Some(format!(
             "save simulation rules {} continue under rules {RULES_VERSION}: pending work uses the current rules; resting cells stay at rest until disturbed",
             version.map_or("unrecorded (legacy)".into(), |v| v.to_string())
         ))),
@@ -119,11 +138,31 @@ pub const STEPS_PER_TICK: u32 = 3;
 /// body dropped together land together.
 pub const GRAVITY_M_S2: f64 = 25.0;
 pub const TERMINAL_M_S: f64 = 70.0;
-/// A landed block is still drawn as a cube for this many ticks, while the
-/// chunk it landed in is remeshed (cosmetic; not state, not saved).
-const GHOST_TICKS: u64 = 5;
+/// A landed block is still drawn as a cube for this many ticks when the
+/// renderer cannot tell whether the chunk it landed in has been remeshed,
+/// and for at most `GHOST_TICKS_MAX` when it can and the mesh is late
+/// (cosmetic; not state, not saved).
+pub const GHOST_TICKS: u64 = 5;
+const GHOST_TICKS_MAX: u64 = 40;
+/// A block that slid over a ledge is drawn travelling from the cell it
+/// left to its own column over this many ticks (0.2 s), eased: it has
+/// cleared the edge within two, well before the earliest landing (the
+/// sixth tick, for a drop of one layer).
+pub const SLIDE_TICKS: f64 = 4.0;
 /// Ticks kept for the average cost.
 const COST_WINDOW: usize = 100;
+/// A cell that goes wet or dry `FLICKER_FLIPS` times within
+/// `FLICKER_WINDOW` ticks (a second) is a flicker (`SimStats::water_flickers`).
+pub const FLICKER_WINDOW: u64 = 20;
+pub const FLICKER_FLIPS: usize = 3;
+
+/// The last few ticks a cell went wet or dry (newest first, 0 = none),
+/// and the tick it was last counted as flickering.
+#[derive(Clone, Copy, Debug, Default)]
+struct Flips {
+    ticks: [u64; 6],
+    flagged: u64,
+}
 
 /// What becomes of level-1 water, which the 2-level rule cannot move
 /// (Andrew's #9; `--film`, `sim film`). water.rs has the rules and the
@@ -333,9 +372,31 @@ pub struct Falling {
     pub z: f64,
     /// Layers per second, `<= 0`.
     pub vel: f64,
+    /// The cell it left (module doc, "What the renderer draws"). Look only:
+    /// not hashed, not digested, never read by a rule.
+    pub from: Option<Trail>,
+    /// Where the last tick left it (look only, not saved): `view` draws the
+    /// block between here and `z`. A block that did not move has it at `z`.
+    pub z_prev: f64,
+}
+
+/// Where a block in flight came from, for the renderer (C2): the cell it
+/// left (a slide: the cell beside its column; a fall: its own), or for a
+/// landed block the cell it took; the edit revision of that cell's chunk
+/// once the write was in (0 when unknown: a reload); and how many ticks
+/// `advance_falling` has run since (1 after the tick it moved in).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Trail {
+    pub cell: BlockPos,
+    pub rev: u64,
+    pub age: u32,
 }
 
 impl Falling {
+    /// A block starting to fall or slide from `cell`, in its own column at `z`.
+    pub fn new(id: BlockId, face: u8, i: u32, j: u32, z: f64, vel: f64) -> Self {
+        Self { id, face, i, j, z, vel, from: None, z_prev: z }
+    }
     #[inline]
     pub fn column(&self) -> PosKey {
         PosKey::of(BlockPos { face: self.face, i: self.i, j: self.j, k: 0 })
@@ -347,6 +408,49 @@ impl Falling {
     }
     fn sort_key(&self) -> (PosKey, u64) {
         (self.column(), self.z.to_bits())
+    }
+}
+
+/// A block as the renderer draws it this frame (`Sim::view`): in flight,
+/// or lately landed while the chunk it landed in is remeshed.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Drawn {
+    pub id: BlockId,
+    pub face: u8,
+    pub i: u32,
+    pub j: u32,
+    /// Layer of the block's bottom to draw it at: part way from where the
+    /// last tick left it to where this one did.
+    pub z: f64,
+    /// Ticks since it left its cell or landed, continuous.
+    pub since: f64,
+    /// A landed block whose chunk may still be meshed without it.
+    pub ghost: bool,
+    /// The cell it left (in flight) or took (a ghost), and the edit
+    /// revision of that chunk once the write was in: a mesh built from an
+    /// older revision still shows the block where it was, or not yet where
+    /// it is. 0: unknown (a reload); the mesh counts as current.
+    pub wrote: Option<(BlockPos, u64)>,
+}
+
+impl Drawn {
+    /// The cell a sliding block left: one beside its own column.
+    pub fn slid_from(&self) -> Option<BlockPos> {
+        let (cell, _) = self.wrote?;
+        (!self.ghost && (cell.face, cell.i, cell.j) != (self.face, self.i, self.j)).then_some(cell)
+    }
+
+    /// How far along the way from the cell it left a sliding block is
+    /// drawn `since` ticks after leaving, 0 there to 1 in its own column:
+    /// eased out, so it clears the edge quickly and the fall takes over.
+    pub fn progress(since: f64) -> f64 {
+        let t = (since / SLIDE_TICKS).clamp(0.0, 1.0);
+        1.0 - (1.0 - t) * (1.0 - t)
+    }
+
+    /// `progress` of this block's own `since`.
+    pub fn slide_progress(&self) -> f64 {
+        Self::progress(self.since)
     }
 }
 
@@ -380,7 +484,10 @@ impl Default for Snapshot {
 }
 
 const SNAPSHOT_MAGIC: &[u8; 4] = b"TRSM";
-const SNAPSHOT_VERSION: u32 = 4;
+/// 5 (C2): each falling block's trail (the cell it left, its age), after
+/// everything else; the revision is not kept (a reload builds every mesh
+/// afresh). Versions 1 to 4 read as before, with no trails.
+const SNAPSHOT_VERSION: u32 = 5;
 
 /// The SHA-256 of the block definitions the simulation's rules read: each
 /// id's name and its solid, liquid, gravity and replaceable flags. Colours
@@ -493,6 +600,20 @@ impl Snapshot {
         if let Some(radius) = self.region_radius {
             w.extend_from_slice(&radius.to_bits().to_le_bytes());
         }
+        // Version 5: the trails, one per falling block in order.
+        for f in &self.falling {
+            match f.from {
+                Some(t) => {
+                    w.push(1);
+                    w.push(t.cell.face);
+                    w.extend_from_slice(&t.cell.i.to_le_bytes());
+                    w.extend_from_slice(&t.cell.j.to_le_bytes());
+                    w.extend_from_slice(&t.cell.k.to_le_bytes());
+                    w.extend_from_slice(&t.age.to_le_bytes());
+                }
+                None => w.push(0),
+            }
+        }
         w
     }
 
@@ -533,7 +654,7 @@ impl Snapshot {
             if face > 5 || !z.is_finite() || !vel.is_finite() || z < 0.0 {
                 return Err(format!("bad falling block face {face} z {z} vel {vel}"));
             }
-            falling.push(Falling { id, face, i, j, z, vel });
+            falling.push(Falling::new(id, face, i, j, z, vel));
         }
         let (mut config, mut focus, mut rules) = (None, None, None);
         let mut drying = Vec::new();
@@ -595,6 +716,23 @@ impl Snapshot {
         } else {
             focus.and(config.map(|c| c.radius_m))
         };
+        if version >= 5 {
+            for f in &mut falling {
+                match r.take(1)?[0] {
+                    0 => {}
+                    1 => {
+                        let face = r.take(1)?[0];
+                        let (i, j, k) = (r.u32()?, r.u32()?, r.u32()?);
+                        let age = r.u32()?;
+                        if face > 5 {
+                            return Err(format!("bad trail face {face}"));
+                        }
+                        f.from = Some(Trail { cell: BlockPos { face, i, j, k }, rev: 0, age });
+                    }
+                    x => return Err(format!("bad trail flag {x}")),
+                }
+            }
+        }
         if r.at != b.len() {
             return Err(format!("{} trailing bytes after simulation state", b.len() - r.at));
         }
@@ -680,6 +818,13 @@ pub struct SimStats {
     /// and by falls by levels. Always 0 under the default rule.
     pub powder_moves: u64,
     pub powder_moved: u64,
+    /// C2 (Andrew's #9): cells that went from dry to wet or back, whoever
+    /// wrote them, and cells on a floor that did so `FLICKER_FLIPS` times
+    /// or more within `FLICKER_WINDOW` ticks (counted once per such spell):
+    /// water that appears and disappears in quick succession where it lies.
+    /// A cell with an open floor is a stream passing through and not counted.
+    pub water_flips: u64,
+    pub water_flickers: u64,
     /// Water cell updates run last tick.
     pub water_updates_last: u32,
     /// Last tick's cost by phase (microseconds): the water rule's two
@@ -745,12 +890,25 @@ pub struct Sim {
     /// `active` is a region computed since `new` or `restore`, so the next
     /// recompute can tell which chunks joined (`wake_new_pairs`).
     region_known: bool,
+    /// Landed blocks still offered to the renderer (`view`), with the tick
+    /// they landed: `z` holds where the block was before the landing tick
+    /// and `from` the cell it took, so the last tick of the fall draws too.
     ghosts: Vec<(Falling, u64)>,
+    /// How much of the current tick the session's 60 Hz steps have
+    /// covered, 0 to 1 (`set_phase`): `view` draws blocks that far from
+    /// where the last tick left them towards where this one did.
+    phase: f64,
     /// Queue, frozen or falling changed since the last snapshot.
     dirty: bool,
     pub stats: SimStats,
     /// The water rule's tick-local writes (water.rs).
     overlay: Overlay,
+    /// Cells that went wet or dry lately (`note_flips`): the last few
+    /// ticks it happened and the tick the cell was last counted a flicker.
+    flips: FastMap<PosKey, Flips>,
+    /// `sim trace on`: every flip, as a line for the transcript.
+    pub trace: bool,
+    trace_lines: Vec<String>,
     /// Tests inject what the boundary holds (a generated river's levels
     /// before M2-hydro produces them).
     #[cfg(test)]
@@ -773,9 +931,13 @@ impl Sim {
             region_radius: None,
             region_known: false,
             ghosts: Vec::new(),
+            phase: 0.0,
             dirty: false,
             stats: SimStats::default(),
             overlay: Overlay::default(),
+            flips: FastMap::default(),
+            trace: false,
+            trace_lines: Vec::new(),
             #[cfg(test)]
             boundary_override: None,
         }
@@ -813,6 +975,8 @@ impl Sim {
         self.region_known = false;
         self.ghosts.clear();
         self.overlay = Overlay::default();
+        self.flips.clear();
+        self.trace_lines.clear();
         self.dirty = false;
     }
 
@@ -937,18 +1101,101 @@ impl Sim {
         (h.finish(), queue.len())
     }
 
-    /// The blocks to draw: those in flight plus, briefly, those that just
-    /// landed (their chunk is being remeshed).
-    pub fn view(&self) -> Vec<Falling> {
-        let mut v = self.falling.clone();
-        v.extend(self.ghosts.iter().map(|(f, _)| *f));
+    /// The blocks to draw this frame (module doc, "What the renderer
+    /// draws"): those in flight, each part way through its tick's move and
+    /// its slide, plus those that landed lately, offered for as long as a
+    /// mesh could be late with them (`draw.rs` drops each one as soon as
+    /// its chunk's mesh shows it, or after `GHOST_TICKS` when it cannot
+    /// tell).
+    pub fn view(&self) -> Vec<Drawn> {
+        let phase = self.phase.clamp(0.0, 1.0);
+        let mut v = Vec::with_capacity(self.falling.len() + self.ghosts.len());
+        for f in &self.falling {
+            let (since, wrote) = match f.from {
+                Some(t) => ((t.age as f64 - 1.0).max(0.0) + phase, Some((t.cell, t.rev))),
+                None => (SLIDE_TICKS, None),
+            };
+            v.push(Drawn { id: f.id, face: f.face, i: f.i, j: f.j, z: f.z_prev + (f.z - f.z_prev) * phase, since, ghost: false, wrote });
+        }
+        for (f, tick) in &self.ghosts {
+            let Some(t) = f.from else { continue };
+            let age = self.tick.saturating_sub(*tick);
+            let landed = t.cell.k as f64;
+            let z = if age == 0 { f.z + (landed - f.z) * phase } else { landed };
+            v.push(Drawn { id: f.id, face: f.face, i: f.i, j: f.j, z, since: age as f64 + phase, ghost: true, wrote: Some((t.cell, t.rev)) });
+        }
         v
+    }
+
+    /// How far the session's 60 Hz steps are through the current tick
+    /// (0 to 1): `view` interpolates with it. With the simulation off, 1.
+    pub fn set_phase(&mut self, phase: f64) {
+        self.phase = phase;
+    }
+
+    /// The blocks in flight and the landed ones still offered to the
+    /// renderer, for a state sidecar.
+    pub fn blocks_json(&self) -> serde_json::Value {
+        let mut v: Vec<serde_json::Value> = self
+            .falling
+            .iter()
+            .map(|f| serde_json::json!({ "id": f.id, "face": f.face, "i": f.i, "j": f.j, "z": f.z, "vel": f.vel, "from": f.from.map(|t| serde_json::json!([t.cell.face, t.cell.i, t.cell.j, t.cell.k, t.age])) }))
+            .collect();
+        v.extend(self.ghosts.iter().map(|(f, tick)| serde_json::json!({ "id": f.id, "face": f.face, "i": f.i, "j": f.j, "ghost": true, "landed_tick": tick, "cell": f.from.map(|t| [t.cell.face as u32, t.cell.i, t.cell.j, t.cell.k]) })));
+        v.into()
+    }
+
+    /// Record the cells that went wet or dry since the last tick (the
+    /// edit store logs them, whoever wrote them): the flip count, the
+    /// flicker count, and the trace.
+    fn note_flips(&mut self, world: &World) {
+        let flips = world.edits.take_flips();
+        if flips.is_empty() {
+            return;
+        }
+        let tick = self.tick;
+        let reg = world.registry.clone();
+        for (bp, was, now) in flips {
+            self.stats.water_flips += 1;
+            // A cell with an open floor is a falling stream passing through,
+            // not water blinking where it lies.
+            if bp.k > 0 && reg.is_replaceable(world.block_at(BlockPos { k: bp.k - 1, ..bp })) {
+                continue;
+            }
+            let e = self.flips.entry(PosKey::of(bp)).or_default();
+            e.ticks.rotate_right(1);
+            e.ticks[0] = tick + 1;
+            let recent = e.ticks.iter().filter(|&&t| t > 0 && tick + 1 - t < FLICKER_WINDOW).count();
+            let flicker = recent >= FLICKER_FLIPS && (e.flagged == 0 || tick + 1 - e.flagged >= FLICKER_WINDOW);
+            if flicker {
+                self.stats.water_flickers += 1;
+                e.flagged = tick + 1;
+            }
+            if self.trace {
+                self.trace_lines.push(format!("tick {tick}: {}/{}/{}/{} {was} -> {now}{}", bp.face, bp.i, bp.j, bp.k, if flicker { "  FLICKER" } else { "" }));
+            }
+        }
+        // Forget cells quiet for longer than the window, now and then.
+        if self.flips.len() > 4096 && tick % 64 == 0 {
+            self.flips.retain(|_, e| tick + 1 - e.ticks[0] < FLICKER_WINDOW);
+        }
+    }
+
+    /// How many times a cell went wet or dry within the last
+    /// `FLICKER_WINDOW` ticks, up to the ring's length.
+    pub fn flips_at(&self, bp: BlockPos) -> usize {
+        self.flips.get(&PosKey::of(bp)).map_or(0, |e| e.ticks.iter().filter(|&&t| t > 0 && self.tick + 1 - t < FLICKER_WINDOW).count())
+    }
+
+    /// Lines the trace wrote since the last call.
+    pub fn take_trace(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.trace_lines)
     }
 
     /// One line for the HUD and the harness transcript.
     pub fn describe(&self) -> String {
         let line = format!(
-            "sim {}  tick {}  falling {}  queued {}  frozen {}  active {} chunks  water {} updates, {} moved, in {} out {}, {} drying, {} dried  tick cost {:.3} ms (avg {:.3}, max {:.3})",
+            "sim {}  tick {}  falling {}  queued {}  frozen {}  active {} chunks  water {} updates, {} moved, in {} out {}, {} drying, {} dried, {} flickers  tick cost {:.3} ms (avg {:.3}, max {:.3})",
             if self.config.enabled { "on" } else { "off" },
             self.tick,
             self.falling.len(),
@@ -961,6 +1208,7 @@ impl Sim {
             self.stats.water_out,
             self.drying.len(),
             self.stats.water_dried,
+            self.stats.water_flickers,
             self.stats.last_us as f64 / 1e3,
             self.stats.avg_us() / 1e3,
             self.stats.max_us as f64 / 1e3
@@ -1369,7 +1617,7 @@ impl Sim {
         let next = self.tick + 1;
         self.absorb(world, next);
         self.tick = next;
-        self.ghosts.retain(|(_, t)| next - *t < GHOST_TICKS);
+        self.ghosts.retain(|(_, t)| next - *t < GHOST_TICKS_MAX);
         // A restored state first gets back the region it was saved with.
         // A game starts at its spawn, not where it was saved, so the next
         // line can jump the whole region. With the same radius, that is a load: nothing
@@ -1469,6 +1717,7 @@ impl Sim {
         self.advance_falling(world);
         let t3 = Instant::now();
         self.absorb(world, self.tick + 1);
+        self.note_flips(world);
         self.stats.absorb_us = t3.elapsed().as_micros() as u32;
         self.stats.record(t0.elapsed().as_micros() as u32);
     }
@@ -1487,7 +1736,8 @@ impl Sim {
         }
         let below = world.block_at(BlockPos { k: bp.k - 1, ..bp });
         if reg.is_replaceable(below) && world.set_block(bp, world.generator.blocks.air) {
-            self.falling.push(Falling { id, face: bp.face, i: bp.i, j: bp.j, z: bp.k as f64, vel: 0.0 });
+            let rev = world.edits.revision(World::chunk_of(bp).0).unwrap_or(0);
+            self.falling.push(Falling { from: Some(Trail { cell: bp, rev, age: 0 }), ..Falling::new(id, bp.face, bp.i, bp.j, bp.k as f64, 0.0) });
             self.stats.falls += 1;
             self.dirty = true;
         }
@@ -1559,7 +1809,7 @@ impl Sim {
             if room {
                 *taken.entry(column).or_default() += 1;
                 clear.push((p, air));
-                next.push(Falling { id, face: n.face, i: n.i, j: n.j, z: n.k as f64, vel: 0.0 });
+                next.push(Falling { from: Some(Trail { cell: p, rev: 0, age: 0 }), ..Falling::new(id, n.face, n.i, n.j, n.k as f64, 0.0) });
             } else {
                 self.queue.insert((self.tick + 1, PosKey::of(p)));
                 self.dirty = true;
@@ -1567,6 +1817,11 @@ impl Sim {
         }
         if !clear.is_empty() {
             world.commit(&clear);
+            for f in &mut next {
+                if let Some(t) = &mut f.from {
+                    t.rev = world.edits.revision(World::chunk_of(t.cell).0).unwrap_or(0);
+                }
+            }
             self.stats.slides += next.len() as u64;
             self.falling.extend(next);
             self.dirty = true;
@@ -1601,8 +1856,15 @@ impl Sim {
         // same batch.
         let mut landings: Vec<(BlockPos, BlockId, Option<u8>)> = Vec::new();
         let mut landed_in: Option<PosKey> = None;
+        // Ghosts added this tick: their chunk's revision is read once the
+        // landings are committed, below.
+        let ghosts_before = self.ghosts.len();
         for mut f in list {
             let (face, i, j) = (f.face, f.i, f.j);
+            f.z_prev = f.z;
+            if let Some(t) = &mut f.from {
+                t.age = t.age.saturating_add(1);
+            }
             let k0 = f.cell().clamp(0, height - 1);
             let ck = World::chunk_of(BlockPos { face, i, j, k: k0 as u32 }).0;
             if !self.active.contains(&ck) {
@@ -1687,6 +1949,11 @@ impl Sim {
         if !landings.is_empty() {
             world.commit_levels(&landings);
         }
+        for (g, _) in &mut self.ghosts[ghosts_before..] {
+            if let Some(t) = &mut g.from {
+                t.rev = world.edits.revision(World::chunk_of(t.cell).0).unwrap_or(0);
+            }
+        }
         self.falling = keep;
     }
 
@@ -1698,7 +1965,10 @@ impl Sim {
         let bp = BlockPos { face: f.face, i: f.i, j: f.j, k: k as u32 };
         let Some((displaced, lost)) = world.displace_writes_within(bp, |b| self.active.contains(&World::chunk_of(b).0)) else { return false };
         self.stats.landings += 1;
-        self.ghosts.push((Falling { z: k as f64, vel: 0.0, ..f }, self.tick));
+        // The ghost keeps where the block was before this tick (`f.z`), so
+        // the last tick of the fall is drawn too; the cell it took is the
+        // trail, its revision filled in once the landing is committed.
+        self.ghosts.push((Falling { from: Some(Trail { cell: bp, rev: 0, age: 0 }), ..f }, self.tick));
         let level = world.water_level_at(bp) as u64;
         self.stats.water_displaced += level - lost as u64;
         self.stats.water_lost += lost as u64;
@@ -1712,6 +1982,8 @@ impl Sim {
 mod film_tests;
 #[cfg(test)]
 mod flow_tests;
+#[cfg(test)]
+mod motion_tests;
 #[cfg(test)]
 mod powder_tests;
 #[cfg(test)]

@@ -68,7 +68,7 @@ fn snapshot_bytes_round_trip_and_reject_damage() {
         tick: 77,
         queue: vec![(78, PosKey(5)), (78, PosKey(9)), (80, PosKey(1))],
         frozen: vec![(ChunkKey::neisor(3, 0, 10, 11, 12), vec![(70, PosKey(123)), (71, PosKey(124))]), (ChunkKey::neisor(4, 0, 0, 0, 0), vec![])],
-        falling: vec![Falling { id: 4, face: 2, i: 100, j: 200, z: 612.25, vel: -3.5 }, Falling { id: 5, face: 2, i: 100, j: 200, z: 615.0, vel: 0.0 }],
+        falling: vec![Falling::new(4, 2, 100, 200, 612.25, -3.5), Falling::new(5, 2, 100, 200, 615.0, 0.0)],
         config: Some(SimConfig { radius_m: 37.5, enabled: false, water_period: 3, flow: Flow { film: Film::Merge, film_reach: 3, film_dry_ticks: 77, ..Flow::before() } }),
         focus: Some(DVec3::new(1.0e6, -2.5e6, 3.25e5)),
         rules: Some([7; 32]),
@@ -79,8 +79,11 @@ fn snapshot_bytes_round_trip_and_reject_damage() {
     assert_eq!(Snapshot::from_bytes(&bytes).unwrap(), snap);
     // Version 2 adds one byte saying which parts follow.
     assert_eq!(Snapshot::default().to_bytes().len(), 4 + 4 + 8 + 8 * 3 + 1 + 5);
-    // A version-1 file (no settings, focus or rules) still reads.
+    // A version-1 file (no settings, focus or rules) still reads. Every
+    // older layout ends before v5's trails: one byte per falling block here.
+    let trails = snap.falling.len();
     let mut v1 = Snapshot { config: None, focus: None, rules: None, drying: vec![], ..snap.clone() }.to_bytes();
+    v1.truncate(v1.len() - trails);
     v1.truncate(v1.len() - 5); // v4's algorithm and absent region radius
     v1.pop();
     v1[4..8].copy_from_slice(&1u32.to_le_bytes());
@@ -89,6 +92,7 @@ fn snapshot_bytes_round_trip_and_reject_damage() {
     // It reads, and takes this build's flow settings.
     let no_focus = Snapshot { focus: None, rules: None, drying: vec![], ..snap.clone() };
     let mut v2 = no_focus.to_bytes();
+    v2.truncate(v2.len() - trails);
     v2.truncate(v2.len() - 5);
     let text = no_focus.config.unwrap().flow.text();
     let flow_at = v2.len() - text.len() - 4;
@@ -100,6 +104,7 @@ fn snapshot_bytes_round_trip_and_reject_damage() {
     assert_eq!(read.config.unwrap().water_period, 3);
     assert_eq!(read.sim_rules, 2);
     let mut v3 = snap.to_bytes();
+    v3.truncate(v3.len() - trails);
     v3.truncate(v3.len() - 5);
     v3[4..8].copy_from_slice(&3u32.to_le_bytes());
     let read = Snapshot::from_bytes(&v3).unwrap();
@@ -210,11 +215,16 @@ fn sand_collapses_in_a_chain_and_a_column_drains_in_order() {
     }
     assert_eq!(w.block_at(col(k0 + 5)), gravel);
     assert_eq!(w.block_at(col(k0 + 6)), air);
-    // At rest nothing is scheduled and the ghosts fade.
+    // At rest nothing is scheduled, and the landed blocks are offered to the
+    // renderer for as long as a mesh could be late, then no more (C2).
     for _ in 0..GHOST_TICKS + 1 {
         sim.step(&w, focus);
     }
     assert_eq!(sim.queued(), 0);
+    assert!(sim.view().iter().all(|d| d.ghost));
+    for _ in 0..GHOST_TICKS_MAX {
+        sim.step(&w, focus);
+    }
     assert!(sim.view().is_empty());
     // The fall of one layer takes sqrt(2 / 25) s = 5.7 ticks: the count first drops in the sixth tick.
     let first_landing = in_flight.windows(2).position(|w| w[1] < w[0]).map(|i| i + 1).unwrap();
@@ -339,7 +349,7 @@ fn a_falling_block_waits_at_the_edge_of_the_active_region() {
     assert!(sim.is_active(upper) && !sim.is_active(lower), "only the upper chunk is active");
     // A sand block at terminal speed a tenth of a layer above the edge: one
     // tick carries it 3.5 layers, past the edge.
-    let start = Falling { id: sand, face: g.face, i: g.i, j: g.j, z: kb as f64 + 0.1, vel: -TERMINAL_M_S / p.block_size };
+    let start = Falling::new(sand, g.face, g.i, g.j, kb as f64 + 0.1, -TERMINAL_M_S / p.block_size);
     sim.restore(Snapshot { tick: sim.tick(), falling: vec![start], focus: Some(focus), ..Default::default() });
     sim.step(&w, focus);
     assert_eq!(w.block_at(col(kb - 2)), air, "nothing landed in the inactive chunk");
@@ -350,7 +360,11 @@ fn a_falling_block_waits_at_the_edge_of_the_active_region() {
     for _ in 0..5 {
         sim.step(&w, focus);
     }
-    assert_eq!(sim.falling(), &[held], "unchanged while it waits");
+    // The state is unchanged while it waits (where it is drawn from, `z_prev`, is look only).
+    let state = |f: &Falling| (f.id, f.face, f.i, f.j, f.z.to_bits(), f.vel.to_bits());
+    assert_eq!(sim.falling().len(), 1);
+    assert_eq!(state(&sim.falling()[0]), state(&held), "unchanged while it waits");
+    assert_eq!(sim.falling()[0].z_prev, held.z, "and drawn where it is");
     // The region reaches down: it lands on the shelf.
     for _ in 0..20 {
         sim.step(&w, at(kb as f64 - 0.5));
@@ -366,7 +380,7 @@ fn a_falling_block_waits_at_the_edge_of_the_active_region() {
     let above = World::chunk_of(col(kb + 32)).0;
     assert!(sim.is_active(upper) && !sim.is_active(above));
     assert!(w.set_block(col(kb + 31), stone));
-    let inside = Falling { id: sand, face: g.face, i: g.i, j: g.j, z: (kb + 31) as f64 + 0.5, vel: -1.0 };
+    let inside = Falling::new(sand, g.face, g.i, g.j, (kb + 31) as f64 + 0.5, -1.0);
     sim.restore(Snapshot { tick: sim.tick(), falling: vec![inside], focus: Some(mid), ..Default::default() });
     sim.step(&w, mid);
     assert_eq!(w.block_at(col(kb + 32)), air, "the free cell above is outside the region: not written");
@@ -410,7 +424,7 @@ fn a_landing_whose_displaced_water_would_leave_the_region_waits() {
     let above = World::chunk_of(col(kb + 32)).0;
     assert!(sim.is_active(upper) && !sim.is_active(above));
     assert_eq!(w.water_level_at(col(kb + 41)), 0);
-    let f = Falling { id: sand, face: g.face, i: g.i, j: g.j, z: kb as f64 + 21.5, vel: 0.0 };
+    let f = Falling::new(sand, g.face, g.i, g.j, kb as f64 + 21.5, 0.0);
     sim.restore(Snapshot { tick: sim.tick(), falling: vec![f], focus: Some(focus), ..Default::default() });
     for _ in 0..30 {
         sim.step(&w, focus);

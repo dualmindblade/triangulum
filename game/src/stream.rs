@@ -1053,6 +1053,9 @@ struct JobResult {
     slot: u32,
     epoch: u32,
     rev: u32,
+    /// The chunk's edit revision when the job was dispatched: what the
+    /// mesh was built from, at the latest (`Renderer::meshed_at`).
+    erev: u64,
 }
 
 struct RangeResult {
@@ -1211,12 +1214,13 @@ impl Streamer {
         let registry = self.registry.clone();
         let opts = self.mesh_opts;
         let tx = self.tx.clone();
+        let erev = if w.key.lod == 0 { world.edits.revision(w.key).unwrap_or(0) } else { 0 };
         rayon::spawn(move || {
             let g = world.generate(w.key);
             let levels = world.padded_levels(w.key, &g);
             let powder = world.padded_powder(w.key, &g);
             let mesh = mesh_chunk_slopes(&g, levels.as_ref(), powder.as_ref(), &registry, &world.planet, opts);
-            let _ = tx.send(JobResult { mesh, gen_us: g.gen_us, slot: w.slot, epoch: w.epoch, rev: w.rev });
+            let _ = tx.send(JobResult { mesh, gen_us: g.gen_us, slot: w.slot, epoch: w.epoch, rev: w.rev, erev });
         });
     }
 
@@ -1263,7 +1267,12 @@ impl Streamer {
             }
         };
         match self.cover.install(res.slot, res.epoch, res.rev, mesh, m.origin) {
-            Installed::Ok => self.stats.uploaded_this_frame += 1,
+            Installed::Ok => {
+                self.stats.uploaded_this_frame += 1;
+                if m.key.lod == 0 {
+                    gpu.meshed_at.insert(m.key, res.erev);
+                }
+            }
             Installed::Stale(w) => {
                 self.stats.stale_results += 1;
                 if let Mesh::Gpu(gm) = mesh {
@@ -1458,6 +1467,7 @@ impl Streamer {
         self.cover.reset();
         self.free_released(gpu);
         self.awaiting.clear();
+        gpu.meshed_at.clear();
     }
 }
 
