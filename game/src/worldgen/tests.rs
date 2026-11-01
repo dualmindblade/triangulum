@@ -3,6 +3,11 @@ use std::sync::OnceLock;
 
 const BAKE_DIR: &str = "C:/code/triangulum/game/assets/world/seed42";
 
+/// The bake shared by the tests, for sibling test modules.
+pub fn shared_bake_pub() -> Arc<dyn Bake> {
+    shared_bake()
+}
+
 fn shared_bake() -> Arc<dyn Bake> {
     static BAKE: OnceLock<Arc<bake::RasterBake>> = OnceLock::new();
     BAKE.get_or_init(|| Arc::new(bake::open(BAKE_DIR).expect("world bake"))).clone()

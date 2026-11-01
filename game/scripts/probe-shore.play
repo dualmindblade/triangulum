@@ -1,7 +1,7 @@
 # Probe the shore site the m2b scripts use (face 1, the sea at i 1985, the
-# land from i 1986, row j 59004, surface layer k 1023): the columns they dig.
+# land from i 1907, row j 59004, surface layer k 1023): the columns they dig.
 # Not a gate; nothing is asserted.
-atblock 1 1989 59004 1023
+atblock 1 1910 59004 1023
 mode fly
 column -4 0
 column -3 0

@@ -293,13 +293,12 @@ fn seeds(s: &Session, kind: &str, here: DVec3) -> Result<Vec<(u8, i64, i64)>, St
             Err(format!("no {kind} within {:.0} km", 80.0 * scale))
         }
         "shore" => {
-            // The coastline in the bake: the first sample, ring by ring at a
-            // 16-block stride, where land meets the sea mask.
+            // The shoreline: the first sample, ring by ring at a 16-block
+            // stride, where land meets the sea.
             let (face, hi, hj) = to_lattice(here);
-            // Sea in the bake: the sea's side of the coastline.
             let sea = |i: i64, j: i64| -> bool {
                 let (f, wi, wj) = planet.wrap_cell(face, i, j);
-                s.engine.bake.sample(planet.dir(f, wi as f64 + 0.5, wj as f64 + 0.5)).coast > 0.0
+                s.engine.generator.at_sea(planet.dir(f, wi as f64 + 0.5, wj as f64 + 0.5))
             };
             let stride = 16;
             let mut out = Vec::new();

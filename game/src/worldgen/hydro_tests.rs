@@ -280,7 +280,7 @@ pub(super) fn shore_point(k: i32, nth: usize) -> Option<DVec3> {
     shore_point_for(hydro(), k, nth)
 }
 
-fn shore_point_for(h: &Hydro, k: i32, nth: usize) -> Option<DVec3> {
+pub(super) fn shore_point_for(h: &Hydro, k: i32, nth: usize) -> Option<DVec3> {
     let inside: Vec<DVec3> = h.field.iter().filter(|c| c.lake == k).map(|c| c.pos).collect();
     if inside.is_empty() {
         return None;
@@ -311,8 +311,10 @@ fn shore_point_for(h: &Hydro, k: i32, nth: usize) -> Option<DVec3> {
 /// Columns along `links` river links: everything within the channel, its
 /// banks and a margin of the course.
 pub(super) fn along(links: &[u32], out: &mut FastMap<Col, ()>) {
-    let g = world_gen();
-    let h = hydro();
+    along_on(world_gen(), hydro(), links, out);
+}
+
+fn along_on(g: &Generator, h: &Hydro, links: &[u32], out: &mut FastMap<Col, ()>) {
     let p = &g.planet;
     for &k in links {
         let s = &h.segs[k as usize];
@@ -623,10 +625,12 @@ fn water_agrees_across_lods() {
                     }
                 }
             }
-            // Every LOD-0 column under it holds water at least three quarters
-            // of a voxel deep: the coarse column must hold water too.
-            let deep = under.iter().filter(|u| u.0.is_some_and(|x| x.1 >= 0.75 * vm)).count();
-            if deep == under.len() {
+            // Every LOD-0 column under it, and a voxel around it, holds water
+            // at least three quarters of a voxel deep: the coarse column must
+            // hold water too. (Around it: a shore's line differs between LODs
+            // by a voxel or so, `a_line_is_the_same_line_at_every_lod`.)
+            let deep = around.iter().filter(|u| u.is_some_and(|x| x.1 >= 0.75 * vm)).count();
+            if deep == around.len() {
                 deep_cols += 1;
                 if c.is_none() {
                     miss_bad.push(format!("{}: all {} LOD-0 columns hold water over 3/4 of a voxel deep, coarse dry", here(), under.len()));
@@ -1059,6 +1063,49 @@ fn water_is_contained_wide() {
     assert_eq!(total.missing, 0);
     assert!(total.walls.is_empty(), "{} water walls, e.g. {}", total.walls.len(), total.walls[0]);
     assert!(total.perched.is_empty(), "{} perched, e.g. {}", total.perched.len(), total.perched[0]);
+}
+
+/// The same gate on every planet size, lakes first: every third lake's shore
+/// at two places, every link into or out of a lake (a sample, on the big
+/// planets, where they are long) and a share of the rest, about a twentieth
+/// of the network on Neisor's scale. Too slow for every run (BOUNDARY_SIZES).
+#[test]
+#[ignore]
+fn water_is_contained_on_every_planet_size() {
+    let sizes = std::env::var("BOUNDARY_SIZES").unwrap_or_else(|_| "128 256 512 832 1024".into());
+    for size in sizes.split_whitespace().map(|s| s.parse::<u32>().unwrap()) {
+        let g = super::tests::planet_size_generator(size);
+        let h = g.hydro.as_deref().unwrap();
+        let p = &g.planet;
+        let stretch = (p.radius / 90_569.0).max(1.0);
+        let (mut cols, mut lakes) = (FastMap::default(), 0);
+        for k in (0..h.lakes.len() as i32).step_by(3) {
+            for nth in [0, 1] {
+                if let Some(d) = shore_point_for(h, k, nth) {
+                    square(p, d, 24, &mut cols);
+                    lakes += 1;
+                }
+            }
+        }
+        let cols: Vec<Col> = cols.into_keys().collect();
+        let region = Region::build(&g, 0, &cols);
+        let mut total = check(&g, &region, &cols);
+        drop(region);
+        let lake_links: Vec<u32> = (0..h.segs.len() as u32).filter(|&k| h.segs[k as usize].lake_a >= 0 || h.segs[k as usize].lake_b >= 0).step_by((2.0 * stretch).ceil() as usize).collect();
+        let rest: Vec<u32> = (0..h.segs.len() as u32).step_by((20.0 * stretch).ceil() as usize).collect();
+        let km = lake_links.iter().chain(&rest).map(|&k| h.segs[k as usize].len).sum::<f64>() / 1000.0;
+        for batch in lake_links.chunks(100).chain(rest.chunks(100)) {
+            let mut cols: FastMap<Col, ()> = FastMap::default();
+            along_on(&g, h, batch, &mut cols);
+            let cols: Vec<Col> = cols.into_keys().collect();
+            let region = Region::build(&g, 0, &cols);
+            total = total.merge(check(&g, &region, &cols));
+        }
+        report(&format!("size {size}: {lakes} lake shores, {} links into or out of lakes, {} others, {km:.0} km of course", lake_links.len(), rest.len()), &total);
+        assert_eq!(total.missing, 0);
+        assert!(total.walls.is_empty(), "{size}: {} walls, e.g. {}", total.walls.len(), total.walls[0]);
+        assert!(total.perched.is_empty(), "{size}: {} perched, e.g. {}", total.perched.len(), total.perched[0]);
+    }
 }
 
 /// Not a check: how much of the river network is at rest, stepped, or has

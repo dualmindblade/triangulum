@@ -1,0 +1,49 @@
+# Round 2 #4 (T3, boundaries): a coast, a lake and the snow line on the 832 planet.
+# Written by the `boundary_places` tool (BOUNDARY_SIZES=832). Not a gate; nothing is
+# asserted.
+#
+#   <exe> --bake DIR --planet-size 832 --no-save --size 1920x1080 --play scripts/t3-832.play --out OUT
+#
+# Heights are metres above sea level, not layers: nothing here moves with sea level.
+mode fly
+skytime 11:00
+
+# window 56% snow, peak 845 m, valley 393 m
+at -34.507247 76.043807 396.2
+look -59.5 6.1
+photo snow_valley_0
+at -34.484824 75.997730 801.5
+look -59.4 -5.3
+photo snow_2km_0
+# window 50% snow, peak 860 m, valley 414 m
+at 3.132411 96.998851 416.6
+look -3.3 6.8
+photo snow_valley_1
+at 3.151483 96.997738 630.1
+look -3.3 0.1
+photo snow_2km_1
+# window 41% snow, peak 806 m, valley 332 m
+at 30.185970 79.386801 334.7
+look -1.6 5.3
+photo snow_valley_2
+at 30.280953 79.383742 622.8
+look -1.6 -1.6
+photo snow_2km_2
+at -27.267402 75.658396 6000.0
+look 0.0 -89.9
+photo coast_6000m
+at -27.267402 75.658396 1500.0
+look 0.0 -89.9
+photo coast_1500m
+at -27.267402 75.658396 200.0
+look 0.0 -89.9
+photo coast_200m
+at 26.287906 123.341193 6000.0
+look 0.0 -89.9
+photo lake_6000m
+at 26.287906 123.341193 1500.0
+look 0.0 -89.9
+photo lake_1500m
+at 26.287906 123.341193 200.0
+look 0.0 -89.9
+photo lake_200m

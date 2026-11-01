@@ -783,9 +783,10 @@ The shoreline is a curve of its own and the ground follows it
   bake loads and works out each texel's signed distance from it on the
   sphere; nothing new is stored, so no re-bake. Catmull-Rom sampling keeps it
   smooth, and it meets itself across cube edges.
-- **The wiggle** adds bounded detail to that distance. Its slope stays under
-  1, so it moves the shoreline but cannot make an island, a pond or a fold:
-  every piece of land and sea is one the planet has.
+- **The warp** (`Warp::coast`, see Boundaries below) makes a column read that
+  distance a bounded way off, at most 600 m on Neisor. It bends the shoreline
+  at every scale from 2 km to a block but cannot make an island, a pond or a
+  fold: every piece of land and sea is one the planet has.
 - **The ground** near the curve is a function of the distance in metres, the
   same at every vertical scale and block size: the land rises at a beach's
   slope, the sea floor falls at the same slope to at least 2 m deep, and the
@@ -795,8 +796,8 @@ The shoreline is a curve of its own and the ground follows it
   the shallows; past them the sea floor is gravel.
 
 Andrew's dials are the constants at the top of `coast.rs`: `BEACH_SLOPE`,
-`BEACH_TOP_M`, `SEA_DEPTH_M`, `BEACH_WIDTH_M`, `SHALLOWS_SHARE`, `WIGGLE_AMP`.
-They change the terrain, so they need a generator version bump.
+`BEACH_TOP_M`, `SEA_DEPTH_M`, `BEACH_WIDTH_M`, `SHALLOWS_SHARE`. They change
+the terrain, so they need a generator version bump.
 
 Coarse LODs agree with LOD 0 about water: a wet column holds water at every
 LOD, and what shows through it is the column's own floor block. The gates are
@@ -860,6 +861,81 @@ lowland river and a plain, `RELIEF_LABEL=name` into `out/relief-maps/`),
 `relief_probe` (a transect at `RELIEF_AT="lat lon"`); `RELIEF_SIZE=U` runs
 the maps and poses on a planet of U half-heights. Saves and replays from
 before this are refused (generator version 6).
+
+## Boundaries (T3)
+
+Every line between two kinds of ground is one line, rough at every scale from
+the size of the thing it bounds down to a block, in only the pieces the planet
+has (`src/worldgen/boundary.rs`): the coast, lake outlines, the snow line, the
+ice line on lakes and sea, dry grass, deserts.
+
+The fields are smooth, so their contours are smooth curves. Nothing is added to
+a value before a threshold any more (across a gentle gradient a fixed number of
+degrees moves a line kilometres, which is what scattered the snow and the polar
+ice). Instead a column **reads its fields somewhere else**, through a warp of
+the sphere made of octaves of uniformly decreasing size, each step 0.17 of its
+wavelength, taken from where the shorter ones left off (short octaves take two
+or three steps, or a line looks like smooth noise up close). Every step is
+one-to-one, so the whole warp is: it bends a line however strong it is, and
+can't make a piece that isn't in the bake.
+
+- **Scale.** Octaves over 1,024 m are positions on the sphere and stretch with
+  the planet (16, 8, 4, 2 km on Neisor); from 1,024 m to two blocks they are
+  metres of ground, the same on any planet. A bigger planet has more global
+  octaves, so there is no gap in the ladder.
+- **LOD.** A voxel takes the octaves it can resolve and leaves out the
+  shortest, which it does by moving the line under a voxel. There is no noise
+  value for a coarse voxel to alias: the line from orbit is the line you walk
+  along.
+- **Height.** The temperature falls 6.5 degrees per real km of what stands above
+  the global surface: the local relief as a 128 m voxel sees it, hills and
+  mountains and not hummocks, as much of it as `Scale::headroom` and the ceiling
+  leave standing, ramped down to the water as the land is, bent by the octaves
+  up to 512 m. On a range the snow line follows the contours, roughly; on the
+  sea there is no lapse at all (it used to read the sea floor).
+- **Rock.** Bare rock is a contour of the slope as a 16 m voxel sees it, read
+  through its own warp (`Generator::rock_map`). A column's own slope has every
+  hummock in it, and a threshold on that draws streaks down every gully, 400 km
+  of line in a 3.9 km2 window of range where this draws 45. Chunks finer than
+  16 m read the columns a 16 m chunk would have, on the same lattice, so the
+  line is the same from LOD 0 to 4; coarser voxels see the mountain less steep
+  and take a lower slope for the same rock (`rock_slope_at`). Rock on a chunk's
+  surface costs a lattice of columns where the ground is steep, nothing on
+  gentle ground. Real cliffs, too narrow for 16 m, are rock by their own slope.
+- **Lakes.** The outline is a position and stretches with the planet; the bands
+  round it are ground, and keep their metres on any planet: an apron 150 m wide,
+  a sand band up to 50 m, a shelf of 170 m out to full depth (`LAKE_APRON_M`,
+  `LAKE_SAND_M`, `LAKE_SHELF_M`, each stopping at its field threshold too).
+- **Cost.** A chunk samples the climate at 25 nodes. If no threshold can lie in
+  it, its columns interpolate them and skip the warp; only chunks with a line
+  in them pay per column. `far_chunks_hold_no_boundary` proves that changes no
+  block.
+
+The dials are constants, and they change the terrain, so they need a generator
+version bump: `STEP_AMP` (strength; at 0.19 a very rare step already folds),
+`CLIMATE_TOP_RADII` and `LAKE_TOP_SHARE` (longest octave of the climate and of
+a lake), `WARP_TOP_RADII` in `coast.rs` (of the coast), `LAPSE_VOXEL_M` (how
+small a hill the snow notices), `ROCK_SLOPE` (how much of a range is bare),
+`ROCK_VOXEL_M` (how small a face is rock of its own).
+
+The gates are `cargo test --release boundaries_are_lines_not_scatter`,
+`lines_are_rough_at_every_scale`, `a_line_is_the_same_line_at_every_lod`,
+`boundaries_cross_cube_edges_without_a_seam`,
+`on_a_slope_the_snow_line_follows_the_contours`,
+`the_lapse_reads_the_ground_that_stands`, `the_rock_line_is_a_line`,
+`a_lakes_bands_keep_their_metres_on_any_planet`,
+`boundaries_are_lines_on_every_planet_size` and `far_chunks_hold_no_boundary`;
+`water_is_contained_on_every_planet_size` (ignored, minutes) is the lakes and
+rivers on every size. The measuring tools are the ignored `boundary_*` tests in
+`src/worldgen/boundary_tests.rs`: `boundary_map` and `boundary_zoom` draw plan
+maps (`BOUNDARY_AT="lat lon"`, `BOUNDARY_SIZE` km, `BOUNDARY_PX`,
+`BOUNDARY_NAME`), `boundary_rock` measures the rock on the ranges at every LOD
+and draws it, `boundary_places` writes poses for the snow and the rock on the
+ranges, `boundary_lake_bands` measures a lake's bands on each planet size and
+`boundary_cost` and `boundary_rock_cost` time chunks. `scripts/t3-poses.play`,
+`scripts/t3-ladder.play` and `scripts/t3-rock.play` shoot Andrew's four photos,
+the same lines from orbit down to the ground, and the ranges, on any two builds;
+`scripts/t3_sheets.py` pairs the frames up.
 
 ## Water (M2b)
 

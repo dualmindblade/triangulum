@@ -1,0 +1,28 @@
+# Round 2 #4 (T3, boundaries): Andrew's four photos, by their exact poses and
+# clocks, so a frame from this build and one from the frozen build pair up by
+# name. Not a gate; nothing is asserted.
+#
+#   <exe> --bake DIR --no-save --size 1920x1080 --play scripts/t3-poses.play --out OUT
+#
+# The poses are world positions, not layers: nothing here moves with sea level.
+mode fly
+
+# shot_lat6.960: the lake
+pose 70652.84842625569,56541.317104372865,11046.693547806999,0.0,0.0,0.0,2.8600024488034066,-1.1628000000000047,fly,0,0,0,2275.830678197541,0
+clock 1203.9749986457396
+photo pose_lake
+
+# shot_lat2.110: grass against dry grass
+pose 83506.62742177336,37561.74944747387,3373.883623219289,0.0,0.0,0.0,5.530802448803383,-1.2705999999999955,fly,0,0,0,5000.0,0
+clock 1278.5416653123384
+photo pose_biome
+
+# shot_lat9.899: snow and frozen lakes
+pose 85887.52451291226,34540.882760886874,16155.384054890998,0.0,0.0,0.0,9.361002448803424,-1.3321999999999958,fly,0,0,0,5000.0,0
+clock 1304.524998645648
+photo pose_snow
+
+# shot_lat-83.716: the polar ice edge
+pose 897.5711445297263,10550.11899226039,-96146.25519587123,0.0,0.0,0.0,10.412602448803401,-1.266199999999993,fly,0,0,0,3846.1538461538457,0
+clock 1381.4083319789115
+photo pose_polar

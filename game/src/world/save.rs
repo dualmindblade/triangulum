@@ -72,8 +72,8 @@ pub const FORMAT_VERSION: u32 = 3;
 /// because saves, not generation, care about it). A save made with another
 /// generator version is refused: its edits sit in terrain that no longer
 /// exists around them.
-pub const GENERATOR_VERSION: u32 = 6; // 6: landforms v3 (local relief in metres: mountains on the belts, the bake as the floor, land falling towards water, river levels from the natural ground)
-// Previous versions: 2: landforms v2 (ridges, gullies, valleys, mesas); 3: lakes and rivers (hydro.bin); 4: coasts (shoreline from the bake's coast, beaches, sea and lake floors); 5: sea level H/2, planet-size terrain defaults
+pub const GENERATOR_VERSION: u32 = 7; // 7: boundaries (the climate, the coast and lake outlines read through a warp of the sphere, boundary.rs; the bare-rock line)
+// Previous versions: 2: landforms v2 (ridges, gullies, valleys, mesas); 3: lakes and rivers (hydro.bin); 4: coasts (shoreline from the bake's coast, beaches, sea and lake floors); 5: sea level H/2, planet-size terrain defaults; 6: landforms v3 (local relief in metres: mountains on the belts, the bake as the floor, land falling towards water, river levels from the natural ground)
 
 const CHUNK_MAGIC: &[u8; 4] = b"TRC2";
 

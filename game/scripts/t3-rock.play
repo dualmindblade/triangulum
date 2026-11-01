@@ -1,0 +1,32 @@
+# Round 2 #4 (T3, boundaries): the bare-rock line on T2's mountains, from a valley
+# floor, from 2 km, and from straight above at three heights. Not a gate; nothing
+# is asserted.
+#
+#   <exe> --bake DIR --no-save --size 1920x1080 --play scripts/t3-rock.play --out OUT
+#
+# Heights are metres above sea level, not layers: nothing here moves with sea level.
+mode fly
+skytime 11:00
+
+# T2's poses: a valley floor looking up at a 793 m peak, the range from 2 km,
+# the belt from 30 km.
+at 65.25779 136.41263 156.8
+look -57.2 25.3
+photo rock_valley_peak
+at 65.02126 137.27422 296.9
+look -56.5 13.2
+photo rock_range_2km
+at 69.27950 111.61061 30000
+look 99.8 -64.3
+photo rock_belt_orbit
+
+# Straight down on the belt.
+at 65.91200 134.84100 6000
+look 0 -89.9
+photo rock_down_6000m
+at 65.91200 134.84100 2600
+look 0 -89.9
+photo rock_down_2600m
+at 65.91200 134.84100 1300
+look 0 -89.9
+photo rock_down_1300m

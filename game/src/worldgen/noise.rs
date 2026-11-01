@@ -73,6 +73,30 @@ pub fn gradient_noise(p: DVec3, seed: u64) -> f64 {
     total * 1.35
 }
 
+/// Three independent gradient noises at `p` for about the price of one: each
+/// lattice corner's hash picks three gradients. Each component is roughly in
+/// [-1, 1]; the length stays under `boundary::NOISE_MAX`.
+pub fn vector_noise(p: DVec3, seed: u64) -> DVec3 {
+    let pi = p.floor();
+    let pf = p - pi;
+    let (ix, iy, iz) = (pi.x as i64, pi.y as i64, pi.z as i64);
+    let (fx, fy, fz) = (fade(pf.x), fade(pf.y), fade(pf.z));
+    let mut total = DVec3::ZERO;
+    for dx in 0..2i64 {
+        let wx = if dx == 1 { fx } else { 1.0 - fx };
+        for dy in 0..2i64 {
+            let wy = if dy == 1 { fy } else { 1.0 - fy };
+            for dz in 0..2i64 {
+                let wz = if dz == 1 { fz } else { 1.0 - fz };
+                let h = hash(ix + dx, iy + dy, iz + dz, seed);
+                let d = pf - DVec3::new(dx as f64, dy as f64, dz as f64);
+                total += DVec3::new(grad(h, d), grad(h >> 8, d), grad(h >> 16, d)) * (wx * wy * wz);
+            }
+        }
+    }
+    total * 1.35
+}
+
 /// Fractal sum: `octaves` gradient octaves starting at wavelength `wl`,
 /// each `lacunarity` times finer and `gain` times weaker. Returns the sum
 /// of amp_i * noise_i (unnormalised; the first octave has amplitude 1).
@@ -280,6 +304,25 @@ mod tests {
             along += (dx * -ty + dy * tx).abs();
         }
         assert!(along < 1e-9 * across + 1e-12, "the analytic derivative lies across the stripes");
+    }
+
+    #[test]
+    fn vector_noise_is_bounded() {
+        let mut mx: f64 = 0.0;
+        let (mut xy, mut xx, mut mean) = (0.0, 0.0, DVec3::ZERO);
+        let n = 4_000_000;
+        for i in 0..n {
+            let p = DVec3::new(i as f64 * 0.3711, (i as f64 * 0.1179).fract() * 41.0, i as f64 * 0.0731);
+            let v = vector_noise(p, 7);
+            mx = mx.max(v.length());
+            mean += v;
+            xy += v.x * v.y;
+            xx += v.x * v.x;
+        }
+        println!("largest |vector noise| {mx:.3}, sd of a component {:.3}, correlation of two {:.4}", (xx / n as f64).sqrt(), xy / xx);
+        assert!(mx < crate::worldgen::boundary::NOISE_MAX, "{mx}");
+        assert!((xy / xx).abs() < 0.02, "the components are independent: {}", xy / xx);
+        assert!(mean.length() / (n as f64) < 0.01, "zero mean");
     }
 
     #[test]

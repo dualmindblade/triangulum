@@ -264,12 +264,12 @@ fn block_colour(c: [f32; 3]) -> [f32; 3] {
 }
 
 /// The ground's colour by the climate: `Generator::surface`'s thresholds,
-/// softened over the dither those rules use, on the blocks' own colours.
+/// softened a little so a line doesn't alias, on the blocks' own colours.
 fn biome_colour(temp: f32, precip: f32, p: &Palette) -> [f32; 3] {
-    let wet = mix(p.dry, p.grass, smooth(260.0, 380.0, precip));
-    let desert = smooth(165.0, 95.0, precip) * smooth(6.5, 9.5, temp);
+    let wet = mix(p.dry, p.grass, smooth(305.0, 335.0, precip));
+    let desert = smooth(140.0, 120.0, precip) * smooth(7.6, 8.4, temp);
     let ground = mix(wet, p.sand, desert);
-    mix(ground, p.snow, smooth(-1.5, -4.5, temp))
+    mix(ground, p.snow, smooth(-2.6, -3.4, temp))
 }
 
 /// Minor contour spacing (metres) for `range` metres of land in view: about
@@ -323,7 +323,9 @@ pub struct Built {
 fn sample(src: &Source, dir: DVec3, lakes: bool, voxel_m: f64) -> Cell {
     let s = src.bake.sample(dir);
     let sea = s.ocean >= 0.5 && s.elev_km <= 0.0;
-    let mut cell = Cell { elev_km: s.elev_km as f32, temp: s.temp_c as f32, precip: s.precip_mm as f32, sea, lake: 0 };
+    // Where the lines really are: the climate through the warp.
+    let (temp, precip) = src.generator.climate_of(dir, voxel_m);
+    let mut cell = Cell { elev_km: s.elev_km as f32, temp: temp as f32, precip: precip as f32, sea, lake: 0 };
     // Most of the planet has no lake near it. Where the bake says there
     // may be one, the generator's own column decides.
     if lakes && !sea && s.lake > 0.01 {

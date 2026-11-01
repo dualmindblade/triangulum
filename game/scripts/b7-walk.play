@@ -24,7 +24,7 @@
 sim powder levels 35
 sun 35
 mode fly
-atblock 1 1990 59004 1025
+atblock 1 1911 59004 1025
 sim off
 fill 0 -3 -3 7 4 -1 sand
 fill -1 -4 -2 7 -4 -2 sandstone
@@ -33,7 +33,7 @@ fill 0 -3 0 7 4 10 air
 sim on
 tick 1200
 assert queued == 0
-assert block[1,1990,59004,1023] == sand
+assert block[1,1911,59004,1023] == sand
 mode walk
 hotbar sand,gravel,stone,dirt
 select 1

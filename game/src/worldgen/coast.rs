@@ -12,11 +12,11 @@
 //!   once from the bake's mask when it loads (no bake change), on the
 //!   sphere, so it meets itself across cube edges. Interpolated Catmull-Rom,
 //!   its zero is a smooth curve with no texels in it.
-//! - `wiggle`: bounded detail added to that distance, so the curve is not
-//!   glassy up close. Its slope stays under 1 and the distance's own slope
-//!   is 1, so their sum has no local maximum or minimum: the wiggle moves the
-//!   shoreline but can never make an island, a pond or a fold. Every piece
-//!   of land and sea in the world is one the planet has.
+//! - `Warp::coast` (`boundary.rs`): a column reads that distance a bounded
+//!   way off, so the curve is as rough as every other line on the planet, at
+//!   every scale from 2 km to a block. The warp is one-to-one, so it bends the
+//!   shoreline but can never make an island, a pond or a fold: every piece of
+//!   land and sea in the world is one the planet has.
 //! - `shape`: the ground as a function of that distance, in metres, so it is
 //!   the same beach at every vertical scale and block size. Land stays
 //!   above the sea and rises at a beach's slope; the sea floor stays below
@@ -56,23 +56,33 @@ const BEACH_VARY: f64 = 0.45;
 const SHALLOWS_SHARE: f64 = 0.6;
 /// Sand stops at this height above the sea (m): a cliff has no beach up it.
 pub const BEACH_SAND_TOP_M: f64 = 4.0;
-/// The wiggle: longest wavelength (m), octaves (each half the last) and
-/// amplitude as a fraction of the wavelength. `wiggle_stays_under_a_slope_of_one`
-/// holds these to the promise above.
-const WIGGLE_TOP_M: f64 = 1024.0;
-const WIGGLE_OCTAVES: u32 = 7;
-pub const WIGGLE_AMP: f64 = 0.065;
-/// Largest |wiggle| anywhere (m).
-pub const WIGGLE_MAX_M: f64 = WIGGLE_AMP * 2.0 * WIGGLE_TOP_M;
-/// Beyond this distance from the coastline, before the wiggle, nothing here
-/// needs working out (m).
-pub const BAND_M: f64 = RIDGE_END_M + WIGGLE_MAX_M;
+/// The warp's longest octave and the furthest it can move a column, as
+/// fractions of the radius (2 km and 680 m on Neisor); they scale as the
+/// field's own reach does. `the_coast_warp_stays_inside_its_reach` holds the second.
+pub const WARP_TOP_RADII: f64 = 0.0226;
+pub const WARP_REACH_RADII: f64 = 0.0075;
+
+/// Beyond this distance from the coastline (m, on a planet of `radius`),
+/// before the warp, nothing here needs working out.
+#[inline]
+pub fn band_m(radius: f64) -> f64 {
+    RIDGE_END_M + WARP_REACH_RADII * radius
+}
+
+/// Read through only the warp's octaves for voxels of `ROUGH_VOXEL_M`, a
+/// column at least `ROUGH_CLEAR_M` from the coastline is past the ground's
+/// reach however the short octaves would move it: it needs no more.
+pub const ROUGH_VOXEL_M: f64 = 64.0;
+pub const ROUGH_CLEAR_M: f64 = RIDGE_END_M + 150.0;
+
+/// How high `held` holds dry ground (m).
+const HELD_TOP_M: f64 = 0.3;
 
 /// A column's place relative to the shore.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Shore {
     /// Distance from the shoreline (m): positive at sea, negative inland;
-    /// `BAND_M` or more means "far from it".
+    /// `band_m` or more means "far from it".
     pub d: f64,
     /// On the sea's side of the shoreline.
     pub sea: bool,
@@ -87,35 +97,14 @@ fn smoothstep(a: f64, b: f64, x: f64) -> f64 {
     t * t * (3.0 - 2.0 * t)
 }
 
-/// Octave fade for voxels of `voxel_m`, as the landform's.
-#[inline]
-fn band(wl: f64, voxel_m: f64) -> f64 {
-    (wl / (4.0 * voxel_m) - 1.0).clamp(0.0, 1.0)
-}
-
-/// Detail added to the distance from the coastline (m), band-limited.
-pub fn wiggle(p: DVec3, voxel_m: f64, seed: u64) -> f64 {
-    let mut sum = 0.0;
-    let mut wl = WIGGLE_TOP_M;
-    for k in 0..WIGGLE_OCTAVES {
-        let fade = band(wl, voxel_m);
-        if fade <= 0.0 {
-            break;
-        }
-        sum += WIGGLE_AMP * wl * fade * gradient_noise(p / wl + DVec3::splat(k as f64 * 7.31), seed.wrapping_add(k as u64 * 0x3C5));
-        wl *= 0.5;
-    }
-    sum
-}
-
-/// Where a column lies relative to the shore. `coast_m` is the bake's signed
-/// distance in metres; `p` the column's position on the sphere (m).
-pub fn shore_at(coast_m: f64, p: DVec3, voxel_m: f64, seed: u64) -> Shore {
-    if coast_m.abs() >= BAND_M.max(2.0 * voxel_m) {
-        return Shore { d: coast_m, sea: coast_m > 0.0, beach: false };
-    }
-    let d = coast_m + wiggle(p, voxel_m, seed ^ 0xC0A5);
+/// Where a column lies relative to the shore. `d` is the bake's signed
+/// distance in metres, read through the warp; `p` the column's position on
+/// the sphere (m).
+pub fn shore_at(d: f64, p: DVec3, voxel_m: f64, seed: u64) -> Shore {
     let sea = d > 0.0;
+    if d.abs() >= RIDGE_END_M.max(2.0 * voxel_m) {
+        return Shore { d, sea, beach: false };
+    }
     // Wider along some stretches of coast than others, with a soft inland
     // edge. The dry sand is never so narrow that a coarse voxel steps over it;
     // the sand under the water keeps its true width, so a coarse LOD doesn't
@@ -124,6 +113,20 @@ pub fn shore_at(coast_m: f64, p: DVec3, voxel_m: f64, seed: u64) -> Shore {
     let width = BEACH_WIDTH_M * (1.0 + BEACH_VARY * n);
     let beach = if sea { d < SHALLOWS_SHARE * width } else { -d < width.max(1.5 * voxel_m) };
     Shore { d, sea, beach }
+}
+
+/// Dry ground near the shoreline stands at least this high (a river's valley
+/// can pull it down past the sea otherwise, and leave the sea a wall). A foot
+/// of it is enough: the whole beach here would be a levee beside the river.
+#[inline]
+pub fn held(h: f64, d: f64) -> f64 {
+    if d < 0.0 && d > -RIDGE_START_M { h.max((BEACH_TOP_M * (1.0 - (d * BEACH_SLOPE / BEACH_TOP_M).exp())).min(HELD_TOP_M)) } else { h }
+}
+
+/// How much of the natural relief stands at distance `d` from the shoreline.
+#[inline]
+pub fn relief_share(d: f64) -> f64 {
+    smoothstep(0.0, REACH_M, -d)
 }
 
 /// The ground at distance `d` from the shoreline, given the natural height.
@@ -286,26 +289,26 @@ mod tests {
         }
     }
 
-    /// The promise in the module header: the wiggle's slope stays under 1, so
-    /// it cannot fold the shoreline or make an island.
+    /// `band_m` is honest: however far the warp carries a column, a column
+    /// past the band can't read the shoreline, on any planet, and the band
+    /// stays inside the field's own reach (it holds its cap beyond that).
     #[test]
-    fn wiggle_stays_under_a_slope_of_one() {
-        let r = 90_569.0;
-        let mut worst: f64 = 0.0;
-        let step = 0.5;
-        for k in 0..200_000u32 {
-            let t = k as f64 * 0.618_033_988_749_895;
-            let (a, b) = (t.fract() * std::f64::consts::TAU, (t * 0.381_966).fract() * 2.0 - 1.0);
-            let s = (1.0 - b * b).sqrt();
-            let d = DVec3::new(s * a.cos(), s * a.sin(), b);
-            let e1 = d.cross(DVec3::new(0.3, 0.5, 0.8)).normalize();
-            let e2 = d.cross(e1);
-            let at = |u: f64, v: f64| wiggle((d + e1 * (u / r) + e2 * (v / r)).normalize() * r, 1.0, 42);
-            let (gx, gy) = ((at(step, 0.0) - at(-step, 0.0)) / (2.0 * step), (at(0.0, step) - at(0.0, -step)) / (2.0 * step));
-            worst = worst.max((gx * gx + gy * gy).sqrt());
+    fn the_coast_warp_stays_inside_its_reach() {
+        for r in [90_569.0, 181_138.0, 725_000.0] {
+            let w = crate::worldgen::boundary::Warp::coast(r, 1.0, 42);
+            let mut worst: f64 = 0.0;
+            for k in 0..400_000u32 {
+                let t = k as f64 * 0.618_033_988_749_895;
+                let (a, b) = (t.fract() * std::f64::consts::TAU, (t * 0.381_966).fract() * 2.0 - 1.0);
+                let s = (1.0 - b * b).sqrt();
+                let d = DVec3::new(s * a.cos(), s * a.sin(), b);
+                worst = worst.max((w.at(d, 1.0) - d).length() * r);
+            }
+            println!("radius {r}: the coast's warp moves a column {worst:.0} m at most");
+            assert!(worst < WARP_REACH_RADII * r, "radius {r}: moved {worst} m");
+            let cap = FIELD_TEXELS as f64 * std::f64::consts::FRAC_PI_2 / 1023.0 * r;
+            assert!(band_m(r) < cap, "the band {} is past the field's reach {cap}", band_m(r));
         }
-        println!("wiggle: steepest slope {worst:.3}");
-        assert!(worst < 1.0, "wiggle slope {worst}");
     }
 
     /// A straight coast along a face's middle: the field is the distance to
