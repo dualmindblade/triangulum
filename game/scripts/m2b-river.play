@@ -45,7 +45,8 @@ assert water_out == 0
 #         k 1021 (below the river bed), the river end last ------------------
 atblock 3 127720 38665 1024
 aim 0 0 -0.5
-assert crosshair == grass
+# T3: the bank's face is steep enough to be bare rock now.
+assert crosshair == stone
 tap break
 aim 0 0 -1.5
 tap break

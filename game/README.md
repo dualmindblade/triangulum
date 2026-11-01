@@ -923,6 +923,7 @@ The gates are `cargo test --release boundaries_are_lines_not_scatter`,
 `boundaries_cross_cube_edges_without_a_seam`,
 `on_a_slope_the_snow_line_follows_the_contours`,
 `the_lapse_reads_the_ground_that_stands`, `the_rock_line_is_a_line`,
+`a_lakes_bands_keep_their_metres_on_any_planet`,
 `boundaries_are_lines_on_every_planet_size` and `far_chunks_hold_no_boundary`;
 `water_is_contained_on_every_planet_size` (ignored, minutes) is the lakes and
 rivers on every size. The measuring tools are the ignored `boundary_*` tests in
