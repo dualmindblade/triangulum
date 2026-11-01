@@ -140,7 +140,7 @@ impl Moment {
         let alt = g.cam.pos.length() - session.engine.planet.radius;
         let png = match &recording {
             Some((rec, n)) => photos::free_path(&markers_dir(rec), &format!("marker{n:02}_step{step:06}")),
-            None => photos::free_path(&photos::dir(), &photos::shot_stem(lat, lon, alt, g.cam.heading.to_degrees(), g.cam.pitch.to_degrees(), true)),
+            None => photos::free_path(&photos::dir(), &photos::shot_stem(lat, lon, alt, g.cam.heading().to_degrees(), g.cam.pitch.to_degrees(), true)),
         };
         let info = ShotInfo { kind: "marker", settled: false, settle_s: 0.0, settle_frames: 0, width: g.width, height: g.height, hud: false, mesh_view: g.mesh_view, preview_world: g.preview_world, frame_ms: g.frame_ms };
         let sidecar = photos::sidecar(session, g.cam, g.settings, g.look, g.digests, &png, &info);

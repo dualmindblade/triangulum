@@ -15,7 +15,7 @@
 
 use crate::camera::Camera;
 use crate::player::{Input, Player, STEP};
-use crate::session::{Action, Button, LOOK_RAD_PER_COUNT, PITCH_MAX, Session};
+use crate::session::{Action, Button, LOOK_RAD_PER_COUNT, Session};
 use std::collections::{HashSet, VecDeque};
 use winit::event::MouseButton;
 use winit::keyboard::KeyCode;
@@ -271,16 +271,12 @@ impl Controls {
     /// The camera to draw: the player's, with mouse motion not yet stepped
     /// already applied (drawing only; the step applies it for real).
     pub fn camera(&self, player: &Player) -> Camera {
-        let mut cam = player.camera();
-        let (mut h, mut p) = (cam.heading, cam.pitch);
+        let mut ahead = player.clone();
         for (_, event) in &self.pending {
             if let StepEvent::Action(Action::Look(dx, dy)) = event {
-                h += dx * LOOK_RAD_PER_COUNT;
-                p = (p - dy * LOOK_RAD_PER_COUNT).clamp(-PITCH_MAX, PITCH_MAX);
+                ahead.look(dx * LOOK_RAD_PER_COUNT, dy * LOOK_RAD_PER_COUNT);
             }
         }
-        cam.heading = h;
-        cam.pitch = p;
-        cam
+        ahead.camera()
     }
 }

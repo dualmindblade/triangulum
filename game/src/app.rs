@@ -6,6 +6,14 @@
 //! world isn't drawn, so a pen stroke costs one egui pass and nothing else, and
 //! closing it puts everything back. Nothing it does reaches the session except
 //! the marker, written when it's saved, at the step it was grabbed.
+//!
+//! Leaving the window. A minimised window has no size, and there is nothing to
+//! draw on: `hidden` stops the drawing, the surface keeps its last size (a 1 x 1
+//! surface and the depth buffer's own size in one render pass is a validation
+//! error, and wgpu panics on those), and the game goes on at its 60 Hz steps from
+//! `about_to_wait`, sleeping between them. Losing focus lets go of the mouse, so
+//! coming back is the same as starting: the first click captures it and does
+//! nothing else.
 
 use crate::annotate::Gate;
 use crate::camera::Camera;
@@ -45,6 +53,14 @@ pub struct AppOptions {
     /// Start recording a replay to this file at launch, as F10 does (M2c;
     /// with `exit_after` it is stopped and written at the exit).
     pub record: Option<String>,
+    /// `--crash-test`: panic on the first frame.
+    pub crash_test: bool,
+    /// `--no-focus`: the window opens inactive, at the bottom of the z-order,
+    /// so an agent can test the real window while somebody uses the machine.
+    pub no_focus: bool,
+    /// `--captured`: start as if the first click had captured the mouse (with
+    /// `--no-focus` the system clips nothing: the window is not active).
+    pub captured: bool,
 }
 
 /// A settled photo wants the world finished for this many frames in a row
@@ -55,6 +71,9 @@ const SETTLE_TIMEOUT: Duration = Duration::from_secs(20);
 const BANNER_LIFE: Duration = Duration::from_secs(4);
 /// While recording, how often to see whether the look or a texture changed.
 const VISUAL_EVERY: Duration = Duration::from_millis(500);
+/// With nothing to draw, how long the event loop sleeps between going through
+/// the steps it owes.
+const HIDDEN_FRAME: Duration = Duration::from_nanos(1_000_000_000 / 60);
 
 /// P was pressed: the world holds still, and streaming runs, until this view
 /// has finished loading. No steps pass, so neither the simulation nor a replay
@@ -117,6 +136,8 @@ struct App {
     water: Vec<DrawRecord>,
     captured: bool,
     vsync: bool,
+    /// No area to draw on (minimised, or sized away): nothing is rendered.
+    hidden: bool,
     show_stats: bool,
     presets: Vec<Preset>,
     /// (time, frame ms) over the last five seconds.
@@ -196,9 +217,13 @@ impl App {
     fn configure_surface(&mut self) {
         let Some(gfx) = &self.gfx else { return };
         let size = gfx.window.inner_size();
+        self.hidden = no_area(size);
+        if self.hidden {
+            return;
+        }
         let mut config = gfx.config.clone();
-        config.width = size.width.max(1);
-        config.height = size.height.max(1);
+        config.width = size.width;
+        config.height = size.height;
         config.present_mode = if self.vsync { wgpu::PresentMode::AutoVsync } else { wgpu::PresentMode::AutoNoVsync };
         gfx.surface.configure(&gfx.gpu.device, &config);
         let gfx = self.gfx.as_mut().unwrap();
@@ -207,7 +232,10 @@ impl App {
     }
 
     fn set_capture(&mut self, on: bool) {
-        let Some(gfx) = &self.gfx else { return };
+        let Some(gfx) = &self.gfx else {
+            self.captured = on;
+            return;
+        };
         if on {
             let ok = gfx.window.set_cursor_grab(CursorGrabMode::Confined).or_else(|_| gfx.window.set_cursor_grab(CursorGrabMode::Locked)).is_ok();
             gfx.window.set_cursor_visible(!ok);
@@ -282,7 +310,7 @@ impl App {
         let Some(gfx) = &self.gfx else { return };
         let (lat, lon) = Planet::lat_lon_deg(cam.pos);
         let alt = cam.pos.length() - self.session.engine.planet.radius;
-        let png = path.unwrap_or_else(|| photos::free_path(&photos::dir(), &photos::shot_stem(lat, lon, alt, cam.heading.to_degrees(), cam.pitch.to_degrees(), how.kind != "settled")));
+        let png = path.unwrap_or_else(|| photos::free_path(&photos::dir(), &photos::shot_stem(lat, lon, alt, cam.heading().to_degrees(), cam.pitch.to_degrees(), how.kind != "settled")));
         let frame_ms = self.frame_stats();
         let info = ShotInfo { kind: how.kind, settled: how.settled, settle_s: how.settle_s, settle_frames: how.settle_frames, width, height, hud: how.hud, mesh_view: self.workshop.mesh_view, preview_world: self.workshop.previewing(), frame_ms };
         let sidecar = photos::sidecar(&self.session, cam, &gfx.gpu.sky.settings, self.workshop.look(), &mut self.digests, &png, &info);
@@ -531,6 +559,16 @@ impl App {
             self.workshop.say(text.clone());
             self.banner = Some((now, text));
         }
+        // Nothing to draw on. The steps above are the game, and it goes on.
+        if self.hidden {
+            if let Some(quit) = &mut self.quitting { quit.presented(); }
+            self.want_exit |= self.exit_after.is_some_and(|s| self.started.elapsed().as_secs_f64() >= s);
+            // A photo or a mark waits for a frame that isn't coming, and the
+            // game waits with it: let them go.
+            self.photo = None;
+            self.mark_wanted = false;
+            return;
+        }
         if self.menu.annotating() {
             self.annotate_frame();
             if let Some(f) = self.menu.take_finished() {
@@ -729,10 +767,11 @@ impl ApplicationHandler for App {
             return;
         }
         let opts = self.opts.take().unwrap();
-        let window = Arc::new(
-            el.create_window(Window::default_attributes().with_title("Triangulum").with_inner_size(winit::dpi::PhysicalSize::new(opts.width, opts.height)))
-                .unwrap(),
-        );
+        let mut attrs = Window::default_attributes().with_title("Triangulum").with_inner_size(winit::dpi::PhysicalSize::new(opts.width, opts.height));
+        if opts.no_focus {
+            attrs = attrs.with_active(false).with_window_level(winit::window::WindowLevel::AlwaysOnBottom);
+        }
+        let window = Arc::new(el.create_window(attrs).unwrap());
         let instance = crate::render::make_instance(opts.backend.as_deref());
         let surface = instance.create_surface(window.clone()).unwrap();
         let engine = self.engine().clone();
@@ -747,6 +786,10 @@ impl ApplicationHandler for App {
         );
         assert!(caps.formats.contains(&gpu.format), "surface does not support {:?}", gpu.format);
         let size = window.inner_size();
+        // The window's size, not the one asked for: the depth buffer and the
+        // surface must agree from the first frame.
+        let mut gpu = gpu;
+        gpu.resize(size.width, size.height);
         let config = wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
             format: gpu.format,
@@ -758,7 +801,10 @@ impl ApplicationHandler for App {
             view_formats: vec![],
             color_space: Default::default(),
         };
-        surface.configure(&gpu.device, &config);
+        self.hidden = no_area(size);
+        if !self.hidden {
+            surface.configure(&gpu.device, &config);
+        }
         let egui_state = egui_winit::State::new(self.egui_ctx.clone(), egui::ViewportId::ROOT, &window, Some(window.scale_factor() as f32), None, None);
         let egui_paint = EguiPaint::new(&gpu.device, gpu.format);
         self.streamer = Some(engine.streamer());
@@ -768,10 +814,63 @@ impl ApplicationHandler for App {
         if let Some(p) = opts.record {
             self.toggle_recording_to(Some(p.into()));
         }
+        if opts.captured {
+            self.set_capture(true);
+        }
+        assert!(!opts.crash_test, "--crash-test: a panic on purpose, to see the crash file");
         println!("app: WASD move, Space jump/up, Ctrl sneak (fly: down), Shift sprint, mouse look (click to capture, Esc releases), LMB break, RMB place, 1-9 block, G walk/fly, scroll fly speed, P photo, Shift+P live photo, T map photos teleport, R to ground, V vsync, F water, M mesh colours, Shift+M mesh lines, H hud, [ slower time, ] faster time, F9 mark what's wrong, F10 record a replay, Q quit");
     }
 
     fn window_event(&mut self, _el: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
+        self.on_window_event(event);
+    }
+
+    fn device_event(&mut self, _el: &ActiveEventLoop, _id: winit::event::DeviceId, event: DeviceEvent) {
+        self.controls.at(self.started.elapsed().as_secs_f64());
+        if let DeviceEvent::MouseMotion { delta } = event {
+            if self.captured && self.replay.is_none() && self.quitting.is_none() {
+                self.gate.motion(&mut self.controls, delta.0, delta.1);
+            }
+        }
+    }
+
+    fn about_to_wait(&mut self, el: &ActiveEventLoop) {
+        if self.want_exit {
+            self.request_exit();
+        }
+        if let Some(quit) = &mut self.quitting {
+            match quit.poll(&mut self.session) {
+                Ok(true) => {
+                    self.writer.finish();
+                    el.exit();
+                    return;
+                }
+                Err(e) => {
+                    self.quitting = None;
+                    self.save_note = format!("SAVE FAILED: {e}");
+                    eprintln!("save failed; quit cancelled: {e}");
+                    self.update_title();
+                }
+                Ok(false) => {}
+            }
+        }
+        if self.hidden {
+            // Nothing to draw, so no redraw to wait for: the steps run from here
+            // and the loop sleeps until the next one is due.
+            self.frame();
+            el.set_control_flow(ControlFlow::WaitUntil(Instant::now() + HIDDEN_FRAME));
+        } else {
+            el.set_control_flow(ControlFlow::Poll);
+            if let Some(g) = &self.gfx {
+                g.window.request_redraw();
+            }
+        }
+    }
+}
+
+impl App {
+    /// A window event, whether the window sent it or a test did.
+    fn on_window_event(&mut self, event: WindowEvent) {
         if self.quitting.is_some() && !matches!(&event, WindowEvent::RedrawRequested | WindowEvent::Resized(_) | WindowEvent::CloseRequested) { return; }
         self.controls.at(self.started.elapsed().as_secs_f64());
         if let Some(gfx) = self.gfx.as_mut() {
@@ -874,46 +973,24 @@ impl ApplicationHandler for App {
             WindowEvent::Focused(false) => {
                 self.shift = false;
                 self.controls.focus_lost();
+                // The system has taken the mouse back, whatever the window
+                // says: holding on to it would leave a hidden pointer, and the
+                // click that brings the window back would go to the game.
+                self.set_capture(false);
             }
-            WindowEvent::Resized(_) => self.configure_surface(),
+            WindowEvent::Resized(size) => {
+                self.hidden = no_area(size);
+                self.configure_surface();
+            }
             WindowEvent::RedrawRequested => self.frame(),
             _ => {}
         }
     }
+}
 
-    fn device_event(&mut self, _el: &ActiveEventLoop, _id: winit::event::DeviceId, event: DeviceEvent) {
-        self.controls.at(self.started.elapsed().as_secs_f64());
-        if let DeviceEvent::MouseMotion { delta } = event {
-            if self.captured && self.replay.is_none() && self.quitting.is_none() {
-                self.gate.motion(&mut self.controls, delta.0, delta.1);
-            }
-        }
-    }
-
-    fn about_to_wait(&mut self, el: &ActiveEventLoop) {
-        if self.want_exit {
-            self.request_exit();
-        }
-        if let Some(quit) = &mut self.quitting {
-            match quit.poll(&mut self.session) {
-                Ok(true) => {
-                    self.writer.finish();
-                    el.exit();
-                    return;
-                }
-                Err(e) => {
-                    self.quitting = None;
-                    self.save_note = format!("SAVE FAILED: {e}");
-                    eprintln!("save failed; quit cancelled: {e}");
-                    self.update_title();
-                }
-                Ok(false) => {}
-            }
-        }
-        if let Some(g) = &self.gfx {
-            g.window.request_redraw();
-        }
-    }
+/// A window with nowhere to draw: minimised, or sized away to nothing.
+fn no_area(size: winit::dpi::PhysicalSize<u32>) -> bool {
+    size.width == 0 || size.height == 0
 }
 
 pub fn run(session: Session, opts: AppOptions) {
@@ -931,51 +1008,197 @@ pub fn run_replay(session: Session, rep: crate::replay::Replay, opts: AppOptions
 
 fn run_with(session: Session, opts: AppOptions, replay: Option<WatchedReplay>) -> i32 {
     let el = EventLoop::new().unwrap();
-    let presets = session.engine.presets();
-    let (screenshot, exit_after) = (opts.screenshot.clone(), opts.exit_after);
-    let egui_ctx = egui::Context::default();
-    egui_ctx.all_styles_mut(|s| s.animation_time = 0.0);
-    let title_speed = session.sky.speed;
-    let workshop = Workshop::new(&session.engine);
-    let mut app = App {
-        session,
-        opts: Some(opts),
-        gfx: None,
-        streamer: None,
-        egui_ctx,
-        controls: Controls::default(),
-        last: Instant::now(),
-        title_speed,
-        shift: false,
-        menu: Menu::new(photos::dir()),
-        photo: None,
-        live_shot: false,
-        mark_wanted: false,
-        gate: Gate::default(),
-        mark_recapture: false,
-        visual_checked: Instant::now(),
-        writer: ShotWriter::default(),
-        digests: ChunkDigests::default(),
-        banner: None,
-        opaque: Vec::new(),
-        water: Vec::new(),
-        captured: false,
-        vsync: true,
-        show_stats: true,
-        presets,
-        frames: VecDeque::new(),
-        cpu_ms: 0.0,
-        last_tris: (0, 0, 0),
-        started: Instant::now(),
-        screenshot,
-        exit_after,
-        want_exit: false,
-        quitting: None,
-        save_note: String::new(),
-        falling_draw: FallingDraws::default(),
-        workshop,
-        replay,
-    };
+    let mut app = App::new(session, opts, replay);
     el.run_app(&mut app).unwrap();
     app.replay.as_ref().map_or(0, |w| w.runner.report.exit_code())
+}
+
+impl App {
+    fn new(session: Session, opts: AppOptions, replay: Option<WatchedReplay>) -> Self {
+        let presets = session.engine.presets();
+        let (screenshot, exit_after) = (opts.screenshot.clone(), opts.exit_after);
+        let egui_ctx = egui::Context::default();
+        egui_ctx.all_styles_mut(|s| s.animation_time = 0.0);
+        let title_speed = session.sky.speed;
+        let workshop = Workshop::new(&session.engine);
+        Self {
+            session,
+            opts: Some(opts),
+            gfx: None,
+            streamer: None,
+            egui_ctx,
+            controls: Controls::default(),
+            last: Instant::now(),
+            title_speed,
+            shift: false,
+            menu: Menu::new(photos::dir()),
+            photo: None,
+            live_shot: false,
+            mark_wanted: false,
+            gate: Gate::default(),
+            mark_recapture: false,
+            visual_checked: Instant::now(),
+            writer: ShotWriter::default(),
+            digests: ChunkDigests::default(),
+            banner: None,
+            opaque: Vec::new(),
+            water: Vec::new(),
+            captured: false,
+            vsync: true,
+            hidden: false,
+            show_stats: true,
+            presets,
+            frames: VecDeque::new(),
+            cpu_ms: 0.0,
+            last_tris: (0, 0, 0),
+            started: Instant::now(),
+            screenshot,
+            exit_after,
+            want_exit: false,
+            quitting: None,
+            save_note: String::new(),
+            falling_draw: FallingDraws::default(),
+            workshop,
+            replay,
+        }
+    }
+}
+
+/// The app's own window-event path, with no window: synthetic events as winit
+/// delivers them. `tools/quiet-window.ps1` is the same thing with a real window.
+#[cfg(test)]
+mod window_tests {
+    use super::*;
+    use winit::dpi::PhysicalSize;
+    use winit::event::{DeviceId, MouseButton};
+
+    fn app() -> App {
+        let mut session = crate::replay::tests::fresh(None);
+        session.sim.config.enabled = true;
+        App::new(session, AppOptions { width: 640, height: 360, vsync: true, backend: None, screenshot: None, exit_after: None, record: None, no_focus: true, captured: false, crash_test: false }, None)
+    }
+
+    fn click(app: &mut App, state: ElementState) {
+        app.on_window_event(WindowEvent::MouseInput { device_id: DeviceId::dummy(), state, button: MouseButton::Left });
+    }
+
+    /// Run the frames that `seconds` of wall clock owe, at `hz`.
+    fn run(app: &mut App, seconds: f64, hz: f64) {
+        for _ in 0..(seconds * hz) as usize {
+            std::thread::sleep(Duration::from_secs_f64(1.0 / hz));
+            app.frame();
+        }
+    }
+
+    #[test]
+    fn a_window_with_no_area_is_hidden() {
+        for (w, h, hidden) in [(0, 0, true), (0, 360, true), (640, 0, true), (1, 1, false), (640, 360, false)] {
+            let mut a = app();
+            a.on_window_event(WindowEvent::Resized(PhysicalSize::new(w, h)));
+            assert_eq!(a.hidden, hidden, "{w} x {h}");
+        }
+    }
+
+    #[test]
+    fn minimised_the_game_goes_on_and_restored_it_draws_again() {
+        let mut a = app();
+        run(&mut a, 0.1, 60.0);
+        a.on_window_event(WindowEvent::Resized(PhysicalSize::new(0, 0)));
+        assert!(a.hidden);
+        let (steps, ticks, t0) = (a.session.steps(), a.session.sim.tick(), Instant::now());
+        run(&mut a, 0.5, 60.0);
+        let (ran, owed) = (a.session.steps() - steps, t0.elapsed().as_secs_f64() * 60.0);
+        assert!((ran as f64 - owed).abs() < 8.0, "60 steps a second of the clock, hidden or not: {ran} for {owed:.0}");
+        assert!(a.session.sim.tick() > ticks, "the simulation ticks on");
+        a.on_window_event(WindowEvent::Resized(PhysicalSize::new(640, 360)));
+        assert!(!a.hidden);
+    }
+
+    /// Closing it from the taskbar while it's minimised: the save-and-quit
+    /// waits for a frame on the screen, and there will never be one.
+    #[test]
+    fn a_minimised_window_can_still_quit() {
+        let mut a = app();
+        a.on_window_event(WindowEvent::Resized(PhysicalSize::new(0, 0)));
+        a.on_window_event(WindowEvent::CloseRequested);
+        a.frame();
+        assert!(a.quitting.as_mut().unwrap().poll(&mut a.session).unwrap(), "nothing to save, so it goes");
+    }
+
+    /// P or F9 hold the steps until a frame is drawn: minimised, that is never.
+    #[test]
+    fn a_minimised_window_does_not_wait_for_a_photo() {
+        let mut a = app();
+        a.take_photo();
+        a.mark_wanted = true;
+        a.on_window_event(WindowEvent::Resized(PhysicalSize::new(0, 0)));
+        a.frame();
+        let steps = a.session.steps();
+        run(&mut a, 0.2, 60.0);
+        assert!(a.session.steps() > steps, "the game goes on");
+    }
+
+    /// `--exit-after` is checked on a drawn frame too.
+    #[test]
+    fn a_minimised_window_keeps_its_exit_time() {
+        let mut a = app();
+        a.exit_after = Some(0.0);
+        a.on_window_event(WindowEvent::Resized(PhysicalSize::new(0, 0)));
+        a.frame();
+        assert!(a.want_exit);
+    }
+
+    /// Clicking out with the mouse captured, and clicking back in: the mouse is
+    /// free meanwhile, nothing stays held, and the click that comes back
+    /// captures the mouse and breaks nothing.
+    #[test]
+    fn losing_focus_lets_go_of_the_mouse_and_the_click_back_is_not_game_input() {
+        let mut a = app();
+        let eye_on_something = { a.session.player.pitch = -1.2; a.session.pick().is_some() };
+        assert!(eye_on_something, "the test looks at the ground");
+        a.set_capture(true);
+        a.controls.key(KeyCode::KeyW, true);
+        a.controls.button(MouseButton::Left, true);
+        run(&mut a, 0.1, 60.0);
+        assert!(a.session.held().is_some());
+
+        a.on_window_event(WindowEvent::Focused(false));
+        assert!(!a.captured, "the mouse goes with the focus");
+        // Long enough for a walking body to stop, however busy the machine is:
+        // the steps follow the clock.
+        run(&mut a, 0.3, 60.0);
+        assert!(a.session.held().is_none(), "the button let go");
+        let at = a.session.player.pos;
+        run(&mut a, 0.1, 60.0);
+        assert!(a.session.player.pos.distance(at) < 1e-6, "W let go");
+
+        a.on_window_event(WindowEvent::Focused(true));
+        assert!(!a.captured, "focus alone doesn't take the mouse: the next click does");
+        let edits_before = a.session.engine.edits.len();
+        click(&mut a, ElementState::Pressed);
+        assert!(a.captured, "the click captures it");
+        run(&mut a, 0.1, 60.0);
+        click(&mut a, ElementState::Released);
+        run(&mut a, 0.1, 60.0);
+        assert!(a.session.held().is_none(), "and that click was not a press in the game");
+        assert_eq!(a.session.engine.edits.len(), edits_before, "it broke nothing");
+    }
+
+    /// The same frames with the window minimised half way give the same world
+    /// as a window that stayed up: drawing was never part of the game.
+    #[test]
+    fn the_steps_do_not_care_whether_anything_is_drawn() {
+        let run_it = |hide: bool| {
+            let mut a = app();
+            a.controls.key(KeyCode::KeyW, true);
+            for n in 0..40 {
+                if hide && n == 10 {
+                    a.on_window_event(WindowEvent::Resized(PhysicalSize::new(0, 0)));
+                }
+                a.controls.step(&mut a.session);
+            }
+            a.session.player.pos
+        };
+        assert_eq!(run_it(false), run_it(true));
+    }
 }

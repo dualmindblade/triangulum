@@ -1,0 +1,14 @@
+ASSERT FAILED (line 15): lat ~ 31.375, actual 89.96394349640873
+ASSERT FAILED (line 16): lon ~ 94.129, actual -14.727401394730592
+ASSERT FAILED (line 17): alt ~ 3000, actual 3066.7716465513076
+ASSERT FAILED (line 21): lat ~ -16.911, actual -89.97286794137527
+ASSERT FAILED (line 22): lon ~ -59.066, actual 3.6798596685069707
+ASSERT FAILED (line 23): alt ~ 3000, actual 3066.7716465587146
+ASSERT FAILED (line 27): lat ~ -11.834, actual 89.94904470041682
+ASSERT FAILED (line 28): lon ~ 176.726, actual 80.93440000446054
+ASSERT FAILED (line 29): alt ~ 3000, actual 3133.495712285003
+ASSERT FAILED (line 44): lat ~ 89.617, actual 89.99842692304141
+ASSERT FAILED (line 55): lat ~ -89.5, actual -89.9965868707266
+ASSERT FAILED (line 73): lon ~ 180, actual 0.0
+ASSERT FAILED (line 85): lon ~ 180, actual 0.0
+done in 13.7 s: 23 asserts, 13 failed, 0 errors

@@ -246,12 +246,12 @@ impl Engine {
 
     pub fn camera_at(&self, dir: DVec3, alt_agl: f64, heading_deg: f64, pitch_deg: f64) -> Camera {
         let h = self.ground(dir);
-        Camera { pos: dir * (self.planet.radius + h + alt_agl), heading: heading_deg.to_radians(), pitch: pitch_deg.to_radians(), fov_y: 60f64.to_radians() }
+        Camera::new(dir * (self.planet.radius + h + alt_agl), heading_deg.to_radians(), pitch_deg.to_radians(), 60f64.to_radians())
     }
 
     /// Camera at an absolute altitude above sea level.
     pub fn camera_asl(&self, dir: DVec3, alt_asl: f64, heading_deg: f64, pitch_deg: f64) -> Camera {
-        Camera { pos: dir * (self.planet.radius + alt_asl), heading: heading_deg.to_radians(), pitch: pitch_deg.to_radians(), fov_y: 60f64.to_radians() }
+        Camera::new(dir * (self.planet.radius + alt_asl), heading_deg.to_radians(), pitch_deg.to_radians(), 60f64.to_radians())
     }
 
     /// Direction `dist_m` along `heading_deg` from `dir` over the sphere.

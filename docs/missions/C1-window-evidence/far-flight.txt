@@ -1,0 +1,32 @@
+  state far_0_start: fly lat 20.00000 lon 40.00000 alt 300.00 m (agl 300.00) face 0 i 124829 j 102779 k 812 ground false
+  state s0: fly lat 20.00000 lon 40.00000 alt 300.00 m (agl 300.00) face 0 i 124829 j 102779 k 812 ground false water fa
+  state s1: fly lat 20.00000 lon 40.00000 alt 500300.00 m (agl 500300.00) face 0 i 124829 j 102779 k 500812 ground false
+  state far_1_500_km_up: fly lat 20.00000 lon 40.00000 alt 500300.00 m (agl 500300.00) face 0 i 124829 j 102779 k 500812
+  state s2: fly lat 20.00000 lon 40.00000 alt 2000300.00 m (agl 2000300.00) face 0 i 124829 j 102779 k 2000812 ground fa
+  assert ok: alt > 1900000 (actual 2000300.0000000056)
+  state far_2_past_the_moon: fly lat 20.00000 lon 40.00000 alt 2000300.00 m (agl 2000300.00) face 0 i 124829 j 102779 k 
+  state s3: fly lat 20.00000 lon 40.00000 alt 2002000300.00 m (agl 2002000300.00) face 0 i 124829 j 102779 k 2002000811 
+  assert ok: alt > 1900000000 (actual 2002000299.999998)
+  state far_3_past_the_sun: fly lat 20.00000 lon 40.00000 alt 2002000300.00 m (agl 2002000300.00) face 0 i 124829 j 1027
+  state s4: fly lat 20.00000 lon 40.00000 alt 2002002000300.00 m (agl 2002002000300.00) face 0 i 124829 j 102779 k 20020
+  assert ok: alt > 1.9e12 (actual 2002002000300.0044)
+  state far_4_two_tera_metres: fly lat 20.00000 lon 40.00000 alt 2002002000300.00 m (agl 2002002000300.00) face 0 i 1248
+  state s5: fly lat 20.00000 lon 40.00000 alt 999999999909430.75 m (agl 999999999909430.75) face 0 i 124829 j 102779 k 9
+  assert ok: alt > 9.9e14 (actual 999999999909430.8)
+  state far_5_the_edge: fly lat 20.00000 lon 40.00000 alt 999999999909430.75 m (agl 999999999909430.75) face 0 i 124829 
+  state s6: fly lat 20.00000 lon 40.00000 alt 999999999909430.75 m (agl 999999999909430.75) face 0 i 124829 j 102779 k 9
+  assert ok: alt > 9.9e14 (actual 999999999909430.8)
+  state s7: fly lat 20.00000 lon 40.00000 alt -510.00 m (agl -510.00) face 0 i 124829 j 102779 k 2 ground false water fa
+  assert ok: alt < -500 (actual -510.0)
+  state far_6_back_at_the_bottom: fly lat 20.00000 lon 40.00000 alt -510.00 m (agl -510.00) face 0 i 124829 j 102779 k 2
+  assert ok: lat ~ 20 (actual 20.000000000000004)
+  assert ok: lon ~ 40 (actual 40.00000000000005)
+  state s8: fly lat -4.46827 lon 40.00000 alt -510.00 m (agl -510.00) face 0 i 124511 j 57261 k 2 ground false water fal
+  state s9: fly lat -0.21403 lon 127.25999 alt -510.00 m (agl -552.93) face 2 i 120731 j 65146 k 2 ground false water fa
+  state s10: fly lat 31.98454 lon -49.96277 alt -510.00 m (agl -510.00) face 3 i 124388 j 123171 k 2 ground false water 
+  state far_7_round_the_planet: fly lat 31.98454 lon -49.96277 alt -510.00 m (agl -510.00) face 3 i 124388 j 123171 k 2 
+  state s11: walk lat 31.98454 lon -49.96277 alt -5.00 m (agl -5.00) face 3 i 124388 j 123171 k 507 ground true water fa
+  state s12: walk lat 31.98454 lon -49.96277 alt -4.07 m (agl -4.07) face 3 i 124388 j 123171 k 507 ground false water t
+  state s13: fly lat 31.98453 lon -49.96277 alt -4.07 m (agl -4.07) face 3 i 124388 j 123171 k 507 ground false water fa
+  state far_8_home_again: fly lat 20.00000 lon 40.00000 alt 300.00 m (agl 300.00) face 0 i 124829 j 102779 k 812 ground 
+done in 59.1 s: 8 asserts, 0 failed, 0 errors

@@ -162,7 +162,7 @@ mode when higher; `--walk` and `--fly` force it.
 |---|---|
 | click | capture the mouse (Esc releases it) |
 | mouse | look |
-| W A S D | walk (fly: move along the view) |
+| W A S D | walk (fly: move along the view), along a great circle in any direction |
 | Space | jump; swim up; fly up |
 | Ctrl | sneak: slow, and never off an edge (build a bridge by backing up); swim down; fly down |
 | Shift | sprint (fly: 4× speed) |
@@ -170,7 +170,7 @@ mode when higher; `--walk` and `--fly` force it.
 | left mouse | break the targeted block (hold to repeat); holding water, remove the targeted water cell |
 | right mouse | place the selected block on the targeted face; holding water, place a full cell of water |
 | 1–9 | select a hotbar block (9 is water: the bucket) |
-| scroll | fly speed |
+| scroll | fly speed, from 1 cm/s up, with no limit |
 | R | drop to the ground here, in walk mode |
 | P | take a photo: the world finishes loading first, and the HUD is left out |
 | Shift+P | take a photo of this very frame, HUD and all |
@@ -216,6 +216,23 @@ and how many chunks are edited and unsaved.
 
 The player is a 0.6 × 1.8 m box, eyes at 1.62 m, reach 6 m, with radial
 gravity, a 1.28 m jump and simple buoyancy in water. There is no fall damage.
+
+**Going straight.** Holding a key follows a great circle: the shortest way
+round the planet, forwards, backwards, sideways, walking or flying, and straight
+over a pole, where the view just carries on. What you face is a direction that
+travels with you (`camera::carried`), not a compass heading, so nothing special
+happens at a pole and the mouse turns the same everywhere. Your compass heading
+changes as you go, as it does on any long flight; a teleport keeps it. In fly
+mode a step is measured around the planet, so flying level stays level at any
+speed. The wheel has no ceiling: at a million metres a second you go round the
+planet nearly twice a second, and Shift is still four times that. You can't go
+through the planet, however fast, and a flight stops 10^15 m from its centre,
+900,000 times the sun's distance, where the sums would stop being numbers.
+
+**Leaving the window** is safe. Minimised, the game draws nothing and keeps
+playing at its 60 steps a second, sleeping in between. Clicking away or Alt-Tab
+lets go of the mouse and of every key; the first click when you come back
+captures the mouse again and does nothing else.
 
 ## Photos, the map and teleport
 
@@ -284,6 +301,12 @@ that moment. It doesn't change the recording: the game stops while you draw, and
 the replay plays as if you had never paused. Quitting with Q or closing the window
 also stops the recording, and if the game crashes the file keeps everything up to
 the last second.
+
+**If the game dies,** it leaves the reason in `game/out/crash/panic-<time>.txt`,
+whatever became of the console: the message, where it happened, the command line,
+the build and a backtrace. Send that file. If the game won't start at all, a box
+says why, and the same words go to the console: a save this game refuses to touch
+is a message and a clean exit, not a crash.
 
 **If it stands still, a photo will do.** F9 with no recording running saves a
 marked photo. Or press **P**, open **T**, select the photo and press *Annotate*.
@@ -371,6 +394,12 @@ a replay can say one differs but can't bring it back. Each marker in `report.jso
 also says how many pixels its settled shot differs from the frame that was marked;
 that frame was live, so distant detail still loading counts.
 
+A recording says how the player moved (`move_rules` in its header). Great
+circles (rules 2) take the same keys somewhere else, so a recording from before
+them refuses to play and says so: its markers and its report still stand, and
+the build that made it still plays it. A photo's exact pose from before still
+works: it holds a heading, and it means the same thing now.
+
 R4 adds the algorithm version and previous region radius to simulation
 hashes. Recordings from before that change can differ at their checks even
 with `sim_rules = 3`; use their recording build to play those files. Their
@@ -399,6 +428,11 @@ saves remain readable when the world/generator checks match.
 --look-file FILE      the look to start from and save to (assets/look.json)
 --panel               start with the look panel open
 --size WxH --no-vsync --backend vulkan|dx12
+--no-focus            the window opens inactive and at the bottom of the z-order:
+                      for testing the real window on a machine somebody is
+                      using (tools/quiet-window.ps1, below)
+--captured            start with the mouse captured, as the first click does
+--crash-test          panic on the first frame, to see the crash file written
 --screenshot PATH --exit-after SECS     save a frame with the HUD (and a
                       PATH.json sidecar with the look) and quit
 --time HH:MM          start at local solar time at the starting longitude (default 12:00)
@@ -645,7 +679,7 @@ partial cell is a whole block. Generated sand stays whole until disturbed, and
 a generated slope holds at one block per block whatever the angle, so a dig
 does not set a whole beach flowing. This game keeps its own save,
 `saves/<world name>-powder`, and it and a normal game refuse each other's
-saves. Partial powder is a wall and a floor to water, and two powders do not
+saves (a box says so, and the game exits cleanly). Partial powder is a wall and a floor to water, and two powders do not
 mix.
 
 Only LOD-0 chunks within `--sim-radius` metres of you (112 by default) are
@@ -971,6 +1005,40 @@ never copy the whole screen (a file dialog or another window may show
 private files). Point `--save`, `--blocks` and `--look-file` at scratch
 copies so a session never writes the real look files.
 
+## Testing the real window quietly (C1)
+
+`game/tools/quiet-window.ps1` tests the game's real window while somebody else
+uses the machine. It sends no input and takes no focus: the game starts with
+`--no-focus`, inactive, off the screen, at the bottom of the z-order and with
+`WS_EX_NOACTIVATE`, and everything after that is a window call on the game's own
+window. Use it for what a headless run can't see: minimising, restoring, resizing,
+a window that thinks it lost focus. Use `window.ps1` above only when the machine
+is yours.
+
+```powershell
+. game\tools\quiet-window.ps1
+Get-IdleSeconds                     # say what it read before each run
+$g = Start-QuietGame -Exe E:\triangulum-build\C1\release\triangulum.exe `
+     -Arguments '--size 640x360 --no-save --bake C:/code/triangulum/game/assets/world/seed42' -Log out\win\run1
+                                    # returns once the game is running frames
+try {
+    Hide-Game $g                    # minimise, not activated (the taskbar button)
+    Get-GameCpu $g                  # seconds of CPU so far
+    Show-Game $g                    # restore, not activated
+    Set-GameSize $g 1 1             # as small as Windows goes
+    Send-GameFocus $g $true         # the window thinks it has focus (posted messages)
+    Send-GameFocus $g $false        # and that it lost it
+    Assert-Quiet $g                 # throws if the game has the foreground or the mouse clip changed
+} finally { Stop-QuietGame $g }     # WM_CLOSE, as the X does; kills only if stuck
+```
+
+It runs from `game/` and writes `<Log>.out.txt` and `<Log>.err.txt`. `Start-Process
+-NoNewWindow` matters: a console of its own would take the foreground. With
+`--captured` the game thinks it has the mouse, but the system clips nothing,
+because the window is not active. So the clip itself, the hidden pointer and a real
+Alt-Tab still want a person. Winit sends no `Occluded` event on Windows, so a window
+under others is a window drawing as usual.
+
 ## The bench
 
 The project's one performance number: a fixed 60 s flight (50 m AGL at
@@ -1082,6 +1150,15 @@ water.
 `scripts/m3b-hotbar.play` (run with `--blocks scripts/m3b-look/blocks.json`)
 builds a wall of the painted `clay_brick` block from the M3b session on key
 1 (the `hotbar` command), checks its blocks, and shoots it with the hotbar.
+
+`scripts/c1-great-circle.play` flies 150 km and 300 km along great circles from
+three starts, flies and strafes straight over both poles, and walks over both (the
+snow of the north, the sea ice of the south), with frames either side of each pole.
+Run on a build from before, the same script gives the frames that go with them.
+`scripts/c1-far-flight.play` goes from the ground past the moon and the sun to the
+edge of everything and back into the planet in one step, and on round it at a
+million metres a second. `scripts/c1-andrew-210239.play` is Andrew's polar strafe
+as a script, since his recording no longer plays.
 
 `scripts/m2c-replay.play` goes to its sites with `find`, records a replay
 with the same recorder F10 uses (a sand collapse, digging at a river bank,
@@ -1203,6 +1280,21 @@ sand collapse, the cost of the B4 rules) and
 pour and a 10,000-cell dam break, with the per-tick cost). The B4 rule table,
 every film rule on every scene, is
 `cargo test --release film_rules_on_the_three_scenes -- --nocapture`.
+
+Moving (`src/player/great_circle_tests.rs`, plain geometry worked out from the
+start): flying and walking a quarter and a full circumference from seven starts and
+six headings, strafing, diagonals and pitched flight stay on the circle with the
+view in its plane; flying and walking straight over both poles, the view never
+turns by more than the move's own angle; standing exactly on a pole; mouse look at
+lat 89.99 turning as at the equator, standing and on the move; a teleport keeping
+its compass heading; every speed up to the arithmetic's limit in every direction
+staying a position; a huge step down stopping at the floor on this side.
+
+The window (`window_tests` in `src/app.rs`, the app's own event path with synthetic
+events and no window): a window with no area draws nothing and the steps run on at
+60 a second, it can still quit, keeps its exit time and doesn't wait for a photo;
+losing focus lets go of the mouse and every key, and the click back captures the
+mouse and breaks nothing. `tools/quiet-window.ps1` is the same with a real window.
 
 Blocks and textures (M3b): `blocks.json` with textures round-trips
 (written, read back, idempotent, back to the shipped file when the

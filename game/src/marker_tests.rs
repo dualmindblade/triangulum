@@ -201,7 +201,8 @@ fn a_marker_sees_what_the_player_saw() {
     assert!(note < look, "the marker comes first: {ev:?}");
     let (report, back) = play(&rep, "ahead");
     assert!(report.ok(), "{}", report.text());
-    assert_eq!(back.player.heading.to_bits(), seen.heading.to_bits(), "the shot looked where the motion was going");
+    // A body at rest is re-placed on its lattice every step, a rounding away.
+    assert!(back.player.facing.distance(seen.facing) < 1e-12, "the shot looked where the motion was going");
     let _ = std::fs::remove_file(&summary.path);
 }
 

@@ -1,0 +1,6 @@
+sky: absolute 1142.541665s, local start 12.00h, speed 1x, day 1440s, lunar month 7d, 3 months/season, year 84d; sun lat 11.020410 lon 117.474432
+simulation: 20 Hz tick, 112 m active radius; resumed at tick 0 with 0 queued, 0 frozen, 0 falling
+replay C:/code/triangulum/game/replays/Neisor-20261031-210239.replay: recorded 20261031-210239 UTC by triangulum 0.1.0 (recorded in the app (F10)); 263 steps (4.4 s), 23 events, 20 snapshot files (564.6 KB), 17 edited chunks at the start
+error: this replay was recorded in a different world or under other rules (recorded vs here: movement rules version 1 vs 2: it was recorded before W followed great circles (the same keys would take the player somewhere else, so it will not play here. Your world and saves are fine, and its markers and its report still stand; to watch this recording, use the build that made it, 8134c61db))
+this recording can't play here, but its markers stand on their own: their shots, words and poses are in report.json, and --repro SHOT.png rebuilds a frame
+report: C:/code/triangulum/.claude/worktrees/agent-a60ba3785e1a85de9/game/out/c1/after-replay/report.json
