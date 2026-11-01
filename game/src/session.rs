@@ -189,6 +189,9 @@ impl Session {
         if self.sim.config.enabled && self.steps % STEPS_PER_TICK as u64 == 0 {
             self.sim.step(world.as_ref(), self.player.pos);
         }
+        // Frames between ticks draw blocks in flight part way (C2): with
+        // the simulation off they sit where the last tick left them.
+        self.sim.set_phase(if self.sim.config.enabled { (self.steps % STEPS_PER_TICK as u64) as f64 / STEPS_PER_TICK as f64 } else { 1.0 });
         self.sky.advance(dt);
         if let Some((button, since)) = self.held {
             if self.steps - since >= REPEAT_STEPS {
@@ -737,6 +740,8 @@ impl Session {
             "water_dried": ws.water_dried, "drying": self.sim.drying_count(),
             "water_balance": ws.water_balance(),
             "water_updates_last": ws.water_updates_last,
+            "water_flips": ws.water_flips, "water_flickers": ws.water_flickers,
+            "falling_blocks": self.sim.blocks_json(),
             "water_period": self.sim.config.water_period,
             "powder_moves": ws.powder_moves, "powder_moved": ws.powder_moved,
             "flow": self.sim.config.flow.text(),

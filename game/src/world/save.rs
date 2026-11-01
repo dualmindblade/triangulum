@@ -941,7 +941,7 @@ mod tests {
         let dir = temp_dir("r4-falling-identity");
         let (cfg, reg) = (config(), registry());
         let snap = crate::sim::Snapshot {
-            falling: vec![crate::sim::Falling { id: 4, face: 2, i: 100, j: 200, z: 612.0, vel: -1.0 }],
+            falling: vec![crate::sim::Falling::new(4, 2, 100, 200, 612.0, -1.0)],
             ..Default::default()
         };
         dir.flush(&EditStore::new(), &cfg, &reg, BAKE, Some(&snap.to_bytes())).unwrap();

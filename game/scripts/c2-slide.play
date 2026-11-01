@@ -1,0 +1,197 @@
+# C2, Andrew's #5: a powder block slides over an edge as one block, and there
+# is one of it.
+#
+#   A. one sand block on the edge of a plate, seen from 4 m: live frames every
+#      60 Hz step as it slides over and falls (a contact sheet), and a video;
+#   B. the same over a cube face edge (face 0 onto the next face);
+#   C. a heap over a cube corner, on video;
+#   D. a save and reload in the middle of a slide: the block draws on;
+#   E. a large collapse (24 x 24 x 10 sand dropped on a plate): the cost of
+#      the look, in ticks and frames, and what the draw held back.
+#
+# Every scene is built with `fill` in the air. Absolute layers: A, D and E stand
+# on layer 606 (plates at 605 and 602), B and C on 760 (T1 shifts these by +512
+# when sea level moves).
+
+mode fly
+sim radius 112
+hud off
+recmode live
+
+# ---- A. one block over a plate's edge --------------------------------------
+atblock 2 107147 57531 606
+fill -4 -4 -2 4 4 -2 stone
+fill 5 -4 -5 8 4 -5 stone
+tick 2
+assert queued == 0
+sim off
+fill 4 0 -1 4 0 -1 sand
+aim 4.5 0 -1
+shot A_placed
+motion reset
+record c2-slide-A.mp4 30
+sim on
+photo A_s00 live
+wait 0.0167
+photo A_s01 live
+wait 0.0167
+photo A_s02 live
+wait 0.0167
+photo A_s03 live
+wait 0.0167
+photo A_s04 live
+wait 0.0167
+photo A_s05 live
+wait 0.0167
+photo A_s06 live
+wait 0.0167
+photo A_s07 live
+wait 0.0167
+photo A_s08 live
+wait 0.0167
+photo A_s09 live
+wait 0.0167
+photo A_s10 live
+wait 0.0167
+photo A_s11 live
+wait 0.0167
+photo A_s12 live
+wait 0.0167
+photo A_s13 live
+wait 0.0167
+photo A_s14 live
+wait 0.0167
+photo A_s15 live
+assert falling == 1
+assert slides == 1
+wait 1.5
+stop
+assert falling == 0
+assert block_rel[5,0,-4] == sand
+assert block_rel[4,0,-1] == air
+shot A_landed
+state A_done
+assert motion_gaps_max == 0
+
+# ---- B. over a cube face edge ------------------------------------------------
+atblock 0 131071 65536 760
+fill -4 -4 -2 0 4 -2 stone
+fill 1 -4 -5 4 4 -5 stone
+tick 2
+assert queued == 0
+sim off
+fill 0 0 -1 0 0 -1 sand
+aim 0.5 0 -1
+shot B_placed
+motion reset
+record c2-slide-B.mp4 30
+sim on
+photo B_s00 live
+wait 0.0167
+photo B_s01 live
+wait 0.0167
+photo B_s02 live
+wait 0.0167
+photo B_s03 live
+wait 0.0167
+photo B_s04 live
+wait 0.0167
+photo B_s05 live
+wait 0.0167
+photo B_s06 live
+wait 0.0167
+photo B_s07 live
+wait 0.0167
+photo B_s08 live
+wait 0.0167
+photo B_s09 live
+wait 0.0167
+photo B_s10 live
+wait 0.0167
+photo B_s11 live
+assert falling == 1
+assert slides == 2
+wait 1.5
+stop
+assert falling == 0
+assert block_rel[1,0,-4] == sand
+shot B_landed
+state B_done
+assert motion_gaps_max == 0
+
+# ---- C. a heap over a cube corner --------------------------------------------
+atblock 0 131071 131071 760
+fill -8 -8 -8 8 8 -8 stone
+tick 3
+assert queued == 0
+sim off
+fill -1 -1 -7 1 1 3 sand
+aim 0 0 -4
+shot C_placed
+motion reset
+record c2-slide-C.mp4 30
+sim on
+wait 5
+stop
+assert falling == 0
+assert queued == 0
+assert vanished == 0
+shot C_settled
+state C_done
+assert motion_gaps_max == 0
+
+# ---- D. a save and a reload in the middle of a slide -------------------------
+atblock 2 107187 57531 606
+fill -4 -4 -2 4 4 -2 stone
+fill 5 -4 -5 8 4 -5 stone
+tick 2
+assert queued == 0
+sim off
+fill 4 0 -1 4 0 -1 sand
+aim 4.5 0 -1
+sim on
+tick 1
+assert falling == 1
+assert slides == 3
+save
+assert dirty == 0
+reload
+assert falling == 1
+photo D_reloaded_live live
+wait 0.0167
+photo D_reloaded_s01 live
+wait 0.0167
+photo D_reloaded_s02 live
+wait 0.0167
+photo D_reloaded_s03 live
+wait 0.0167
+photo D_reloaded_s04 live
+wait 0.0167
+photo D_reloaded_s05 live
+wait 1.5
+assert falling == 0
+assert block_rel[5,0,-4] == sand
+shot D_landed
+state D_done
+
+# ---- E. a large collapse: the cost of the look -------------------------------
+atblock 2 107247 57531 606
+fill -20 -20 -2 20 20 -2 stone
+tick 2
+assert queued == 0
+sim off
+fill -12 -12 0 11 11 9 sand
+look 90 -30
+sim on
+motion reset
+speed 1
+record c2-slide-E.mp4 30
+travel 8 s
+stop
+assert falling == 0
+assert queued == 0
+assert vanished == 0
+shot E_settled
+state E_done
+assert motion_gaps_max == 0
+assert tick_ms_avg < 8

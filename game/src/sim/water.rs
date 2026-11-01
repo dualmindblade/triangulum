@@ -14,24 +14,42 @@
 //!    while each is at or below the running mean of the included set
 //!    (water-filling), then the included cells receive the floor of the
 //!    mean, the cell keeps the floor, and the remainder (fewer units than
-//!    cells) goes one unit each to the lowest included neighbours. So after
-//!    a spread the cell is never more than 1 above or below any neighbour
-//!    it levelled with, and water that nothing moves differs from every
-//!    lateral neighbour by at most 1: "resting water may lean up to 1/256".
+//!    cells) goes one unit to the cell first and then one each to the
+//!    lowest included neighbours (C2, rules 4: before, the cell came last,
+//!    and a cell of level 2 with two dry neighbours went dry wetting them,
+//!    then was wetted again from behind). So after a spread the cell is
+//!    never more than 1 above or below any neighbour it levelled with, and
+//!    water that nothing moves differs from every lateral neighbour by at
+//!    most 1: "resting water may lean up to 1/256".
 //!
 //! 3. **Slide** (B4, Andrew's #7). A cell that can neither fall nor spread,
 //!    with a free cell beside it whose floor is open (replaceable and not
 //!    full), moves half its level, rounded up, straight into the cell below
 //!    that free cell, as much as fits. This is what moves the level-1 cell at
 //!    a ledge, which is only 1 above the air beside it, so the spread can
-//!    never move it. Anything thicker gets there by spreading into the free
-//!    cell and falling out of it next tick. Of several ledges the lowest of
-//!    `choice` goes.
+//!    never move it. Of several ledges the lowest of `choice` goes. Since
+//!    C2 (rules 4) a cell over a drop is never a place water rests: the
+//!    spread does not wet it, so anything thicker goes over the same way,
+//!    half at a time straight into the cell below the lip, and the lip
+//!    cell itself stays dry instead of blinking with every unit that
+//!    passed through it.
 //! 4. **The film** (B4, Andrew's #9). What is left at level 1 is not at a
 //!    ledge, and what the rule does with it is `Flow::film`:
 //!    - `seek`: it looks along the four straight lines from the cell, through
 //!      dry cells, up to `film_reach` cells, and its unit goes to the nearest
 //!      drop, straight into the cell below it: the slide, from further off.
+//!      Since C2 (rules 4, Andrew's "appearing and disappearing") a sheet
+//!      of film is one thing: a film cell with water beside it neither
+//!      runs nor goes over a ledge (thicker water drains through it, and
+//!      a sheet left behind dries where it lies); only a lone film cell
+//!      runs, or goes over the ledge beside it. Thicker
+//!      water looks along the same lines, which pass through film cells
+//!      without spending reach (`LINE_CELLS` bounds the walk), so a puddle
+//!      drains to a ledge through the sheet between, however long, and the
+//!      sheet stays wet while it does, then dries where it lies. Before,
+//!      every unit crossed the sheet by emptying a cell and refilling it
+//!      from behind every other tick, a 10 Hz blink
+//!      (`SimStats::water_flickers`; `a_puddle_drains_to_a_ledge...`).
 //!    - `merge`: no cell is wetted with fewer than 2 units, so a spread never
 //!      thins an edge to 1, and a level-1 cell gives its unit to its wettest
 //!      neighbour. Water beads up.
@@ -137,6 +155,9 @@ pub const FILM_WEIGHT: u64 = 510;
 /// The largest body a film may dry from (`Sim::may_dry`): a poured block is
 /// about 60 cells of level 2 or more, a pond past this is not a puddle.
 pub const PUDDLE_CELLS: usize = 256;
+/// The most cells a line to a drop crosses, film and dry together
+/// (`Sim::water_slide`): film costs no reach, so this bounds the work.
+pub const LINE_CELLS: u32 = 48;
 
 /// How an active cell sees a neighbour in an inactive chunk.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -334,29 +355,54 @@ impl Sim {
             return level;
         }
         let flow = self.config.flow;
-        let reach = if level == 1 && flow.film.seeks() { flow.film_reach.max(1) } else { 1 };
-        let key = PosKey::of(p);
         let reg = world.registry.clone();
+        let far = if flow.film.seeks() { flow.film_reach.max(1) } else { 1 };
+        // How many dry cells a line may cross, and how many cells at all
+        // (film cells cost no reach: a sheet is a way, however long, up to
+        // `LINE_CELLS`).
+        if level == 1 {
+            // A film cell with water beside it is part of a sheet (module
+            // doc, step 4) and holds: thicker water drains through it, and
+            // a sheet left behind dries where it lies. Only a lone film cell
+            // runs to a drop, or goes over the ledge beside it. (A sheet's
+            // last cell before a ledge used to go over and be wetted again
+            // from behind, the same blink as the seek's.)
+            let wet = beside.iter().flatten().any(|n| self.is_active_block(*n) && matches!(self.cell(world, *n), (id, nl) if nl >= 1 && reg.is_replaceable(id)));
+            if wet {
+                return level;
+            }
+        }
+        let (reach, steps) = (far, LINE_CELLS);
+        let key = PosKey::of(p);
         let mut best: Option<((u32, u64), BlockPos, u8)> = None;
         let mut outside = [None; 4];
         for (way, first) in beside.iter().enumerate() {
             let Some(mut cur) = *first else { continue };
             let mut prev = p;
-            for dist in 1..=reach {
+            let mut dist = 0;
+            for step in 1..=steps {
                 if best.is_some_and(|b| b.0.0 < dist) {
                     break;
                 }
                 if !self.is_active_block(cur) {
                     // At one step `wake_new_pairs` takes this pair when the
                     // chunk joins; further on, the cells between are dry.
-                    if dist > 1 {
+                    if step > 1 {
                         outside[way] = Some(World::chunk_of(cur).0);
                     }
                     break;
                 }
+                // The line runs through a cell lower than this one, then
+                // through dry or film cells.
                 let (nid, nl) = self.cell(world, cur);
-                if !reg.is_replaceable(nid) || nl >= if dist == 1 { level } else { 1 } {
+                if !reg.is_replaceable(nid) || nl >= if step == 1 { level } else { 2 } {
                     break;
+                }
+                if nl == 0 {
+                    dist += 1;
+                    if dist > reach {
+                        break;
+                    }
                 }
                 let low = BlockPos { k: cur.k - 1, ..cur };
                 if !self.is_active_block(low) {
@@ -549,7 +595,9 @@ impl Sim {
                 let Some(n) = n else { continue };
                 if self.is_active_block(*n) {
                     let (nid, nl) = self.cell(world, *n);
-                    if reg.is_replaceable(nid) && nl <= level - 2 {
+                    // A cell over a drop is no place to rest: the slide below
+                    // sends water straight past it (module doc, step 3).
+                    if reg.is_replaceable(nid) && nl <= level - 2 && !(self.config.flow.slide && self.room_below(world, *n)) {
                         cands.push((nl, idx, *n, false));
                     }
                 } else if let Boundary::Water { level: nl, drains: true } = self.boundary_cell(world, *n)
@@ -583,8 +631,13 @@ impl Sim {
                 let (total, count, included) = fill(&cands);
                 let m = total / count;
                 let r = total - m * count; // < count, so at most `included` units
+                // The remainder goes to this cell first (C2, rules 4): a cell
+                // of level 2 with two dry neighbours used to give them one
+                // each and go dry itself, then be wetted again from behind.
+                // The distribution is as even either way, so the potential
+                // falls as before.
                 for (n, c) in cands[..included].iter().enumerate() {
-                    let nl = m as u8 + u8::from((n as u32) < r);
+                    let nl = m as u8 + u8::from((n as u32 + 1) < r);
                     let d = nl - c.0;
                     if c.3 {
                         self.stats.water_out += d as u64;
@@ -593,7 +646,7 @@ impl Sim {
                     }
                     self.overlay.moved += d as u64;
                 }
-                level = m as u8;
+                level = m as u8 + u8::from(r > 0);
                 spread = true;
             }
         }

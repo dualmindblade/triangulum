@@ -1,0 +1,128 @@
+# C2, Andrew's #9: water that appears and disappears while it spreads, and the
+# lone water cell that fights the ground.
+#
+#   A. a bucket poured four cells from a ledge: it drains over the ledge through
+#      its film without any cell blinking (replay 192820 blinked 351 cells);
+#   B. a lone level-1 cell on stone, seen from 2, 10, 50 and 200 m: a thin sheet,
+#      never a shimmer (the cell sits 4 mm above the floor);
+#   C. the same on sand, across a chunk border, and over a cube face edge;
+#   D. Andrew's pose from shot_lat-4.533: a level-1 cell where his crosshair was.
+#
+# Scenes A to C are built with `fill` in the air. Absolute layers: the scenes
+# stand on layer 612 (A, B, C; the plate at 604) and D at Andrew's own cell,
+# layer 558 (T1 shifts these by +512 when sea level moves).
+
+mode fly
+sim radius 112
+
+# ---- A. a bucket drains to a ledge through its film ------------------------
+atblock 2 107147 57531 612
+# the table, its +i part cut away from dx 5 on (one ledge, the other edges
+# far off); a walled basin below the cliff catches what goes over
+fill -20 -20 -8 4 20 -8 stone
+fill 5 -20 -11 30 20 -11 stone
+fill 30 -20 -10 30 20 -9 stone
+fill 5 -20 -10 30 -20 -9 stone
+fill 5 20 -10 30 20 -9 stone
+fill 4 -20 -10 4 20 -9 stone
+tick 2
+assert queued == 0
+sim trace on
+fill 0 0 -7 0 0 -7 water 255
+aim 2 0 -7
+shot A_poured
+tick 20
+shot A_after_1s
+tick 40
+shot A_after_3s
+tick 240
+shot A_after_15s
+flips -12 12 -8 8 -7
+cells -12 12 -8 8 -7
+cells 4 24 -8 8 -10
+state A_15s
+assert water_balance == 0
+assert water_rel[5,-20,-10,30,20,-10] > 0
+log before C2 this scene blinked: replay 192820 had 351 cells going wet and dry three or more times within a second
+assert water_flickers == 0
+tick 1200
+assert queued == 0
+assert water_flickers == 0
+state A_settled
+sim trace off
+
+# ---- B. a lone film cell on stone, from 2 m to 200 m --------------------------
+atblock 2 107187 57531 612
+fill -8 -8 -8 8 8 -8 stone
+tick 2
+sim off
+fill 0 0 -7 0 0 -7 water 1
+assert level_rel[0,0,-7] == 1
+aim 0 0 -7
+photo B_stone_2m
+atblock 2 107187 57531 612
+hold s 1
+aim 0 0 -7
+photo B_stone_8m
+at -4.5664 117.4714 60
+atblock 2 107187 57531 612
+hold s 7
+aim 0 0 -7
+photo B_stone_50m
+hold s 25
+aim 0 0 -7
+photo B_stone_200m
+sim on
+
+# ---- C. on sand, over a chunk border, over a cube face edge ------------------
+atblock 2 107227 57531 612
+fill -8 -8 -9 8 8 -9 stone
+fill -8 -8 -8 8 8 -8 sand
+tick 2
+sim off
+fill 0 0 -7 0 0 -7 water 1
+aim 0 0 -7
+photo C_sand_2m
+hold s 1
+aim 0 0 -7
+photo C_sand_8m
+sim on
+# a chunk border: i 107263 | 107264 (32 x 3352)
+atblock 2 107263 57531 612
+fill -8 -8 -8 8 8 -8 stone
+tick 2
+sim off
+fill 0 0 -7 1 0 -7 water 1
+assert level_rel[1,0,-7] == 1
+aim 0.5 0 -7
+photo C_chunk_border_2m
+hold s 1
+aim 0.5 0 -7
+photo C_chunk_border_8m
+sim on
+# a cube face edge: face 0, i 131071, beside face 1's i 0
+atblock 0 131071 65536 760
+fill -8 -8 -8 8 8 -8 stone
+tick 2
+sim off
+fill 0 0 -7 1 0 -7 water 1
+aim 0.5 0 -7
+photo C_cube_edge_2m
+hold s 1
+aim 0.5 0 -7
+photo C_cube_edge_8m
+sim on
+
+# ---- D. Andrew's pose, a level-1 cell where his crosshair was -----------------
+# shot_lat-4.533_lon117.520_alt0.051km_yaw-63_pitch-58: replay 192845 ends with
+# the crosshair on a water cell at face 2, i 107216, j 57575, k 558.
+sim off
+atblock 2 107216 57575 557
+assert block[2,107216,57575,557] != air
+fill 0 0 0 0 0 0 water 1
+pose -41740.12236390071,80113.96853919285,-7161.268511963459,0.0,0.0,0.0,-1.099997551196619,-1.0176000000000078,fly,0,0,0,7.002555932915509,8
+assert level[2,107216,57575,558] == 1
+photo D_andrews_pose
+shot D_andrews_pose_hud
+sim on
+state final

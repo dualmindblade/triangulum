@@ -547,3 +547,103 @@ fn a_save_from_before_loads_and_nothing_wakes_until_it_is_touched() {
     }
     assert!(sim.stats.slides > 0, "what a change reaches moves under the new rules");
 }
+
+/// A table 41 cells wide whose +i part is cut away from `cliff` on: a
+/// ledge `cliff` cells from the middle, the other edges far off, and a
+/// walled basin three layers down beyond the cliff, so whatever goes over
+/// is caught (`o.k - 3` is its floor; its water lies at `o.k - 2`).
+fn table_with_a_cliff(cliff: u32) -> (World, DVec3, BlockPos) {
+    let w = test_world();
+    let (g, focus) = site(&w);
+    let (air, stone, ..) = ids(&w);
+    let o = BlockPos { k: g.k + 14, ..g };
+    table(&w, o, 20);
+    let at = |dx: i32, dy: i32, dz: i32| BlockPos { i: (o.i as i32 + dx) as u32, j: (o.j as i32 + dy) as u32, k: (o.k as i32 + dz) as u32, ..o };
+    let mut writes: Vec<(BlockPos, BlockId)> = Vec::new();
+    for dx in cliff as i32..=20 {
+        for dy in -20..=20 {
+            writes.push((at(dx, dy, 0), air));
+            writes.push((at(dx, dy, -3), stone));
+            if dx == 20 || dy.abs() == 20 {
+                writes.push((at(dx, dy, -2), stone));
+                writes.push((at(dx, dy, -1), stone));
+            }
+        }
+    }
+    for dy in -20..=20 {
+        writes.push((at(cliff as i32 - 1, dy, -2), stone));
+        writes.push((at(cliff as i32 - 1, dy, -1), stone));
+    }
+    w.commit(&writes);
+    (w, focus, o)
+}
+
+/// The flip history of every cell the trace marked as flickering, for a
+/// failure's message.
+fn flicker_report(sim: &mut Sim) -> String {
+    let lines = sim.take_trace();
+    let cells: std::collections::BTreeSet<String> = lines.iter().filter(|l| l.contains("FLICKER")).filter_map(|l| l.split(": ").nth(1).map(|s| s.split(' ').next().unwrap_or("").to_string())).collect();
+    let mut out = String::new();
+    for c in cells.iter().take(12) {
+        let history: Vec<String> = lines.iter().filter(|l| l.contains(&format!(": {c} "))).map(|l| l.replace("tick ", "").replace(&format!(": {c} "), " ").replace("  FLICKER", "*")).collect();
+        out.push_str(&format!("\n  {c}: {}", history.join(", ")));
+    }
+    out
+}
+
+/// C2, Andrew's #9 (replay 192820: 351 cells going wet and dry every
+/// other tick for a second as a puddle drained to a ledge). A poured block
+/// four cells from a cliff: its film reaches the drop, and under rules 3
+/// the film cells emptied themselves and were refilled from behind every
+/// other tick. Now the thicker water drains through the film, which stays
+/// wet while it does: no cell goes wet or dry three times in a second.
+#[test]
+fn a_puddle_drains_to_a_ledge_through_its_film_without_blinking() {
+    let (w, focus, o) = table_with_a_cliff(5);
+    assert!(w.set_water(BlockPos { k: o.k + 1, ..o }, w.water_id(), FULL));
+    let mut sim = Sim::new(with(Film::SeekDry));
+    sim.trace = true;
+    let mut over = 0;
+    let mut ticks = 0;
+    for t in 1..=8000 {
+        sim.step(&w, focus);
+        over = over.max(layer(&w, o.k - 2).2);
+        if sim.queued() == 0 && sim.falling().is_empty() && sim.drying_count() == 0 {
+            ticks = t;
+            break;
+        }
+    }
+    assert!(ticks > 0, "settled");
+    let (wet, film, units) = layer(&w, o.k + 1);
+    println!("settled in {ticks} ticks: {wet} wet cells ({film} at level 1, {units} units) on the table, at most {over} units in the basin at once, {} dried, {} flips, {} flickers", sim.stats.water_dried, sim.stats.water_flips, sim.stats.water_flickers);
+    assert!(over >= 60, "a good part of it went over the ledge: at most {over} units in the basin");
+    assert!(sim.stats.water_flips > 0);
+    let (flickers, report) = (sim.stats.water_flickers, flicker_report(&mut sim));
+    assert_eq!(flickers, 0, "no cell went wet or dry {FLICKER_FLIPS} times within {FLICKER_WINDOW} ticks:{report}");
+    assert_quiet(&w, &mut sim, focus);
+}
+
+/// The lip cell over a drop is never wetted: what reaches it goes straight
+/// into the cell below it, so a trickle over an edge does not blink the lip.
+#[test]
+fn nothing_spreads_onto_a_cell_over_a_drop() {
+    let (w, focus, o) = table_with_a_cliff(5);
+    let (_, stone, ..) = ids(&w);
+    let pool = BlockPos { i: o.i + 4, k: o.k + 1, ..o };
+    let walls: Vec<(BlockPos, BlockId)> = [(-1i64, 0i64), (0, -1), (0, 1)].iter().map(|&(di, dj)| (BlockPos { i: (pool.i as i64 + di) as u32, j: (pool.j as i64 + dj) as u32, ..pool }, stone)).collect();
+    w.commit(&walls);
+    assert!(w.set_water(pool, w.water_id(), 40));
+    let lip = BlockPos { i: pool.i + 1, ..pool };
+    let below = BlockPos { k: lip.k - 1, ..lip };
+    let mut sim = Sim::new(with(Film::SeekDry));
+    sim.trace = true;
+    sim.step(&w, focus);
+    assert_eq!(w.water_level_at(lip), 0, "the lip stays dry");
+    assert_eq!(w.water_level_at(below), 20, "half the pool went straight into the cell below the lip");
+    assert_eq!(w.water_level_at(pool), 20);
+    let ticks = settle(&w, &mut sim, focus, 4000);
+    println!("settled in {ticks} ticks, {} flips, {} flickers", sim.stats.water_flips, sim.stats.water_flickers);
+    let (flickers, report) = (sim.stats.water_flickers, flicker_report(&mut sim));
+    assert_eq!(flickers, 0, "{report}");
+    assert_eq!(sim.flips_at(lip), 0);
+}

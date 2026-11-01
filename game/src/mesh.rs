@@ -181,6 +181,11 @@ impl<'a> Surface<'a> {
     /// a chunk with no partial water draws, flat, so the two always meet
     /// (review 3 #8); it is a pure function of the real cells at the corner,
     /// so every chunk and every cube face that shares it gets one height.
+    /// Never 0 (C2, Andrew's lone cell): the mean over a level-1 film and
+    /// the air round it rounds to 0, which put the film's top in the
+    /// floor's own plane, where the depth test cannot tell them apart and
+    /// the film shimmers. A corner of water stands at least one level
+    /// (1/255 of a voxel, 4 mm) over the floor.
     fn corner(&self, cx: i32, cy: i32, z: i32) -> u8 {
         let (mut sum, mut w, mut air, mut partial) = (0u32, 0u32, 0u32, false);
         for (x, y) in [(cx - 1, cy - 1), (cx, cy - 1), (cx - 1, cy), (cx, cy)] {
@@ -208,7 +213,7 @@ impl<'a> Surface<'a> {
             return 255;
         }
         w += air;
-        ((sum + w / 2) / w) as u8
+        (((sum + w / 2) / w) as u8).max(1)
     }
 
     /// The four corner heights of a face of water voxel (x, y, z), packed
@@ -572,6 +577,44 @@ mod tests {
     use super::*;
     use crate::grid::BlockPos;
     use crate::worldgen::Generator;
+
+    /// C2, Andrew's lone cell: a level-1 film on a flat floor, with air on
+    /// every side, used to get a surface at height 0 at every corner (the
+    /// mean of 1 and three airs rounds down), exactly in the floor's plane:
+    /// the shimmering wedges he photographed. Every corner of water now
+    /// stands at least one level over the floor; corners that were already
+    /// above it are as they were.
+    #[test]
+    fn a_film_cells_surface_stands_above_the_floor_at_every_corner() {
+        let mut masks = Masks { solid: vec![0u64; PAD * PAD], liquid: vec![0u64; PAD * PAD] };
+        let mut levels = vec![0u8; PAD * PAD * PAD];
+        // A stone floor at z = 0 over the whole padded grid, a lone level-1
+        // cell at (5, 5, 1), and a level-1 cell at (10, 10, 1) with a
+        // level-9 neighbour at (11, 10, 1).
+        for x in -1..=CHUNK as i32 {
+            for y in -1..=CHUNK as i32 {
+                masks.solid[col(x, y)] |= 1 << 1;
+            }
+        }
+        for (x, y, l) in [(5, 5, 1u8), (10, 10, 1), (11, 10, 9)] {
+            masks.liquid[col(x, y)] |= 1 << 2;
+            levels[pidx(x, y, 1)] = l;
+        }
+        let water = PaddedWater { levels, skirted: Vec::new() };
+        let s = Surface { masks, levels: &water.levels, no_cell: None };
+        for (cx, cy) in [(5, 5), (6, 5), (5, 6), (6, 6)] {
+            assert_eq!(s.corner(cx, cy, 1), 1, "the lone film's corner ({cx}, {cy}) is one level up, not in the floor");
+        }
+        // The top face packs four corners; none is 0, and the side faces'
+        // top corners agree with it.
+        let top = s.heights(2, 1, 5, 5, 1);
+        assert_eq!(top, 0x0101_0101, "{top:#x}");
+        assert_eq!(s.heights(0, 1, 5, 5, 1) >> 16, 0x0101, "a side face's top corners");
+        // Beside thicker water the mean already stood above the floor and is unchanged.
+        assert_eq!(s.corner(11, 10, 1), (1 + 9 + 2) / 4, "between the film, the level-9 cell and two airs: the rounded mean as before");
+        assert_eq!(s.corner(11, 11, 1), 3);
+        assert_eq!(s.corner(12, 11, 1), (9 + 2) / 4, "the level-9 cell's far corner: 9 over four cells");
+    }
 
     fn generator() -> (Generator, Registry) {
         let registry = Registry::load(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/blocks.json")).unwrap();

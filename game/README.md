@@ -633,6 +633,21 @@ until the region arrives. Natural sand and gravel do not move until a change
 reaches them: a generated beach steeper than the slope stands until touched.
 `--no-slide` is the old rule, unit for unit.
 
+**What you see of it (C2).** The rule moves a sliding block into the next
+column in one tick; the picture does not. A block in flight is drawn part way
+through each tick (frames between ticks interpolate), and a block that slid is
+drawn travelling from the cell it left to its own column over 0.2 s, fast off
+the edge and dropping as it goes, so it reads as one block going over an edge,
+across chunk borders, cube edges and cube corners alike. None of that is
+state: a save carries the cell it left so a reload mid-slide draws on, and
+nothing of it is hashed or replayed. The second copy Andrew saw was the
+chunk's mesh, which is rebuilt asynchronously and showed the block where it
+was for a frame or more after it had moved: the renderer now knows which edit
+revision each chunk's mesh was built from, holds a block exactly where the
+mesh still shows it until the mesh drops it, and keeps drawing a landed block
+as a cube until the mesh shows it and not a frame longer (no double, no
+blink). The harness reports what it held back as `motion_*` (below).
+
 **Powder that holds a level (B7, an experiment).** `--powder levels` is another
 rule for sand and gravel, off by default, for Andrew to judge by playing:
 `docs/missions/B7-powder-findings.md`. A cell holds a level, as water's does,
@@ -757,7 +772,26 @@ neighbour, so the last levels of a drained lake take hundreds of ticks.
 free cell whose floor has room, moves half its level straight into the cell
 below that free cell: the level-1 cell at a ledge, which the 2-level rule can
 never move, goes over. In the potential this is exactly a fall, so the reason
-water comes to rest is unchanged.
+water comes to rest is unchanged. Since C2 (rules 4) nothing spreads onto a
+cell over a drop either: the lip of a waterfall stays dry and the water
+appears in the cell below it, instead of the lip blinking with every unit
+that passed through.
+
+**Water that does not blink (C2, rules 4).** Andrew's second #9: a spreading
+puddle near a ledge drained one unit at a time through film cells that
+emptied themselves (the seek) and were wetted again from behind the next
+tick, a 10 Hz blink over hundreds of cells (replay 192820: 351 cells, up to
+20 flips a second). Three changes, all in `sim/water.rs`: a film cell with
+water beside it is part of a sheet and holds (only a lone film cell runs to
+a drop or goes over the ledge beside it); thicker water looks along the same
+lines, which pass through film without spending `--film-reach`, so a puddle
+drains to a ledge through the sheet between and the sheet stays wet until it
+dries where it lies; and a spread gives its remainder to the spreading cell
+first, so a cell of level 2 no longer goes dry wetting two neighbours. The
+stats line and the state carry `water_flips` (cells that went wet or dry)
+and `water_flickers` (cells on a floor that did so three times within a
+second; a falling stream is not counted). Saves and replays from rules 3
+continue; a replay recorded under rules 3 is refused with a note.
 
 **The film (B4).** On its own the ledge rule only lowers what a drained area
 keeps by one level: a cell at level 1 beside a dry one is stuck again, so a
@@ -767,7 +801,7 @@ chooses what happens to level-1 water:
 | `--film` | what it does | water |
 |---|---|---|
 | `keep` | nothing more: the wedge and the film stay | kept |
-| `seek` | a level-1 cell at the edge of the wet area looks along four straight lines, through dry cells, up to `--film-reach` cells, and runs to the nearest drop | kept |
+| `seek` | a lone level-1 cell looks along four straight lines, through dry cells, up to `--film-reach` cells, and runs to the nearest drop; thicker water looks along the same lines through film (C2) | kept |
 | `merge` | nothing is wetted with fewer than 2 units, and a level-1 cell gives its unit to its wettest neighbour: water beads up | kept |
 | `dry` | a level-1 cell dries after `--film-dry-s` to three times that | counted as `water_dried` |
 | `seek+dry` (default) | it runs to a drop if it can, and dries if it cannot | counted |
