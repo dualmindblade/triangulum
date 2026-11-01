@@ -452,7 +452,9 @@ mod planet_scale_tests {
 
     #[test]
     fn t1_large_river_search_covers_the_whole_course_with_bounded_index_work() {
-        let data = HydroData::load(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/world/seed42/hydro.bin")).unwrap().unwrap();
+        // The bake lives in the main checkout (as `worldgen/tests.rs` reads
+        // it), so this passes in a worktree without a copied bake.
+        let data = HydroData::load("C:/code/triangulum/game/assets/world/seed42/hydro.bin").unwrap().unwrap();
         let p = crate::grid::Planet::new(1.0, 2048, 1024, 1_048_576);
         // A flat 10 m ground and 10 m of relief stand in for the generator:
         // this test is about the index, not the levels.

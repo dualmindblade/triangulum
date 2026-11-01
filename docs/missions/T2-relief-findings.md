@@ -571,6 +571,80 @@ whose scenes stand on fixed natural ground (above, 7: each needs a tray or
 a `find`-relative site, and the two showcase flights need re-flying over
 the ranges). Everything else the lead listed is closed.
 
+## Findings corrected (the last round before the merge, 2026-11-01)
+
+**The throughflow test was never a leak.** The 150 in / 75 out counted on
+the first tick after the water was placed (above, "The sim tests, proved")
+are the test's own overwrite, not water vanishing: on this terrain the
+test's cell is open air, so in the first `sim.step` (the one that builds
+the region) it pulled 100 units from the reservoir beside it and gave 25 to
+the drain, and then the test's `set_water` wrote 100 over it, throwing that
+tick's water away while the ledger kept the counts. On T1 the same cell lay
+inside the natural ground, so nothing moved before the overwrite and the
+counts started clean. The lead confirmed the reading; nobody needs to chase
+"water that enters from a boundary and vanishes" in `sim/`, there is none.
+The test (`a_steady_throughflow_at_the_boundary_keeps_flowing`) now takes
+its in/out baseline after `set_water` and asserts the deltas of 20 ticks
+(1,000 / 1,000); the basin test
+(`a_full_basin_rests_until_touched_and_a_lake_drains_through_a_channel_to_its_sill`)
+counts B4's evaporation in both of its conservation checks,
+`water_total + sim.stats.water_dried == total` and the partition by place,
+so it is conserved whatever beat the position hash lands on. No sim rule
+and no non-test code changed. `edits_propagate_to_coarse_lods` expects the
+generator's own coarse voxel where the topmost LOD-0 solid under the marker
+is natural (the band-limited LOD rule; the comment in the test says why)
+and still asserts the marker shows wherever it is the topmost solid. T1's
+`t1_large_river_search_covers_the_whole_course_with_bounded_index_work`
+loads `hydro.bin` by the same absolute bake path the other tests use.
+
+**The 12 play scripts** stand on scenes the next terrain change cannot
+move, every assert kept with its meaning and none deleted or weakened:
+
+- `b3-corner`: a stone tray at the recording's own layers (tops at 1035 for
+  eight blocks around the vertex, air above), laid in fly mode before the
+  recording's `at`, which holds the player at 13.0 m as it did.
+- `m2a-sand`, `m2c-video-driver`, `b5-meshview` (the trench), `m3b-hotbar`
+  (after `find flat`), `m2c-replay` (after `find flat`, before the
+  recording starts, since `fill` is not a player action and the replay's
+  snapshot must hold it): stone trays under the feet, air above; the
+  m2c-replay pins are the new `find flat` site (107153, 57513, 1077).
+- `m3a-tunnel`: the column the asserts name, laid as a tray (limestone
+  under dirt under grass).
+- `b7-walk`: a sand sheet (layers 1023..1025) eight blocks square over the
+  beach, which falls towards the sea now, with a sandstone kerb on the two
+  sides where the beach drops away. Three things were learnt on the way:
+  any edit in this chunk wakes the sea along its sides when the region is
+  built (`wake_new_pairs`: the shore is not at rest as generated), about
+  4,200 units move and the films they leave dry in patches for a thousand
+  ticks, so the sheet gets 1,200 ticks before the recording and nothing is
+  queued at the asserts; a box that cut natural sand left ravelled cells
+  at a chunk border and the replay then diverged after the reload (16 of
+  17 checks), so the box cuts nothing; and the pile only forms where the
+  poured blocks fall and spread as they land, so the sheet is edited sand,
+  and it stands a block over the natural ground, as the old beach stood
+  over its own height, for `alt_agl` to read the pile as it did (2.1 m on
+  top, 1.0 m going down).
+- `b4-film` scene D: a walled stair of four terraces a block apart in the
+  air beside scenes A-C (the real hills now fall so gently that the film
+  ran far and was still drying when the script's clock ran out).
+- `tunnel-wall-reload`: a pit seven blocks square cut from the new surface
+  (layer 1081) down to 1050, then the shaft from 1049 as before; cz 31
+  stays buried, which is the case the fix is for.
+- `m1-showcase` 30/40: a grass-topped tray flush with the new ground at
+  layer 1076 (the absolute layers in its asserts moved from 1068 to 1076
+  with it); section 10 and `m1-showcase-vscale8` re-flown 200-300 m over
+  the ranges from probed ground heights (the 1/70 crest on the line is
+  793 m at lon 117.4; at 1/8 it is 1,653 m at lon 117.25).
+
+Each of the 12 was run through `scripts/t1_play_suite.py` on this build
+after its re-site and passed with every assert (`b3-corner` 52 of 52,
+`b7-walk` 25 of 25 with the replay matching 17 of 17 checks,
+`m1-showcase` 63 asserts and no flight error, `m1-showcase-vscale8` no
+flight error, the rest as before), and the four tests above pass. The
+whole `cargo test --release` and the whole play suite, on a fresh build of
+the final commit into `game/target/`, are reported in the commit that
+follows this one.
+
 ## For the lead
 
 - The lapse line is `let lapse = (LAPSE_C_PER_KM * dh / 1000.0).clamp(-12.0, 12.0);`

@@ -19,8 +19,14 @@
 # cover_rel[DI,DJ,DK] (after a shot) says what the streamer's cut shows at
 # a block: the fix is "drawn:0" at the block under the feet, where it used
 # to be the coarse LOD-4 ancestor, which has no face there.
+#
+# T2: the ground here rose to layer 1081, so a pit seven blocks square is
+# cut from the surface down to layer 1050 first; the shaft then starts at
+# 1049 as before, chunk cz 32 is the shaft's own chunk and cz 31 stays
+# buried, which is the case the fix is for.
 mode fly
 atblock 2 107672 57752 1049
+fill -3 -3 0 3 3 40 air
 assert mode == fly
 assert block_rel[0,0,-1] != air
 assert block_rel[0,0,0] == air

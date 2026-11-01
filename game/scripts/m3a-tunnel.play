@@ -5,13 +5,21 @@
 # after to compare the frames; the asserts pin the blocks, so the shots show
 # grass where the script says grass.
 #
-# Site: face 2, row J = 57519 of the hills preset, columns I = 107136..107140
-# all have grass on top of dirt on top of limestone at the same layer.
+# Site: face 2, row J = 57519 of the hills preset, columns I = 107136..107140.
+# They had grass on top of dirt on top of limestone at the same layer; T2
+# moved the hills, so the script lays that very column itself: a tray of
+# limestone under dirt under grass at the feet, 17 blocks square, the air
+# above cleared, so the shaft and the tunnel meet what the asserts name.
 #   shaft   column 107140, three blocks down (grass, dirt, limestone)
 #   tunnel  from the shaft bottom along -i, three cells, two high: its
 #           ceiling is the underside of the grass layer
 
 atblock 2 107140 57519 2512
+assert on_ground == true
+fill -8 -8 -6 8 8 -3 limestone
+fill -8 -8 -2 8 8 -2 dirt
+fill -8 -8 -1 8 8 -1 grass
+fill -8 -8 0 8 8 8 air
 lookaxis +i 0
 assert block_rel[0,0,-1] == grass
 assert block_rel[0,0,-2] == dirt

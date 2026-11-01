@@ -12,9 +12,17 @@
 # high on flat ground, checks every block, and shoots it with the hotbar.
 # (The same picture from 12 m to 1 km, against a flat block of its average
 # colour, is docs/missions/M3b-evidence/far_painted_brick_sheet.jpg.)
+# T2: `find flat` is flat to its own test but a column of the wall's row
+# can sit a block lower, and the ray to it then places elsewhere, so the
+# wall stands on a tray laid where `find` put the player: stone under a
+# grass top at the feet, 13 blocks square, the air above cleared.
 
 hotbar clay_brick,dirt,grass,sand,gravel,snow,ice,dry_grass,water
 find flat
+fill -6 -6 -3 6 6 -2 stone
+fill -6 -6 -1 6 6 -1 grass
+fill -6 -6 0 6 6 6 air
+assert on_ground == true
 select 1
 assert selected_block == clay_brick
 
