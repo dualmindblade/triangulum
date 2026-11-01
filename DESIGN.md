@@ -54,6 +54,32 @@ with their OK; record the change here with the date.
   may come back.
 - Relief finer than planetgen's resolution comes from the engine's
   generator. Its roughness is a dial for Andrew.
+- **Local and global (Andrew, 2026-10-31).** *Global* features belong to the
+  planet and stretch with its radius. *Local* features belong to the ground under
+  your feet, are sized in metres, and are the same on any planet. In the code the
+  split is `game/src/worldgen/scale.rs`.
+
+  | | Global (stretches with R) | Local (metres) |
+  |---|---|---|
+  | Shape | continents, ocean basins, shelves, the bake's own slopes | peaks, ridges, spurs, valleys, hills, gullies, metre roughness |
+  | Height | the bake's elevation × vertical scale: the *floor* of the land | relief standing on that floor: up to ~800 m on the strongest belts, 10-70 m hills elsewhere |
+  | Where | the belts (active uplift, rough highlands), plains, plateaus | which ridge a peak is on |
+  | Rivers | where they run, where they join, which lake or sea they reach | channel width and depth, banks, the valley's width and shape, steps and falls |
+  | Lakes | where they are | their depth, beaches, the basin's slope to the shore |
+  | Water levels | the floor along the course, less the incision; a lake's level follows the lowest river reaching it | |
+  | Coast | where the shoreline runs | the beach, its slope, the shallows |
+  | Climate | temperature and rain bands | the lapse on local relief: 6.5 °C per real km |
+  | Rock | which strata, hardness, soil depth | bed thickness, the fold of the beds, mesa steps |
+
+- Land falls towards water: rivers lie in valleys, and lakes in basins (Andrew,
+  2026-10-31). Nothing dips below the bake's surface, so valleys lie on it. A
+  river's level is the lowest natural ground along its course upstream, less a
+  1.5-3 m incision. A lake takes the lowest level any river reaches it at.
+- The world's ceiling is half the world height. Global and local heights are
+  summed and eased under it, and where the bake's own heights leave too little
+  room the local relief is thinned to fit, so a range keeps its shape instead of
+  flattening into a cap. **For Andrew to judge:** on the 90 km planet this changes
+  nothing, but at 832 half-heights the highest belts carry about 190 m of relief.
 - Sampling is smooth everywhere: no visible raster texels or noise seams.
 - The coast is a smooth curve from the bake's coastline with bounded detail;
   noise never decides where the sea ends (2026-10-31).
