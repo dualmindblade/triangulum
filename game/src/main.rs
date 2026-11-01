@@ -375,6 +375,29 @@ fn parse_args() -> Args {
     a
 }
 
+/// A terrain worker gives way to the main thread. There is one on every logical
+/// core, and generating a mountain range starved the drawing: the flight's worst
+/// 1% of frames fell to 83 fps with nothing slow on the CPU or GPU clocks. Four
+/// workers fixed that too, but terrain took 2.6 times as long to load. At low
+/// priority all of them stay, and they take what the frame leaves (about 270 fps,
+/// and about 10% longer to load).
+#[cfg(windows)]
+fn give_way() {
+    const THREAD_PRIORITY_LOWEST: i32 = -2;
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn GetCurrentThread() -> isize;
+        fn SetThreadPriority(thread: isize, priority: i32) -> i32;
+    }
+    // Safe: a pseudo-handle for this thread, and a failure leaves it as it was.
+    unsafe {
+        SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_LOWEST);
+    }
+}
+
+#[cfg(not(windows))]
+fn give_way() {}
+
 /// Why the game won't start. Somebody who started it without a console, or
 /// whose console goes when the game does, must see this too, or a refused save
 /// is a game that crashes on launch.
@@ -405,9 +428,11 @@ near it, by hand:
   {}", r.script.display(), r.command, r.at_command);
         return;
     }
+    let mut workers = rayon::ThreadPoolBuilder::new().start_handler(|_| give_way());
     if args.threads > 0 {
-        rayon::ThreadPoolBuilder::new().num_threads(args.threads).build_global().unwrap();
+        workers = workers.num_threads(args.threads);
     }
+    workers.build_global().unwrap();
     let mut config = WorldConfig::load(&args.world).unwrap_or_else(|e| fail(&e));
     let mut sky_settings = sky::Settings::load(&args.world).unwrap_or_else(|e| fail(&e));
     if let Some(v) = args.day_length { sky_settings.day_length_s = v; }
