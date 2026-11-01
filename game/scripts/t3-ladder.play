@@ -64,29 +64,29 @@ look 40 -35
 photo biome_foot
 
 # --- The snow line, Andrew's snow photo
-at 9.80613 21.31239 150000
+at 9.48487 21.21475 150000
 skytime 12:00
 look 0 -89.9
 photo snow_150km
-at 9.80613 21.31239 40000
+at 9.48487 21.21475 40000
 look 0 -89.9
 photo snow_40km
-at 9.80613 21.31239 10000
+at 9.48487 21.21475 10000
 look 0 -89.9
 photo snow_10km
-at 9.80613 21.31239 2500
+at 9.48487 21.21475 2500
 look 0 -89.9
 photo snow_2500m
-at 9.80613 21.31239 600
+at 9.48487 21.21475 600
 look 0 -89.9
 photo snow_600m
-at 9.80613 21.31239 200
+at 9.48487 21.21475 200
 look 0 -89.9
 photo snow_150m
-at 9.80613 21.31239 90
+at 9.48487 21.21475 90
 look 0 -89.9
 photo snow_40m
-at 9.80613 21.31239 60
+at 9.48487 21.21475 60
 look 40 -35
 photo snow_foot
 

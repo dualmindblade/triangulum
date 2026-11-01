@@ -964,57 +964,77 @@ fn boundary_cost() {
     }
 }
 
-/// Not a check: how wide a lake's bands are on the ground. From shore points
-/// over the planet's lakes, walks across the shore and prints the median
-/// distance (m) from the shoreline to where the dry sand stops, where the
-/// apron's hold stops, and where the bed reaches 90% of its depth, per planet
-/// size (`BOUNDARY_SIZES`, half-heights, 0 = Neisor).
+/// How wide a lake's bands are on the ground, walking across the shore at
+/// every `step`th lake: from the shoreline to where the dry sand stops, to
+/// where the apron's hold stops, and to where the bed reaches 90% of its depth
+/// (m), each a list over the shores.
+fn lake_bands(g: &Generator, step: usize) -> [Vec<f64>; 3] {
+    let h = g.hydro.as_deref().unwrap();
+    let zone = h.lake_zone;
+    let rows: Vec<[f64; 3]> = (0..h.lakes.len() as i32)
+        .into_par_iter()
+        .step_by(step)
+        .filter_map(|k| {
+            let d = super::hydro_tests::shore_point_for(h, k, 0)?;
+            let lake = |dir: DVec3| {
+                let c = h.cands(dir, 0.0);
+                h.lake_at(dir, &c.cells, g.planet.block_size)
+            };
+            let e = 2.0 / g.planet.radius;
+            let (t1, t2) = (DVec3::new(d.y, -d.x, 0.0).normalize(), d.cross(DVec3::new(d.y, -d.x, 0.0)).normalize());
+            let f = |dir: DVec3| lake(dir).field_of(k);
+            let (gx, gy) = (f((d + t1 * e).normalize()) - f((d - t1 * e).normalize()), f((d + t2 * e).normalize()) - f((d - t2 * e).normalize()));
+            let out = -(t1 * gx + t2 * gy).normalize_or_zero();
+            let at = |x: f64| (d + out * (x / g.planet.radius)).normalize();
+            let step = 2.0;
+            let walk = |stop: &dyn Fn(f64) -> bool| (1..3000).map(|n| n as f64 * step).find(|x| stop(*x));
+            let w = h.lakes[k as usize].w;
+            let sand = walk(&|x| {
+                let c = g.column(at(x), 1.0);
+                !c.wet() && !c.lake_sand
+            })?;
+            let apron = walk(&|x| lake(at(x)).iter().find(|l| l.lake == k).is_none_or(|l| l.past_apron(zone) > 0.0))?;
+            let bed = (1..3000).map(|n| g.column(at(-(n as f64) * step), 1.0).height_m as f64).fold(f64::MAX, f64::min);
+            let shelf = walk(&|x| w - g.column(at(-x), 1.0).height_m as f64 >= 0.9 * (w - bed)).unwrap_or(f64::NAN);
+            Some([sand, apron, shelf])
+        })
+        .collect();
+    [0, 1, 2].map(|b| {
+        let mut v: Vec<f64> = rows.iter().map(|r| r[b]).filter(|x| x.is_finite()).collect();
+        v.sort_by(f64::total_cmp);
+        v
+    })
+}
+
+/// Not a check: `lake_bands` per planet size (`BOUNDARY_SIZES`, half-heights,
+/// 0 = Neisor).
 #[test]
 #[ignore]
 fn boundary_lake_bands() {
     let sizes = std::env::var("BOUNDARY_SIZES").unwrap_or_else(|_| "0 128 256 512 832 1024".into());
     for size in sizes.split_whitespace().map(|s| s.parse::<u32>().unwrap()) {
         let g = if size == 0 { super::tests::generator_pub(None, 2048, 1024) } else { super::tests::planet_size_generator(size) };
-        let h = g.hydro.as_deref().unwrap();
-        let zone = h.lake_zone;
-        let scale = g.planet.radius / 90_569.0;
-        let names = ["dry sand", "apron", "shelf"];
-        let rows: Vec<[f64; 3]> = (0..h.lakes.len() as i32)
-            .into_par_iter()
-            .step_by(7)
-            .filter_map(|k| {
-                let d = super::hydro_tests::shore_point_for(h, k, 0)?;
-                let lake = |dir: DVec3| {
-                    let c = h.cands(dir, 0.0);
-                    h.lake_at(dir, &c.cells, g.planet.block_size)
-                };
-                let e = 2.0 / g.planet.radius;
-                let (t1, t2) = (DVec3::new(d.y, -d.x, 0.0).normalize(), d.cross(DVec3::new(d.y, -d.x, 0.0)).normalize());
-                let f = |dir: DVec3| lake(dir).field_of(k);
-                let (gx, gy) = (f((d + t1 * e).normalize()) - f((d - t1 * e).normalize()), f((d + t2 * e).normalize()) - f((d - t2 * e).normalize()));
-                let out = -(t1 * gx + t2 * gy).normalize_or_zero();
-                let at = |x: f64| (d + out * (x / g.planet.radius)).normalize();
-                let step = 2.0;
-                let walk = |stop: &dyn Fn(f64) -> bool| (1..3000).map(|n| n as f64 * step).find(|x| stop(*x));
-                let w = h.lakes[k as usize].w;
-                let sand = walk(&|x| {
-                    let c = g.column(at(x), 1.0);
-                    !c.wet() && !c.lake_sand
-                })?;
-                let apron = walk(&|x| lake(at(x)).iter().find(|l| l.lake == k).is_none_or(|l| l.past_apron(zone) > 0.0))?;
-                let bed = (1..3000).map(|n| g.column(at(-(n as f64) * step), 1.0).height_m as f64).fold(f64::MAX, f64::min);
-                let shelf = walk(&|x| w - g.column(at(-x), 1.0).height_m as f64 >= 0.9 * (w - bed)).unwrap_or(f64::NAN);
-                Some([sand, apron, shelf])
-            })
-            .collect();
-        print!("size {size:5}: R {:8.1} km, {} shores:", g.planet.radius / 1000.0, rows.len());
-        let _ = scale;
-        for b in 0..3 {
-            let mut v: Vec<f64> = rows.iter().map(|r| r[b]).filter(|x| x.is_finite()).collect();
-            v.sort_by(f64::total_cmp);
-            print!("  {} median {:.0} m (p90 {:.0})", names[b], v[v.len() / 2], v[v.len() * 9 / 10]);
+        let bands = lake_bands(&g, 7);
+        print!("size {size:5}: R {:8.1} km, {} shores:", g.planet.radius / 1000.0, bands[1].len());
+        for (name, v) in ["dry sand", "apron", "shelf"].iter().zip(&bands) {
+            print!("  {name} median {:.0} m (p90 {:.0})", v[v.len() / 2], v[v.len() * 9 / 10]);
         }
         println!();
+    }
+}
+
+/// A lake's outline stretches with the planet and the bands round it don't:
+/// they are ground. On the 832 planet the apron and the shelf are what they
+/// are on Neisor, near enough. (In field units alone they came out six or seven
+/// times wider, 754 m and 1,157 m against 128 m and 168 m.)
+#[test]
+fn a_lakes_bands_keep_their_metres_on_any_planet() {
+    let (near, far) = (super::tests::generator_pub(None, 2048, 1024), super::tests::planet_size_generator(832));
+    let (a, b) = (lake_bands(&near, 14), lake_bands(&far, 14));
+    for (name, x, y) in [("sand", &a[0], &b[0]), ("apron", &a[1], &b[1]), ("shelf", &a[2], &b[2])] {
+        let (mx, my) = (x[x.len() / 2], y[y.len() / 2]);
+        println!("{name}: median {mx:.0} m on Neisor, {my:.0} m at 832");
+        assert!(my < 1.6 * mx + 4.0, "{name} is {my:.0} m at 832 and {mx:.0} m on Neisor");
     }
 }
 

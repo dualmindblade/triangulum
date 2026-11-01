@@ -902,6 +902,10 @@ can't make a piece that isn't in the bake.
   and take a lower slope for the same rock (`rock_slope_at`). Rock on a chunk's
   surface costs a lattice of columns where the ground is steep, nothing on
   gentle ground. Real cliffs, too narrow for 16 m, are rock by their own slope.
+- **Lakes.** The outline is a position and stretches with the planet; the bands
+  round it are ground, and keep their metres on any planet: an apron 150 m wide,
+  a sand band up to 50 m, a shelf of 170 m out to full depth (`LAKE_APRON_M`,
+  `LAKE_SAND_M`, `LAKE_SHELF_M`, each stopping at its field threshold too).
 - **Cost.** A chunk samples the climate at 25 nodes. If no threshold can lie in
   it, its columns interpolate them and skip the warp; only chunks with a line
   in them pay per column. `far_chunks_hold_no_boundary` proves that changes no
