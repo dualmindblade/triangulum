@@ -1,0 +1,6 @@
+  state start: fly lat -85.79866 lon -122.69451 alt 13605.91 m (agl 13605.91) face 5 i 599
+  state step60: fly lat -86.44728 lon 131.68690 alt 13626.70 m (agl 13626.70) face 5 i 697
+  state step120: fly lat -86.25608 lon 117.92128 alt 13657.62 m (agl 13657.62) face 5 i 70
+  state step180: fly lat -85.83647 lon 150.47053 alt 13676.31 m (agl 13676.31) face 5 i 68
+  state step240: fly lat -85.99698 lon 116.50517 alt 13691.73 m (agl 13691.73) face 5 i 71
+  state end: fly lat -86.08638 lon 104.63381 alt 13692.33 m (agl 13692.33) face 5 i 71514 

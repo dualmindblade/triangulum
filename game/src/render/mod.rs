@@ -156,6 +156,12 @@ pub struct Renderer {
     /// This frame's sloped powder: the streamer fills it, no draw list passes
     /// through a caller, and it stays empty unless `--powder levels` is on.
     pub slope_draws: Vec<DrawRecord>,
+    /// The edit revision each resident LOD-0 mesh was built from, by chunk
+    /// (C2): the streamer writes it on every install, and the falling-block
+    /// draw reads it to tell whether a chunk's mesh has caught up with a
+    /// block that left or landed in it (`sim/draw.rs`). A chunk never
+    /// meshed is absent.
+    pub meshed_at: crate::grid::FastMap<crate::grid::ChunkKey, u64>,
     water_pipeline: wgpu::RenderPipeline,
     sky_pipeline: wgpu::RenderPipeline,
     /// The mesh view (M and Shift+M in the game), off by default.
@@ -221,6 +227,7 @@ impl Renderer {
 
         let quad_bytes = (quad_buffer_mb << 20).min(alimits.max_storage_buffer_binding_size as u64).min(alimits.max_buffer_size);
         let quad_capacity = (quad_bytes / QUAD_BYTES) as u32;
+        let slot_capacity = slot_capacity.min((alimits.max_storage_buffer_binding_size as usize / GRID_BYTES) as u32);
         println!("quad buffer: {} MB ({} M quads); grid slots {}", quad_bytes >> 20, quad_capacity / 1_000_000, slot_capacity);
         let mk = |label: &str, size: u64, usage: wgpu::BufferUsages| {
             device.create_buffer(&wgpu::BufferDescriptor { label: Some(label), size, usage, mapped_at_creation: false })
@@ -375,6 +382,7 @@ impl Renderer {
             terrain_pipeline,
             slope_pipeline,
             slope_draws: Vec::new(),
+            meshed_at: Default::default(),
             water_pipeline,
             sky_pipeline,
             mesh_view: MeshView::NORMAL,

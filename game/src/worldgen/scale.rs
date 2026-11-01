@@ -30,6 +30,9 @@ const CEILING_KNEE: f64 = 0.72;
 /// The height the easing approaches, as a share of the ceiling (a few
 /// blocks of air stay above the highest block).
 const CEILING_TOP: f64 = 0.985;
+/// How high the local relief's peaks stand, as a share of its relief scale
+/// (`landform.rs`: about 1.25), for `headroom`.
+const PEAK_SHARE: f64 = 1.25;
 
 #[derive(Clone, Copy, Debug)]
 pub struct Scale {
@@ -71,6 +74,21 @@ impl Scale {
     #[inline]
     pub fn chart_m(&self, angle: f64) -> f64 {
         angle * self.radius
+    }
+
+    /// How much of the local relief stands where the global surface is
+    /// `base_m`: all of it where its peaks (about `PEAK_SHARE` x the relief
+    /// scale) fit between the global surface and the ceiling's top, less
+    /// where they would not, none where the global surface reaches the top
+    /// itself. On the 90 km planet this is 1 everywhere; on an Earth
+    /// analogue the bake's own heights take most of the room on the belts,
+    /// and without this the easing below squashed whole ranges into a flat
+    /// cap at the top. Smooth in the base, so LODs agree, and never above 1,
+    /// so every bound on the relief still holds.
+    #[inline]
+    pub fn headroom(&self, base_m: f64, relief_m: f64) -> f64 {
+        let room = CEILING_TOP * self.ceiling_m - base_m;
+        (room / (PEAK_SHARE * relief_m + 1.0)).clamp(0.0, 1.0)
     }
 
     /// The world's ceiling: heights above the knee ease toward `CEILING_TOP`

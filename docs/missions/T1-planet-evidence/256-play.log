@@ -1,0 +1,143 @@
+bake loaded and hashed in 1.45s: equal-angle world bake E:\triangulum-work\T1\game\assets\world\seed42 (1024x1024 per face, land min -3.67 km, rough max 5.61 km, with soil and geology fields, 20504 river links and 771 lakes)
+blocks: 19 definitions from E:\triangulum-work\T1\game\assets\blocks.json
+save E:\triangulum-work\T1\game/saves/_play/t1-size: reset
+save E:\triangulum-work\T1\game/saves/_play/t1-size: 0 edited chunk(s) loaded
+look: E:\triangulum-work\T1\game\out\t1\after\256\exercise\look.json
+planet Neisor: s = 1 m, H = 2048 blocks (sea level 1024), N = 262144, R = 181.138 km, vertical scale 0.02843 (1/35.2), landforms v2, roughness 1, landform 1, max LOD 10 (1024 m voxels), lod factor 5, 4 rayon threads
+sky: absolute 1142.541665s, local start 12.00h, speed 1x, day 1440s, lunar month 7d, 3 months/season, year 84d; sun lat 11.020410 lon 117.474432
+simulation: 20 Hz tick, 112 m active radius; resumed at tick 0 with 0 queued, 0 frozen, 0 falling
+adapter: NVIDIA GeForce RTX 2060 (Vulkan, DiscreteGpu)
+quad buffer: 512 MB (67 M quads); grid slots 131072
+play E:\triangulum-work\T1\game\scripts\t1-size.play -> E:\triangulum-work\T1\game\out\t1\after\256\exercise
+> at -4.5654 117.4744
+> find flat
+  find flat: standing on face 2 i 214311 j 115037 k 1097 (0 m from where the player was; 25 columns sampled), looking +i 0 column(s) to face 2 i 214311 j 115037 k 1097
+> assert find_kind == flat
+  assert ok: find_kind == flat (actual flat)
+> assert mode == walk
+  assert ok: mode == walk (actual walk)
+> assert on_ground == true
+  assert ok: on_ground == true (actual true)
+> sim off
+  sim off  tick 0  falling 0  queued 0  frozen 0  active 0 chunks  water 0 updates, 0 moved, in 0 out 0, 0 drying, 0 dried  tick cost 0.000 ms (avg 0.000, max 0.000)
+> mode fly
+> fill -5 -5 -2 5 5 -2 stone
+  fill: 121 cells of stone changed
+> fill -5 -5 -1 5 5 4 air
+  fill: 89 cells of air changed
+> mode walk
+> wait 1
+> assert on_ground == true
+  assert ok: on_ground == true (actual true)
+> replay record size.replay
+  recording a replay to E:\triangulum-work\T1\game\out\t1\after\256\exercise\size.replay
+> hold w 0.25
+> wait 0.2
+> assert on_ground == true
+  assert ok: on_ground == true (actual true)
+> mode fly
+> aim 0 0 -0.5
+> assert crosshair == stone
+  assert ok: crosshair == stone (actual stone)
+> tap break
+  break: face 2 i 214312 j 115037 k 1096
+> assert block_rel[0,0,-1] == air
+  assert ok: block_rel[0,0,-1] == air (actual air)
+> select 1
+> aim 0 0 -1.5
+> tap place
+  place: face 2 i 214312 j 115037 k 1096
+> assert block_rel[0,0,-1] == stone
+  assert ok: block_rel[0,0,-1] == stone (actual stone)
+> save
+  saved 1 chunk(s)
+> reload
+  reloaded 2 chunk(s) from disk
+> assert block_rel[0,0,-1] == stone
+  assert ok: block_rel[0,0,-1] == stone (actual stone)
+> select 9
+> aim 0 0 -0.5
+> tap place
+  place: face 2 i 214312 j 115037 k 1097
+> assert block_rel[0,0,0] == water
+  assert ok: block_rel[0,0,0] == water (actual water)
+> sim on
+  sim on  tick 0  falling 0  queued 529  frozen 0  active 0 chunks  water 0 updates, 0 moved, in 0 out 0, 0 drying, 0 dried  tick cost 0.000 ms (avg 0.000, max 0.000)
+> tick 12
+  ticked 0 -> 12: sim on  tick 12  falling 0  queued 72  frozen 0  active 358 chunks  water 101 updates, 1050 moved, in 0 out 0, 56 drying, 0 dried  tick cost 0.121 ms (avg 1.123, max 5.786)
+> assert water_placed > 0
+  assert ok: water_placed > 0 (actual 255)
+> assert water_moved > 0
+  assert ok: water_moved > 0 (actual 1050)
+> save
+  saved 2 chunk(s)
+> reload
+  reloaded 2 chunk(s) from disk
+> tick 6
+  ticked 12 -> 18: sim on  tick 18  falling 0  queued 0  frozen 0  active 358 chunks  water 0 updates, 4 moved, in 0 out 0, 57 drying, 0 dried  tick cost 0.001 ms (avg 0.744, max 4.396)
+> mode fly
+> hold space 1
+> assert alt_agl > 10
+  assert ok: alt_agl > 10 (actual 19.37950897187693)
+> replay stop
+  replay E:\triangulum-work\T1\game\out\t1\after\256\exercise\size.replay: 141 steps, 20 events, 3 checks, 0 notes; 40.4 KB (35.1 KB of it the snapshot)
+> assert replay_notes == 0
+  assert ok: replay_notes == 0 (actual 0)
+> replay check size.replay
+  replayed 141 steps (2.4 s), 20 events; 3 of 3 checks matched; the end state hash matches (e002846ea805c2cd..)
+  replay OK: the session reproduced exactly
+  look: the same as the recording (every look value, block and texture)
+  (played in 10.9 s)
+> assert replay_ok == true
+  assert ok: replay_ok == true (actual true)
+> assert replay_end_match == true
+  assert ok: replay_end_match == true (actual true)
+> assert replay_look == same
+  assert ok: replay_look == same (actual same)
+> sim off
+  sim off  tick 38  falling 0  queued 0  frozen 0  active 358 chunks  water 0 updates, 4 moved, in 0 out 0, 57 drying, 0 dried  tick cost 0.001 ms (avg 0.172, max 4.396)
+> at -4.5654 117.4744
+> find river
+  find river: standing on face 2 i 216542 j 111847 k 1073 (3699 m from where the player was; 24 columns sampled), looking -i 1 column(s) to face 2 i 216541 j 111847 k 1073
+> assert find_kind == river
+  assert ok: find_kind == river (actual river)
+> assert on_ground == true
+  assert ok: on_ground == true (actual true)
+> select 9
+> shot river
+  shot river: E:\triangulum-work\T1\game\out\t1\after\256\exercise/river.png (settled in 23.4 s / 1854 frames; 36 draws)
+  state river: walk lat -5.45966 lon 118.23175 alt 50.00 m (agl -0.11) face 2 i 216542 j 111847 k 1074 ground true water false crosshair "water" edits 2 dirty 1
+> find lake
+  find lake: standing on face 2 i 230939 j 128172 k 1039 (22075 m from where the player was; 3 columns sampled), looking +i 2 column(s) to face 2 i 230941 j 128172 k 1039
+> assert find_kind == lake
+  assert ok: find_kind == lake (actual lake)
+> assert on_ground == true
+  assert ok: on_ground == true (actual true)
+> shot lake
+  shot lake: E:\triangulum-work\T1\game\out\t1\after\256\exercise/lake.png (settled in 18.6 s / 2152 frames; 587 draws)
+  state lake: walk lat -0.80814 lon 123.45441 alt 16.00 m (agl -0.20) face 2 i 230939 j 128172 k 1040 ground true water false crosshair "water" edits 2 dirty 1
+> mode walk
+> at -11 -170 -2
+> wait 0.1
+> assert in_water == true
+  assert ok: in_water == true (actual true)
+> assert head_in_water == true
+  assert ok: head_in_water == true (actual true)
+> shot underwater
+  shot underwater: E:\triangulum-work\T1\game\out\t1\after\256\exercise/underwater.png (settled in 81.5 s / 2181 frames; 972 draws)
+  state underwater: walk lat -11.00000 lon -170.00000 alt -1.98 m (agl -1.98) face 1 i 162780 j 95791 k 1022 ground false water true crosshair "water" edits 2 dirty 1
+> hold space 2
+> assert in_water == true
+  assert ok: in_water == true (actual true)
+> mode fly
+> at -4.5654 117.4744 2000
+> look -60 -20
+> speed 200
+> travel 0.25
+  travel 15 frames in 1.5 s: faces 2; cover violations 0 (overlaps max 0, gaps max 0, uncovered max 0); nodes max 11068; cpu avg 8.19 ms p99 96.76 max 96.76; worst phases: tree 2.44 (policy 0.59, structure 1.71 of which splits 0.87, counts 0.29; inline ranges 0.00 / 0), results 95.23, draw lists 0.25; range jobs in flight max 32, worst 0.61 ms
+> assert travel_violations == 0
+  assert ok: travel_violations == 0 (actual 0)
+> assert travel_uncovered_max == 0
+  assert ok: travel_uncovered_max == 0 (actual 0)
+saved 1 chunk(s) at exit
+done in 147.8 s: 26 asserts, 0 failed, 0 errors

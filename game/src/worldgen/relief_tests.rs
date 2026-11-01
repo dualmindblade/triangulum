@@ -83,7 +83,7 @@ fn relief_survey() {
 #[test]
 fn local_features_keep_their_metres() {
     let small = world_gen();
-    let big = Generator::new(Planet::new(1.0, 2048, 512, 262_144), small.bake.clone(), 42, Planet::new(1.0, 2048, 512, 262_144).radius / 6_371_000.0, 1.0, 1.0, super::hydro_tests::registry()).unwrap();
+    let big = Generator::new(Planet::new(1.0, 2048, 1024, 262_144), small.bake.clone(), 42, Planet::new(1.0, 2048, 1024, 262_144).radius / 6_371_000.0, 1.0, 1.0, super::hydro_tests::registry()).unwrap();
     assert!((big.planet.radius / small.planet.radius - 2.0).abs() < 1e-9);
     let ratio = big.vscale / small.vscale;
     assert!((ratio - 2.0).abs() < 1e-9, "the vertical scale follows the radius: {ratio}");
@@ -176,7 +176,10 @@ fn write_relief_map(path: &str, h: &[f32], ocean: &[bool], px: usize, spacing: f
 #[test]
 #[ignore]
 fn relief_maps() {
-    let g = world_gen();
+    let g: &Generator = match std::env::var("RELIEF_SIZE").ok().and_then(|s| s.parse::<u32>().ok()) {
+        Some(units) => Box::leak(Box::new(super::tests::planet_size_generator(units))),
+        None => world_gen(),
+    };
     let label = std::env::var("RELIEF_LABEL").unwrap_or_else(|_| "now".into());
     let dir = format!("{}/out/relief-maps/{label}", env!("CARGO_MANIFEST_DIR"));
     std::fs::create_dir_all(&dir).unwrap();
@@ -222,8 +225,13 @@ fn relief_maps() {
 #[test]
 #[ignore]
 fn relief_places() {
-    let g = world_gen();
-    let h = hydro();
+    // RELIEF_SIZE=U poses on a planet of U half-heights (T1's slider; the
+    // shots then need `--planet-size U`).
+    let g: &Generator = match std::env::var("RELIEF_SIZE").ok().and_then(|s| s.parse::<u32>().ok()) {
+        Some(units) => Box::leak(Box::new(super::tests::planet_size_generator(units))),
+        None => world_gen(),
+    };
+    let h: &hydro::Hydro = g.hydro.as_deref().unwrap();
     let p = &g.planet;
     let r = p.radius;
     let heading = |at: DVec3, v: DVec3| {
@@ -468,6 +476,111 @@ fn relief_cliffs() {
     worst.sort_by(|a, b| b.0.total_cmp(&a.0));
     for (_, info) in worst.iter().take(8) {
         println!("{info}");
+    }
+}
+
+/// Not a check: do the sim tests' hand-built scenes at the hills preset meet
+/// the ground? `a_full_basin_rests_until_touched...` builds a 5 x 5 lake
+/// 10 layers over the ground and a 9 x 7 basin beside it from 6 layers up;
+/// `a_steady_throughflow...` uses the cell at the +i,+j corner of the chunk
+/// holding ground + 12, 10 layers over that chunk's floor. Prints the
+/// highest natural solid layer under each footprint against the scene's
+/// floor, and what fills the throughflow cell.
+#[test]
+#[ignore]
+fn relief_sim_scenes() {
+    use crate::grid::BlockPos;
+    let w = crate::world::tests::test_world();
+    let g = crate::world::tests::hills_ground(&w);
+    let reg = &w.registry;
+    let top_solid = |i: u32, j: u32| -> u32 {
+        (g.k.saturating_sub(40)..g.k + 80).rev().find(|&k| reg.is_solid(w.block_at(BlockPos { i, j, k, ..g }))).unwrap_or(0)
+    };
+    let footprint = |name: &str, i0: u32, j0: u32, ni: u32, nj: u32, floor_k: u32| {
+        let (mut hi, mut at) = (0u32, (0u32, 0u32));
+        for i in i0..i0 + ni {
+            for j in j0..j0 + nj {
+                let t = top_solid(i, j);
+                if t > hi {
+                    hi = t;
+                    at = (i, j);
+                }
+            }
+        }
+        println!("{name}: floor plate at layer {floor_k} (ground at the site {}); highest natural solid under the footprint at layer {hi} ({:+} against the plate) at ({}, {})", g.k, hi as i64 - floor_k as i64, at.0, at.1);
+    };
+    let o = BlockPos { i: g.i - 3, j: g.j - 3, k: g.k + 10, ..g };
+    let ob = BlockPos { i: o.i + 6, j: o.j - 2, k: o.k - 4, ..o };
+    footprint("basin scene: the 9 x 7 basin", ob.i, ob.j, 11, 9, ob.k);
+    footprint("basin scene: the 5 x 5 lake", o.i, o.j, 7, 7, o.k);
+    let ck = crate::world::World::chunk_of(BlockPos { k: g.k + 12, ..g }).0;
+    let (i0, j0, k0) = ck.origin_blocks();
+    let (i0, j0, k0) = (i0 as u32, j0 as u32, k0 as u32);
+    let c = BlockPos { face: ck.face, i: i0 + 31, j: j0 + 31, k: k0 + 10 };
+    let name = |bp: BlockPos| reg.def(w.block_at(bp)).name.clone();
+    println!(
+        "throughflow scene: cell ({}, {}, {}) holds {}; below {}, -i {}, -j {}, +i {}, +j {}; the highest natural solid in that column is layer {}",
+        c.i, c.j, c.k, name(c), name(BlockPos { k: c.k - 1, ..c }), name(BlockPos { i: c.i - 1, ..c }), name(BlockPos { j: c.j - 1, ..c }), name(BlockPos { i: c.i + 1, ..c }), name(BlockPos { j: c.j + 1, ..c }), top_solid(c.i, c.j)
+    );
+    // Generated water near the scenes: any natural water or ice cell in the
+    // 3 x 3 chunks around the throughflow chunk at its layers, and around
+    // the basin's chunk.
+    let generator = &w.generator;
+    let p = &w.planet;
+    for (what, ci, cj, k_lo, k_hi) in [("throughflow chunk and its 8 neighbours", (i0 / 32) as i64, (j0 / 32) as i64, k0 as i64, k0 as i64 + 31), ("basin chunk and its 8 neighbours", (g.i / 32) as i64, (g.j / 32) as i64, g.k as i64 + 4, g.k as i64 + 20)] {
+        let (mut wet, mut highest) = (0usize, f64::MIN);
+        let mut example = None;
+        for dx in -1..=1i64 {
+            for dy in -1..=1i64 {
+                for x in 0..32i64 {
+                    for y in 0..32i64 {
+                        let (i, j) = ((ci + dx) * 32 + x, (cj + dy) * 32 + y);
+                        let col = generator.column(p.dir(g.face, i as f64 + 0.5, j as f64 + 0.5), p.block_size);
+                        if col.water_m.is_finite() {
+                            let top_layer = col.water_m / p.block_size + p.sea_level as f64;
+                            if top_layer >= k_lo as f64 - 1.0 && col.water_m > col.height_m as f64 - 0.5 {
+                                wet += 1;
+                                if col.water_m > highest {
+                                    highest = col.water_m;
+                                    example = Some((i, j, col.water_kind, col.height_m));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        println!("{what} (layers {k_lo}..{k_hi}): {wet} generated water columns with a surface at or above the scene's floor; highest {highest:.2} m above sea, e.g. {example:?}");
+    }
+}
+
+/// Not a check: a lake for `mesh::tests::a_resting_lake_does_not_dip_at_chunk_borders`,
+/// which wants a lake at rest with a partial top level (a surface off the
+/// block grid) and sand on its shore, in a 5 x 5 block of chunks. Prints the
+/// biggest lakes whose surface sits 0.3-0.7 of a block up, with the chunk
+/// window around a shore point and the level the test should look for.
+#[test]
+#[ignore]
+fn relief_lake_for_mesh() {
+    let g = world_gen();
+    let h = hydro();
+    let p = &g.planet;
+    let mut cands: Vec<(usize, i32, f64)> = (0..h.lakes.len() as i32)
+        .map(|k| (h.field.iter().filter(|c| c.lake == k).count(), k, h.lakes[k as usize].w))
+        .filter(|(_, _, w)| {
+            let frac = (w / p.block_size).fract();
+            (0.3..0.7).contains(&frac)
+        })
+        .collect();
+    cands.sort_by(|a, b| b.0.cmp(&a.0));
+    for (cells, k, w) in cands.iter().take(6) {
+        let Some(shore) = shore_point(*k, 0) else { continue };
+        let (f, i, j) = p.lattice_of_dir(shore);
+        let (cx, cy) = ((i / 32.0).floor() as u32, (j / 32.0).floor() as u32);
+        let cz = ((w / p.block_size) + p.sea_level as f64).floor() as u32 / 32;
+        let level = ((w / p.block_size).fract() * 255.0).round() as u32;
+        let (lat, lon) = Planet::lat_lon_deg(shore);
+        println!("lake {k}: {cells} field cells, level {w:.3} m (partial level {level} in the cell at layer {}), shore at lat {lat:.4} lon {lon:.4}: face {f}, chunks cx {}..{} cy {}..{} cz {cz}", (w / p.block_size).floor() as i64 + p.sea_level as i64, cx - 2, cx + 2, cy - 2, cy + 2);
     }
 }
 

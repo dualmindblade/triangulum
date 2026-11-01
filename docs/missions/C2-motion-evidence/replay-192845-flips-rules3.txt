@@ -1,0 +1,7 @@
+211 flips over 127 cells, ticks 4223..4339
+0 cells flipped 3+ times within 20 ticks
+most flips in a window: {}
+gaps between flips (ticks: count): {}
+level a flickering cell is wetted to: {}
+flips per cell (count: cells): {1: 43, 2: 84}
+layers of flickering cells: {}

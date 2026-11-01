@@ -96,7 +96,7 @@ def main():
         common = ["--bake", bake, "--size", a.size]
         # One directory per run, so each keeps its run.log transcript.
         run([exe, *common, "--out", os.path.join(clips_dir, "main"), "--play", os.path.join(GAME, "scripts", "m1-showcase.play")], cwd=GAME)
-        run([exe, *common, "--out", os.path.join(clips_dir, "vscale8"), "--vscale", "0.125", "--height", "4096", "--sea-level", "1536",
+        run([exe, *common, "--out", os.path.join(clips_dir, "vscale8"), "--vscale", "0.125", "--height", "4096", "--sea-level", "2048", "--n", "131072",
              "--play", os.path.join(GAME, "scripts", "m1-showcase-vscale8.play")], cwd=GAME)
     # Clips play in file-name order (10_, 20_, ...) whichever run made them.
     clips = sorted(glob.glob(os.path.join(clips_dir, "*.mp4")) + glob.glob(os.path.join(clips_dir, "*", "*.mp4")), key=os.path.basename)

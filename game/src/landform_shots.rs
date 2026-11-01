@@ -165,6 +165,6 @@ pub fn run_landform_shots(engine: Arc<Engine>, opts: LandformShotOptions) {
         let path = format!("{}/{}.png", opts.out, s.name);
         h.save(&path, Some(&s.caption));
         let (lat, lon, alt) = s.cam.lat_lon_alt(&p);
-        println!("{} -> {path} (settled {secs:.1} s{}; cam lat {lat:.4} lon {lon:.4} alt {alt:.0} m heading {:.1} pitch {:.1}; {} draws)", s.name, if ok { "" } else { " TIMEOUT" }, s.cam.heading.to_degrees(), s.cam.pitch.to_degrees(), h.streamer.stats.drawn);
+        println!("{} -> {path} (settled {secs:.1} s{}; cam lat {lat:.4} lon {lon:.4} alt {alt:.0} m heading {:.1} pitch {:.1}; {} draws)", s.name, if ok { "" } else { " TIMEOUT" }, s.cam.heading().to_degrees(), s.cam.pitch.to_degrees(), h.streamer.stats.drawn);
     }
 }

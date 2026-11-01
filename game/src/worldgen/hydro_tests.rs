@@ -168,7 +168,7 @@ impl Report {
 
 /// Whether a drop from column a to column b (LOD 0) is designated.
 fn designated(g: &Generator, a: DVec3, b: DVec3) -> bool {
-    let h = hydro();
+    let h = g.hydro.as_deref().unwrap();
     let ca = g.channels_at(a, g.planet.block_size);
     let cb = g.channels_at(b, g.planet.block_size);
     ca.iter().any(|&(sa, xa)| cb.iter().any(|&(sb, xb)| (sa == sb && xb > xa) || (sa != sb && h.downstream(sa, sb, 12))))
@@ -277,7 +277,10 @@ fn square(p: &Planet, dir: DVec3, r: i64, out: &mut FastMap<Col, ()>) {
 /// A point on lake `k`'s shore (field = zone) between one of its cells and
 /// the nearest field cell outside it, if any.
 pub(super) fn shore_point(k: i32, nth: usize) -> Option<DVec3> {
-    let h = hydro();
+    shore_point_for(hydro(), k, nth)
+}
+
+fn shore_point_for(h: &Hydro, k: i32, nth: usize) -> Option<DVec3> {
     let inside: Vec<DVec3> = h.field.iter().filter(|c| c.lake == k).map(|c| c.pos).collect();
     if inside.is_empty() {
         return None;
@@ -469,6 +472,38 @@ fn water_is_contained() {
         assert_eq!(rep.missing, 0, "{name}: cells outside the generated region");
         assert!(rep.walls.is_empty(), "{name}: {} water walls, e.g. {}", rep.walls.len(), rep.walls[0]);
         assert!(rep.perched.is_empty(), "{name}: {} perched water cells, e.g. {}", rep.perched.len(), rep.perched[0]);
+    }
+}
+
+/// A fixed sample of the same global river links and lake shores at every
+/// planet size. Local patches are measured in blocks, not angles.
+#[test]
+fn t1_water_containment_at_every_planet_size() {
+    for size in [128, 256, 512, 832, 1024] {
+        let g = super::tests::planet_size_generator(size);
+        let h = g.hydro.as_deref().unwrap();
+        let mut cols = FastMap::default();
+        let mut lakes = 0;
+        for k in (0..h.lakes.len()).step_by(79) {
+            if let Some(d) = shore_point_for(h, k as i32, 0) {
+                square(&g.planet, d, 8, &mut cols);
+                lakes += 1;
+            }
+        }
+        for s in h.segs.iter().step_by(2048) {
+            for part in [1, 2, 3] {
+                let d = s.pts[(s.pts.len()-1)*part/4];
+                square(&g.planet, d, (s.hw + 3.0).ceil() as i64, &mut cols);
+            }
+        }
+        let cols: Vec<_> = cols.into_keys().collect();
+        let region = Region::build(&g, 0, &cols);
+        let rep = check(&g, &region, &cols);
+        report(&format!("T1 size {size}, {lakes} lake shores + 33 river sites"), &rep);
+        assert!(lakes >= 5 && rep.water_cells > 100);
+        assert_eq!(rep.missing, 0);
+        assert!(rep.walls.is_empty(), "{size}: {} walls: {:?}", rep.walls.len(), rep.walls.first());
+        assert!(rep.perched.is_empty(), "{size}: {} perched: {:?}", rep.perched.len(), rep.perched.first());
     }
 }
 

@@ -6,7 +6,7 @@
 # relative to where the player stands (block_rel[di,dj,dk], dk 0 = the feet
 # block), and every check is about what the edits did.
 #
-#   atblock F I J 2000   stands on whatever is the top solid block of
+#   atblock F I J 2512   starts above H, then stands on the top solid block of
 #                        column (I, J): the ground, or a block built there
 #   fly mode             no collision, 20 m/s, and placing into one's own
 #                        cell is allowed; at a fixed 60 Hz step,
@@ -27,7 +27,7 @@
 # below its underside, which holds on any gentle slope.
 
 # ---- 1. walk to the site ---------------------------------------------------
-atblock 2 107156 57519 2000
+atblock 2 107156 57519 2512
 lookaxis +i 0
 assert mode == walk
 assert on_ground == true
@@ -69,7 +69,7 @@ assert edits >= 1
 # Each block: stand on the last one, fly one cell on and one layer down (into
 # the cell the next block fills) and place it against the last block's +i face.
 mode walk
-atblock 2 107156 57519 2000
+atblock 2 107156 57519 2512
 assert block_rel[0,0,-1] == stone
 mode fly
 lookaxis +i 0
@@ -81,7 +81,7 @@ tap place
 assert block_rel[0,0,0] == stone
 assert block_rel[-1,0,0] == stone
 mode walk
-atblock 2 107157 57519 2000
+atblock 2 107157 57519 2512
 assert block_rel[0,0,-1] == stone
 mode fly
 lookaxis +i 0
@@ -92,7 +92,7 @@ assert crosshair == stone
 tap place
 assert block_rel[0,0,0] == stone
 mode walk
-atblock 2 107158 57519 2000
+atblock 2 107158 57519 2512
 assert block_rel[0,0,-1] == stone
 mode fly
 lookaxis +i 0
@@ -102,7 +102,7 @@ aim -0.5 0 0.5
 tap place
 assert block_rel[0,0,0] == stone
 mode walk
-atblock 2 107159 57519 2000
+atblock 2 107159 57519 2512
 assert block_rel[0,0,-1] == stone
 mode fly
 lookaxis +i 0
@@ -112,7 +112,7 @@ aim -0.5 0 0.5
 tap place
 assert block_rel[0,0,0] == stone
 mode walk
-atblock 2 107160 57519 2000
+atblock 2 107160 57519 2512
 assert block_rel[0,0,-1] == stone
 mode fly
 lookaxis +i 0
@@ -122,7 +122,7 @@ aim -0.5 0 0.5
 tap place
 assert block_rel[0,0,0] == stone
 mode walk
-atblock 2 107161 57519 2000
+atblock 2 107161 57519 2512
 assert block_rel[0,0,-1] == stone
 mode fly
 lookaxis +i 0
@@ -135,7 +135,7 @@ assert edits >= 1
 mode walk
 
 # ---- 4. walk out along the deck and jump on it -------------------------------
-atblock 2 107156 57519 2000
+atblock 2 107156 57519 2512
 lookaxis +i 0
 hold w 1.0
 assert on_ground == true
@@ -149,7 +149,7 @@ assert on_ground == false
 wait 1
 assert on_ground == true
 assert block_rel[0,0,-1] == stone
-atblock 2 107153 57516 2000
+atblock 2 107153 57516 2512
 mode fly
 hold space 0.3
 aim 6.0 3.0 -3.0
@@ -157,7 +157,7 @@ shot 04_bridge
 mode walk
 
 # ---- 5. dig a shaft five blocks down, then a tunnel along -i ----------------
-atblock 2 107152 57519 2000
+atblock 2 107152 57519 2512
 assert on_ground == true
 aim 0 0 -0.5
 assert crosshair != none
@@ -240,7 +240,7 @@ lookaxis +i 5
 shot 03_tunnel
 
 # ---- 6. the deck from underneath --------------------------------------------
-atblock 2 107159 57519 2000
+atblock 2 107159 57519 2512
 assert block_rel[0,0,-1] == stone
 mode fly
 hold ctrl 0.15
@@ -250,25 +250,25 @@ shot 04_under_bridge
 mode walk
 
 # ---- 7. save, reload (quit and start again), check every edit ---------------
-atblock 2 107159 57519 2000
+atblock 2 107159 57519 2512
 save
 assert dirty == 0
 reload
 assert edits >= 1
 # the pillar
-atblock 2 107156 57519 2000
+atblock 2 107156 57519 2512
 assert block_rel[0,0,-1] == stone
 assert block_rel[0,0,-5] == stone
 # the deck, end to end, with air under it
-atblock 2 107157 57519 2000
+atblock 2 107157 57519 2512
 assert block_rel[0,0,-1] == stone
 assert block_rel[0,0,-2] == air
-atblock 2 107162 57519 2000
+atblock 2 107162 57519 2512
 assert block_rel[0,0,-1] == stone
 assert block_rel[0,0,-2] == air
 assert block_rel[1,0,-1] == air
 # the shaft (standing at its bottom) and the tunnel
-atblock 2 107152 57519 2000
+atblock 2 107152 57519 2512
 assert block_rel[0,0,0] == air
 assert block_rel[0,0,4] == air
 assert block_rel[0,0,-1] != air
@@ -281,7 +281,7 @@ shot 05_reloaded
 # ---- 8. the bridge from a distance: 300 m, 550 m and 1 km back along -j ------
 # Fly mode is exact (20 m/s, 60 Hz): 15 s is 300 m, and the climb puts the eye
 # about 42, 62 and 92 m above the deck, which sets the pitches.
-atblock 2 107159 57519 2000
+atblock 2 107159 57519 2512
 mode fly
 lookaxis -j 0
 hold w 15

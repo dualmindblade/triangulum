@@ -410,10 +410,13 @@ impl Generator {
             _ => LakeAt::default(),
         };
         // Land falls towards water: the relief ramps up from a river's bank
-        // or a lake's shore over the valley it leaves (`Hydro::relief_ramp`).
+        // or a lake's shore over the valley it leaves (`Hydro::relief_ramp`);
+        // and it gives way where the global surface leaves it no room under
+        // the ceiling (`Scale::headroom`: 1 on the 90 km planet).
+        let dh = lf.dh * self.scale.headroom(base, lf.local.relief);
         let dh = match hx {
-            Some((h, _)) if !lake.is_empty() || !rivers.is_empty() => lf.dh * h.relief_ramp(&lake, &rivers, lf.local.relief, lf.local.mountain, voxel_m),
-            _ => lf.dh,
+            Some((h, _)) if !lake.is_empty() || !rivers.is_empty() => dh * h.relief_ramp(&lake, &rivers, lf.local.relief, lf.local.mountain, voxel_m),
+            _ => dh,
         };
         // The global surface plus the relief, under the ceiling; then the
         // shoreline, which the ground follows (`coast.rs`).
@@ -465,7 +468,12 @@ impl Generator {
     /// its surface.
     pub fn ground_height_m(&self, dir: DVec3) -> f64 {
         let c = self.column(dir, self.planet.block_size);
-        if c.wet() && !self.hide_water { c.water_m } else { c.height_m as f64 }
+        let h = if c.wet() && !self.hide_water { c.water_m } else { c.height_m as f64 };
+        // Teleport, spawn and ground-relative cameras must use the surface
+        // that exists: layer 0 is bedrock and terrain is clipped at H.
+        let p = &self.planet;
+        h.clamp((1.0 - p.sea_level as f64) * p.block_size,
+            (p.height - p.sea_level) as f64 * p.block_size)
     }
 
     /// Conservative (min, max) of the bake elevation (km) over the columns a
@@ -587,8 +595,10 @@ impl Generator {
             let damped = !c.cells.is_empty();
             h.height_range(&c).map(|r| (r, damped))
         });
+        // The relief is scaled toward zero near water (the valley ramp) and
+        // under a low ceiling (`Scale::headroom`), so zero is always in range.
+        lo = lo.min(0.0);
         if let Some((_, true)) = hyd {
-            lo = lo.min(0.0);
             hi = hi.max(0.0);
         }
         // The global surface plus the relief's range, eased under the
@@ -785,7 +795,7 @@ impl Generator {
                     return (b.ice, 0);
                 }
                 // When it is also the world's bottom voxel (it spans everything
-                // below sea level: L9 at sea level 512), nothing opaque lies
+                // below sea level: L10 at sea level H/2 = 1024), nothing opaque lies
                 // under it and translucent water would show the sky through the
                 // planet (review 2 #12). It is opaque deep ocean instead, coloured
                 // like the next finer LOD's water over its gravel floor. Below this

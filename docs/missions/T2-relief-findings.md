@@ -1,9 +1,12 @@
 # T2-relief findings (round 2 #1, #2a, #6): mountains in metres, the local/global split, land that falls towards water
 
-Branch `worktree-agent-a1eb49e1b01a4a063`, from main at 18d69c7. Evidence in
-`docs/missions/T2-relief-evidence/`. Generator version 4 -> 5: saves and replays
-from before are refused, as the round page expects. The frozen build
-`E:/triangulum-build/baseline-8134c61/triangulum.exe` made every "before".
+Branch `worktree-agent-a1eb49e1b01a4a063`, from main at 18d69c7, then merged
+with `T1-planet-scale` (a5e163f: main with C1 and C2, sea level 1024, planet
+sizes). Evidence in `docs/missions/T2-relief-evidence/`. Generator version
+**6** (T1 took 5): saves and replays from before are refused, as the round
+page expects. The frozen build `E:/triangulum-build/baseline-8134c61/triangulum.exe`
+made every "before". The second half of this page ("After the merge with
+T1") has what the lead asked for after the first report.
 
 ## What Andrew will see
 
@@ -309,43 +312,54 @@ LOD 0: mountains leave fewer chunks buried).
   (counts over 300 land columns at 1 m: columns on the floor, in a valley's
   ramp or on a beach are the bake's for every seed).
 - `world::tests::edits_propagate_to_coarse_lods` (not my file, left as it
-  is) fails at LOD 3: "a higher natural block keeps the voxel solid". It
-  places a marker flush with the surface near the spawn and expects the
-  8 m voxel over it to be solid when any LOD-0 natural column inside the
-  voxel rises above the marker. The propagation keeps the generator's own
-  coarse voxel there, which is band-limited and stands below the highest
-  fine column on steep ground (it is air); the hills at the spawn were
-  gentle enough before that it never showed. Either the propagation should
-  take the highest fine column, or the test should compare against the
-  generator's coarse voxel (I tried that: the other branch then fails for
-  the same reason, the voxel is air, so the propagation shows neither the
-  marker nor rock). That is a real, pre-existing LOD gap for edits on steep
-  ground, for the lead.
+  is) fails at LOD 3: "a higher natural block keeps the voxel solid". What
+  happens (`World::overlay_coarse`): a coarse voxel over an edited chunk
+  takes the topmost solid LOD-0 block in it when that block was placed by an
+  edit; when the topmost is natural it keeps the generator's own coarse
+  voxel. The test places a marker flush with the surface near the spawn and
+  expects, when a natural column inside the 8 m voxel rises above the
+  marker, that the voxel is solid. The generator's coarse voxel there is
+  air: a coarse column is band-limited, so on steep ground it stands below
+  the highest fine column inside its voxel (the LOD rule "coarse is the mean
+  of fine, not the max", unchanged since M1), and the spawn's hills are
+  steep enough now to show it. **It is not a hole**: that voxel was air at
+  LOD 3 before the edit and is air after it, so the far view is the same
+  with or without the marker; what a player sees is that a block placed
+  flush with the surface on steep ground does not show from 8 m voxels out
+  when a natural column inside the same voxel stands higher, until the LOD
+  refines on approach (an edit that is the topmost solid in its voxel still
+  shows at every LOD). The small fix I tried (compare against the
+  generator's coarse voxel) makes the other branch fail for the same
+  reason, so I reverted it. The fix that would make the test's expectation
+  true, in edited chunks only, is to show the topmost natural solid whenever
+  the generator's coarse voxel is not solid: that lifts the coarse surface of
+  every edited chunk on steep ground to the LOD-0 maximum while its unedited
+  neighbours stay at the band-limited mean, a chunk-shaped bump from afar
+  wherever anyone has dug, which is worse than the missing marker. Doing it
+  everywhere means every coarse voxel taking the maximum of its LOD-0
+  columns: 64 columns per voxel at LOD 3, far more than the generator can
+  afford. I recommend the test's branch be changed to expect the
+  generator's coarse voxel (air or rock) when the topmost solid is natural,
+  which is what the propagation promises; the lead's call, in his file.
 - `chunk_grid_matches_direct_columns`: the worst column off mesas at 1/8 is
   1.15 m at LOD 0 (the bar was 1 voxel; the mean is 1 cm and the p99 19 cm).
   The grid now interpolates only octaves with 16 samples per cell
   (`grid_cut` 64 voxels, was 32) and the bar is 1.25 voxels. At 1/70 the
   worst is 0.11 m.
-- `mesh::tests::a_resting_lake_does_not_dip_at_chunk_borders` (B1's) looks
+- `mesh::tests::a_resting_lake_does_not_dip_at_chunk_borders` (B1's) looked
   for a lake at level 204 in chunks (3607-3611, 2001-2005, cz 16): that
-  lake's level changed with the generator: it is lake 591, lowered to
-  0.00 m (a coastal lake whose inflow arrives at sea level), so its top
-  cell is now full water at layer 511 and layer 512 is air
-  (`hydro_probe` at face 2, 115504, 64112). The test wants a lake with a
-  partial level; the lake at Andrew's lat 6.96 pose is one. Not re-sited by
-  me (B1's file, and T1's sea-level move changes every `cz` in it anyway).
+  lake (591) is at 0.00 m now, a coastal lake whose inflow arrives at sea
+  level, so its top cell is full water and the layer above is air. Re-sited
+  to lake 419 after the merge (see "After the merge with T1", 4).
 - `sim::water_tests::a_full_basin_rests_until_touched...` (one unit of water
   not conserved) and `a_steady_throughflow_at_the_boundary_keeps_flowing`
-  (1100/1025 units counted against 1000/1000): both build their scenes 10-12
-  layers above the hills preset's ground, where the relief now rises 0.3-0.4
-  per metre; I did not change `sim/`, and read the cause as the scenes
-  meeting the ground (the powder tests build theirs at layer 1500 for this
-  reason). The lead or C2 should raise them; I have not proved it.
-- `m2b-boundary.play` and `m2b-water.play` dig their trenches and pits at
-  fixed blocks on the shore at (1986, 59004) and beside a river; the ground
-  there is not what it was (`frozen == 0, actual 27`; `water_rel ... == 255,
-  actual 0`): the scenes need re-siting with `find`, which T1's sea-level
-  move needs anyway.
+  (1100/1025 units counted against 1000/1000): I first read the cause as the
+  scenes meeting the steeper ground at the spawn. That was wrong; see
+  "After the merge with T1", 2.
+- `m2b-boundary.play` and `m2b-water.play` failed at site A (the flat patch
+  beside the spawn is hills now): `frozen == 0, actual 27`,
+  `water_rel ... == 255, actual 0`. Re-sited on a stone tray after the merge
+  (see "After the merge with T1", 5).
 
 ## Not verified
 
@@ -385,6 +399,177 @@ LOD 0: mountains leave fewer chunks buried).
   the tropics is -15 C, so the plateau belts are snow and ice at every
   latitude (the gorge frames). That is planetgen's climate, not the lapse;
   T3 owns the snow line.
+
+## After the merge with T1 (2026-11-01)
+
+The branch now carries `T1-planet-scale` (a5e163f: main with C1 and C2, sea
+level H/2 = 1024, planet sizes), generator version 6. Two conflicts in
+`hydro.rs` (T1's `index_scale` for the spatial grids and `search_run` for
+long courses sit beside my valley reach and ground sampling; both kept) and
+`save.rs` (the version). T1's own hydro index test now builds the model
+with a flat ground closure.
+
+**2. The sim tests, proved.** `relief_sim_scenes` (an ignored test,
+`relief_tests.rs`) rebuilds the two scenes' geometry at the hills preset on
+this terrain and reads the ground under them: the 9 x 7 basin's floor plate
+is at layer 571 with the highest natural solid under its footprint at 567
+(4 layers clear), the 5 x 5 lake's plate at 575 over ground at 565 (10
+clear), and the throughflow cell (107167, 57535, 586) is air with air on
+every side and the ground 22 layers below. **The scenes do not touch the
+ground; my first reading was wrong.** Raising them anyway (the lake and
+basin 16 layers higher, the throughflow cell 10) changes nothing: the same
+19,124 of 19,125 units and the same (1,100, 1,025) counts, so the raise was
+reverted and, as the lead asked, I stopped there and changed no water rule.
+What I can say about the mechanism without touching the rules: the basin
+test's one missing unit is the size of one level-1 film cell, and B4's rule
+dries a resting level-1 puddle cell between 200 and 600 ticks after it comes
+to rest on a beat hashed from its position (`plan_drying`,
+`sim/water.rs`), while `settle` runs until the queue empties (the drying
+list is not the queue); the drained surface layer in that test is a film
+leaning one level per cell up from the sill, and the test settled in 688
+ticks. The throughflow counts are identical at two heights, so they are not
+a position draw. **The control**: `T1-planet-scale` at a5e163f, built in a
+separate worktree (`E:/triangulum-build/t1-check`), passes both tests, and
+its basin test settles in the same 688 ticks with the same 103,664 units
+moved as on my branch. So the water moves identically in both trees and the
+difference is one unit at the end (and 100 / 25 units in the throughflow's
+counts): something my branch counts, dries, loses or takes from a boundary
+that T1's does not. With the sim's own counters printed before the asserts
+(a diagnostic line in the test, reverted afterwards): the basin test ends
+with `in 0 out 0 placed 0 removed 0 displaced 0 lost 0 dried 1 drying 7`.
+**One level-1 film cell dried** (B4's evaporation, Andrew's confirmed rule)
+before the queue emptied, and seven more were waiting to; `water_total` is
+then one short of 75 x 255, exactly the failure. The drying beat is hashed
+from the cell's position (`choice(key, key, 0) % 200` on top of 200-600
+ticks), so moving the scene's layer, which my terrain did through
+`hills_ground` (555 -> 565), moved every beat; on T1 the beats fall after
+the 688th tick and the test passes. So this test's "conserved" ignores
+evaporation and passes on main by the timing of a hash: not a terrain
+contact, not a water bug, a test that should count `water_dried`
+(`water_total + sim.stats.water_dried == total`) or run the scene under
+`Film::Keep`. I did not make that change: it is `sim/`'s file and the lead
+said to stop here.
+The throughflow test, traced tick by tick on both trees with the same
+instrumented test file (`out/t2/simdiag2.log`, `simdiag3.log`): on T1 the
+first `sim.step` (the one that builds the region, before the water is
+placed) leaves 0 updates queued and every later tick moves exactly 50 in
+and 50 out; on my branch that first step leaves **7 updates queued**, the
+first tick after the water is placed then counts **150 in and 75 out**
+while the only water cell goes from 100 to 100 (so 75 units came in from a
+boundary and went nowhere: `water_lost 0`, no other water cell, edited
+chunks 1), and every tick after that is the same 50 / 50 as T1's. The
+seven neighbouring chunks are classified `Mixed` on both trees, so my
+footprint bounds are not what differs. What differs is where the scene
+sits: the test puts its cell 10 layers over the floor of the chunk holding
+`hills_ground + 12`; on T1 (ground 555) that chunk is 544-575 and the cell
+is at **554, one layer inside the natural ground**, closed in by dirt; on
+my branch (ground 565) the chunk is 576-607 and the cell floats in open
+air at 586 with air on every side but the three stones the test places.
+The test was passing with its scene buried. Where the 7 updates come from
+and where the 75 units go is inside `sim/` and I did not go further:
+water that enters from a boundary and vanishes in the first tick of a
+freshly built region is for the lead or C2 to look at, with this scene
+(the hills site, a cell at k0 + 10 of chunk cz 18) as the repro.
+
+**3. `edits_propagate_to_coarse_lods`**: see "Tests that changed" above; not
+a hole, and the fix that makes the test's expectation true is not small. The
+test is left as it is.
+
+**4. `a_resting_lake_does_not_dip_at_chunk_borders`** re-sited to lake 419
+(level 9.39 m, partial level 100 in the cell at layer 521, face 0, chunks
+743-747 x 2757-2761 at cz 16; `relief_lake_for_mesh` lists candidates). It
+passes: the lake's level-100 cells are flat at their level, with sand on
+the shore.
+
+**5. `m2b-water.play` and `m2b-boundary.play`** keep their site and every
+assert; site A now stands on a stone tray laid with `fill` (five layers
+under the feet, air above, a rim at feet level 31 blocks out that keeps the
+poured film inside the box the asserts measure), the way `t1-size.play`
+levels its ground. The first run of the tray showed the draw the lead
+warned of: the second-tick levels (64 / 64 / 63 and 64 in the pit) are the
+even-tick spread order (the pass alternates direction every tick) and the
+tray's 23 ticks flipped them to 96 / 96 / 63 and an empty pit. The tray now
+takes an even number of ticks, and the headers say so. Both pass on this
+build: `m2b-water` 99 of 99 asserts, `m2b-boundary` 47 of 47 (the counts
+grew by the tray's own `on_ground`, `queued` and `frozen` checks).
+`m2b-river` passed 42 of 42 on this terrain, three times, with T1's pinned
+tick.
+
+**6. Every planet size.** `t1-size.play` passes at 128, 256, 512, 832 and
+1024 half-heights (26 of 26 asserts each, `--planet-size U --save
+saves/_t2U`). The hydro model builds in 2.4, 4.7, 7.0, 19.0 and 13.3 s on
+the loaded machine, almost all of it the old `lake_ends` pass (1.6 to
+15.8 s); the lakes lowered to their inflow go 19.6, 39.2, 78.5, 127.5 and
+157.0 m at most (global, as said above). **The ceiling at 832**: the belt's
+bake heights are 505-720 m there, so 640 m of local relief had 290 m of
+room under the 1009 m the easing tops out at. The easing is a tanh and
+saturates: the whole belt came out as a plateau at 1004-1005 m with the
+valleys as pits in it (`relief_maps` at 832: heights 542..1005 m over 12
+km; `sizes_832_before.jpg`: "the range from 2 km" is a flat white cap with
+a bowl in it, and "the valley floor" at 786 m looks up at a 1005 m skyline
+1 km away). That is flat-topping by another name. So the rule is now that
+**local relief gives way where the global surface leaves it no room**
+(`Scale::headroom`, applied to the relief before the valley ramp): the
+share of the relief that stands is the room under the ceiling's top over
+1.25 x the relief scale, clamped to 1, which is 1 everywhere on the 90 km
+planet (room 870 m or more against 800 needed, so nothing at 128 changes)
+and about 0.37 on the 832 planet's strongest belt, where ranges keep their
+shape at about 240 m of relief; the easing stays as the last guard. With
+it (`sizes_832_after.jpg`, `relief_maps_832.jpg`): the belt's 12 km window
+reads 534..913 m (bake 505..720), the valley floor at 730 m looks up at a
+913 m ridge, and "the range from 2 km" is snowy rolling high ground with a
+long ridge, not a cap: at 832 the belts are high rolling country, about
+190 m of local relief on 700 m of bake. The map's before/after is the
+clearest: pits in a plateau against ridges and valleys. On the 90 km
+planet nothing changes (`sizes_128_merged.jpg` is the merged build's 128
+frames: the same range and valley as before, with sea level at 1024); the
+gates (`land_falls_towards_water` 4.7%, `local_features_keep_their_metres`,
+the bounds, the grid, the ceiling, the floor) were run again after it and
+pass. This is a judgement call for Andrew and T1: local relief shrinking
+where the planet's own heights fill the world, instead of ranges with
+their tops cut off.
+
+**7. The whole suite.** `cargo test --release` in one run after the last
+change (`Scale::headroom`), 482 s on the loaded machine: **424 passed, 4
+failed, 33 ignored.** The four: the two sim tests and
+`edits_propagate_to_coarse_lods` (above, all three left for the lead), and
+T1's `t1_large_river_search_covers_the_whole_course_with_bounded_index_work`,
+which loads `hydro.bin` from `assets/world/seed42` relative to `game/` and
+found nothing there in this worktree (the other tests read the bake from
+the main checkout by absolute path); it is an environment miss, not a
+failure: with the bake copied into the worktree it passes (984 points on
+long courses, 128 search runs). T1's play suite
+(`python scripts/t1_play_suite.py`) failed every script in 0.1 s for the
+same reason (`exit 2`, no bake at `assets/world/seed42`); with the bake
+copied into the worktree (538 MB, not in git) it ran all 45 scripts
+(`out/t1/plays/20261101-014902/`): **33 pass, 12 fail**, every failure a
+scene standing on fixed natural ground that my relief changed under it,
+the same kind of break the two `m2b` scripts had. None of them is a rule
+or a renderer failing; all need re-siting (a `fill` tray as in `m2b-water`,
+or `find`-relative scenes), which I have not done:
+`b3-corner` (37: the cube-corner blocks are at other heights, `crosshair_k
+1035 vs 1038`, shale where air was), `m2a-sand` (11: the tower's columns
+meet limestone and umber where the flat patch was), `m1-showcase` (12, and
+`m1-showcase-vscale8`: the recorded flights dive 464-471 m under the new
+ranges, `fly: the eye came within -471 m of the ground`; the showcase
+needs re-flying over mountains), `m2c-replay` (5: `find` lands elsewhere,
+`find_k 1067 vs 1077`, two landings for one), `m2c-video-driver` (6: sand
+placed at a fixed block is air now), `m3a-tunnel` (6: the surface here is
+dirt, not grass, the hill is steeper), `tunnel-wall-reload` (6: the shaft
+meets shale), `m3b-hotbar` (2: a wall at fixed blocks), `b5-meshview` (1:
+a water level at a fixed block), `b7-walk` (1: a pile on a slope, `alt_agl
+0.96`), `b4-film` (1: `drying 6 vs 0`, a film on real ground now runs down
+a slope and dries). The 33 that pass include `m1-done` (94 of 94 this
+time), the three `m2b` scripts, `b2-shores`, `b4-slide`, `c1-*`, `c2-*`,
+`t2-andrew`, the probes and the water seams.
+
+**Left open after the merge**: the two sim tests (above: one is evaporation
+timing, one a first-tick boundary accounting in open air; both need a
+decision in `sim/`), `edits_propagate_to_coarse_lods` (the test's
+expectation against the band-limited LOD rule), and the 12 play scripts
+whose scenes stand on fixed natural ground (above, 7: each needs a tray or
+a `find`-relative site, and the two showcase flights need re-flying over
+the ranges). Everything else the lead listed is closed.
 
 ## For the lead
 

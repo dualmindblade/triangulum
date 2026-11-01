@@ -72,7 +72,8 @@ pub const FORMAT_VERSION: u32 = 3;
 /// because saves, not generation, care about it). A save made with another
 /// generator version is refused: its edits sit in terrain that no longer
 /// exists around them.
-pub const GENERATOR_VERSION: u32 = 5; // 2: landforms v2 (ridges, gullies, valleys, mesas); 3: lakes and rivers (hydro.bin); 4: coasts (shoreline from the bake's coast, beaches, sea and lake floors); 5: landforms v3 (local relief in metres: mountains on the belts, the bake as the floor, land falling towards water, river levels from the natural ground)
+pub const GENERATOR_VERSION: u32 = 6; // 6: landforms v3 (local relief in metres: mountains on the belts, the bake as the floor, land falling towards water, river levels from the natural ground)
+// Previous versions: 2: landforms v2 (ridges, gullies, valleys, mesas); 3: lakes and rivers (hydro.bin); 4: coasts (shoreline from the bake's coast, beaches, sea and lake floors); 5: sea level H/2, planet-size terrain defaults
 
 const CHUNK_MAGIC: &[u8; 4] = b"TRC2";
 
@@ -941,7 +942,7 @@ mod tests {
         let dir = temp_dir("r4-falling-identity");
         let (cfg, reg) = (config(), registry());
         let snap = crate::sim::Snapshot {
-            falling: vec![crate::sim::Falling { id: 4, face: 2, i: 100, j: 200, z: 612.0, vel: -1.0 }],
+            falling: vec![crate::sim::Falling::new(4, 2, 100, 200, 612.0, -1.0)],
             ..Default::default()
         };
         dir.flush(&EditStore::new(), &cfg, &reg, BAKE, Some(&snap.to_bytes())).unwrap();

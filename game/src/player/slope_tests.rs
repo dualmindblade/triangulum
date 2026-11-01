@@ -35,9 +35,7 @@ fn walker(w: &World, c: BlockPos, di: f64, dj: f64) -> Player {
     let p = &w.planet;
     let pos = p.pos(c.face, c.i as f64 + 0.5 + di, c.j as f64 + 0.5 + dj, c.k as f64 + 1e-5);
     let mut b = Player::new(pos, 0.0, 0.0, Mode::Walk, p.block_size);
-    let f = Frame::at(p, pos);
-    let (north, east, _) = Camera::local_frame(pos);
-    b.heading = f.ei.dot(east).atan2(f.ei.dot(north));
+    b.face(Frame::at(p, pos).ei);
     b.on_ground = true;
     b
 }
@@ -111,9 +109,7 @@ fn a_body_walks_over_a_pile_on_a_cube_edge() {
         // Face to face the heading is the same world direction only for a
         // moment: keep it pointing onward.
         let onward = (b.pos - start).normalize();
-        let (north, east, up) = Camera::local_frame(b.pos);
-        let t = (onward - up * onward.dot(up)).normalize();
-        b.heading = t.dot(east).atan2(t.dot(north));
+        b.face(onward);
     }
     assert!(crossed, "it reached the other face");
     assert!(high - c.k as f64 > 2.5, "up the pile: {}", high - c.k as f64);

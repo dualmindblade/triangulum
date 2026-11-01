@@ -1,0 +1,134 @@
+
+running 21 tests
+test player::great_circle_tests::a_huge_dive_along_the_view_does_not_tunnel ... FAILED
+test player::great_circle_tests::any_speed_any_direction_stays_a_position ... FAILED
+test player::great_circle_tests::flying_forward_goes_a_quarter_of_the_way_round_on_a_great_circle ... FAILED
+test player::great_circle_tests::flying_straight_over_a_pole_has_no_jump_at_5000_m_s ... FAILED
+test player::great_circle_tests::mouse_look_at_lat_89_99_turns_the_same_as_at_the_equator ... ok
+test player::great_circle_tests::standing_exactly_on_a_pole_is_nothing_special ... FAILED
+test player::great_circle_tests::strafing_is_a_great_circle_too ... FAILED
+test player::great_circle_tests::a_diagonal_is_a_great_circle_too ... FAILED
+test player::great_circle_tests::a_teleport_faces_the_same_compass_heading_at_the_other_end ... ok
+test player::great_circle_tests::flying_straight_over_a_pole_has_no_jump_at_20_m_s ... FAILED
+test player::great_circle_tests::the_view_is_carried_on_any_step_however_the_step_moved ... FAILED
+test player::great_circle_tests::a_pitched_flight_stays_in_the_plane ... FAILED
+test player::great_circle_tests::set_heading_and_heading_agree ... ok
+test player::great_circle_tests::mouse_look_on_the_move_near_a_pole_turns_by_what_the_mouse_said ... FAILED
+test player::great_circle_tests::flying_forward_goes_all_the_way_round_on_a_great_circle ... FAILED
+test player::great_circle_tests::walking_forward_goes_all_the_way_round_on_a_great_circle ... FAILED
+test player::great_circle_tests::walking_straight_over_a_pole_has_no_jump ... FAILED
+test player::great_circle_tests::walking_from_far_out_is_a_body_falling ... ok
+test player::great_circle_tests::walking_sideways_is_a_great_circle_too ... FAILED
+test player::great_circle_tests::walking_forward_goes_a_quarter_of_the_way_round_on_a_great_circle ... FAILED
+test player::great_circle_tests::a_huge_step_down_stops_at_the_floor_and_does_not_tunnel ... FAILED
+
+failures:
+
+---- player::great_circle_tests::a_huge_dive_along_the_view_does_not_tunnel stdout ----
+
+thread 'player::great_circle_tests::a_huge_dive_along_the_view_does_not_tunnel' (9176) panicked at src\player\great_circle_tests.rs:497:13:
+10000000 m/s step 1: went through to the far side
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- player::great_circle_tests::any_speed_any_direction_stays_a_position stdout ----
+
+thread 'player::great_circle_tests::any_speed_any_direction_stays_a_position' (13032) panicked at src\player\great_circle_tests.rs:453:17:
+1000000000 m/s pitch -88 step 0: a step went past a quarter turn
+
+---- player::great_circle_tests::flying_forward_goes_a_quarter_of_the_way_round_on_a_great_circle stdout ----
+
+thread 'player::great_circle_tests::flying_forward_goes_a_quarter_of_the_way_round_on_a_great_circle' (13368) panicked at src\player\great_circle_tests.rs:66:5:
+the height held: 91069.21831901377 to 91134.65935826665
+
+---- player::great_circle_tests::flying_straight_over_a_pole_has_no_jump_at_5000_m_s stdout ----
+
+thread 'player::great_circle_tests::flying_straight_over_a_pole_has_no_jump_at_5000_m_s' (11172) panicked at src\player\great_circle_tests.rs:181:9:
+5000 m/s, step 9, 0.0260 deg from the pole: the view turned 3.140675e0 rad for a move of 9.180755e-4 rad
+
+---- player::great_circle_tests::standing_exactly_on_a_pole_is_nothing_special stdout ----
+
+thread 'player::great_circle_tests::standing_exactly_on_a_pole_is_nothing_special' (10676) panicked at src\player\great_circle_tests.rs:226:9:
+and the view stayed put
+
+---- player::great_circle_tests::strafing_is_a_great_circle_too stdout ----
+
+thread 'player::great_circle_tests::strafing_is_a_great_circle_too' (3560) panicked at src\player\great_circle_tests.rs:135:17:
+(0, 0) heading 0: 83.22512738732887 m off
+
+---- player::great_circle_tests::a_diagonal_is_a_great_circle_too stdout ----
+
+thread 'player::great_circle_tests::a_diagonal_is_a_great_circle_too' (24008) panicked at src\player\great_circle_tests.rs:157:13:
+the view keeps its angle to the path
+
+---- player::great_circle_tests::flying_straight_over_a_pole_has_no_jump_at_20_m_s stdout ----
+
+thread 'player::great_circle_tests::flying_straight_over_a_pole_has_no_jump_at_20_m_s' (18872) panicked at src\player\great_circle_tests.rs:181:9:
+20 m/s, step 2348, 0.0058 deg from the pole: the view turned 3.672322e-6 rad for a move of 3.672317e-6 rad
+
+---- player::great_circle_tests::the_view_is_carried_on_any_step_however_the_step_moved stdout ----
+
+thread 'player::great_circle_tests::the_view_is_carried_on_any_step_however_the_step_moved' (6168) panicked at src\player\great_circle_tests.rs:342:9:
+step 89: 0.000010070153922327619
+
+---- player::great_circle_tests::a_pitched_flight_stays_in_the_plane stdout ----
+
+thread 'player::great_circle_tests::a_pitched_flight_stays_in_the_plane' (2584) panicked at src\player\great_circle_tests.rs:106:21:
+(0, 0) heading 37 pitch -30 step 2
+
+---- player::great_circle_tests::mouse_look_on_the_move_near_a_pole_turns_by_what_the_mouse_said stdout ----
+
+thread 'player::great_circle_tests::mouse_look_on_the_move_near_a_pole_turns_by_what_the_mouse_said' (18580) panicked at src\player\great_circle_tests.rs:384:13:
+step 0: the view swung 0.016356000916243174 rad on its own
+
+---- player::great_circle_tests::flying_forward_goes_all_the_way_round_on_a_great_circle stdout ----
+
+thread 'player::great_circle_tests::flying_forward_goes_all_the_way_round_on_a_great_circle' (4844) panicked at src\player\great_circle_tests.rs:66:5:
+the height held: 91069.21831901377 to 91173.87706227491
+
+---- player::great_circle_tests::walking_forward_goes_all_the_way_round_on_a_great_circle stdout ----
+
+thread 'player::great_circle_tests::walking_forward_goes_all_the_way_round_on_a_great_circle' (7808) panicked at src\player\great_circle_tests.rs:253:9:
+(0, 0) heading 37, step 5175: the view left the plane by 0.0573 deg
+
+---- player::great_circle_tests::walking_straight_over_a_pole_has_no_jump stdout ----
+
+thread 'player::great_circle_tests::walking_straight_over_a_pole_has_no_jump' (4480) panicked at src\player\great_circle_tests.rs:318:17:
+pole 1 lon 0 step 421: the view turned 3.141580e0 for a move of 1.246686e-5
+
+---- player::great_circle_tests::walking_sideways_is_a_great_circle_too stdout ----
+
+thread 'player::great_circle_tests::walking_sideways_is_a_great_circle_too' (18836) panicked at src\player\great_circle_tests.rs:294:13:
+(0, 0) step 13557: left the circle by -2.000 m
+
+---- player::great_circle_tests::walking_forward_goes_a_quarter_of_the_way_round_on_a_great_circle stdout ----
+
+thread 'player::great_circle_tests::walking_forward_goes_a_quarter_of_the_way_round_on_a_great_circle' (8616) panicked at src\player\great_circle_tests.rs:253:9:
+(0, 0) heading 37, step 5175: the view left the plane by 0.0573 deg
+
+---- player::great_circle_tests::a_huge_step_down_stops_at_the_floor_and_does_not_tunnel stdout ----
+
+thread 'player::great_circle_tests::a_huge_step_down_stops_at_the_floor_and_does_not_tunnel' (4428) panicked at src\player\great_circle_tests.rs:479:13:
+10000000 m/s from 384000000: ended at [73289.92132644913, -42314.0428896533, 30802.142953490467] (0.11073651410684968 m from where it should)
+
+
+failures:
+    player::great_circle_tests::a_diagonal_is_a_great_circle_too
+    player::great_circle_tests::a_huge_dive_along_the_view_does_not_tunnel
+    player::great_circle_tests::a_huge_step_down_stops_at_the_floor_and_does_not_tunnel
+    player::great_circle_tests::a_pitched_flight_stays_in_the_plane
+    player::great_circle_tests::any_speed_any_direction_stays_a_position
+    player::great_circle_tests::flying_forward_goes_a_quarter_of_the_way_round_on_a_great_circle
+    player::great_circle_tests::flying_forward_goes_all_the_way_round_on_a_great_circle
+    player::great_circle_tests::flying_straight_over_a_pole_has_no_jump_at_20_m_s
+    player::great_circle_tests::flying_straight_over_a_pole_has_no_jump_at_5000_m_s
+    player::great_circle_tests::mouse_look_on_the_move_near_a_pole_turns_by_what_the_mouse_said
+    player::great_circle_tests::standing_exactly_on_a_pole_is_nothing_special
+    player::great_circle_tests::strafing_is_a_great_circle_too
+    player::great_circle_tests::the_view_is_carried_on_any_step_however_the_step_moved
+    player::great_circle_tests::walking_forward_goes_a_quarter_of_the_way_round_on_a_great_circle
+    player::great_circle_tests::walking_forward_goes_all_the_way_round_on_a_great_circle
+    player::great_circle_tests::walking_sideways_is_a_great_circle_too
+    player::great_circle_tests::walking_straight_over_a_pole_has_no_jump
+
+test result: FAILED. 4 passed; 17 failed; 0 ignored; 0 measured; 388 filtered out; finished in 0.97s
+

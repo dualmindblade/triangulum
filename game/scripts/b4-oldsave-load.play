@@ -4,7 +4,7 @@
 # unscheduled, exactly as a generated river is held until disturbed. Then the
 # tower is touched, and only what the touch reaches moves.
 mode fly
-atblock 2 107155 57531 620
+atblock 2 107155 57531 1132
 assert block_rel[0,0,0] == sand
 assert level_rel[-8,0,-5] == 1
 assert sim_tick > 200

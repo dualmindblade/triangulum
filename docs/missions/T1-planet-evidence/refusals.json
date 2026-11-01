@@ -1,0 +1,40 @@
+[
+  {
+    "name": "step",
+    "command": [
+      "E:\\triangulum-work\\T1\\game\\target\\release\\triangulum.exe",
+      "--find-places",
+      "--no-save",
+      "--planet-size",
+      "129"
+    ],
+    "exit_code": 2,
+    "message": "error: planet_size_half_heights = 129 must be a positive multiple of 32 (32, 64, 96, ...): a coarsest chunk spans 32 half-heights, and must tile every face exactly\n"
+  },
+  {
+    "name": "limit",
+    "command": [
+      "E:\\triangulum-work\\T1\\game\\target\\release\\triangulum.exe",
+      "--find-places",
+      "--no-save",
+      "--planet-size",
+      "1056"
+    ],
+    "exit_code": 2,
+    "message": "error: planet_size_half_heights = 1056 exceeds the limit 1024 at H = 2048: N = size * H/2 must fit 1048576 columns (sim::PosKey stores i and j in 20 bits); the size dial is also capped at 1024\n"
+  },
+  {
+    "name": "height",
+    "command": [
+      "E:\\triangulum-work\\T1\\game\\target\\release\\triangulum.exe",
+      "--find-places",
+      "--no-save",
+      "--planet-size",
+      "832",
+      "--height",
+      "4096"
+    ],
+    "exit_code": 2,
+    "message": "error: planet_size_half_heights = 832 exceeds the limit 512 at H = 4096: N = size * H/2 must fit 1048576 columns (sim::PosKey stores i and j in 20 bits); the size dial is also capped at 1024\n"
+  }
+]

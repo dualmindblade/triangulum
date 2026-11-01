@@ -31,22 +31,29 @@ everything you change shows straight away.
   **Shift+M** keys do (see Controls).
 - **Distance detail**: how much detail far-away land keeps. Higher looks
   better and costs speed.
-- **Terrain**: roughness, landforms and how tall the mountains are
-  (vertical scale 1/70, 1/20, 1/8). These rebuild the world, so the game
-  shows you a *preview world* with saving turned off: your own world and
-  its save are never touched. *Back to my world* takes you home. *Make
-  this the default...* makes new worlds start with this terrain, but saves
-  made with the old terrain will not load any more, so only do it when you
-  are sure.
+- **Terrain**: planet size, roughness, landforms and vertical scale. *Planet
+  size* runs from 128 to 1024 half-heights in steps of 32. **Earth analogue
+  (832)** means a 588.7 km radius: Earth reduced until its deepest trench
+  fits below the middle of this world. The panel shows the radius and
+  vertical scale. **Follow planet radius** keeps Earth's slopes as you
+  resize; untick it to choose custom relief. Continents and the river
+  network stretch; block size stays the same.
+  These dials rebuild a *preview world* with saving off. Your own world,
+  edits and simulation are set aside safely. *Back to my world* restores
+  them. *Save look* keeps the preview's size and terrain as the defaults
+  for new worlds in `world.json`; it never saves blocks dug in the preview.
+  Existing saves need their original size and terrain settings.
 
 Sky and light, Water, Blocks and Distance detail each have a reset button
 that puts that section back to the look the game ships with (each block
 also has its own small reset); in Terrain, *Back to my world* does that.
 
-**Saving and sharing.** *Save look* writes your choices into two files:
+**Saving and sharing.** *Save look* writes your choices into three files:
 `game/assets/look.json` (sky, light, water, detail) and
-`game/assets/blocks.json` (block colours). *Revert to saved* throws away
-what you changed since. To share a look, commit and push those two files,
+`game/assets/blocks.json` (block colours), plus `game/assets/world.json`
+(planet size and terrain). *Revert to saved* throws away what you changed
+since, rebuilding a preview if the saved terrain differs. To share a look,
+commit and push those three files,
 or just send them: everyone who pulls gets your look. You can also edit
 the files in a text editor; the game notices within half a second.
 
@@ -162,7 +169,7 @@ mode when higher; `--walk` and `--fly` force it.
 |---|---|
 | click | capture the mouse (Esc releases it) |
 | mouse | look |
-| W A S D | walk (fly: move along the view) |
+| W A S D | walk (fly: move along the view), along a great circle in any direction |
 | Space | jump; swim up; fly up |
 | Ctrl | sneak: slow, and never off an edge (build a bridge by backing up); swim down; fly down |
 | Shift | sprint (fly: 4× speed) |
@@ -170,7 +177,7 @@ mode when higher; `--walk` and `--fly` force it.
 | left mouse | break the targeted block (hold to repeat); holding water, remove the targeted water cell |
 | right mouse | place the selected block on the targeted face; holding water, place a full cell of water |
 | 1–9 | select a hotbar block (9 is water: the bucket) |
-| scroll | fly speed |
+| scroll | fly speed, from 1 cm/s up, with no limit |
 | R | drop to the ground here, in walk mode |
 | P | take a photo: the world finishes loading first, and the HUD is left out |
 | Shift+P | take a photo of this very frame, HUD and all |
@@ -216,6 +223,23 @@ and how many chunks are edited and unsaved.
 
 The player is a 0.6 × 1.8 m box, eyes at 1.62 m, reach 6 m, with radial
 gravity, a 1.28 m jump and simple buoyancy in water. There is no fall damage.
+
+**Going straight.** Holding a key follows a great circle: the shortest way
+round the planet, forwards, backwards, sideways, walking or flying, and straight
+over a pole, where the view just carries on. What you face is a direction that
+travels with you (`camera::carried`), not a compass heading, so nothing special
+happens at a pole and the mouse turns the same everywhere. Your compass heading
+changes as you go, as it does on any long flight; a teleport keeps it. In fly
+mode a step is measured around the planet, so flying level stays level at any
+speed. The wheel has no ceiling: at a million metres a second you go round the
+planet nearly twice a second, and Shift is still four times that. You can't go
+through the planet, however fast, and a flight stops 10^15 m from its centre,
+900,000 times the sun's distance, where the sums would stop being numbers.
+
+**Leaving the window** is safe. Minimised, the game draws nothing and keeps
+playing at its 60 steps a second, sleeping in between. Clicking away or Alt-Tab
+lets go of the mouse and of every key; the first click when you come back
+captures the mouse again and does nothing else.
 
 ## Photos, the map and teleport
 
@@ -284,6 +308,12 @@ that moment. It doesn't change the recording: the game stops while you draw, and
 the replay plays as if you had never paused. Quitting with Q or closing the window
 also stops the recording, and if the game crashes the file keeps everything up to
 the last second.
+
+**If the game dies,** it leaves the reason in `game/out/crash/panic-<time>.txt`,
+whatever became of the console: the message, where it happened, the command line,
+the build and a backtrace. Send that file. If the game won't start at all, a box
+says why, and the same words go to the console: a save this game refuses to touch
+is a message and a clean exit, not a crash.
 
 **If it stands still, a photo will do.** F9 with no recording running saves a
 marked photo. Or press **P**, open **T**, select the photo and press *Annotate*.
@@ -371,6 +401,12 @@ a replay can say one differs but can't bring it back. Each marker in `report.jso
 also says how many pixels its settled shot differs from the frame that was marked;
 that frame was live, so distant detail still loading counts.
 
+A recording says how the player moved (`move_rules` in its header). Great
+circles (rules 2) take the same keys somewhere else, so a recording from before
+them refuses to play and says so: its markers and its report still stand, and
+the build that made it still plays it. A photo's exact pose from before still
+works: it holds a heading, and it means the same thing now.
+
 R4 adds the algorithm version and previous region radius to simulation
 hashes. Recordings from before that change can differ at their checks even
 with `sim_rules = 3`; use their recording build to play those files. Their
@@ -381,6 +417,8 @@ saves remain readable when the world/generator checks match.
 ```
 --seed N --block-size S --height H --sea-level K --n N --bake DIR --vscale F --roughness F
                       world parameters (defaults in assets/world.json)
+--planet-size U       half-heights per face edge (128..1024, steps of 32;
+                      Earth analogue 832); --n remains a raw-column override
 --save DIR            save directory (default saves/<world name>)
 --no-save             neither load nor write a save
 --sim-radius M        active region of the simulation around the player (112)
@@ -399,6 +437,11 @@ saves remain readable when the world/generator checks match.
 --look-file FILE      the look to start from and save to (assets/look.json)
 --panel               start with the look panel open
 --size WxH --no-vsync --backend vulkan|dx12
+--no-focus            the window opens inactive and at the bottom of the z-order:
+                      for testing the real window on a machine somebody is
+                      using (tools/quiet-window.ps1, below)
+--captured            start with the mouse captured, as the first click does
+--crash-test          panic on the first frame, to see the crash file written
 --screenshot PATH --exit-after SECS     save a frame with the HUD (and a
                       PATH.json sidecar with the look) and quit
 --time HH:MM          start at local solar time at the starting longitude (default 12:00)
@@ -408,10 +451,26 @@ saves remain readable when the world/generator checks match.
                       July calendar parameters (7, 3, 84)
 ```
 
-Block size, height, sea level and N are validated at startup; an
-unsupported combination (for example a sea level that is not a multiple of
-H / 8, or an N the coarsest chunks do not tile) is refused with a message
-saying what to change.
+`world.json` uses `planet_size_half_heights`, with N = that number × H/2.
+The shipped world is H = 2048, sea level 1024, size 128, N = 131072.
+The coarsest voxel is 1024 m (LOD 10): the bottom half can hold ocean and
+the top half air. At this LOD the bottom sea voxel uses opaque ocean colour
+so the sky cannot show through the planet; finer water has a real floor.
+
+The size must be a multiple of 32 so coarsest chunks tile every face.
+N cannot exceed 1048576: the simulation packs each horizontal coordinate
+in 20 bits. At H = 2048 that permits 1024 half-heights; H = 4096 permits
+512. Refusals explain both the value and the rule. Small test worlds may
+use sizes down to 32. Changing `--height` keeps the half-height count and
+places sea level at H/2; `--n` and `--sea-level` can override those for tests.
+Legacy files with `columns_per_face` still load, but a file must not supply
+both size fields. N need not be a power of two: 832 works.
+
+Generator version 5 moves the absolute layers. Saves and replays from an
+older generator are refused, with their files left untouched. Use their
+original build to continue them, or `--save saves/another-name` for a new
+world. `scripts/shift_layers.py` shifts only absolute layer references in
+`.play` files by +512; use it once on scripts brought in from older branches.
 
 ## Sky and time
 
@@ -434,9 +493,15 @@ moonlight levels and underwater tint retain July's equations. Atmosphere
 height, limb thickness and fog distance scale with planet radius. The
 `sky` JSON fields `atmosphere_height_radii`, `limb_height_radii` and
 `fog_per_radius` set those optical lengths' defaults; since M3a the look
-(`assets/look.json`, below) carries the atmosphere height and the fog in
-metres and overrides them, and the limb keeps its July proportion to the
-atmosphere. The moon's orbit supplies light only; a visible moon, eclipses, clouds
+(`assets/look.json`, below) carries the atmosphere height and fog in metre
+units, together with `sky.reference_radius_m`, the radius where those dials
+were authored. Loading or previewing another radius multiplies atmosphere
+height by the new radius / authored radius and divides fog density by that factor. The
+panel shows the resulting actual metres and fog per km; saving records
+the new reference radius. The limb keeps its July proportion to the
+atmosphere. Shipped air scale heights range from about 640 m at size 128
+to 5.12 km at 1024; fog e-folding distances range from 4.06 to 32.5 km.
+The moon's orbit supplies light only; a visible moon, eclipses, clouds
 and weather remain M5 work. Cube face normals and per-vertex AO stay in
 the existing packed quad format; continuous natural-surface normals and
 cave skylight propagation need additional terrain data.
@@ -487,9 +552,10 @@ Andrew's dials live in three files, all tracked in git:
   writes the file back in its own style (one aligned line per block, ids
   and every other field kept); `blocks::colours_into_text` reproduces the
   shipped file byte for byte.
-- `assets/world.json`: the terrain dials (`roughness`, `landform`,
-  `vertical_scale`), written only by the panel's *Make this the default*,
-  which changes the three values in place and nothing else.
+- `assets/world.json`: `planet_size_half_heights` and the terrain dials
+  (`roughness`, `landform`, `vertical_scale`), written by *Save look*.
+  These four values change in place; `vertical_scale: null` keeps following
+  radius across a save and restart.
 
 `src/workshop.rs` is the panel. Per frame it applies changes (the look into
 the sky uniform, colours into the colour table, the LOD factor into the
@@ -633,6 +699,21 @@ until the region arrives. Natural sand and gravel do not move until a change
 reaches them: a generated beach steeper than the slope stands until touched.
 `--no-slide` is the old rule, unit for unit.
 
+**What you see of it (C2).** The rule moves a sliding block into the next
+column in one tick; the picture does not. A block in flight is drawn part way
+through each tick (frames between ticks interpolate), and a block that slid is
+drawn travelling from the cell it left to its own column over 0.2 s, fast off
+the edge and dropping as it goes, so it reads as one block going over an edge,
+across chunk borders, cube edges and cube corners alike. None of that is
+state: a save carries the cell it left so a reload mid-slide draws on, and
+nothing of it is hashed or replayed. The second copy Andrew saw was the
+chunk's mesh, which is rebuilt asynchronously and showed the block where it
+was for a frame or more after it had moved: the renderer now knows which edit
+revision each chunk's mesh was built from, holds a block exactly where the
+mesh still shows it until the mesh drops it, and keeps drawing a landed block
+as a cube until the mesh shows it and not a frame longer (no double, no
+blink). The harness reports what it held back as `motion_*` (below).
+
 **Powder that holds a level (B7, an experiment).** `--powder levels` is another
 rule for sand and gravel, off by default, for Andrew to judge by playing:
 `docs/missions/B7-powder-findings.md`. A cell holds a level, as water's does,
@@ -645,7 +726,7 @@ partial cell is a whole block. Generated sand stays whole until disturbed, and
 a generated slope holds at one block per block whatever the angle, so a dig
 does not set a whole beach flowing. This game keeps its own save,
 `saves/<world name>-powder`, and it and a normal game refuse each other's
-saves. Partial powder is a wall and a floor to water, and two powders do not
+saves (a box says so, and the game exits cleanly). Partial powder is a wall and a floor to water, and two powders do not
 mix.
 
 Only LOD-0 chunks within `--sim-radius` metres of you (112 by default) are
@@ -746,8 +827,11 @@ from the bake's local-relief field, varying from place to place), mountains
 on the belts (active uplift or a rough highland: up to about 850 m above the
 bake, ridges about 1.8 km apart with flanks near 0.5), the massif and
 gullies summed and eased above zero so valley floors lie on the bake and
-nothing dips below it. The sum is eased under the world's ceiling (half the
-world height) so a range rounds off under it instead of flat-topping.
+nothing dips below it. Where the global surface leaves the relief no room
+under the ceiling (half the world height) the relief gives way
+(`Scale::headroom`: all of it stands on the 90 km planet; on an Earth
+analogue the belts keep about a third), and the sum is eased under the
+ceiling as the last guard, so a range rounds off instead of flat-topping.
 **Land falls towards water:** the relief ramps up from every river bank and
 lake shore over a valley in proportion to the relief (V-shaped on the belts,
 flat-floored in lowlands, `Hydro::relief_ramp`), river levels are the lowest
@@ -773,8 +857,9 @@ fields, the relief and the heights), `relief_maps` (hillshade maps with
 contours and water at a belt, a rough highland, the highest plateau, a
 lowland river and a plain, `RELIEF_LABEL=name` into `out/relief-maps/`),
 `relief_places` (writes the evidence poses to `out/relief-shots/`) and
-`relief_probe` (a transect at `RELIEF_AT="lat lon"`). Saves and replays from
-before this are refused (generator version 5).
+`relief_probe` (a transect at `RELIEF_AT="lat lon"`); `RELIEF_SIZE=U` runs
+the maps and poses on a planet of U half-heights. Saves and replays from
+before this are refused (generator version 6).
 
 ## Water (M2b)
 
@@ -807,7 +892,26 @@ neighbour, so the last levels of a drained lake take hundreds of ticks.
 free cell whose floor has room, moves half its level straight into the cell
 below that free cell: the level-1 cell at a ledge, which the 2-level rule can
 never move, goes over. In the potential this is exactly a fall, so the reason
-water comes to rest is unchanged.
+water comes to rest is unchanged. Since C2 (rules 4) nothing spreads onto a
+cell over a drop either: the lip of a waterfall stays dry and the water
+appears in the cell below it, instead of the lip blinking with every unit
+that passed through.
+
+**Water that does not blink (C2, rules 4).** Andrew's second #9: a spreading
+puddle near a ledge drained one unit at a time through film cells that
+emptied themselves (the seek) and were wetted again from behind the next
+tick, a 10 Hz blink over hundreds of cells (replay 192820: 351 cells, up to
+20 flips a second). Three changes, all in `sim/water.rs`: a film cell with
+water beside it is part of a sheet and holds (only a lone film cell runs to
+a drop or goes over the ledge beside it); thicker water looks along the same
+lines, which pass through film without spending `--film-reach`, so a puddle
+drains to a ledge through the sheet between and the sheet stays wet until it
+dries where it lies; and a spread gives its remainder to the spreading cell
+first, so a cell of level 2 no longer goes dry wetting two neighbours. The
+stats line and the state carry `water_flips` (cells that went wet or dry)
+and `water_flickers` (cells on a floor that did so three times within a
+second; a falling stream is not counted). Saves and replays from rules 3
+continue; a replay recorded under rules 3 is refused with a note.
 
 **The film (B4).** On its own the ledge rule only lowers what a drained area
 keeps by one level: a cell at level 1 beside a dry one is stuck again, so a
@@ -817,7 +921,7 @@ chooses what happens to level-1 water:
 | `--film` | what it does | water |
 |---|---|---|
 | `keep` | nothing more: the wedge and the film stay | kept |
-| `seek` | a level-1 cell at the edge of the wet area looks along four straight lines, through dry cells, up to `--film-reach` cells, and runs to the nearest drop | kept |
+| `seek` | a lone level-1 cell looks along four straight lines, through dry cells, up to `--film-reach` cells, and runs to the nearest drop; thicker water looks along the same lines through film (C2) | kept |
 | `merge` | nothing is wetted with fewer than 2 units, and a level-1 cell gives its unit to its wettest neighbour: water beads up | kept |
 | `dry` | a level-1 cell dries after `--film-dry-s` to three times that | counted as `water_dried` |
 | `seek+dry` (default) | it runs to a drop if it can, and dries if it cannot | counted |
@@ -1021,6 +1125,40 @@ never copy the whole screen (a file dialog or another window may show
 private files). Point `--save`, `--blocks` and `--look-file` at scratch
 copies so a session never writes the real look files.
 
+## Testing the real window quietly (C1)
+
+`game/tools/quiet-window.ps1` tests the game's real window while somebody else
+uses the machine. It sends no input and takes no focus: the game starts with
+`--no-focus`, inactive, off the screen, at the bottom of the z-order and with
+`WS_EX_NOACTIVATE`, and everything after that is a window call on the game's own
+window. Use it for what a headless run can't see: minimising, restoring, resizing,
+a window that thinks it lost focus. Use `window.ps1` above only when the machine
+is yours.
+
+```powershell
+. game\tools\quiet-window.ps1
+Get-IdleSeconds                     # say what it read before each run
+$g = Start-QuietGame -Exe E:\triangulum-build\C1\release\triangulum.exe `
+     -Arguments '--size 640x360 --no-save --bake C:/code/triangulum/game/assets/world/seed42' -Log out\win\run1
+                                    # returns once the game is running frames
+try {
+    Hide-Game $g                    # minimise, not activated (the taskbar button)
+    Get-GameCpu $g                  # seconds of CPU so far
+    Show-Game $g                    # restore, not activated
+    Set-GameSize $g 1 1             # as small as Windows goes
+    Send-GameFocus $g $true         # the window thinks it has focus (posted messages)
+    Send-GameFocus $g $false        # and that it lost it
+    Assert-Quiet $g                 # throws if the game has the foreground or the mouse clip changed
+} finally { Stop-QuietGame $g }     # WM_CLOSE, as the X does; kills only if stuck
+```
+
+It runs from `game/` and writes `<Log>.out.txt` and `<Log>.err.txt`. `Start-Process
+-NoNewWindow` matters: a console of its own would take the foreground. With
+`--captured` the game thinks it has the mouse, but the system clips nothing,
+because the window is not active. So the clip itself, the hidden pointer and a real
+Alt-Tab still want a person. Winit sends no `Occluded` event on Windows, so a window
+under others is a window drawing as usual.
+
 ## The bench
 
 The project's one performance number: a fixed 60 s flight (50 m AGL at
@@ -1035,6 +1173,15 @@ Results land in `out/run1/results.md` (and the pose PNGs beside it). The
 flight measures wall-clock time, so run it alone: anything else rendering or
 compiling on the machine corrupts it. `--skip-flight` and `--only pose,pose`
 narrow the run.
+
+The planet-size matrix is `python scripts/t1_planet_check.py --bench`: the
+same full bench at 128, 256, 512, 832 and 1024 half-heights. Without
+`--bench` it captures ground, 2 km, orbit and map frames; `--exercise`
+walks, digs, pours water, saves/reloads and checks a replay at every size.
+`python scripts/t1_play_suite.py` runs the existing play scripts with their
+required flags and separate scratch saves. Both drivers stop before their
+next case if `out/t1/STOP` exists. T1's findings and curated evidence are in
+`docs/missions/T1-planet-findings.md` from the repository root.
 
 ## The play harness
 
@@ -1112,9 +1259,11 @@ a heap over a cube corner, a block waiting at the edge of the active region.
 `scripts/b4-film.play` drains a terraced bowl, leaves a film on a wide table,
 pours a block on a table and on real ground; it asserts only what holds under
 every rule, so run it with `--film MODE` and compare the frames and the
-printed levels. `b4-oldsave-make.play`, run on an older build, and
-`b4-oldsave-load.play`, run on this one, check that an old save loads and that
-nothing in it wakes until it is touched.
+printed levels. On this generator, run `b4-oldsave-make.play` with
+`--no-slide`, then `b4-oldsave-load.play` with normal rules and the same
+scratch `--save` directory: the old-flow fixture stays asleep until touched.
+For a genuinely historical binary use its matching script revision; saves
+from before the sea-level change are intentionally refused by this build.
 
 `scripts/b7-compare.play` runs the same tower, dropped cube, pit, cliff, beach
 and pool under whichever powder rule the command line says, so `--powder-angle
@@ -1132,6 +1281,15 @@ water.
 `scripts/m3b-hotbar.play` (run with `--blocks scripts/m3b-look/blocks.json`)
 builds a wall of the painted `clay_brick` block from the M3b session on key
 1 (the `hotbar` command), checks its blocks, and shoots it with the hotbar.
+
+`scripts/c1-great-circle.play` flies 150 km and 300 km along great circles from
+three starts, flies and strafes straight over both poles, and walks over both (the
+snow of the north, the sea ice of the south), with frames either side of each pole.
+Run on a build from before, the same script gives the frames that go with them.
+`scripts/c1-far-flight.play` goes from the ground past the moon and the sun to the
+edge of everything and back into the planet in one step, and on round it at a
+million metres a second. `scripts/c1-andrew-210239.play` is Andrew's polar strafe
+as a script, since his recording no longer plays.
 
 `scripts/m2c-replay.play` goes to its sites with `find`, records a replay
 with the same recorder F10 uses (a sand collapse, digging at a river bank,
@@ -1254,6 +1412,21 @@ pour and a 10,000-cell dam break, with the per-tick cost). The B4 rule table,
 every film rule on every scene, is
 `cargo test --release film_rules_on_the_three_scenes -- --nocapture`.
 
+Moving (`src/player/great_circle_tests.rs`, plain geometry worked out from the
+start): flying and walking a quarter and a full circumference from seven starts and
+six headings, strafing, diagonals and pitched flight stay on the circle with the
+view in its plane; flying and walking straight over both poles, the view never
+turns by more than the move's own angle; standing exactly on a pole; mouse look at
+lat 89.99 turning as at the equator, standing and on the move; a teleport keeping
+its compass heading; every speed up to the arithmetic's limit in every direction
+staying a position; a huge step down stopping at the floor on this side.
+
+The window (`window_tests` in `src/app.rs`, the app's own event path with synthetic
+events and no window): a window with no area draws nothing and the steps run on at
+60 a second, it can still quit, keeps its exit time and doesn't wait for a photo;
+losing focus lets go of the mouse and every key, and the click back captures the
+mouse and breaks nothing. `tools/quiet-window.ps1` is the same with a real window.
+
 Blocks and textures (M3b): `blocks.json` with textures round-trips
 (written, read back, idempotent, back to the shipped file when the
 textures go), adding, renaming, falling and hiding write the file and merge
@@ -1274,7 +1447,7 @@ partial files, unknown and out-of-range fields refused, the shipped file
 is the M1 look), blocks.json's round trip (the shipped file rewritten from
 its own colours is byte-identical, idempotent, keeps comments and ids),
 the per-face colour table (grass, dry grass and snow undersides are dirt),
-world.json's terrain edit changing only its three values, the file watch,
+world.json's terrain and size edit preserving its other fields, the file watch,
 hot reload (a colour changed in blocks.json in a text editor reaches the
 GPU colour table on the next poll; a changed look.json reaches the look; a
 broken file is reported and not applied), Save look writing both files,
@@ -1304,11 +1477,12 @@ sites (`hydro_places`) and print the water model at a column
   need a cut-out drawing pass), and the water rules know one liquid, so the
   panel adds only solid blocks. Water has no texture.
 - The pixel editor has no line, rectangle or mirror tools, and no redo.
-- A terrain preview keeps the world's height and sea level. At 1/8 the
-  deepest ocean (about 1,380 m down) reaches below the bottom of the
-  default world (512 m below the sea); 1/8 is normally run with
-  `--height 4096 --sea-level 1536`, a restart setting the panel does not
-  expose. What the preview draws there was not checked.
+- A terrain preview keeps world height and block size. At size 1024 the
+  deepest trench reaches below the default world's bottom: bedrock clips
+  it at 1023 m below sea level. Ground-relative camera and teleport hints
+  use this actual floor (and the clipped ceiling). Extra relief needs a
+  taller world at restart; `--height 4096 --n 131072 --vscale 0.125` keeps
+  the original radius while allowing 2048 m above and below sea level.
 - The time of day and its speed are not part of the look; a screenshot's
   sidecar records them.
 - Resting water leans up to one level per cell, as the rule allows, and the
@@ -1326,12 +1500,14 @@ sites (`hydro_places`) and print the water model at a column
   one-voxel halo around them, across face edges too); one that gets edited
   appears under its coarser parent and refines down to LOD 0 over the next
   frames, so a deep shaft shows its walls coarsely for a moment.
-- Quads on the sea-level plane (and all water quads) have tangent edges of
-  at most 256 m (`mesh::SEA_EDGE_MAX_M`), so the sea's chords sag under
-  0.1 m against the sphere and the vertices of neighbouring LODs coincide
-  from LOD 5 up; a seam at the LOD 5/4 boundary and finer is below a
-  centimetre. Other coarse surfaces still sag (23 m mid-quad at LOD 9),
-  inside their own LOD's height quantisation.
+- Sea and water quads aim for 256 m edges (`mesh::SEA_EDGE_MAX_M`), but
+  cannot be smaller than one voxel. LOD 10 therefore has nominal 1024 m
+  edges: about 1.45 m of chord sag at the original radius, less on larger
+  planets. A 9×9 curvature grid reduces the sampled L10 warp error from
+  23.14 m to 2.14 m. Small differences between LOD edges remain; the
+  coarsest geometry is intended for distant views. Far sea surfaces use
+  water shading over an opaque virtual floor so their coarsened floor's
+  horizon cannot leave strips of sky showing through the water.
 - In coarse chunks' padding, an edit at the one diagonal column of a cube
   corner (three faces meet there) is left natural.
 - The corner policy for lattice coordinates past two sides of a face maps

@@ -14,18 +14,18 @@ assert face == 2
 assert crosshair_face == 4
 assert crosshair_i == 131069
 assert crosshair_j == 131071
-assert crosshair_k == 523
-assert block[4,131069,131071,524] == air
+assert crosshair_k == 1035
+assert block[4,131069,131071,1036] == air
 tap place
-assert block[4,131069,131071,524] == stone
+assert block[4,131069,131071,1036] == stone
 assert crosshair_face == 4
 assert crosshair_i == 131069
 assert crosshair_j == 131071
-assert crosshair_k == 524
+assert crosshair_k == 1036
 shot 02_step800_placed
 tap break
-assert block[4,131069,131071,524] == air
-assert crosshair_k == 523
+assert block[4,131069,131071,1036] == air
+assert crosshair_k == 1035
 shot 03_step800_broken
 
 at 35.26398985220677 134.99970599305274 13.000000000014552
@@ -34,15 +34,15 @@ shot 04_step1300
 assert crosshair_face == 2
 assert crosshair_i == 131068
 assert crosshair_j == 131070
-assert crosshair_k == 523
-assert block[2,131068,131070,524] == air
+assert crosshair_k == 1035
+assert block[2,131068,131070,1036] == air
 tap place
-assert block[2,131068,131070,524] == stone
-assert crosshair_k == 524
+assert block[2,131068,131070,1036] == stone
+assert crosshair_k == 1036
 shot 05_step1300_placed
 tap break
-assert block[2,131068,131070,524] == air
-assert crosshair_k == 523
+assert block[2,131068,131070,1036] == air
+assert crosshair_k == 1035
 shot 06_step1300_broken
 
 # Bucket follows the same cross-face ray. Pause simulation so the poured
@@ -50,16 +50,16 @@ shot 06_step1300_broken
 look -323.5720449160814 -44.312555875417985
 select 9
 tap place
-assert block[4,131069,131071,524] == water
-assert level[4,131069,131071,524] == 255
+assert block[4,131069,131071,1036] == water
+assert level[4,131069,131071,1036] == 255
 assert crosshair == water
 assert crosshair_face == 4
-assert crosshair_k == 524
+assert crosshair_k == 1036
 shot 07_bucket
 tap break
-assert block[4,131069,131071,524] == air
-assert level[4,131069,131071,524] == 0
-assert crosshair_k == 523
+assert block[4,131069,131071,1036] == air
+assert level[4,131069,131071,1036] == 0
+assert crosshair_k == 1035
 
 # Body straddles all three faces at the vertex. A downward placement
 # would overlap it even when the target belongs to a different face.
@@ -70,27 +70,27 @@ assert face == 2
 assert crosshair_face == 4
 assert crosshair_i == 131071
 assert crosshair_j == 131071
-assert crosshair_k == 523
-assert block[4,131071,131071,524] == air
+assert crosshair_k == 1035
+assert block[4,131071,131071,1036] == air
 tap place
-assert block[4,131071,131071,524] == air
-assert crosshair_k == 523
+assert block[4,131071,131071,1036] == air
+assert crosshair_k == 1035
 look 120 -85
 assert crosshair_face == 1
 assert crosshair_i == 0
 assert crosshair_j == 131071
-assert crosshair_k == 523
-assert block[1,0,131071,524] == air
+assert crosshair_k == 1035
+assert block[1,0,131071,1036] == air
 tap place
-assert block[1,0,131071,524] == air
-assert crosshair_k == 523
+assert block[1,0,131071,1036] == air
+assert crosshair_k == 1035
 look 240 -85
 assert crosshair_face == 2
 assert crosshair_i == 131071
 assert crosshair_j == 131071
-assert crosshair_k == 523
-assert block[2,131071,131071,524] == air
+assert crosshair_k == 1035
+assert block[2,131071,131071,1036] == air
 tap place
-assert block[2,131071,131071,524] == air
-assert crosshair_k == 523
+assert block[2,131071,131071,1036] == air
+assert crosshair_k == 1035
 shot 08_body_guard

@@ -1,0 +1,46 @@
+   Compiling triangulum v0.1.0 (E:\triangulum-work\T1\game)
+warning: variable does not need to be mutable
+    --> src\stream.rs:1792:13
+     |
+1792 |         let mut drain = |c: &mut Coverage, gpu: &mut FakeGpu, wants: &mut Vec<Want>| {
+     |             ----^^^^^
+     |             |
+     |             help: remove this `mut`
+     |
+     = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: `triangulum` (bin "triangulum" test) generated 1 warning (run `cargo fix --bin "triangulum" -p triangulum --tests` to apply 1 suggestion)
+    Finished `release` profile [optimized + debuginfo] target(s) in 53.03s
+     Running unittests src\main.rs (target\release\deps\triangulum-7d877ee1b0401067.exe)
+
+running 11 tests
+test workshop::tests::t1_preview_size_saves_only_the_default_and_restores_home ... ignored
+test workshop::tests::time_of_day_seeks_the_shortest_way ... ok
+test workshop::tests::far_ocean_matches_the_shipped_colour ... ok
+look panel: Saved C:\Users\Austin\AppData\Local\Temp\triangulum-workshop-paint-1372\look.json and C:\Users\Austin\AppData\Local\Temp\triangulum-workshop-paint-1372\blocks.json and 2 picture(s) in C:\Users\Austin\AppData\Local\Temp\triangulum-workshop-paint-1372\textures. To share the look, commit and push them (the textures folder too), or send them.
+look panel: blocks.json changed on disk: 1 block colour(s) and 0 block texture(s) applied.
+look panel: Imported C:\Users\Austin\AppData\Local\Temp\triangulum-workshop-r4-import-1372\import.png (256 x 256, made 16 x 16) onto stone's top.
+look panel: blocks.json changed on disk: added brick; 0 block colour(s) and 0 block texture(s) applied.
+test workshop::tests::r4_import_decoding_is_deferred_off_the_game_thread ... ok
+look panel: look.json changed on disk: applied.
+look panel: Back to the look as last saved.
+look panel: Saved C:\Users\Austin\AppData\Local\Temp\triangulum-workshop-reload-1372\look.json and C:\Users\Austin\AppData\Local\Temp\triangulum-workshop-reload-1372\blocks.json. To share the look, commit and push them (the textures folder too), or send them.
+test workshop::tests::paint_a_texture_save_and_read_back ... ok
+look panel: look.json changed but was not applied: C:\Users\Austin\AppData\Local\Temp\triangulum-workshop-reload-1372\look.json: sky.atmosphere_height_m must be a number of at least 0, not -5
+test workshop::tests::hot_reload_applies_a_changed_colour ... ok
+look panel: blocks.json changed on disk: its blocks were not applied (block 19 changed its original identity from 'brick' to 'glass' (ids are stable: never renumber)); 0 block colour(s) and 0 block texture(s) applied.
+test workshop::tests::hot_reload_brings_in_a_new_block_and_a_texture ... ok
+test workshop::tests::t1_opening_terrain_keeps_custom_startup_sizes_and_automatic_scale ... ok
+look panel: Saved C:\Users\Austin\AppData\Local\Temp\triangulum-workshop-save-1372\look.json and C:\Users\Austin\AppData\Local\Temp\triangulum-workshop-save-1372\blocks.json. To share the look, commit and push them (the textures folder too), or send them.
+test workshop::tests::save_look_round_trips_both_files ... ok
+look panel: Texture arrives_later.png changed on disk: applied.
+look panel: Texture arrives_later.png was not applied: read C:\Users\Austin\AppData\Local\Temp\triangulum-workshop-r4-first-texture-1372\textures\arrives_later.png: The system cannot find the file specified. (os error 2)
+test workshop::tests::r4_the_first_missing_texture_recovers ... ok
+look panel: Added brick (block 19) and saved it to blocks.json. Put it on the hotbar below to place it.
+look panel: Renamed brick to red_brick. blocks.json keeps the old name in "was", so saves and replays that know brick still work.
+look panel: red brick now falls like sand: dig under it to see.
+look panel: Renamed red_brick to fire_brick. blocks.json keeps the old name in "was", so saves and replays that know red_brick still work.
+test workshop::tests::add_rename_fall_and_hotbar_through_a_session ... ok
+
+test result: ok. 10 passed; 0 failed; 1 ignored; 0 measured; 390 filtered out; finished in 2.75s
+

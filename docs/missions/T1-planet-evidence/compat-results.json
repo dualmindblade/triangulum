@@ -1,0 +1,65 @@
+[
+  {
+    "command": [
+      "E:\\triangulum-build\\baseline-8134c61\\triangulum.exe",
+      "--bake",
+      "E:\\triangulum-work\\T1\\game\\assets\\world\\seed42",
+      "--blocks",
+      "E:\\triangulum-work\\T1\\game\\assets\\blocks.json",
+      "--threads",
+      "4",
+      "--out",
+      "E:\\triangulum-work\\T1\\game\\out\\t1\\compat",
+      "--save",
+      "E:\\triangulum-work\\T1\\game\\out\\t1\\compat\\save",
+      "--world",
+      "E:\\triangulum-work\\T1\\game\\out\\t1\\compat\\old-world.json",
+      "--look-file",
+      "E:\\triangulum-work\\T1\\game\\out\\t1\\compat\\old-look.json",
+      "--play",
+      "E:\\triangulum-work\\T1\\game\\out\\t1\\compat\\make.play"
+    ],
+    "exit": 0
+  },
+  {
+    "command": [
+      "E:\\triangulum-work\\T1\\game\\target\\release\\triangulum.exe",
+      "--bake",
+      "E:\\triangulum-work\\T1\\game\\assets\\world\\seed42",
+      "--blocks",
+      "E:\\triangulum-work\\T1\\game\\assets\\blocks.json",
+      "--threads",
+      "4",
+      "--out",
+      "E:\\triangulum-work\\T1\\game\\out\\t1\\compat",
+      "--save",
+      "E:\\triangulum-work\\T1\\game\\out\\t1\\compat\\save",
+      "--world",
+      "E:\\triangulum-work\\T1\\game\\assets\\world.json",
+      "--play",
+      "E:\\triangulum-work\\T1\\game\\out\\t1\\compat\\load.play"
+    ],
+    "exit": 2
+  },
+  {
+    "command": [
+      "E:\\triangulum-work\\T1\\game\\target\\release\\triangulum.exe",
+      "--replay",
+      "E:\\triangulum-work\\T1\\game\\out\\t1\\compat\\old.replay",
+      "--out",
+      "E:\\triangulum-work\\T1\\game\\out\\t1\\compat\\replay-refusal",
+      "--bake",
+      "E:\\triangulum-work\\T1\\game\\assets\\world\\seed42"
+    ],
+    "exit": 2
+  },
+  {
+    "old_save_unchanged": true,
+    "save_files": {
+      "commit.json": "4f24751a6ec8645552db4cda26515f751bff38f96f0868014292e950de472008",
+      "header.json": "7faa93d7be9b5cc0549c7c8532ff834c8f4bcd7a285d79888cbd38fa211ec444",
+      "sim.g6.bin": "ef8da4e76bfd0a834b7033fa95666a32345afbb35be11f592f2b72391491d56d",
+      "chunks\\b0_f2_3348_1797_17.g4.chunk": "9dd41de18d8363b83b7572115dff34dde55691fdbea20145ded40933aaa1ee0a"
+    }
+  }
+]

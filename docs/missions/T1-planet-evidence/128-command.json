@@ -1,0 +1,29 @@
+{
+  "command": [
+    "E:\\triangulum-work\\T1\\game\\target\\release\\triangulum.exe",
+    "--world",
+    "E:\\triangulum-work\\T1\\game\\out\\t1\\after\\128\\world.json",
+    "--blocks",
+    "E:\\triangulum-work\\T1\\game\\assets\\blocks.json",
+    "--look-file",
+    "E:\\triangulum-work\\T1\\game\\out\\t1\\after\\128\\look.json",
+    "--threads",
+    "4",
+    "--no-save",
+    "--interchange",
+    "E:\\triangulum-work\\T1\\game\\out\\t1\\after\\128\\interchange",
+    "--replays",
+    "E:\\triangulum-work\\T1\\game\\out\\t1\\after\\128\\replays",
+    "--play",
+    "E:\\triangulum-work\\T1\\game\\out\\t1\\after\\128\\frames.play",
+    "--out",
+    "E:\\triangulum-work\\T1\\game\\out\\t1\\after\\128",
+    "--size",
+    "1920x1080"
+  ],
+  "exit_code": 0,
+  "wall_s": 28.54172820000167,
+  "timing": "PROVISIONAL: other agents are active",
+  "size_half_heights": 128,
+  "radius_m": 90569.21831901377
+}

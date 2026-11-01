@@ -1,0 +1,63 @@
+﻿=== focus-before (idle 72.25 s): --no-sim --captured --exit-after 40 --screenshot out/win/v2-focus-before.png
+ready: alive True client 426x240
+gained: alive True
+lost: alive True
+back: alive True
+activate messages: alive True
+end: alive False
+--- err
+=== focus-after (idle 118.656 s): --no-sim --captured --exit-after 40 --screenshot out/win/v2-focus-after.png
+ready: alive True client 426x240
+gained: alive True
+lost: alive True
+back: alive True
+activate messages: alive True
+end: alive False
+--- err
+=== minimise-before (idle 175 s): --no-sim --captured
+ready: alive True client 426x240
+minimised: alive True
+end: alive True
+quiet: foreground 330062 (was 330062), clip 0,0,2560,1440
+closed
+--- err
+Caused by:
+  In a CommandEncoder
+    In a pass parameter
+      Attachments have differing sizes: the depth attachment's texture view has extent (640, 360, 1) but is followed by the color attachment at index 0's texture view which has (1, 1, 1)
+
+
+stack backtrace:
+note: Some details are omitted, run with `RUST_BACKTRACE=full` for a verbose backtrace.
+=== tiny-before (idle 261.422 s): --no-sim --captured
+ready: alive True client 426x240
+tiny: alive True
+end: alive True
+quiet: foreground 330062 (was 330062), clip 0,0,2560,1440
+stuck: killed
+--- err
+=== tiny-after (idle 330.093 s): --no-sim --record-replay out/win/v2-tiny.replay
+ready: alive True client 426x240
+size 1 x 1: alive True client 0x0
+size 120 x 1: alive True client 105x0
+size 1 x 120: alive True client 0x82
+size 137 x 40: alive True client 122x2
+size 160 x 28: alive True client 145x0
+size 300 x 200: alive True client 285x162
+back: alive True client 645x362
+end: alive True
+quiet: foreground 330062 (was 330062), clip 0,0,2560,1440
+closed
+--- err
+=== restored-after (idle 387.718 s): --record-replay out/win/v2-restored.replay --exit-after 45 --screenshot out/win/v2-restored.png
+ready: alive True client 426x240
+minimised: alive True iconic True
+minimised: 13.4375 CPU s, was 13.4375, over 5 s
+restored: alive True
+tiny: alive True client 0x0
+end: alive False
+--- err
+v2-tiny : replayed 1010 steps (16.8 s), 19 events; 17 of 17 checks matched; the end state hash matches (984e0ee416ffee3e..)
+v2-tiny : replay OK: the session reproduced exactly
+v2-restored : replayed 2327 steps (38.8 s), 41 events; 39 of 39 checks matched; the end state hash matches (5c984d88b2251545..)
+v2-restored : replay OK: the session reproduced exactly
