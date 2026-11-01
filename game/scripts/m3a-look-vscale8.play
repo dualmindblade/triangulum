@@ -2,7 +2,7 @@
 # is nearly space-dark at the peaks. Run at 1/8 with and without a raised
 # atmosphere (sky.atmosphere_height_m in a look file):
 #
-#   cargo run --release -- --vscale 0.125 --height 4096 --sea-level 1536 --play scripts/m3a-look-vscale8.play
+#   cargo run --release -- --vscale 0.125 --height 4096 --sea-level 2048 --n 131072 --play scripts/m3a-look-vscale8.play
 #   ... --look-file my-look.json --out out/play/peak-after
 #
 # The place is the "highest peak" preset: 3.5 km from Neisor's highest

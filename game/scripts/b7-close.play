@@ -14,7 +14,7 @@ sun 35
 speed 20
 
 # ---- a pile on a thin plate -------------------------------------------------------
-atblock 2 107147 57531 612
+atblock 2 107147 57531 1124
 fill -5 -20 -8 33 20 -8 stone
 tick 2
 fill 14 0 -7 14 0 44 sand
@@ -25,27 +25,27 @@ surface 2 -9 26 9 -8 8
 aim 14 0 -6
 photo a_pile
 # level with the toe, a metre off the plate
-atblock 2 107155 57531 604
+atblock 2 107155 57531 1116
 aim 6 0 1
 photo a_toe_level
 # the eye a hand above the slope
-atblock 2 107158 57531 606
+atblock 2 107158 57531 1118
 aim 3 0 1
 photo a_on_the_slope
-atblock 2 107161 57533 607
+atblock 2 107161 57533 1119
 aim 0 -2 -0.5
 photo a_on_the_slope_2
 # looking down the slope along a diagonal, close
-atblock 2 107163 57535 608
+atblock 2 107163 57535 1120
 aim -3 -3 -2
 photo a_diagonal
 # from under the plate: nothing to see but stone, and no sand through it
-atblock 2 107161 57531 590
+atblock 2 107161 57531 1102
 aim 0 0 12
 photo a_from_below
 
 # ---- against a wall and round a post ----------------------------------------------
-atblock 2 107207 57531 612
+atblock 2 107207 57531 1124
 fill -5 -20 -8 33 20 -8 stone
 fill 18 -10 -7 18 10 0 stone
 fill 11 2 -7 11 2 -3 stone
@@ -57,16 +57,16 @@ assert queued == 0
 surface 2 -9 18 9 -8 8
 aim 14 0 -6
 photo b_wall
-atblock 2 107214 57528 608
+atblock 2 107214 57528 1120
 aim 6 3 -1
 photo b_wall_close
-atblock 2 107216 57533 609
+atblock 2 107216 57533 1121
 aim 0 -2 -3
 photo b_post_close
 
 # ---- a pile over a chunk corner ----------------------------------------------------
-# i 107136 and j 57536 are chunk borders; layer 608 is one.
-atblock 2 107136 57536 640
+# i 107136 and j 57536 are chunk borders; layer 1120 is one.
+atblock 2 107136 57536 1152
 fill -14 -14 -32 14 14 -32 stone
 tick 2
 fill 0 0 -31 0 0 12 sand
@@ -75,12 +75,12 @@ assert falling == 0
 assert queued == 0
 aim 0 0 -30
 photo c_chunk_corner
-atblock 2 107128 57536 610
+atblock 2 107128 57536 1122
 aim 8 0 -1
 photo c_chunk_corner_close
 
 # ---- on a shelf with a drop beside it ---------------------------------------------
-atblock 2 107267 57531 612
+atblock 2 107267 57531 1124
 fill -5 -20 -8 33 20 -8 stone
 fill 8 -6 -7 20 6 -5 stone
 tick 2
@@ -91,12 +91,12 @@ assert queued == 0
 surface 0 -12 28 12 -8 8
 aim 14 0 -5
 photo d_shelf
-atblock 2 107272 57520 607
+atblock 2 107272 57520 1119
 aim 8 5 -1
 photo d_shelf_close
 
 # ---- at the shore of a pool ---------------------------------------------------------
-atblock 2 107327 57531 612
+atblock 2 107327 57531 1124
 fill -5 -20 -8 33 20 -8 stone
 fill 4 -12 -7 26 -12 -3 stone
 fill 4 12 -7 26 12 -3 stone
@@ -110,12 +110,12 @@ assert falling == 0
 surface 5 -11 25 11 -7 4
 aim 14 0 -5
 photo e_shore
-atblock 2 107340 57525 608
+atblock 2 107340 57525 1120
 aim 0 5 -2
 photo e_shore_close
 
 # ---- in mid-air ----------------------------------------------------------------------
-atblock 2 107387 57531 612
+atblock 2 107387 57531 1124
 fill -5 -20 -8 33 20 -8 stone
 tick 2
 fill 12 0 2 14 2 2 sand 120
@@ -125,7 +125,7 @@ tick 3
 photo f_falling_2
 
 # ---- across a cube edge ---------------------------------------------------------------
-atblock 0 131071 65536 1500
+atblock 0 131071 65536 2012
 fill -10 -10 -8 10 10 -8 stone
 tick 2
 fill 0 0 -7 0 0 36 sand
@@ -134,6 +134,6 @@ assert falling == 0
 assert queued == 0
 aim 0 0 -6
 photo g_cube_edge
-atblock 0 131063 65536 1496
+atblock 0 131063 65536 2008
 aim 6 0 -1
 photo g_cube_edge_close

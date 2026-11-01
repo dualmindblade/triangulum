@@ -417,13 +417,44 @@ pub struct Seg {
     centre: DVec3,
     /// Bounding radius of the course (m).
     span: f64,
-    /// Bounding spheres (centre, chord radius) of runs of SEARCH_RUN course
+    /// Bounding spheres (centre, chord radius) of at most 128 course runs
     /// pieces, for the nearest-point search.
     runs: Vec<(DVec3, f64)>,
 }
 
 /// Course pieces per bounding sphere in the nearest-point search.
 const SEARCH_RUN: usize = 8;
+
+#[cfg(test)]
+mod planet_scale_tests {
+    use super::*;
+
+    #[test]
+    fn t1_large_river_search_covers_the_whole_course_with_bounded_index_work() {
+        let data = HydroData::load(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/world/seed42/hydro.bin")).unwrap().unwrap();
+        let p = crate::grid::Planet::new(1.0, 2048, 1024, 1_048_576);
+        let h = Hydro::new(&data, p.radius, 1.0, p.radius / 6_371_000.0, 42);
+        let (k, longest) = h.segs.iter().enumerate().max_by_key(|(_, s)| s.runs.len()).unwrap();
+        let bins: i64 = h.seg_grid.range(longest.centre * p.radius, 26_000.0).iter().map(|(a,b)| b-a+1).product();
+        println!("1024 half-heights: longest river {k}, {} pieces, {} search runs; coarse query visits {bins} bins; index has {} river / {} lake bins",
+            longest.pts.len()-1, longest.runs.len(), h.seg_grid.map.len(), h.cell_grid.map.len());
+        assert!(longest.runs.len() <= 128, "the u128 candidate mask loses the tail of long rivers");
+        assert!(bins <= 250_000, "a coarse footprint must not probe a million empty index cells");
+        let mut checked = 0;
+        for (k, s) in h.segs.iter().enumerate().filter(|(_, s)| s.pts.len() > 1024) {
+            for fraction in [0.1, 0.4, 0.75, 0.99] {
+                let dir = s.pts[((s.pts.len()-1) as f64 * fraction) as usize];
+                let c = h.cands(dir, 0.0);
+                let mut rivers = Vec::new();
+                h.rivers_at(dir, &c, 1.0, &mut rivers);
+                assert!(rivers.iter().any(|r| r.seg == k as u32 && r.d < 1e-5), "river {k} at {fraction}: course omitted");
+                checked += 1;
+            }
+        }
+        assert!(checked > 0);
+        println!("checked {checked} points on long river courses");
+    }
+}
 
 impl Seg {
     /// Point on the course at arc length `s` (unit vector).
@@ -676,7 +707,12 @@ impl Hydro {
             }
         }
         let mut segs = Vec::with_capacity(data.segs.len());
-        let mut seg_grid = SphereGrid::new(512.0);
+        // The network and lake field stretch with R. Keep the lookup grid
+        // at that scale too: fixed metre bins cost millions of empty probes
+        // per coarse footprint on a large planet. Exact metre distances
+        // still filter candidates, so this changes no channel or shore.
+        let index_scale = (radius / (131_072.0 * (6.0 / (4.0 * std::f64::consts::PI)).sqrt())).max(1.0);
+        let mut seg_grid = SphereGrid::new(512.0 * index_scale);
         let mut max_reach = 0.0f64;
         // Widest channel at each node (LOD 0).
         let mut hw_node = vec![0.0f64; nn];
@@ -709,10 +745,13 @@ impl Hydro {
             }
             let centre = pts.iter().fold(DVec3::ZERO, |a, p| a + *p).normalize();
             let span = pts.iter().map(|p| (*p - centre).length() * radius).fold(0.0, f64::max);
+            // Cands holds a u128 mask. Longer courses need larger runs,
+            // never a shift past bit 127 (which aliases bits in release).
+            let search_run = (pts.len() - 1).div_ceil(128).max(SEARCH_RUN);
             let runs = pts
                 .windows(2)
                 .collect::<Vec<_>>()
-                .chunks(SEARCH_RUN)
+                .chunks(search_run)
                 .map(|run| {
                     let c = run.iter().fold(DVec3::ZERO, |a, w| a + w[0] + w[1]).normalize();
                     let r = run.iter().map(|w| (w[0] - c).length().max((w[1] - c).length())).fold(0.0, f64::max);
@@ -746,7 +785,7 @@ impl Hydro {
             });
         }
         let r_field = data.lake_r_chord * radius;
-        let mut cell_grid = SphereGrid::new(2048.0);
+        let mut cell_grid = SphereGrid::new(2048.0 * index_scale);
         for (k, c) in data.field.iter().enumerate() {
             cell_grid.insert(c.pos * radius, r_field, k as u32);
         }
@@ -1028,6 +1067,7 @@ impl Hydro {
         out.clear();
         for (&k, &mask) in cands.segs.iter().zip(&cands.runs) {
             let s = &self.segs[k as usize];
+            let search_run = (s.pts.len() - 1).div_ceil(128).max(SEARCH_RUN);
             if (s.centre - dir).length() * self.radius > s.span + seg_reach(s.hf) {
                 continue;
             }
@@ -1043,8 +1083,8 @@ impl Hydro {
                 if lb * lb >= best.0 {
                     continue;
                 }
-                let i0 = ri * SEARCH_RUN;
-                for i in i0..(i0 + SEARCH_RUN).min(s.pts.len() - 1) {
+                let i0 = ri * search_run;
+                for i in i0..(i0 + search_run).min(s.pts.len() - 1) {
                     let (p, q) = (s.pts[i], s.pts[i + 1]);
                     let e = q - p;
                     let ee = e.length_squared();
@@ -1072,8 +1112,8 @@ impl Hydro {
                     if (dir - c).length() - rr > rc {
                         continue;
                     }
-                    let i0 = ri * SEARCH_RUN;
-                    for i in i0..(i0 + SEARCH_RUN).min(s.pts.len() - 1) {
+                    let i0 = ri * search_run;
+                    for i in i0..(i0 + search_run).min(s.pts.len() - 1) {
                         let (p, q) = (s.pts[i], s.pts[i + 1]);
                         if s.cum[i] >= s_near {
                             break;

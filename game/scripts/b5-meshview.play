@@ -94,7 +94,7 @@ meshview normal
 #      with a cell of water let go at one end. Its surface leans from cell to
 #      cell, so its corners sit at different heights.
 mode walk
-atblock 2 107153 57531 2000
+atblock 2 107153 57531 2512
 assert on_ground == true
 lookaxis +i 0
 aim 1 0 -0.5

@@ -16,7 +16,7 @@ mode fly
 sim radius 112
 
 # ---- A. a bucket drains to a ledge through its film ------------------------
-atblock 2 107147 57531 612
+atblock 2 107147 57531 1124
 # the table, its +i part cut away from dx 5 on (one ledge, the other edges
 # far off); a walled basin below the cliff catches what goes over
 fill -20 -20 -8 4 20 -8 stone
@@ -52,7 +52,7 @@ state A_settled
 sim trace off
 
 # ---- B. a lone film cell on stone, from 2 m to 200 m --------------------------
-atblock 2 107187 57531 612
+atblock 2 107187 57531 1124
 fill -8 -8 -8 8 8 -8 stone
 tick 2
 sim off
@@ -60,12 +60,12 @@ fill 0 0 -7 0 0 -7 water 1
 assert level_rel[0,0,-7] == 1
 aim 0 0 -7
 photo B_stone_2m
-atblock 2 107187 57531 612
+atblock 2 107187 57531 1124
 hold s 1
 aim 0 0 -7
 photo B_stone_8m
 at -4.5664 117.4714 60
-atblock 2 107187 57531 612
+atblock 2 107187 57531 1124
 hold s 7
 aim 0 0 -7
 photo B_stone_50m
@@ -75,7 +75,7 @@ photo B_stone_200m
 sim on
 
 # ---- C. on sand, over a chunk border, over a cube face edge ------------------
-atblock 2 107227 57531 612
+atblock 2 107227 57531 1124
 fill -8 -8 -9 8 8 -9 stone
 fill -8 -8 -8 8 8 -8 sand
 tick 2
@@ -88,7 +88,7 @@ aim 0 0 -7
 photo C_sand_8m
 sim on
 # a chunk border: i 107263 | 107264 (32 x 3352)
-atblock 2 107263 57531 612
+atblock 2 107263 57531 1124
 fill -8 -8 -8 8 8 -8 stone
 tick 2
 sim off
@@ -101,7 +101,7 @@ aim 0.5 0 -7
 photo C_chunk_border_8m
 sim on
 # a cube face edge: face 0, i 131071, beside face 1's i 0
-atblock 0 131071 65536 760
+atblock 0 131071 65536 1272
 fill -8 -8 -8 8 8 -8 stone
 tick 2
 sim off
@@ -117,11 +117,11 @@ sim on
 # shot_lat-4.533_lon117.520_alt0.051km_yaw-63_pitch-58: replay 192845 ends with
 # the crosshair on a water cell at face 2, i 107216, j 57575, k 558.
 sim off
-atblock 2 107216 57575 557
-assert block[2,107216,57575,557] != air
+atblock 2 107216 57575 1069
+assert block[2,107216,57575,1069] != air
 fill 0 0 0 0 0 0 water 1
 pose -41740.12236390071,80113.96853919285,-7161.268511963459,0.0,0.0,0.0,-1.099997551196619,-1.0176000000000078,fly,0,0,0,7.002555932915509,8
-assert level[2,107216,57575,558] == 1
+assert level[2,107216,57575,1070] == 1
 photo D_andrews_pose
 shot D_andrews_pose_hud
 sim on

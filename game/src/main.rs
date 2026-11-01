@@ -12,6 +12,7 @@
 //!   cargo run --release -- --terrain-stats --out out/stats # slope, fidelity, anisotropy, LOD checks
 //!
 //! World settings come from `assets/world.json`; every one can be overridden:
+//!   --planet-size U (N in half-heights: 128..1024 in steps of 32; Earth analogue 832)
 //!   --seed N --block-size S --height H --sea-level K --n N --bake DIR --vscale F --roughness F --landform F
 //! (a relative "bake" in world.json is resolved against the game/ directory)
 //! Saves: --save DIR (default saves/<world name>)  --no-save  --keep-save (harness: keep its save)
@@ -122,6 +123,7 @@ struct Args {
     height: Option<u32>,
     sea_level: Option<u32>,
     n: Option<u32>,
+    planet_size: Option<u32>,
     bake: Option<String>,
     vscale: Option<f64>,
     roughness: Option<f64>,
@@ -199,6 +201,7 @@ fn parse_args() -> Args {
         height: None,
         sea_level: None,
         n: None,
+        planet_size: None,
         bake: None,
         vscale: None,
         roughness: None,
@@ -276,6 +279,7 @@ fn parse_args() -> Args {
             "--height" => a.height = Some(val().parse().unwrap()),
             "--sea-level" => a.sea_level = Some(val().parse().unwrap()),
             "--n" => a.n = Some(val().parse().unwrap()),
+            "--planet-size" => a.planet_size = Some(val().parse().unwrap()),
             "--bake" => a.bake = Some(val()),
             "--vscale" => a.vscale = Some(val().parse().unwrap()),
             "--roughness" => a.roughness = Some(val().parse().unwrap()),
@@ -421,8 +425,20 @@ near it, by hand:
     }
     if let Some(v) = args.seed { config.seed = v; }
     if let Some(v) = args.block_size { config.block_size_m = v; }
-    if let Some(v) = args.height { config.world_height = v; }
+    let half_heights = config.columns_per_face / (config.world_height / 2);
+    if let Some(v) = args.height {
+        config.world_height = v;
+        config.sea_level = v / 2;
+        if args.n.is_none() {
+            config.columns_per_face = WorldConfig::columns_for_half_heights(args.planet_size.unwrap_or(half_heights), v)
+                .unwrap_or_else(|e| fail(&e));
+        }
+    }
     if let Some(v) = args.sea_level { config.sea_level = v; }
+    if let Some(v) = args.planet_size {
+        if args.n.is_some() { fail("choose --planet-size (half-heights) or --n (raw columns), not both"); }
+        config.columns_per_face = WorldConfig::columns_for_half_heights(v, config.world_height).unwrap_or_else(|e| fail(&e));
+    }
     if let Some(v) = args.n { config.columns_per_face = v; }
     if let Some(v) = &args.bake { config.bake = v.clone(); }
     if let Some(v) = args.vscale { config.vertical_scale = Some(v); }

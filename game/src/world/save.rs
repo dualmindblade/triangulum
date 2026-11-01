@@ -72,7 +72,8 @@ pub const FORMAT_VERSION: u32 = 3;
 /// because saves, not generation, care about it). A save made with another
 /// generator version is refused: its edits sit in terrain that no longer
 /// exists around them.
-pub const GENERATOR_VERSION: u32 = 4; // 2: landforms v2 (ridges, gullies, valleys, mesas); 3: lakes and rivers (hydro.bin); 4: coasts (shoreline from the bake's coast, beaches, sea and lake floors)
+pub const GENERATOR_VERSION: u32 = 5; // 5: sea level H/2; planet-size terrain defaults.
+// Previous versions: // 2: landforms v2 (ridges, gullies, valleys, mesas); 3: lakes and rivers (hydro.bin); 4: coasts (shoreline from the bake's coast, beaches, sea and lake floors)
 
 const CHUNK_MAGIC: &[u8; 4] = b"TRC2";
 

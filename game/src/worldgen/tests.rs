@@ -29,6 +29,43 @@ pub fn test_generator() -> Generator {
     generator_with(None, 2048, 512)
 }
 
+pub(super) fn planet_size_generator(units: u32) -> Generator {
+    let p = Planet::new(1.0, 2048, 1024, units * 1024);
+    Generator::new(p, shared_bake(), 42, p.radius / 6_371_000.0, 1.0, 1.0, &registry()).unwrap()
+}
+
+#[test]
+fn t1_two_coarse_voxels_and_clipped_ground_at_every_size() {
+    for size in [128, 256, 512, 832, 1024] {
+        let mut g = planet_size_generator(size);
+        let p = g.planet;
+        let places = crate::engine::find_places(g.bake.as_ref());
+        let key = key_at(&g, places.trench.0, p.max_lod, -1.0);
+        let coarse = g.generate(key);
+        let cols = g.chunk_columns(key);
+        let mut wet = 0;
+        for x in 0..CHUNK as i32 {
+            for y in 0..CHUNK as i32 {
+                if cols[(x+1) as usize * PAD + (y+1) as usize].ocean {
+                    let bottom = coarse.ids[pidx(x,y,0)];
+                    assert!(bottom == g.blocks.deep_ocean || bottom == g.blocks.ice);
+                    assert_eq!(coarse.ids[pidx(x,y,1)], g.blocks.air, "{size}: air above sea");
+                    wet += 1;
+                }
+            }
+        }
+        assert!(wet > 100);
+        g.hide_water = true;
+        let raw_floor = g.column(places.trench.0, 1.0).height_m;
+        let raw_peak = g.column(places.peak.0, 1.0).height_m;
+        let floor = g.ground_height_m(places.trench.0);
+        let peak = g.ground_height_m(places.peak.0);
+        assert!(floor >= -1023.0 && peak <= 1024.0, "camera/teleport hint must name the real bedrock floor or clipped ceiling");
+        println!("{size}: R {:.3} km, vscale 1/{:.4}, {wet} coarse ocean/air columns; trench {raw_floor:.2} -> {floor:.2} m, peak {raw_peak:.2} -> {peak:.2} m",
+            p.radius/1000.0, 1.0/g.vscale);
+    }
+}
+
 /// The half-metre world of the README: the same planet in blocks of 0.5 m,
 /// at vertical scale 1/20.
 pub fn half_metre_generator() -> Generator {

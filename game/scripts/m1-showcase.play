@@ -50,16 +50,16 @@ stop
 skyspeed 0
 
 # ---- 30. walk, dig a trench, bridge it, dig down and tunnel ----------------
-# Face 2, row J = 57519, on flat hills: ground top layer 556 (feet 557) for
-# i 107161..107172. Trench: i 107166..107168, j 57518..57520, layers 556
-# and 555. Bridge: snow blocks (white, so it reads from far away) at layer
-# 556, j = J, i 107166..107168, placed by sneaking backwards to the edge.
-# Shaft at i 107164 (layers 556..554), then
-# a tunnel along -i (i 107163..107161, layers 554-555, roof 556 untouched).
+# Face 2, row J = 57519, on flat hills: ground top layer 1068 (feet 1069) for
+# i 107161..107172. Trench: i 107166..107168, j 57518..57520, layers 1068
+# and 1067. Bridge: snow blocks (white, so it reads from far away) at layer
+# 1068, j = J, i 107166..107168, placed by sneaking backwards to the edge.
+# Shaft at i 107164 (layers 1068..1066), then
+# a tunnel along -i (i 107163..107161, layers 1066-1067, roof 1068 untouched).
 mode walk
-atblock 2 107162 57519 2000
+atblock 2 107162 57519 2512
 assert block_rel[0,0,-1] == grass
-assert k == 557
+assert k == 1069
 column 4 0
 column 6 0
 column 8 0
@@ -77,7 +77,7 @@ pan 1.6 turn 40 2
 hold w 0.767
 wait 0.15
 assert fi ~ 107165.5 0.2
-assert k == 557
+assert k == 1069
 assert on_ground == true
 # -- the trench: top layer, near to far
 caption Dig a trench
@@ -179,14 +179,14 @@ caption Dig down, then tunnel
 pan 0.5 aim 0 0 -0.5
 tap break
 wait 0.45
-assert k == 556
+assert k == 1068
 pan 0.2 aim 0 0 -0.5
 tap break
 wait 0.45
 pan 0.2 aim 0 0 -0.5
 tap break
 wait 0.45
-assert k == 554
+assert k == 1066
 assert on_ground == true
 pan 0.4 aim -1 0 1.5
 tap break
@@ -221,7 +221,7 @@ pan 0.7 lookaxis +i 0
 hold w 0.75
 wait 0.1
 assert i == 107164
-assert k == 554
+assert k == 1066
 pan 1.2 lookaxis +i 80
 wait 0.8
 stop
@@ -232,14 +232,14 @@ save
 assert dirty == 0
 reload
 assert edits >= 1
-assert block[2,107166,57519,556] == snow
-assert block[2,107167,57519,556] == snow
-assert block[2,107168,57519,556] == snow
-assert block[2,107167,57518,555] == air
-assert block[2,107162,57519,554] == air
+assert block[2,107166,57519,1068] == snow
+assert block[2,107167,57519,1068] == snow
+assert block[2,107168,57519,1068] == snow
+assert block[2,107167,57518,1067] == air
+assert block[2,107162,57519,1066] == air
 recmode settle
 mode fly
-target 2 107167 57519 556
+target 2 107167 57519 1068
 keyrel 0.0167 7 -j 3.5
 fly none target
 sun 9

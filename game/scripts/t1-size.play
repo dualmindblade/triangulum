@@ -1,0 +1,78 @@
+# T1: same behaviour checks at --planet-size 128, 256, 512, 832 and 1024.
+# Every edit is relative to a found site; there are no absolute layer numbers.
+at -4.5654 117.4744
+find flat
+assert find_kind == flat
+assert mode == walk
+assert on_ground == true
+sim off
+mode fly
+fill -5 -5 -2 5 5 -2 stone
+fill -5 -5 -1 5 5 4 air
+mode walk
+wait 1
+assert on_ground == true
+replay record size.replay
+hold w 0.25
+wait 0.2
+assert on_ground == true
+mode fly
+aim 0 0 -0.5
+assert crosshair == stone
+tap break
+assert block_rel[0,0,-1] == air
+select 1
+aim 0 0 -1.5
+tap place
+assert block_rel[0,0,-1] == stone
+save
+reload
+assert block_rel[0,0,-1] == stone
+# Pour a cell, let it spread, then preserve and replay its evolution.
+select 9
+aim 0 0 -0.5
+tap place
+assert block_rel[0,0,0] == water
+sim on
+tick 12
+assert water_placed > 0
+assert water_moved > 0
+save
+reload
+tick 6
+mode fly
+hold space 1
+assert alt_agl > 10
+replay stop
+assert replay_notes == 0
+replay check size.replay
+assert replay_ok == true
+assert replay_end_match == true
+assert replay_look == same
+sim off
+at -4.5654 117.4744
+find river
+assert find_kind == river
+assert on_ground == true
+select 9
+shot river
+find lake
+assert find_kind == lake
+assert on_ground == true
+shot lake
+# Generated ocean, swimming and the submerged sky tint.
+mode walk
+at -11 -170 -2
+wait 0.1
+assert in_water == true
+assert head_in_water == true
+shot underwater
+hold space 2
+assert in_water == true
+mode fly
+at -4.5654 117.4744 2000
+look -60 -20
+speed 200
+travel 0.25
+assert travel_violations == 0
+assert travel_uncovered_max == 0

@@ -1,0 +1,29 @@
+warning: variable does not need to be mutable
+    --> src\stream.rs:1792:13
+     |
+1792 |         let mut drain = |c: &mut Coverage, gpu: &mut FakeGpu, wants: &mut Vec<Want>| {
+     |             ----^^^^^
+     |             |
+     |             help: remove this `mut`
+     |
+     = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: `triangulum` (bin "triangulum" test) generated 1 warning (run `cargo fix --bin "triangulum" -p triangulum --tests` to apply 1 suggestion)
+    Finished `release` profile [optimized + debuginfo] target(s) in 1.69s
+     Running unittests src\main.rs (target\release\deps\triangulum-7d877ee1b0401067.exe)
+
+running 1 test
+adapter: NVIDIA GeForce RTX 2060 (Vulkan, DiscreteGpu)
+quad buffer: 512 MB (67 M quads); grid slots 131072
+look panel: Preview world built in 2.9 s: roughness 1.00, landforms 1.00, vertical scale 1/35.2. Saving is off and your save is untouched; anything you dig here is thrown away.
+look panel: Preview world built in 4.4 s: roughness 1.00, landforms 1.00, vertical scale 1/17.6. Saving is off and your save is untouched; anything you dig here is thrown away.
+look panel: Preview world built in 7.4 s: roughness 1.00, landforms 1.00, vertical scale 1/10.8. Saving is off and your save is untouched; anything you dig here is thrown away.
+look panel: Saved terrain and planet size to world.json for new worlds. Your current save is unchanged. Existing saves need their original terrain settings; use --save saves/another-name to start fresh.
+look panel: Saved C:\Users\Austin\AppData\Local\Temp\triangulum-workshop-t1-size-preview-10892\look.json and C:\Users\Austin\AppData\Local\Temp\triangulum-workshop-t1-size-preview-10892\blocks.json. To share the look, commit and push them (the textures folder too), or send them.
+look panel: Preview world built in 8.5 s: roughness 1.00, landforms 1.00, vertical scale 1/8.8. Saving is off and your save is untouched; anything you dig here is thrown away.
+look panel: Back in your world: saving is on again.
+five preview sizes, fly altitude, sky radius, Save look, and byte-for-byte home-save preservation verified
+test workshop::tests::t1_preview_size_saves_only_the_default_and_restores_home ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 399 filtered out; finished in 32.32s
+

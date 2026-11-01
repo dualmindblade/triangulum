@@ -1,0 +1,718 @@
+   Compiling triangulum v0.1.0 (E:\triangulum-work\T1\game)
+warning: variable does not need to be mutable
+    --> src\stream.rs:1792:13
+     |
+1792 |         let mut drain = |c: &mut Coverage, gpu: &mut FakeGpu, wants: &mut Vec<Want>| {
+     |             ----^^^^^
+     |             |
+     |             help: remove this `mut`
+     |
+     = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: `triangulum` (bin "triangulum" test) generated 1 warning (run `cargo fix --bin "triangulum" -p triangulum --tests` to apply 1 suggestion)
+    Finished `release` profile [optimized + debuginfo] target(s) in 1m 43s
+     Running unittests src\main.rs (target\release\deps\triangulum-7d877ee1b0401067.exe)
+
+running 400 tests
+annotator with 20 strokes of 300 points: 3.87 ms a pass on average, 6.40 ms at worst
+test annotate::tests::a_stroke_starts_on_the_pixel_pressed_and_keeps_every_point ... ok
+test annotate::tests::a_photo_keeps_its_original_and_its_sidecar ... ok
+test annotate::tests::a_text_mark_is_typed_where_it_was_clicked ... ok
+test annotate::tests::enter_saves_and_esc_asks_before_it_loses_anything ... ok
+test annotate::tests::every_tool_and_every_colour_make_their_mark ... ok
+annotator with 200 strokes of 300 points: 31.67 ms a pass on average, 45.61 ms at worst
+test annotate::tests::flattening_puts_marks_on_their_pixels_and_nothing_elsewhere ... ok
+test annotate::tests::flattened_text_is_there ... ok
+test annotate::tests::marks_this_build_cant_read_are_no_marks ... ok
+test annotate::tests::marks_land_on_the_right_pixels_at_every_scale ... ok
+flattening the same on 1920 x 1080: 813 ms
+test annotate::tests::typing_just_works_and_undo_takes_marks ... ok
+test annotate::tests::a_pass_stays_quick_with_a_lot_drawn ... ok
+test app::save_ui_tests::s1_waiting_and_errors_are_drawn_without_the_stats_hud ... ok
+test grid::planet_scale_tests::t1_every_slider_step_tiles_and_extreme_positions_round_trip ... ok
+test compat_tests::header_names_survive_a_rename_and_catch_a_renumbering ... ok
+test grid::planet_scale_tests::t1_world_file_accepts_half_heights ... ok
+test grid::planet_scale_tests::t1_shipped_world_has_two_half_height_voxels ... ok
+smallest slack 0.5560 m
+test grid::tests::border_columns_continue_onto_the_neighbour_at_every_edge_and_lod ... ok
+test grid::tests::chunk_bounds_contain_every_grid_corner_near_a_cube_corner ... ok
+test grid::tests::chunk_counts_tile_the_world ... ok
+test grid::tests::coarse_voxel_covers_exactly_2_to_the_l_fine_columns ... ok
+test grid::tests::corners_continue_onto_the_third_face ... ok
+test grid::tests::edge_maps_are_mutual_and_cover_the_cube ... ok
+test grid::tests::keys_know_their_descendants ... ok
+test grid::tests::extended_coords_inverts_wrap_at_every_side ... ok
+test grid::tests::lat_lon_round_trip ... ok
+test grid::tests::lattice_round_trip ... ok
+
+thread 'grid::tests::n_must_divide_by_h' (18584) panicked at src\grid.rs:261:76:
+N = 131104 must be a multiple of H = 2048
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test grid::tests::radius_follows_the_equal_area_convention ... ok
+test grid::tests::n_must_divide_by_h - should panic ... ok
+test grid::tests::worlds_past_the_simulation_key_are_refused ... ok
+test grid::tests::unsupported_configurations_are_rejected_with_a_reason ... ok
+test look::tests::file_watch_sees_changes_but_not_its_own_writes ... ok
+test look::tests::look_json_round_trip ... ok
+test look::tests::t1_shipped_atmosphere_and_fog_follow_radius ... ok
+test look::tests::t1_size_and_automatic_relief_survive_save_and_restart ... ok
+test look::tests::tidy_rounds_for_the_file ... ok
+test look::tests::world_json_terrain_edit_keeps_the_file ... ok
+test annotate::tests::a_release_always_gets_through_and_nothing_else_does ... ok
+test map::tests::a_moved_view_addresses_the_old_picture ... ok
+test map::tests::contour_spacing_follows_the_relief ... ok
+test map::tests::the_river_gate_opens_with_zoom ... ok
+test map::tests::zoom_keeps_the_ground_under_the_cursor ... ok
+test menu::tests::an_open_window_owns_all_input ... ok
+worst window pass 43.3 ms during a 1256.5 ms build
+test menu::tests::a_shut_window_does_nothing ... ok
+test menu::tests::a_build_never_holds_up_the_window_and_stale_builds_stop ... ok
+test menu::tests::delete_asks_then_moves_to_the_trash ... ok
+test menu::tests::annotate_opens_from_the_roll_and_the_original_stays ... ok
+test menu::tests::esc_backs_out_one_layer_at_a_time ... ok
+test menu::tests::make_report_waits_for_the_recording_to_stop ... ok
+test menu::tests::every_way_of_going_somewhere ... ok
+report: C:\Users\Austin\AppData\Local\Temp\triangulum-menu-recordings-8716\reports\20261101-012630-the-bank
+test menu::tests::the_photo_roll_and_going_to_a_photo ... ok
+test menu::tests::the_recordings_tab_lists_markers_and_makes_a_report ... ok
+test menu::tests::typed_coordinates_are_strict ... ok
+test menu::tests::wheel_and_drag_move_the_map_under_the_pointer ... ok
+test mesh::tests::a_fall_keeps_its_lip ... ok
+test mesh::tests::a_resting_lake_does_not_dip_at_chunk_borders ... ok
+test mesh::tests::chunks_agree_on_every_shared_water_corner ... ok
+note: the save was made under other block rules (blocks.json's solid, liquid, gravity or replaceable flags changed); it continues under the current ones
+test compat_tests::a_save_and_a_replay_made_before_a_block_was_added_still_work ... ok
+ChunkKey { body: 0, face: 0, lod: 9, cx: 0, cy: 0, cz: 0 }: 32 edge quads; ChunkKey { body: 0, face: 0, lod: 8, cx: 2, cy: 0, cz: 0 }: 33 edge vertices
+ChunkKey { body: 0, face: 0, lod: 9, cx: 1, cy: 0, cz: 0 }: 32 edge quads; ChunkKey { body: 0, face: 0, lod: 8, cx: 4, cy: 0, cz: 0 }: 33 edge vertices
+ChunkKey { body: 0, face: 0, lod: 9, cx: 2, cy: 0, cz: 0 }: 32 edge quads; ChunkKey { body: 0, face: 0, lod: 8, cx: 6, cy: 0, cz: 0 }: 33 edge vertices
+3 L9/L8 boundaries, 147 fine vertices against emitted coarse edges: worst separation 0.747 m (radial 0.586 m)
+test mesh::tests::emitted_sea_edges_meet_across_an_lod_boundary ... ok
+test mesh::tests::full_water_meets_across_a_chunk_with_no_levels ... ok
+opaque quads with AO 1978, without 1662
+test mesh::tests::no_water_side_face_lies_against_real_ground ... ok
+test mesh::tests::quads_are_well_formed_and_ao_costs_are_reported ... ok
+test mesh::tests::t1_coarse_ocean_material_keeps_water_shading ... ok
+test menu::tests::the_window_fits_at_every_size_and_scale ... ok
+T1 L10 sea warp vs exact lattice: 2.1379 m worst
+test mesh::tests::t1_coarsest_warp_stays_close_to_the_lattice ... ok
+test mesh::tests::t1_far_water_keeps_an_opaque_floor_at_the_horizon ... ok
+test photos::tests::a_name_holds_the_pose_and_never_replaces_a_photo ... ok
+test photos::tests::a_repro_script_is_written_from_the_sidecar ... ok
+test mesh::tests::three_faces_agree_at_a_cube_corner ... ok
+test photos::tests::notes_keep_every_other_key ... ok
+test photos::tests::delete_moves_to_the_trash_and_destroys_nothing ... ok
+test photos::tests::the_roll_reads_what_it_can_and_nothing_else ... ok
+B3 body: 80 overlapping cells on other faces refused
+test player::picking_tests::b3_body_overlap_at_every_edge_and_corner ... ok
+test player::picking_tests::b3_inclusive_reach_and_exact_seam_rays ... ok
+test player::picking_tests::b3_bucket_skips_own_water_cell_and_hits_across_seam ... ok
+test player::picking_tests::b3_outline_does_not_fold_a_box_over_three_faces ... ok
+B3 outline: 1200 vertices agree with the mesher's uploaded curvature grid
+test player::picking_tests::b3_outline_uses_the_mesh_grid_on_all_faces ... ok
+test player::picking_tests::b3_pick_cost ... ignored, provisional timing; run explicitly with --ignored --nocapture
+test player::picking_tests::b3_radial_graze_enters_layer_between_equal_endpoint_layers ... ok
+test player::picking_tests::b3_lateral_graze_turns_inside_a_face ... ok
+L9/L8 sea surface radial mismatch: 5.86 m before, 0.0035 m after; lateral 0.00 m
+test mesh::tests::water_surfaces_meet_across_lod_boundaries_with_the_radius_correction ... ok
+test mesh::tests::water_top_shows_under_a_solid_unless_it_touches_it ... ok
+B3 oracle sliver edge size=1: 0.422017 mm ray interval, reference step 1.000 mm, refined step 0.031250 mm
+test player::slope_tests::a_body_falling_at_terminal_speed_stops_on_the_surface ... ok
+test player::slope_tests::a_body_stands_jumps_and_sneaks_on_a_slope ... ok
+B3 oracle sliver ground size=1: 0.255052 mm ray interval, reference step 1.000 mm, refined step 0.031250 mm
+B3 oracle sliver ground size=1: 0.255052 mm ray interval, reference step 1.000 mm, refined step 0.031250 mm
+test player::slope_tests::a_body_walks_over_a_pile_on_a_cube_edge ... ok
+dj 0: 14.55 cells across, up 3.53, steepest change 0.064 a step, 0 steps off the ground
+dj 0.31: 14.55 cells across, up 3.53, steepest change 0.064 a step, 0 steps off the ground
+dj 1.7: 14.55 cells across, up 2.62, steepest change 0.065 a step, 0 steps off the ground
+dj -2.4: 14.55 cells across, up 2.15, steepest change 0.077 a step, 0 steps off the ground
+test player::slope_tests::a_body_walks_up_a_pile_and_down_the_other_side_on_the_surface ... ok
+test player::slope_tests::a_shelf_is_a_wall_whatever_stands_on_it ... ok
+B3 oracle sliver corner size=0.5: 0.388987 mm ray interval, reference step 0.500 mm, refined step 0.015625 mm
+test player::slope_tests::a_slope_overhead_is_not_the_ground ... ok
+test player::tests::a_wall_just_past_the_edge_stops_the_walk_without_overlap ... ok
+test player::tests::falls_onto_the_floor_and_rests_exactly_on_it ... ok
+test player::tests::half_metre_blocks_size_the_box_in_blocks ... ok
+test player::tests::picking_across_a_face_edge_names_the_neighbours_block ... ok
+test player::tests::picking_finds_the_facing_block_and_its_normal ... ok
+test player::tests::sneaking_holds_the_edge_and_walking_falls_off ... ok
+test player::tests::standing_in_a_thin_film_is_not_swimming ... ok
+test player::slope_tests::picking_finds_the_surface_not_the_cube ... ok
+test player::tests::swims_in_water_and_floats_up ... ok
+test player::tests::walking_across_a_face_edge_along_a_wall_keeps_the_box_out_of_it ... ok
+test player::tests::walks_across_a_face_edge_and_round_a_corner ... ok
+test player::tests::walls_stop_the_box_and_a_jump_clears_a_block ... ok
+test render::meshview::tests::every_setting_has_a_legend ... ok
+test render::meshview::tests::neighbouring_chunks_never_share_a_square ... ok
+test render::meshview::tests::neighbouring_palette_colours_are_far_apart ... ok
+test render::meshview::tests::the_settings_cycle_and_have_names ... ok
+test render::meshview::tests::the_shader_numbers_the_tints_as_the_enum_does ... ok
+test render::regions::tests::a_bake_without_the_layers_says_so ... ok
+test player::slope_tests::with_the_switch_off_a_cell_is_its_cube ... ok
+test render::sky::tests::t1_sky_uniform_changes_planet_without_a_renderer_restart ... ok
+test render::textures::tests::fill_stays_inside_its_colour ... ok
+test render::textures::tests::mips_average_in_linear_light ... ok
+test render::textures::tests::paint_save_revert ... ok
+test render::textures::tests::hot_reload_of_a_texture_file ... ok
+test render::textures::tests::r4_large_hot_reload_runs_in_the_worker_and_preserves_painting ... ok
+test render::textures::tests::r4_png_dimensions_are_checked_before_decoding_pixels ... ok
+test render::textures::tests::r4_replacing_texture_references_reclaims_unused_layers ... ok
+test render::textures::tests::r4_texture_capacity_stays_within_device_limits ... ok
+test render::textures::tests::resampling_and_png_round_trip ... ok
+test render::textures::tests::srgb_round_trip_and_flat_average ... ok
+test render::regions::tests::the_layers_agree_with_the_bake ... ok
+test replay::tests::a_photo_disturbs_nothing ... ok
+test replay::tests::a_replay_recorded_under_other_simulation_rules_is_refused ... ok
+test replay::tests::a_replay_never_touches_the_real_save ... ok
+test replay::tests::a_tap_shorter_than_a_frame_still_counts ... ok
+test replay::tests::a_teleport_lands_where_it_should ... ok
+test replay::tests::a_corrupted_replay_reports_its_first_divergence ... ok
+test replay::tests::markers::a_marker_is_on_disk_at_once_and_its_words_survive ... ok
+test replay::tests::markers::a_look_change_during_a_recording_is_written_down ... ok
+test replay::tests::markers::an_old_header_still_parses ... ok
+test replay::tests::markers::a_marker_sees_what_the_player_saw ... ok
+test replay::tests::harness_pokes_are_recorded_as_poses_and_replay_exactly ... ok
+test player::picking_tests::b3_world_ray_reference has been running for over 60 seconds
+B3 rays traversing three faces: 100; hits on a different face from eye: 2309
+B3 corners: 4096 comparisons, 1 raw wrong blocks (0.0244%), 0 after 32x reference refinement; 1 raw including distance > reference step, 0 unresolved
+B3 edges: 6144 comparisons, 1 raw wrong blocks (0.0163%), 0 after 32x reference refinement; 1 raw including distance > reference step, 0 unresolved
+B3 ground: 3072 comparisons, 2 raw wrong blocks (0.0651%), 0 after 32x reference refinement; 2 raw including distance > reference step, 0 unresolved
+test player::picking_tests::b3_world_ray_reference ... ok
+test replay::tests::markers::nothing_done_in_the_annotator_reaches_the_game ... ok
+test replay::tests::markers::the_time_in_there_is_not_owed_afterwards ... ok
+test replay::tests::markers::markers_change_nothing ... ok
+preset 2: highest peak
+preset 2: highest peak
+13 recordings parsed
+test replay::tests::old_replays_still_parse_and_preset_still_plays ... ok
+test replay::tests::p_no_longer_moves_the_player ... ok
+test replay::tests::r4_short_taps_and_releases_survive_catch_up_and_dropped_time ... ok
+test replay::tests::markers::markers_hold_at_any_frame_rate ... ok
+test replay::tests::markers::what_is_let_go_in_there_is_let_go ... ok
+test replay::tests::replay_cost ... ignored
+test replay::tests::record_then_replay_gives_the_same_state ... ok
+test replay::tests::r4_wall_clock_input_does_not_reach_earlier_catch_up_steps ... ok
+preset 1: mountains
+test report::tests::a_cut_off_recording_still_lists_its_markers ... ok
+test report::tests::a_markers_words_show_as_it_passes ... ok
+test report::tests::a_note_is_a_marker_only_if_it_says_so ... ok
+preset 1: mountains
+test replay::tests::the_t_windows_teleports_and_places_replay_exactly ... ok
+test report::tests::a_recording_lists_its_markers_and_keeps_its_notes ... ok
+test report::tests::a_replays_markers_stand_on_their_own ... ok
+test report::tests::a_report_gathers_everything_into_one_folder ... ok
+test report::tests::a_report_says_what_it_does_not_have ... ok
+test report::tests::a_report_of_photos ... ok
+test replay::tests::r4_exact_replay_requires_a_checkpoint_at_the_claimed_end ... ok
+test report::tests::a_title_makes_a_plain_folder_name ... ok
+test report::tests::a_report_stands_without_its_replay ... ok
+test replay::tests::the_same_inputs_at_different_frame_rates_give_the_same_world ... ok
+test session::save_tests::s1_autosave_returns_before_acknowledgement ... ok
+test session::save_tests::s1_kill_child ... ok
+test session::save_tests::s1_failed_simulation_only_save_is_retried_by_autosave ... ok
+test session::save_tests::s1_load_preserved_main_save ... ignored
+test session::save_tests::s1_main_thread_save_cost ... ignored
+test session::save_tests::s1_autosaves_do_not_change_fixed_steps_or_replay ... ok
+test session::save_tests::s1_published_is_not_saved_until_the_final_flush_succeeds ... ok
+test session::save_tests::s1_quit_displays_waits_and_saves_the_last_edits ... ok
+test session::save_tests::s1_quit_failure_keeps_the_session_open_for_retry ... ok
+test session::save_tests::s1_replacing_a_chunk_during_a_write_keeps_its_new_revision_dirty ... ok
+test session::save_tests::s1_recording_reports_a_failed_save_barrier ... ok
+test session::save_tests::s1_saving_preserves_pending_simulation_work_and_dirty_state ... ok
+test session::save_tests::s1_barriers_finish_old_and_latest_generations_before_continuing ... ok
+test session::save_tests::s1_snapshot_budget_includes_simulation_queues ... ok
+test session::save_tests::s1_snapshot_budget_rejects_before_copying_and_keeps_dirt ... ok
+test session::save_tests::s1_snapshot_is_one_moment_and_busy_requests_allocate_nothing ... ok
+test sha256::tests::known_vectors ... ok
+test sha256::tests::sha256_speed ... ignored
+SHA instructions: used
+test sha256::tests::the_sha_instructions_agree_with_the_portable_code ... ok
+
+thread 'save-writer' (21692) panicked at src\save_tests.rs:32:35:
+injected writer panic
+the fed film at rest: [5, 4, 3, 2, 1, 0, 0, 0], 15 in, 0 dried
+test sim::film_tests::a_film_fed_from_the_boundary_comes_to_rest_and_stays ... ok
+test session::save_tests::s1_worker_failure_and_panic_keep_dirt_and_retry ... ok
+test session::save_tests::s1_snapshot_owns_water_and_the_registry_identity ... ok
+test sim::film_tests::a_film_outside_the_region_does_not_dry_until_the_region_returns ... ok
+test sim::film_tests::a_film_waiting_to_dry_survives_a_save_and_reload ... ok
+rule      scene       ticks    wet  level1  units  dried
+test sim::film_tests::a_save_from_before_loads_and_nothing_wakes_until_it_is_touched ... ok
+test session::save_tests::s1_kill_mid_write_keeps_the_previous_generation_loadable ... ok
+keep      plateau         1     25      25     25      0
+test sim::film_tests::seek_runs_across_a_cube_edge ... ok
+test sim::film_tests::stress_flow_cost_of_the_new_rules ... ignored
+test sim::film_tests::a_save_loaded_away_from_where_it_was_saved_wakes_nothing ... ok
+81 cells of level 2 with a level-1 edge: 0 cells left, 202 units dried
+keep      lake         1550    204      16    984      0
+keep seed 1: settled in 106 ticks, 26354 units moved, 0 dried
+625 cells of level 2 with a level-1 edge: 725 cells left, 4 units dried
+test sim::film_tests::the_edge_of_a_large_body_stays_and_the_edge_of_a_puddle_goes ... ok
+keep      poured         15    114      37    255      0
+keep seed 2: settled in 94 ticks, 23054 units moved, 0 dried
+the 125-block collapse: 35 slides in 24 ticks
+test sim::flow_tests::a_collapse_survives_a_save_and_reload_in_the_middle ... ok
+seek      plateau         1     25      25     25      0
+keep seed 3: settled in 130 ticks, 21644 units moved, 0 dried
+test sim::flow_tests::a_ledge_opened_below_the_free_cell_wakes_what_rests_beside_it ... ok
+test sim::film_tests::seek_runs_along_a_dry_line_as_far_as_its_reach ... ok
+keep seed 4: settled in 258 ticks, 45045 units moved, 0 dried
+test sim::flow_tests::a_ledge_over_a_pool_with_room_drains_into_it_until_it_is_full ... ok
+seek      lake         1619    144      44    364      0
+test sim::flow_tests::a_pile_forms_across_a_chunk_corner ... ok
+seek seed 1: settled in 115 ticks, 26577 units moved, 0 dried
+test sim::flow_tests::a_pile_forms_across_a_cube_edge ... ok
+seek      poured         15    114      37    255      0
+test sim::flow_tests::a_pile_forms_on_a_cube_corner ... ok
+seek seed 2: settled in 95 ticks, 23252 units moved, 0 dried
+a pile of 400: 139 columns, height 8, profile along +i [8, 7, 6, 5, 4, 3, 2, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0], along the diagonal [8, 6, 4, 3, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]; 1749 slides in 903 ticks
+test sim::flow_tests::a_poured_pile_settles_at_a_slope_of_one_block_per_block ... ok
+merge     plateau         2      7       0     25      0
+seek seed 3: settled in 148 ticks, 21840 units moved, 0 dried
+test sim::flow_tests::a_step_one_block_high_is_stable_and_a_step_two_high_is_not ... ok
+test sim::flow_tests::a_slide_waits_at_the_edge_of_the_active_region ... ok
+seek seed 4: settled in 273 ticks, 45704 units moved, 0 dried
+a tower of 200 blocks spread with 220 slides in 45 ticks
+test sim::flow_tests::every_slide_ends_lower_so_a_heap_cannot_cycle ... ok
+merge     lake         1529    204       0   1333      0
+test sim::flow_tests::four_blocks_round_a_pit_cannot_stack_above_where_they_started ... ok
+merge seed 1: settled in 111 ticks, 25639 units moved, 0 dried
+300 blocks, 111 columns: blocks moved and ticks after a cut at the foot [(6, 17), (5, 15), (4, 13), (4, 13), (5, 15), (4, 13), (2, 9), (5, 15)]; under the 6-high middle: 5 moved in 11 ticks
+test sim::flow_tests::one_block_from_a_pile_moves_a_few_blocks_and_never_the_whole_pile ... ok
+merge     poured         12     55       0    255      0
+slid and landed 12 layers down in 20 ticks
+test sim::flow_tests::sand_beside_a_drop_moves_over_and_falls ... ok
+test sim::flow_tests::stress_sand_collapse ... ignored
+merge seed 2: settled in 93 ticks, 22527 units moved, 0 dried
+dry       plateau       198      0       0      0     25
+directions taken by 400 blocks: {(-1, 0): 99, (0, -1): 95, (0, 1): 105, (1, 0): 101}
+test sim::flow_tests::the_direction_of_a_slide_has_no_lattice_bias ... ok
+test sim::film_tests::film_rules_on_the_three_scenes has been running for over 60 seconds
+merge seed 3: settled in 132 ticks, 21063 units moved, 0 dried
+test sim::flow_tests::the_level_one_cell_at_a_ledge_goes_over_it ... ok
+merge seed 4: settled in 242 ticks, 43128 units moved, 0 dried
+dry       lake         3168      0       0      0    992
+level 1 at the ledge: settled in 2 ticks, shelf left [0, 0, 0]
+test sim::flow_tests::slides_do_not_depend_on_the_order_blocks_were_placed_or_ran ... ok
+test sim::film_tests::the_potential_falls_on_every_tick_under_every_rule_on_random_stairs has been running for over 60 seconds
+level 2 at the ledge: settled in 3 ticks, shelf left [0, 0, 0]
+dry       poured        673      0       0      0    255
+dry seed 1: settled in 6439 ticks, 26823 units moved, 183 dried
+test sim::flow_tests::with_the_slide_off_nothing_slides ... ok
+level 3 at the ledge: settled in 4 ticks, shelf left [0, 0, 0]
+seek+dry  plateau       198      0       0      0     25
+dry seed 2: settled in 1196 ticks, 23150 units moved, 95 dried
+note: the save's simulation ran with radius 112 m, on, water period 1, slide=on film=seek+dry reach=8 dry=200 powder=levels angle=40; it continues with radius 112 m, on, water period 1, slide=on film=seek+dry reach=8 dry=200 powder=levels angle=30
+level 7 at the ledge: settled in 7 ticks, shelf left [0, 0, 0]
+dry seed 3: settled in 1059 ticks, 21714 units moved, 71 dried
+test sim::powder_tests::a_levels_save_and_a_normal_save_refuse_each_other ... ok
+level 40 at the ledge: settled in 20 ticks, shelf left [0, 0, 0]
+seek+dry  lake         2205      0       0      0    373
+test sim::powder_tests::a_move_waits_at_the_edge_of_the_active_region ... ok
+dry seed 4: settled in 2452 ticks, 45317 units moved, 146 dried
+level 255 at the ledge: settled in 39 ticks, shelf left [0, 0, 0]
+test sim::flow_tests::water_on_a_shelf_runs_over_the_ledge_and_the_potential_strictly_falls ... ok
+seek+dry  poured        673      0       0      0    255
+test sim::film_tests::film_rules_on_the_three_scenes ... ok
+test sim::powder_tests::a_partial_cell_falls_by_levels ... ok
+seek+dry seed 1: settled in 317 ticks, 26590 units moved, 20 dried
+test sim::powder_tests::a_pile_forms_across_a_chunk_corner ... ok
+test sim::powder_tests::a_pile_forms_across_a_cube_edge ... ok
+test sim::powder_tests::a_pile_forms_on_a_cube_corner ... ok
+seek+dry seed 2: settled in 591 ticks, 23272 units moved, 32 dried
+60 blocks: 204 ticks, 60 columns; reach along the axes [5, 5, 5, 5], along the diagonals [4, 4, 4, 4] (x 1.41)
+test sim::powder_tests::a_pile_is_close_to_round_and_has_no_preferred_way ... ok
+test sim::powder_tests::a_restored_state_runs_on_to_the_same_world ... ok
+test sim::powder_tests::a_stored_zero_is_a_whole_block ... ok
+test sim::powder_tests::a_save_in_the_middle_of_a_collapse_reloads_exactly ... ok
+seek+dry seed 3: settled in 868 ticks, 21850 units moved, 24 dried
+test sim::powder_tests::a_settled_pile_costs_nothing ... ok
+20 degrees: 12 blocks settle in 40 ticks, 411 moves, 29 columns, 1.14 high, steepest 93 of 93 (axis), 130 of 131 (diagonal)
+test sim::powder_tests::a_whole_block_landing_on_a_partial_cell_fills_it ... ok
+a four-deep shaft on the beach at 20 degrees: still in 11 ticks, 12 moves, 1094 units
+test sim::powder_tests::digging_a_real_beach_does_not_set_it_flowing ... ok
+seek+dry seed 4: settled in 2292 ticks, 45931 units moved, 87 dried
+test sim::film_tests::the_potential_falls_on_every_tick_under_every_rule_on_random_stairs ... ok
+35 degrees: 12 blocks settle in 36 ticks, 288 moves, 25 columns, 1.72 high, steepest 183 of 179 (axis), 234 of 253 (diagonal)
+test sim::powder_tests::digging_at_the_foot_brings_the_slope_down ... ok
+40 poured: 417 ticks, 45 columns, 2.72 high
+test sim::powder_tests::pouring_on_one_spot_builds_a_pile_at_the_angle ... ok
+test sim::powder_tests::stress_powder_levels_collapse ... ignored
+test sim::powder_tests::the_default_flow_text_is_what_it_was ... ok
+test sim::powder_tests::powder_meeting_water_pushes_it_up_and_none_is_lost ... ok
+45 degrees: 12 blocks settle in 34 ticks, 227 moves, 21 columns, 2.15 high, steepest 255 of 255 (axis), 290 of 361 (diagonal)
+seed 1 at 12 degrees: 369 ticks, 55457 moves
+60 degrees: 12 blocks settle in 33 ticks, 192 moves, 9 columns, 3.01 high, steepest 441 of 442 (axis), 569 of 625 (diagonal)
+test sim::powder_tests::a_tower_comes_to_rest_at_its_angle ... ok
+test sim::powder_tests::the_settings_round_trip_and_the_angle_has_limits ... ok
+test sim::powder_tests::the_same_inputs_give_the_same_world_whatever_order_they_came_in ... ok
+seed 2 at 25 degrees: 113 ticks, 12059 moves
+test sim::powder_tests::the_hash_is_the_same_across_rayon_pools_of_one_and_eight_threads ... ok
+test sim::tests::a_falling_block_draws_as_the_cube_of_its_id ... ok
+test sim::powder_tests::two_powders_do_not_mix ... ok
+test sim::tests::a_block_built_into_a_falling_blocks_path_makes_it_settle_above_it ... ok
+test sim::tests::a_falling_block_waits_at_the_edge_of_the_active_region ... ok
+test sim::tests::edit_memory_and_costs_by_edited_chunks ... ignored
+seed 3 at 35 degrees: 55 ticks, 6190 moves
+test sim::tests::a_landing_whose_displaced_water_would_leave_the_region_waits ... ok
+test sim::tests::pos_key_round_trips_and_orders_canonically ... ok
+test sim::tests::a_reload_keeps_the_active_region_it_was_computed_for ... ok
+test sim::tests::r4_old_registry_compatibility_does_linear_work ... ok
+test sim::tests::neighbours_cross_chunk_borders_and_face_edges_but_not_the_world_top_or_floor ... ok
+test sim::tests::snapshot_bytes_round_trip_and_reject_damage ... ok
+test sim::tests::stress_five_thousand_sand_blocks_falling_at_once ... ignored
+test sim::tests::r4_algorithm_version_changes_the_state_hash ... ok
+seed 4 at 45 degrees: 41 ticks, 3334 moves
+test sim::tests::sand_collapses_in_a_chain_and_a_column_drains_in_order ... ok
+test sim::tests::the_hash_covers_the_simulation_settings ... ok
+seed 5 at 60 degrees: 26 ticks, 1859 moves
+seed 6 at 69 degrees: 29 ticks, 1017 moves
+test sim::powder_tests::random_heaps_always_come_to_rest ... ok
+test sim::tests::tick_is_three_player_steps ... ok
+test sim::tests::the_hash_is_the_same_across_a_save_and_a_reload_in_the_middle ... ok
+test sim::tests::the_hash_is_the_same_across_rayon_pools_of_one_and_eight_threads ... ok
+test sim::tests::updates_outside_the_active_region_wait_and_persist_and_run_when_it_arrives ... ok
+test sim::water_tests::a_falling_block_displaces_water_upward_and_a_sealed_pool_loses_it ... ok
+test sim::tests::the_same_inputs_give_the_same_hash_twice_and_the_scenario_is_not_trivial ... ok
+lake drained through the channel and settled in 720 ticks, 111908 units moved
+lake surface after draining: [2, 1, 0, 1, 2, 2, 1, 0, 1, 2, 2, 1, 0, 1, 2, 2, 1, 0, 1, 2, 2, 1, 0, 1, 2]
+test sim::water_tests::a_full_basin_rests_until_touched_and_a_lake_drains_through_a_channel_to_its_sill ... ok
+shore: sea BlockPos { face: 1, i: 1985, j: 59003, k: 511 }, land BlockPos { face: 1, i: 1986, j: 59003, k: 511 } (the m2b-water.play site)
+shore pit: settled in 111 ticks, 56938 units moved, in 0 out 0, worst tick 19.79 ms
+sea levels out from the pit: [237, 238, 239, 240, 241, 242, 243, 244, 245, 246, 247, 248, 249, 250, 251, 252, 253, 254, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255]
+test sim::water_tests::a_pit_dug_at_the_shore_fills_from_the_sea_and_the_sea_stays_full ... ok
+beach pit: settled in 111 ticks, 6 slides, 6 landings, 53403 units moved, 919 displaced, 0 lost, in 0 out 0
+test sim::water_tests::a_pit_dug_in_a_beach_slumps_and_the_water_still_adds_up ... ok
+four-cell pour settled in 19 ticks, 7073 units moved
+test sim::water_tests::a_pour_falls_as_a_column_then_spreads_and_the_potential_strictly_falls ... ok
+test sim::water_tests::a_steady_throughflow_at_the_boundary_keeps_flowing ... ok
+single cell settled in 8 ticks
+test sim::water_tests::one_cell_spreads_evenly_then_the_basin_levels_and_rests ... ok
+test sim::water_tests::a_write_that_changes_nothing_leaves_no_chunk_and_no_trace_in_the_hash ... ok
+pool drained into the river cells in 56 ticks
+  layer 2 row 1:    0   0   0
+  layer 2 row 2:    0   0   0
+  layer 2 row 3:    0   0   0
+  layer 1 row 1:   13  12  11
+  layer 1 row 2:   13  12  11
+  layer 1 row 3:   13  12  11
+  out 4481, moved 11253, queued []
+pool refilled from the reservoir in 53 ticks
+test sim::water_tests::boundary_cells_read_as_reservoirs_walls_or_drains_and_are_never_written ... ok
+test sim::water_tests::growing_the_region_over_untouched_water_wakes_nothing ... ok
+test sim::water_tests::r4_radius_change_is_not_lost_when_loading_at_another_spawn_chunk ... ok
+test sim::water_tests::r4_restoring_a_larger_radius_wakes_the_sleeping_donor ... ok
+test sim::water_tests::r4_snapshot_between_radius_change_and_tick_keeps_the_old_region ... ok
+test sim::water_tests::sloped_water_surfaces_share_corners_and_are_watertight ... ok
+test sim::water_tests::water_stress_large_pour_and_dam_break ... ignored
+test sim::water_tests::water_dammed_at_an_old_edge_flows_on_when_both_sides_return_together ... ok
+test sky::tests::default_calendar_and_bad_parameters ... ok
+test sky::tests::ephemeris_is_seekable_and_stars_rotate_with_inertial_frame ... ok
+test sky::tests::seek_local_time_at_any_longitude_without_camera_following ... ok
+test sky::tests::speed_change_has_no_jump_and_pause_does_not_advance ... ok
+after the region grew: settled in 41 ticks, 1515 units in the far half
+test sim::water_tests::water_dammed_at_the_old_edge_flows_on_when_the_region_grows ... ok
+test stream::tests::a_stale_resident_mesh_is_requested_again_when_its_replacement_is_lost ... ok
+test stream::tests::an_edited_enclosed_chunk_becomes_a_node ... ok
+test sim::water_tests::water_held_up_by_the_old_edge_falls_when_the_region_grows_below_it ... ok
+seed 1: max nodes 5630, max drawn 3826, switches 2159, merges 944, final nodes 2062
+test sim::water_tests::water_waits_for_its_period_and_the_period_is_in_the_hash ... ok
+test stream::tests::roots_cover_the_band_and_nothing_else ... ok
+test stream::tests::switches_are_atomic_and_fallbacks_are_kept ... ok
+test visual::tests::a_different_look_is_named_thing_by_thing ... ok
+test visual::tests::every_look_value_counts ... ok
+test visual::tests::it_survives_the_header_as_json ... ok
+test visual::tests::the_verdict_says_what_it_does_not_know ... ok
+test workshop::editor::tests::lines_have_no_gaps ... ok
+test workshop::editor::tests::undo_steps_back ... ok
+seed 2: max nodes 4158, max drawn 2622, switches 2092, merges 1289, final nodes 1194
+seed 3: max nodes 4598, max drawn 3174, switches 2139, merges 1370, final nodes 2198
+seed 4: max nodes 4822, max drawn 3236, switches 2044, merges 1125, final nodes 2150
+seed 5: max nodes 4498, max drawn 2900, switches 2172, merges 1156, final nodes 658
+seed 6: max nodes 5102, max drawn 3657, switches 2064, merges 1125, final nodes 678
+test stream::tests::coverage_tree_invariants_under_random_camera_paths ... ok
+test workshop::tests::far_ocean_matches_the_shipped_colour ... ok
+below ChunkKey { body: 0, face: 2, lod: 0, cx: 3348, cy: 1797, cz: 15 } (Enclosed), across ChunkKey { body: 0, face: 2, lod: 0, cx: 0, cy: 2463, cz: 15 } (Mixed)
+look panel: blocks.json changed on disk: 1 block colour(s) and 0 block texture(s) applied.
+look panel: look.json changed on disk: applied.
+look panel: Saved C:\Users\Austin\AppData\Local\Temp\triangulum-workshop-reload-8716\look.json and C:\Users\Austin\AppData\Local\Temp\triangulum-workshop-reload-8716\blocks.json. To share the look, commit and push them (the textures folder too), or send them.
+look panel: look.json changed but was not applied: C:\Users\Austin\AppData\Local\Temp\triangulum-workshop-reload-8716\look.json: sky.atmosphere_height_m must be a number of at least 0, not -5
+test workshop::tests::hot_reload_applies_a_changed_colour ... ok
+trench floor -1375 m; M1a-style occluder 23354 m below sea (hides the floor: false), world bottom 1536 m
+test stream::tests::a_chunk_whose_padding_holds_an_edit_exists ... ok
+look panel: blocks.json changed on disk: added brick; 0 block colour(s) and 0 block texture(s) applied.
+test stream::tests::occluder_never_hides_the_trench_floor ... ok
+look panel: blocks.json changed on disk: its blocks were not applied (block 19 changed its original identity from 'brick' to 'glass' (ids are stable: never renumber)); 0 block colour(s) and 0 block texture(s) applied.
+test workshop::tests::hot_reload_brings_in_a_new_block_and_a_texture ... ok
+look panel: Imported C:\Users\Austin\AppData\Local\Temp\triangulum-workshop-r4-import-8716\import.png (256 x 256, made 16 x 16) onto stone's top.
+test workshop::tests::r4_import_decoding_is_deferred_off_the_game_thread ... ok
+look panel: Saved C:\Users\Austin\AppData\Local\Temp\triangulum-workshop-paint-8716\look.json and C:\Users\Austin\AppData\Local\Temp\triangulum-workshop-paint-8716\blocks.json and 2 picture(s) in C:\Users\Austin\AppData\Local\Temp\triangulum-workshop-paint-8716\textures. To share the look, commit and push them (the textures folder too), or send them.
+look panel: Back to the look as last saved.
+test workshop::tests::paint_a_texture_save_and_read_back ... ok
+test workshop::tests::t1_preview_size_saves_only_the_default_and_restores_home ... ignored
+test workshop::tests::time_of_day_seeks_the_shortest_way ... ok
+test world::blocks::tests::add_rename_fall_hide_and_write ... ok
+look panel: Texture arrives_later.png changed on disk: applied.
+look panel: Texture arrives_later.png was not applied: read C:\Users\Austin\AppData\Local\Temp\triangulum-workshop-r4-first-texture-8716\textures\arrives_later.png: The system cannot find the file specified. (os error 2)
+look panel: Saved C:\Users\Austin\AppData\Local\Temp\triangulum-workshop-save-8716\look.json and C:\Users\Austin\AppData\Local\Temp\triangulum-workshop-save-8716\blocks.json. To share the look, commit and push them (the textures folder too), or send them.
+test workshop::tests::r4_the_first_missing_texture_recovers ... ok
+test world::blocks::tests::blocks_file_round_trip ... ok
+test workshop::tests::save_look_round_trips_both_files ... ok
+test world::blocks::tests::blocks_file_round_trip_with_textures ... ok
+test world::blocks::tests::contradictory_flags_are_refused ... ok
+test world::blocks::tests::r4_an_invalid_pinned_identity_cannot_poison_a_new_header ... ok
+test world::blocks::tests::loads_the_shipped_definitions ... ok
+test world::blocks::tests::per_face_colours_and_the_gpu_table ... ok
+test world::blocks::tests::r4_rename_back_preserves_original_identity_across_restart ... ok
+test world::chunk::tests::many_ids_round_trip ... ok
+test world::chunk::tests::bytes_round_trip_and_reject_damage ... ok
+test world::edits::tests::acknowledging_a_stale_revision_keeps_the_chunk_dirty ... ok
+test world::chunk::tests::uniform_fast_path ... ok
+test world::chunk::tests::palette_round_trip ... ok
+test world::edits::tests::set_tracks_change_and_dirt ... ok
+test world::edits::tests::packed_ids_hold_what_was_written_through_every_width ... ok
+test world::edits::tests::the_ancestor_index_finds_edits_under_a_coarse_chunk ... ok
+test world::edits::tests::the_store_holds_water_levels_and_a_batch_commits_under_one_lock ... ok
+drained 32768 cells one at a time in 11.7 ms
+test world::edits::tests::emptying_water_cell_by_cell_does_not_rescan_the_chunk ... ok
+test world::save::tests::a_save_image_installs_and_loads_like_the_store_it_came_from ... ok
+look panel: Added brick (block 19) and saved it to blocks.json. Put it on the hotbar below to place it.
+test world::save::tests::a_committed_save_without_its_header_is_refused_not_loaded_empty ... ok
+look panel: Renamed brick to red_brick. blocks.json keeps the old name in "was", so saves and replays that know brick still work.
+look panel: red brick now falls like sand: dig under it to see.
+[
+    "write chunks/b0_f2_100_200_17.g2.chunk",
+    "write chunks/b0_f3_5_6_7.g2.chunk",
+    "write sim.g2.bin",
+    "sync_dir chunks",
+    "sync_dir .",
+    "write commit.tmp",
+    "replace commit.tmp -> commit.json",
+    "sync_dir .",
+    "remove chunks/b0_f2_100_200_17.g1.chunk",
+    "remove sim.g1.bin",
+]
+look panel: Renamed red_brick to fire_brick. blocks.json keeps the old name in "was", so saves and replays that know red_brick still work.
+test world::save::tests::a_save_makes_its_new_generation_durable_before_it_lets_go_of_the_old_one ... ok
+test workshop::tests::add_rename_fall_and_hotbar_through_a_session ... ok
+test world::save::tests::bake_identity_follows_contents_even_when_size_and_time_match ... ok
+test world::save::tests::bake_identity_follows_the_contents ... ok
+test world::save::tests::mismatched_manifest_is_refused_with_the_reasons ... ok
+test world::save::tests::missing_save_is_empty_and_damaged_files_are_reported ... ok
+test world::save::tests::r4_falling_ids_require_a_saved_identity ... ok
+test world::save::tests::r4_header_extension_fills_id_gaps ... ok
+test world::save::tests::r4_image_manifest_cannot_reference_external_or_missing_files ... ok
+test world::save::tests::r4_manifest_is_checked_before_reading_or_flushing ... ok
+test world::save::tests::r4_save_records_and_checks_simulation_algorithm_version ... ok
+test world::save::tests::r4_used_ids_require_a_saved_identity ... ok
+10 failure points checked: ["write chunks/b0_f2_100_200_17.g2.chunk", "write chunks/b0_f3_5_6_7.g2.chunk", "write sim.g2.bin", "sync_dir chunks", "sync_dir .", "write commit.tmp", "replace commit.tmp -> commit.json", "sync_dir .", "remove chunks/b0_f2_100_200_17.g1.chunk", "remove sim.g1.bin"]
+test world::save::tests::a_failure_at_any_step_of_a_save_keeps_the_previous_generation ... ok
+test world::save::tests::save_cost_by_dirty_chunks ... ignored
+test world::save::tests::the_projection_table_is_the_documented_one ... ok
+test world::save::tests::an_interrupted_save_leaves_the_previous_generation_whole ... ok
+test world::save::tests::round_trip_only_the_changed_chunks ... ok
+test world::save::tests::out_of_bounds_duplicate_and_unknown_id_chunks_are_refused ... ok
+test world::save::tests::the_simulation_state_rides_along_with_a_flush ... ok
+test world::save::tests::water_levels_round_trip_exactly ... ok
+test world::slope::tests::height_at_is_the_drawn_surface ... ok
+test world::slope::tests::a_lone_cell_stands_at_its_own_height ... ok
+120 shared edges, 18 against something else
+test world::slope::tests::every_edge_of_a_slope_is_closed ... ok
+test world::slope::tests::the_cube_mesh_leaves_the_cells_a_slope_replaces ... ok
+8 chunks, 88 corners, 82 shared, all equal
+1 chunks, 88 corners, 82 shared, all equal
+test world::slope::tests::with_the_switch_off_there_is_no_slope ... ok
+test world::tests::coarse_halo_invalidation_steps_a_whole_voxel ... ok
+6 chunks, 71 corners, 68 shared, all equal
+test world::slope::tests::tops_meet_exactly_across_a_cube_edge_and_at_a_cube_corner ... ok
+4 chunks, 88 corners, 82 shared, all equal
+test world::slope::tests::tops_meet_exactly_inside_a_chunk_and_across_chunks ... ok
+test world::tests::edits_are_authoritative_and_reach_neighbours ... ok
+test world::tests::edits_propagate_to_coarse_lods ... ok
+test worldgen::bake::tests::elevation_gradient_matches_finite_differences ... ok
+test world::tests::hiding_water_does_not_change_what_an_edit_makes_authoritative ... ok
+test worldgen::bake::tests::the_identity_is_hashed_from_the_bytes_that_were_loaded ... ok
+test worldgen::bake::tests::new_bake_samples_smoothly_and_agrees_with_the_old_one_roughly ... ok
+test worldgen::coast::tests::the_shore_profile_is_continuous_and_keeps_its_sides ... ok
+test worldgen::coast::tests::the_distance_field_measures_from_the_contour ... ok
+wiggle: steepest slope 0.832
+test worldgen::coast::tests::wiggle_stays_under_a_slope_of_one ... ok
+test worldgen::hydro::tests::channel_shape_grows_with_discharge ... ok
+test worldgen::hydro::tests::wendland_derivative_matches_finite_differences ... ok
+test worldgen::hydro_tests::hydro_lake_survey ... ignored
+test worldgen::hydro_tests::hydro_places ... ignored
+test worldgen::hydro_tests::hydro_probe ... ignored
+test worldgen::hydro_tests::hydro_stats ... ignored
+test worldgen::hydro_tests::profile_hydro_chunks ... ignored
+test worldgen::hydro_tests::profile_hydro_parts ... ignored
+Neisor's bake loaded and hashed in 3.50 s: 90735e721a63c903f12be013d151e4c8d24aea88dff111850c309a29de47ac34
+test worldgen::bake::tests::the_real_bake_keeps_the_identity_saves_recorded ... ok
+test world::tests::edits_cross_the_face_edge_into_coarse_padding ... ok
+T1 size 128, 10 lake shores + 33 river sites: 18859 columns, 29409 water cells, 113961 neighbour pairs at rest, 0 designated drops, 0 walls, 0 perched, 0 cells not generated
+sweep: 1537 lake shore windows (771 lakes), 300 river links (139.0 km of course: 1126 mouths, 852 inflows, 627 outflows, 51 face-edge crossings in the network); sites found in 7.9 s
+1024 half-heights: longest river 20449, 1021 pieces, 128 search runs; coarse query visits 2366 bins; index has 67549 river / 10575 lake bins
+checked 984 points on long river courses
+test worldgen::hydro::planet_scale_tests::t1_large_river_search_covers_the_whole_course_with_bounded_index_work ... ok
+test worldgen::hydro_tests::water_is_contained_wide ... ignored
+gully mean -0.0258 sd 0.4485 E[v^2] 0.3134
+test worldgen::landform::tests::gully_moments_match_constants ... ok
+slope (0.3, 0): gully change along 1856.2, across 8938.5
+slope (0, 0.3): gully change along 1927.6, across 8870.4
+slope (0.21, -0.21): gully change along 2029.7, across 9271.7
+test worldgen::landform::tests::gully_stripes_run_downhill_on_a_plain_slope ... ok
+test worldgen::landform::tests::noise_constants_match_measured_moments ... ok
+test worldgen::landform::tests::terrace_preserves_the_mean_and_is_continuous ... ok
+test worldgen::noise::tests::fast_sin_cos_is_accurate ... ok
+test worldgen::noise::tests::gully2d_is_bounded_continuous_and_follows_the_stripe_direction ... ok
+test worldgen::noise::tests::noise2d_derivative_matches_finite_differences_and_is_bounded ... ok
+test worldgen::noise::tests::noise_is_bounded_zero_at_lattice_and_seeded ... ok
+T1 size 256, 10 lake shores + 33 river sites: 18859 columns, 30293 water cells, 117425 neighbour pairs at rest, 0 designated drops, 0 walls, 0 perched, 0 cells not generated
+lake shores: 28026 chunks generated in 38.9 s, checked in 4.7 s
+lake shores: 3255756 columns, 1568273 water cells, 6144176 neighbour pairs at rest, 0 designated drops, 0 walls, 0 perched, 0 cells not generated
+1/70 041021 LOD 0: 3.2 km of coast, 0 blobs, 0 slivers, 0 closed pieces (bake 0)
+1/70 041021 LOD 5: 12.5 km of coast, 0 blobs, 2 slivers, 0 closed pieces (bake 0)
+test worldgen::hydro_tests::t1_water_containment_at_every_planet_size has been running for over 60 seconds
+test worldgen::hydro_tests::water_agrees_across_lods has been running for over 60 seconds
+test worldgen::hydro_tests::water_is_contained has been running for over 60 seconds
+test worldgen::shore_tests::coasts_are_coherent has been running for over 60 seconds
+T1 size 512, 10 lake shores + 33 river sites: 18859 columns, 30199 water cells, 117018 neighbour pairs at rest, 0 designated drops, 0 walls, 0 perched, 0 cells not generated
+river stretches: 36174 chunks generated in 74.3 s, checked in 5.6 s
+river stretches: 5956503 columns, 7854432 water cells, 30722532 neighbour pairs at rest, 3608 designated drops, 0 walls, 0 perched, 0 cells not generated
+1/70 041200 LOD 0: 6.9 km of coast, 0 blobs, 0 slivers, 1 closed pieces (bake 2)
+1/70 041200 LOD 5: 32.8 km of coast, 0 blobs, 8 slivers, 3 closed pieces (bake 4)
+test worldgen::hydro_tests::water_is_contained ... ok
+LOD 1: 454641 coarse columns checked (2992 chunks), 205945 wet, 54044 over deep LOD-0 water; 0 surface disagreements, 0 deep water missing, 0 coarse water with no LOD-0 water near
+1/70 q10 LOD 0: 4.8 km of coast, 0 blobs, 0 slivers, 0 closed pieces (bake 0)
+1/70 q10 LOD 5: 14.7 km of coast, 0 blobs, 0 slivers, 0 closed pieces (bake 0)
+T1 size 832, 10 lake shores + 33 river sites: 18859 columns, 32410 water cells, 125780 neighbour pairs at rest, 0 designated drops, 0 walls, 0 perched, 0 cells not generated
+LOD 2: 118555 coarse columns checked (1472 chunks), 53270 wet, 6624 over deep LOD-0 water; 0 surface disagreements, 0 deep water missing, 0 coarse water with no LOD-0 water near
+1/70 q30 LOD 0: 3.2 km of coast, 0 blobs, 0 slivers, 0 closed pieces (bake 0)
+1/70 q30 LOD 5: 21.2 km of coast, 0 blobs, 4 slivers, 0 closed pieces (bake 0)
+LOD 3: 30990 coarse columns checked (893 chunks), 14971 wet, 0 over deep LOD-0 water; 0 surface disagreements, 0 deep water missing, 0 coarse water with no LOD-0 water near
+test worldgen::hydro_tests::water_agrees_across_lods ... ok
+test worldgen::shore_tests::shore_coast_stats ... ignored
+test worldgen::shore_tests::shore_fields ... ignored
+test worldgen::shore_tests::shore_floor_by_lod ... ignored
+test worldgen::shore_tests::shore_lod0_digest ... ignored
+test worldgen::shore_tests::shore_water_by_lod ... ignored
+1660 samples of cube edge near a coast: largest step in the distance 0.65 m
+test worldgen::shore_tests::the_coast_meets_itself_across_cube_edges ... ok
+041021 LOD 1: 816 of 816 columns show what LOD 0 shows
+1/70 q50 LOD 0: 4.6 km of coast, 0 blobs, 1 slivers, 0 closed pieces (bake 0)
+1/70 q50 LOD 5: 28.3 km of coast, 0 blobs, 17 slivers, 2 closed pieces (bake 2)
+041021 LOD 2: 815 of 816 columns show what LOD 0 shows
+T1 size 1024, 10 lake shores + 33 river sites: 18859 columns, 32087 water cells, 124344 neighbour pairs at rest, 0 designated drops, 0 walls, 0 perched, 0 cells not generated
+test worldgen::hydro_tests::t1_water_containment_at_every_planet_size ... ok
+test worldgen::strata::tests::beds_are_2_to_6_blocks_and_fold_gently ... ok
+test worldgen::strata::tests::cached_rock_lookup_matches_the_plain_one ... ok
+test worldgen::shore_tests::lakes_and_rivers_keep_their_water_at_every_lod has been running for over 60 seconds
+041021 LOD 3: 815 of 816 columns show what LOD 0 shows
+1/70 q70 LOD 0: 4.2 km of coast, 0 blobs, 0 slivers, 0 closed pieces (bake 0)
+041021 LOD 4: 814 of 815 columns show what LOD 0 shows
+test worldgen::tests::bedrock_floor_at_layer_zero ... ok
+041021 LOD 5: 813 of 815 columns show what LOD 0 shows
+1/70 q70 LOD 5: 12.5 km of coast, 0 blobs, 4 slivers, 0 closed pieces (bake 0)
+041021 LOD 6: 811 of 815 columns show what LOD 0 shows
+vscale None LOD 0 (1 m voxels): grid vs direct mean 0.0015 m, p99 0.012 m, worst off mesas 0.021 m, worst 0.021 m
+041021 LOD 7: 810 of 815 columns show what LOD 0 shows
+041021 LOD 8: 801 of 807 columns show what LOD 0 shows
+041021 LOD 9: 0 of 0 columns show what LOD 0 shows
+vscale None LOD 1 (2 m voxels): grid vs direct mean 0.0062 m, p99 0.067 m, worst off mesas 0.128 m, worst 0.154 m
+vscale None LOD 2 (4 m voxels): grid vs direct mean 0.0167 m, p99 0.136 m, worst off mesas 0.187 m, worst 0.419 m
+1/70 q90 LOD 0: 5.2 km of coast, 0 blobs, 2 slivers, 0 closed pieces (bake 0)
+vscale None LOD 3 (8 m voxels): grid vs direct mean 0.0398 m, p99 0.352 m, worst off mesas 1.002 m, worst 1.002 m
+vscale None LOD 4 (16 m voxels): grid vs direct mean 0.0016 m, p99 0.048 m, worst off mesas 0.761 m, worst 0.761 m
+vscale None LOD 5 (32 m voxels): grid vs direct mean 0.0000 m, p99 0.000 m, worst off mesas 0.000 m, worst 0.000 m
+1/70 q90 LOD 5: 16.5 km of coast, 0 blobs, 1 slivers, 1 closed pieces (bake 1)
+vscale Some(0.125) LOD 0 (1 m voxels): grid vs direct mean 0.0028 m, p99 0.029 m, worst off mesas 0.094 m, worst 0.094 m
+vscale Some(0.125) LOD 1 (2 m voxels): grid vs direct mean 0.0168 m, p99 0.241 m, worst off mesas 0.548 m, worst 0.566 m
+vscale Some(0.125) LOD 2 (4 m voxels): grid vs direct mean 0.0479 m, p99 0.711 m, worst off mesas 2.602 m, worst 2.602 m
+vscale Some(0.125) LOD 3 (8 m voxels): grid vs direct mean 0.1391 m, p99 2.109 m, worst off mesas 7.826 m, worst 7.826 m
+vscale Some(0.125) LOD 4 (16 m voxels): grid vs direct mean 0.2021 m, p99 2.697 m, worst off mesas 9.714 m, worst 9.714 m
+vscale Some(0.125) LOD 5 (32 m voxels): grid vs direct mean 0.2670 m, p99 5.051 m, worst off mesas 19.239 m, worst 19.239 m
+test worldgen::tests::chunk_grid_matches_direct_columns ... ok
+041200 LOD 1: 567 of 567 columns show what LOD 0 shows
+1/8 041021 LOD 0: 3.2 km of coast, 0 blobs, 0 slivers, 0 closed pieces (bake 0)
+test worldgen::tests::coarse_lods_keep_the_ocean ... ok
+test worldgen::tests::determinism_across_runs_and_thread_counts ... ok
+1/8 041021 LOD 5: 12.5 km of coast, 0 blobs, 2 slivers, 0 closed pieces (bake 0)
+041200 LOD 2: 566 of 567 columns show what LOD 0 shows
+test worldgen::shore_tests::water_shows_the_same_floor_at_every_lod has been running for over 60 seconds
+test worldgen::tests::enclosed_chunks_hold_the_full_per_block_result ... ok
+1/8 041200 LOD 0: 6.9 km of coast, 0 blobs, 0 slivers, 1 closed pieces (bake 2)
+041200 LOD 3: 566 of 567 columns show what LOD 0 shows
+041200 LOD 4: 564 of 567 columns show what LOD 0 shows
+1/8 041200 LOD 5: 32.8 km of coast, 0 blobs, 8 slivers, 3 closed pieces (bake 4)
+041200 LOD 5: 558 of 564 columns show what LOD 0 shows
+041200 LOD 6: 549 of 559 columns show what LOD 0 shows
+041200 LOD 7: 531 of 551 columns show what LOD 0 shows
+041200 LOD 8: 512 of 539 columns show what LOD 0 shows
+041200 LOD 9: 0 of 0 columns show what LOD 0 shows
+1/8 q10 LOD 0: 4.8 km of coast, 0 blobs, 0 slivers, 0 closed pieces (bake 0)
+1/8 q10 LOD 5: 14.7 km of coast, 0 blobs, 0 slivers, 0 closed pieces (bake 0)
+test worldgen::tests::every_ocean_column_is_opaque_underneath ... ok
+1/8 q30 LOD 0: 3.2 km of coast, 0 blobs, 0 slivers, 0 closed pieces (bake 0)
+1/8 q30 LOD 5: 21.2 km of coast, 0 blobs, 4 slivers, 0 closed pieces (bake 0)
+041049_end LOD 1: 594 of 594 columns show what LOD 0 shows
+041049_end LOD 2: 594 of 594 columns show what LOD 0 shows
+041049_end LOD 3: 591 of 593 columns show what LOD 0 shows
+041049_end LOD 4: 590 of 593 columns show what LOD 0 shows
+1/8 q50 LOD 0: 4.6 km of coast, 0 blobs, 1 slivers, 0 closed pieces (bake 0)
+1/8 q50 LOD 5: 28.3 km of coast, 0 blobs, 17 slivers, 2 closed pieces (bake 2)
+041049_end LOD 5: 586 of 590 columns show what LOD 0 shows
+041049_end LOD 6: 580 of 587 columns show what LOD 0 shows
+1/8 q70 LOD 0: 4.2 km of coast, 0 blobs, 0 slivers, 0 closed pieces (bake 0)
+041049_end LOD 7: 565 of 580 columns show what LOD 0 shows
+1/8 q70 LOD 5: 12.5 km of coast, 0 blobs, 4 slivers, 0 closed pieces (bake 0)
+vscale None: worst approach to a bound -0.344 of the band (negative = inside)
+041049_end LOD 8: 547 of 571 columns show what LOD 0 shows
+041049_end LOD 9: 0 of 0 columns show what LOD 0 shows
+test worldgen::shore_tests::water_shows_the_same_floor_at_every_lod ... ok
+test worldgen::shore_tests::lakes_and_rivers_keep_their_water_at_every_lod ... ok
+1/8 q90 LOD 0: 5.2 km of coast, 0 blobs, 2 slivers, 0 closed pieces (bake 0)
+1/8 q90 LOD 5: 16.5 km of coast, 0 blobs, 1 slivers, 1 closed pieces (bake 1)
+half-metre blocks 041021 LOD 0: 3.2 km of coast, 0 blobs, 0 slivers, 0 closed pieces (bake 0)
+half-metre blocks 041021 LOD 5: 4.8 km of coast, 0 blobs, 1 slivers, 0 closed pieces (bake 0)
+place 0: 12 km window mean offset 15.23 m
+place 1: 12 km window mean offset -11.44 m
+place 2: 12 km window mean offset -0.01 m
+place 3: 12 km window mean offset 0.06 m
+place 4: 12 km window mean offset -0.04 m
+place 5: 12 km window mean offset 6.03 m
+place 6: 12 km window mean offset -0.77 m
+place 7: 12 km window mean offset 0.29 m
+place 8: 12 km window mean offset 0.05 m
+place 9: 12 km window mean offset -0.10 m
+place 10: 12 km window mean offset 9.85 m
+place 11: 12 km window mean offset 0.13 m
+test worldgen::tests::landform_averages_out_over_kilometres ... ok
+half-metre blocks 041200 LOD 0: 6.9 km of coast, 0 blobs, 0 slivers, 1 closed pieces (bake 2)
+half-metre blocks 041200 LOD 5: 13.8 km of coast, 0 blobs, 2 slivers, 1 closed pieces (bake 2)
+half-metre blocks q10 LOD 0: 4.8 km of coast, 0 blobs, 0 slivers, 0 closed pieces (bake 0)
+half-metre blocks q10 LOD 5: 6.9 km of coast, 0 blobs, 3 slivers, 0 closed pieces (bake 0)
+test worldgen::tests::landform_height_is_deterministic ... ok
+half-metre blocks q30 LOD 0: 3.2 km of coast, 0 blobs, 0 slivers, 0 closed pieces (bake 0)
+half-metre blocks q30 LOD 5: 4.4 km of coast, 0 blobs, 1 slivers, 0 closed pieces (bake 0)
+cube edges (96 walks): worst (step at the edge) / (largest step beside it + 0.25 m) = 0.47
+test worldgen::tests::no_seam_across_cube_edges ... ok
+test worldgen::tests::profile_column_parts ... ignored
+half-metre blocks q50 LOD 0: 4.6 km of coast, 0 blobs, 1 slivers, 0 closed pieces (bake 0)
+half-metre blocks q50 LOD 5: 7.3 km of coast, 0 blobs, 2 slivers, 0 closed pieces (bake 0)
+vscale Some(0.125): worst approach to a bound -0.302 of the band (negative = inside)
+test worldgen::tests::footprint_bounds_contain_every_sampled_column ... ok
+half-metre blocks q70 LOD 0: 4.2 km of coast, 0 blobs, 0 slivers, 0 closed pieces (bake 0)
+half-metre blocks q70 LOD 5: 5.5 km of coast, 0 blobs, 1 slivers, 0 closed pieces (bake 0)
+test worldgen::tests::surface_chunk_has_air_above_and_rock_below ... ok
+test worldgen::tests::landform_height_is_lod_consistent ... ok
+128: R 90.569 km, vscale 1/70.3440, 724 coarse ocean/air columns; trench -156.30 -> -156.30 m, peak 131.97 -> 131.97 m
+half-metre blocks q90 LOD 0: 5.2 km of coast, 0 blobs, 2 slivers, 0 closed pieces (bake 0)
+half-metre blocks q90 LOD 5: 9.5 km of coast, 0 blobs, 1 slivers, 0 closed pieces (bake 0)
+test worldgen::shore_tests::coasts_are_coherent ... ok
+256: R 181.138 km, vscale 1/35.1720, 1024 coarse ocean/air columns; trench -313.80 -> -313.80 m, peak 265.55 -> 265.55 m
+test worldgen::tests::world_ceiling_exposes_clipped_terrain ... ok
+512: R 362.277 km, vscale 1/17.5860, 1024 coarse ocean/air columns; trench -618.50 -> -618.50 m, peak 459.26 -> 459.26 m
+832: R 588.700 km, vscale 1/10.8222, 1024 coarse ocean/air columns; trench -1022.97 -> -1022.97 m, peak 800.62 -> 800.62 m
+1024: R 724.554 km, vscale 1/8.7930, 1024 coarse ocean/air columns; trench -1259.55 -> -1023.00 m, peak 823.65 -> 823.65 m
+test worldgen::tests::t1_two_coarse_voxels_and_clipped_ground_at_every_size ... ok
+
+test result: ok. 374 passed; 0 failed; 26 ignored; 0 measured; 0 filtered out; finished in 724.29s
+

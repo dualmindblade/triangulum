@@ -5,7 +5,7 @@
 mode fly
 sun 35
 assert slides == 0
-atblock 2 107147 57531 612
+atblock 2 107147 57531 1124
 aim 10 0 -30
 photo frame_hills
 fill -5 -12 -8 21 12 -8 stone
@@ -17,15 +17,15 @@ photo frame_sand_falling
 tick 60
 photo frame_sand_settled
 state settled
-atblock 1 2003 59004 516
+atblock 1 2003 59004 1028
 lookaxis -i 0
 aim -5 0 -5
 photo frame_beach
-atblock 1 1998 59004 513
+atblock 1 1998 59004 1025
 aim 0 0 -1.5
 tap break
 tick 30
-atblock 1 2003 59004 516
+atblock 1 2003 59004 1028
 lookaxis -i 0
 aim -5 0 -5
 photo frame_beach_dug

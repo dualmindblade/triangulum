@@ -1,0 +1,17 @@
+
+running 1 test
+
+thread 'mesh::tests::t1_far_water_keeps_an_opaque_floor_at_the_horizon' (13124) panicked at src\mesh.rs:865:21:
+assertion `left != right` failed: at grazing angles the coarse floor's horizon ends before the water's: provide a virtual floor instead of showing sky through the sea
+  left: 0
+ right: 0
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test mesh::tests::t1_far_water_keeps_an_opaque_floor_at_the_horizon ... FAILED
+
+failures:
+
+failures:
+    mesh::tests::t1_far_water_keeps_an_opaque_floor_at_the_horizon
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 399 filtered out; finished in 8.71s
+

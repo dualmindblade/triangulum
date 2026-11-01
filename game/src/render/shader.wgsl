@@ -1,7 +1,7 @@
 // Vertex-pulled greedy quads on a cube-sphere, camera-relative.
 //
 // Quad: lo = axis:2 | sign:1 | slice:5 | u:5 | v:5 | w-1:5 | h-1:5;
-//       hi = block id:16 | ao:8 (2 bits per corner, corner = cu + 2 cv).
+//       hi = block id:16 | ao:8 (corner = cu + 2 cv) | far-ocean shading:1.
 
 struct Camera {
     view_proj: mat4x4<f32>,
@@ -33,6 +33,8 @@ struct Sky {
     moon: vec4<f32>,       // moonlight rgb
     water: vec4<f32>,      // opacity, edge opacity, glint, glint sharpness
     underwater: vec4<f32>, // rgb, strength
+    ocean_water: vec4<f32>,
+    ocean_floor: vec4<f32>,
     tex: vec4<f32>,        // M3b: blocks per metre (textures tile once per block)
 };
 
@@ -46,8 +48,8 @@ struct Draw {
 };
 
 struct Grid {
-    off: array<vec4<f32>, 25>,
-    dir: array<vec4<f32>, 25>,
+    off: array<vec4<f32>, 81>,
+    dir: array<vec4<f32>, 81>,
 };
 
 @group(0) @binding(0) var<uniform> cam: Camera;
@@ -73,10 +75,11 @@ struct VOut {
     // samples (-1: its flat colour).
     @location(6) uv: vec2<f32>,
     @location(7) @interpolate(flat) layer: i32,
+    @location(8) @interpolate(flat) ocean: u32,
     // Water only (C2): how deep the water is at this vertex, in voxels (the
     // corner height of a top face, 1 elsewhere). A film a few millimetres
     // deep draws fainter than a lake (`fs_water`).
-    @location(8) depth: f32,
+    @location(9) depth: f32,
 };
 
 // Water thinner than FILM_DEPTH voxels fades towards FILM_OPACITY of the
@@ -183,37 +186,41 @@ fn vertex(vi: u32, ii: u32, water: bool, slope: bool) -> VOut {
         lp.z = corner_height(corners, ao_corner);
     }
 
-    // Curvature grid over the footprint (4x4 cells of 8 voxels): bilinear
+    // Curvature grid over the footprint (8x8 cells of 4 voxels): bilinear
     // within a cell, or, at coarse LODs, the quartic through the chunk's
     // five corners along each axis (review 2 #9: a cell is 4 km at LOD 9
     // and the lattice lines curve, so a bilinear mid-cell vertex sat up to
     // 30 m beside the finer neighbour's corner on the same lattice point;
     // the quartic puts it within centimetres, and two chunks of one LOD
     // still evaluate a shared edge from the same five corners).
-    let g = lp.xy * 0.125;
-    let gi = min(vec2<u32>(g), vec2<u32>(3u, 3u));
+    let g = lp.xy * 0.25;
+    let gi = min(vec2<u32>(g), vec2<u32>(7u, 7u));
     let gf = g - vec2<f32>(gi);
-    let b = gi.y * 5u + gi.x;
+    let b = gi.y * 9u + gi.x;
     let o00 = grids[d.slot].off[b].xyz;
     let o10 = grids[d.slot].off[b + 1u].xyz;
-    let o01 = grids[d.slot].off[b + 5u].xyz;
-    let o11 = grids[d.slot].off[b + 6u].xyz;
+    let o01 = grids[d.slot].off[b + 9u].xyz;
+    let o11 = grids[d.slot].off[b + 10u].xyz;
     let n00 = grids[d.slot].dir[b].xyz;
     let n10 = grids[d.slot].dir[b + 1u].xyz;
-    let n01 = grids[d.slot].dir[b + 5u].xyz;
-    let n11 = grids[d.slot].dir[b + 6u].xyz;
+    let n01 = grids[d.slot].dir[b + 9u].xyz;
+    let n11 = grids[d.slot].dir[b + 10u].xyz;
     var off = mix(mix(o00, o10, gf.x), mix(o01, o11, gf.x), gf.y);
     var up = mix(mix(n00, n10, gf.x), mix(n01, n11, gf.x), gf.y);
     if (d.voxel >= 64.0) {
-        let wx = lagrange5(g.x);
-        let wy = lagrange5(g.y);
+        // Two quartic patches per axis, meeting on exact shared corners.
+        // A single patch over an L10 chunk has visible tangential error.
+        let base = min(vec2<u32>(g / 4.0) * 4u, vec2<u32>(4u));
+        let t = g - vec2<f32>(base);
+        let wx = lagrange5(t.x);
+        let wy = lagrange5(t.y);
         off = vec3<f32>(0.0);
         up = vec3<f32>(0.0);
         for (var j = 0u; j < 5u; j++) {
             for (var i = 0u; i < 5u; i++) {
                 let w = wx[i] * wy[j];
-                off += grids[d.slot].off[j * 5u + i].xyz * w;
-                up += grids[d.slot].dir[j * 5u + i].xyz * w;
+                off += grids[d.slot].off[(base.y + j) * 9u + base.x + i].xyz * w;
+                up += grids[d.slot].dir[(base.y + j) * 9u + base.x + i].xyz * w;
             }
         }
     }
@@ -241,7 +248,7 @@ fn vertex(vi: u32, ii: u32, water: bool, slope: bool) -> VOut {
         default: { n = normalize(up) * sgn; }
     }
     // A sloped top lights by its gradient at each vertex, in the column's own
-    // frame (du and dv span eight voxels of the grid), so a pile shades
+    // frame (du and dv span four voxels of the grid), so a pile shades
     // smoothly across its cells rather than as facets.
     if (fan) {
         var word = leans.x;
@@ -249,7 +256,7 @@ fn vertex(vi: u32, ii: u32, water: bool, slope: bool) -> VOut {
         let g = word >> (16u * (c & 1u));
         let gu = f32(i32(g << 24u) >> 24u) / 32.0;
         let gv = f32(i32(g << 16u) >> 24u) / 32.0;
-        n = normalize(cross(du * 0.125 + up * (gu * d.voxel), dv * 0.125 + up * (gv * d.voxel)));
+        n = normalize(cross(du * 0.25 + up * (gu * d.voxel), dv * 0.25 + up * (gv * d.voxel)));
         if (dot(n, up) < 0.0) { n = -n; }
     }
 
@@ -283,6 +290,7 @@ fn vertex(vi: u32, ii: u32, water: bool, slope: bool) -> VOut {
     out.side = select(1.0, 0.0, axis == 2u);
     out.view = world;
     out.normal = n;
+    out.ocean = (q.y >> 24u) & 1u;
     out.depth = depth;
     return out;
 }
@@ -320,6 +328,12 @@ fn fs_main(in: VOut) -> @location(0) vec4<f32> {
     var base = in.color;
     if (in.layer >= 0) {
         base = textureSampleGrad(block_tex, block_samp, in.uv, in.layer, gx, gy).rgb;
+    }
+    if (in.ocean != 0u && sky.ocean_water.w > 0.0) {
+        // The coarsest sea has no opaque voxel below it. Composite the
+        // same water over a virtual gravel floor, keeping the result opaque.
+        // A fixed pre-mixed colour made a blue ring at the L9/L10 switch.
+        return ocean_surface(in);
     }
     let col = lighting(base * in.face_shade * in.ao, normalize(in.normal), in.view);
     return vec4<f32>(atmosphere(col, in.view), 1.0);
@@ -371,6 +385,18 @@ fn vs_water(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) ->
 
 @fragment
 fn fs_water(in: VOut) -> @location(0) vec4<f32> {
+    if (in.ocean != 0u && sky.ocean_water.w > 0.0) { return ocean_surface(in); }
+    return water_surface(in, in.color);
+}
+
+fn ocean_surface(in: VOut) -> vec4<f32> {
+    let water = water_surface(in, sky.ocean_water.rgb);
+    let up = normalize(sky.eye.xyz + in.view / sky.eye.w);
+    let floor = atmosphere(lighting(sky.ocean_floor.rgb, up, in.view), in.view);
+    return vec4<f32>(water.rgb + floor * (1.0 - water.a), 1.0);
+}
+
+fn water_surface(in: VOut, colour: vec3<f32>) -> vec4<f32> {
     let v = normalize(-in.view);
     let up = normalize(sky.eye.xyz + in.view / sky.eye.w);
     // July water-step fix: gently sky-facing sides avoid bright/black bands.
@@ -385,7 +411,7 @@ fn fs_water(in: VOut) -> @location(0) vec4<f32> {
     let sun = normalize(sky.sun_position.xyz);
     let day = smoothstep(-0.08, 0.15, dot(sun, up));
     let glint = pow(max(dot(r, sun), 0.0), sky.water.w) * sky.water.z * day;
-    var col = lighting(in.color * mix(1.0, 0.93, in.side), n, in.view) + vec3<f32>(glint);
+    var col = lighting(colour * mix(1.0, 0.93, in.side), n, in.view) + vec3<f32>(glint);
     col = atmosphere(col, in.view);
     return vec4<f32>(col * alpha, alpha);
 }

@@ -8,26 +8,33 @@
 # Site: the small river above the tallest fall at 1/70 (Opus's
 # `hydro_places` "waterfall_ground": lat -14.11420 lon -47.69908, link 1728,
 # 173 m3/s). Probed with probe-river.play: face 3, the river runs along j
-# over i 127712..127716 (two cells deep, gravel bed at k 510, water at k 511
-# and a partial top cell at k 512); the +i bank at i 127717..127720 is grass
-# on dirt with its top block at k 512. The chunk is i 127712..127743,
+# over i 127712..127716 (two cells deep, gravel bed at k 1022, water at k 1023
+# and a partial top cell at k 1024); the +i bank at i 127717..127720 is grass
+# on dirt with its top block at k 1024. The chunk is i 127712..127743,
 # j 38656..38687, so the river crosses the chunk's j sides (upstream and
 # downstream are boundary cells) and its -i cells at 127711 lie in the
 # neighbour chunk.
 
 # ---- 1. at rest: a generated river schedules nothing --------------------
 at -14.11420 -47.69908
-assert block[3,127715,38665,511] == water
-assert level[3,127715,38665,511] == 255
-assert block[3,127715,38665,512] == water
-assert level[3,127715,38665,512] > 0
-assert level[3,127715,38665,512] < 255
-assert block[3,127715,38665,510] == gravel
-assert block[3,127718,38665,512] == grass
-assert block[3,127718,38665,511] == dirt
+assert block[3,127715,38665,1023] == water
+assert level[3,127715,38665,1023] == 255
+assert block[3,127715,38665,1024] == water
+assert level[3,127715,38665,1024] > 0
+assert level[3,127715,38665,1024] < 255
+assert block[3,127715,38665,1022] == gravel
+assert block[3,127718,38665,1024] == grass
+assert block[3,127718,38665,1023] == dirt
 mode fly
 sim radius 1
-tick 40
+# The tick matters. What this scene does turns on where the first gravel block
+# slides, and that is a tie-break hashed from position and tick: one tick either
+# way, or another sea level, and the slide plugs the trench's near end, the reach
+# pays for the trench out of its own water by leaning back up (about 1 level per
+# cell, which Andrew's rule allows at rest), and nothing crosses the edge. Both
+# are right. This tick is the one where the bank unravels, so the scene exercises
+# the inflow below; m2b-boundary tests inflow without depending on a draw.
+tick 44
 assert water_updates_last == 0
 assert water_moved == 0
 assert queued == 0
@@ -35,8 +42,8 @@ assert water_in == 0
 assert water_out == 0
 
 # ---- 2. the trench: i 127717..127720 at j 38665, from the bank top down to
-#         k 509 (below the river bed), the river end last ------------------
-atblock 3 127720 38665 512
+#         k 1021 (below the river bed), the river end last ------------------
+atblock 3 127720 38665 1024
 aim 0 0 -0.5
 assert crosshair == grass
 tap break
@@ -46,9 +53,9 @@ aim 0 0 -2.5
 tap break
 aim 0 0 -3.5
 tap break
-assert block[3,127720,38665,509] == air
-assert block[3,127720,38665,508] != air
-atblock 3 127719 38665 512
+assert block[3,127720,38665,1021] == air
+assert block[3,127720,38665,1020] != air
+atblock 3 127719 38665 1024
 aim 0 0 -0.5
 tap break
 aim 0 0 -1.5
@@ -57,7 +64,7 @@ aim 0 0 -2.5
 tap break
 aim 0 0 -3.5
 tap break
-atblock 3 127718 38665 512
+atblock 3 127718 38665 1024
 aim 0 0 -0.5
 tap break
 aim 0 0 -1.5
@@ -66,7 +73,7 @@ aim 0 0 -2.5
 tap break
 aim 0 0 -3.5
 tap break
-atblock 3 127717 38665 512
+atblock 3 127717 38665 1024
 aim 0 0 -0.5
 tap break
 aim 0 0 -1.5
@@ -75,30 +82,30 @@ aim 0 0 -2.5
 tap break
 aim 0 0 -3.5
 tap break
-assert block[3,127717,38665,512] == air
-assert block[3,127717,38665,511] == air
-assert block[3,127717,38665,509] == air
-assert block[3,127716,38665,511] == water
-assert level[3,127717,38665,511] == 0
+assert block[3,127717,38665,1024] == air
+assert block[3,127717,38665,1023] == air
+assert block[3,127717,38665,1021] == air
+assert block[3,127716,38665,1023] == water
+assert level[3,127717,38665,1023] == 0
 
 # ---- 3. the river flows into the trench and keeps flowing ----------------
 tick 1
-assert level[3,127717,38665,511] > 0
+assert level[3,127717,38665,1023] > 0
 tick 3
-assert level[3,127717,38665,509] > 0
-atblock 3 127721 38665 513
+assert level[3,127717,38665,1021] > 0
+atblock 3 127721 38665 1025
 hold space 0.1
 aim -4 0 -2.5
 shot 08_river_diverted_early
 tick 400
 # B4: the river's bed is gravel, and the trench undercuts it, so the bed's edge
 # slides into the trench's near end and takes the place of the water there.
-assert block[3,127717,38665,509] == gravel
+assert block[3,127717,38665,1021] == gravel
 assert slides > 0
-assert level[3,127718,38665,509] == 255
-assert level[3,127719,38665,509] == 255
-assert level[3,127720,38665,509] == 255
-assert level[3,127720,38665,510] >= 200
+assert level[3,127718,38665,1021] == 255
+assert level[3,127719,38665,1021] == 255
+assert level[3,127720,38665,1021] == 255
+assert level[3,127720,38665,1022] >= 200
 assert water_in > 0
 assert water_lost == 0
 # the river inside the loaded area is not dry: its bottom layer stays nearly
@@ -106,17 +113,17 @@ assert water_lost == 0
 # (the river runs from the chunk's -i side at about j 38675 down to its -j
 # side at i 127714..127716, flowing toward -j), and water still stands in
 # the trench's river end
-assert level[3,127716,38665,511] >= 200
-assert level[3,127715,38665,511] >= 200
-assert level[3,127712,38665,511] >= 200
-assert level[3,127715,38660,511] >= 200
-assert level[3,127715,38670,511] >= 200
-assert level[3,127715,38656,511] >= 200
-assert level[3,127717,38665,511] > 0
+assert level[3,127716,38665,1023] >= 200
+assert level[3,127715,38665,1023] >= 200
+assert level[3,127712,38665,1023] >= 200
+assert level[3,127715,38660,1023] >= 200
+assert level[3,127715,38670,1023] >= 200
+assert level[3,127715,38656,1023] >= 200
+assert level[3,127717,38665,1023] > 0
 # the frozen river beyond the chunk's -j side is exactly as generated
-assert level[3,127714,38655,511] == 255
-assert level[3,127716,38655,511] == 255
-assert block[3,127714,38655,511] == water
+assert level[3,127714,38655,1023] == 255
+assert level[3,127716,38655,1023] == 255
+assert block[3,127714,38655,1023] == water
 aim -4 0 -2.5
 shot 09_river_diverted_settled
 assert tick_ms_avg < 2

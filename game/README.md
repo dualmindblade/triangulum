@@ -31,22 +31,29 @@ everything you change shows straight away.
   **Shift+M** keys do (see Controls).
 - **Distance detail**: how much detail far-away land keeps. Higher looks
   better and costs speed.
-- **Terrain**: roughness, landforms and how tall the mountains are
-  (vertical scale 1/70, 1/20, 1/8). These rebuild the world, so the game
-  shows you a *preview world* with saving turned off: your own world and
-  its save are never touched. *Back to my world* takes you home. *Make
-  this the default...* makes new worlds start with this terrain, but saves
-  made with the old terrain will not load any more, so only do it when you
-  are sure.
+- **Terrain**: planet size, roughness, landforms and vertical scale. *Planet
+  size* runs from 128 to 1024 half-heights in steps of 32. **Earth analogue
+  (832)** means a 588.7 km radius: Earth reduced until its deepest trench
+  fits below the middle of this world. The panel shows the radius and
+  vertical scale. **Follow planet radius** keeps Earth's slopes as you
+  resize; untick it to choose custom relief. Continents and the river
+  network stretch; block size stays the same.
+  These dials rebuild a *preview world* with saving off. Your own world,
+  edits and simulation are set aside safely. *Back to my world* restores
+  them. *Save look* keeps the preview's size and terrain as the defaults
+  for new worlds in `world.json`; it never saves blocks dug in the preview.
+  Existing saves need their original size and terrain settings.
 
 Sky and light, Water, Blocks and Distance detail each have a reset button
 that puts that section back to the look the game ships with (each block
 also has its own small reset); in Terrain, *Back to my world* does that.
 
-**Saving and sharing.** *Save look* writes your choices into two files:
+**Saving and sharing.** *Save look* writes your choices into three files:
 `game/assets/look.json` (sky, light, water, detail) and
-`game/assets/blocks.json` (block colours). *Revert to saved* throws away
-what you changed since. To share a look, commit and push those two files,
+`game/assets/blocks.json` (block colours), plus `game/assets/world.json`
+(planet size and terrain). *Revert to saved* throws away what you changed
+since, rebuilding a preview if the saved terrain differs. To share a look,
+commit and push those three files,
 or just send them: everyone who pulls gets your look. You can also edit
 the files in a text editor; the game notices within half a second.
 
@@ -410,6 +417,8 @@ saves remain readable when the world/generator checks match.
 ```
 --seed N --block-size S --height H --sea-level K --n N --bake DIR --vscale F --roughness F
                       world parameters (defaults in assets/world.json)
+--planet-size U       half-heights per face edge (128..1024, steps of 32;
+                      Earth analogue 832); --n remains a raw-column override
 --save DIR            save directory (default saves/<world name>)
 --no-save             neither load nor write a save
 --sim-radius M        active region of the simulation around the player (112)
@@ -442,10 +451,26 @@ saves remain readable when the world/generator checks match.
                       July calendar parameters (7, 3, 84)
 ```
 
-Block size, height, sea level and N are validated at startup; an
-unsupported combination (for example a sea level that is not a multiple of
-H / 8, or an N the coarsest chunks do not tile) is refused with a message
-saying what to change.
+`world.json` uses `planet_size_half_heights`, with N = that number × H/2.
+The shipped world is H = 2048, sea level 1024, size 128, N = 131072.
+The coarsest voxel is 1024 m (LOD 10): the bottom half can hold ocean and
+the top half air. At this LOD the bottom sea voxel uses opaque ocean colour
+so the sky cannot show through the planet; finer water has a real floor.
+
+The size must be a multiple of 32 so coarsest chunks tile every face.
+N cannot exceed 1048576: the simulation packs each horizontal coordinate
+in 20 bits. At H = 2048 that permits 1024 half-heights; H = 4096 permits
+512. Refusals explain both the value and the rule. Small test worlds may
+use sizes down to 32. Changing `--height` keeps the half-height count and
+places sea level at H/2; `--n` and `--sea-level` can override those for tests.
+Legacy files with `columns_per_face` still load, but a file must not supply
+both size fields. N need not be a power of two: 832 works.
+
+Generator version 5 moves the absolute layers. Saves and replays from an
+older generator are refused, with their files left untouched. Use their
+original build to continue them, or `--save saves/another-name` for a new
+world. `scripts/shift_layers.py` shifts only absolute layer references in
+`.play` files by +512; use it once on scripts brought in from older branches.
 
 ## Sky and time
 
@@ -468,9 +493,15 @@ moonlight levels and underwater tint retain July's equations. Atmosphere
 height, limb thickness and fog distance scale with planet radius. The
 `sky` JSON fields `atmosphere_height_radii`, `limb_height_radii` and
 `fog_per_radius` set those optical lengths' defaults; since M3a the look
-(`assets/look.json`, below) carries the atmosphere height and the fog in
-metres and overrides them, and the limb keeps its July proportion to the
-atmosphere. The moon's orbit supplies light only; a visible moon, eclipses, clouds
+(`assets/look.json`, below) carries the atmosphere height and fog in metre
+units, together with `sky.reference_radius_m`, the radius where those dials
+were authored. Loading or previewing another radius multiplies atmosphere
+height by the new radius / authored radius and divides fog density by that factor. The
+panel shows the resulting actual metres and fog per km; saving records
+the new reference radius. The limb keeps its July proportion to the
+atmosphere. Shipped air scale heights range from about 640 m at size 128
+to 5.12 km at 1024; fog e-folding distances range from 4.06 to 32.5 km.
+The moon's orbit supplies light only; a visible moon, eclipses, clouds
 and weather remain M5 work. Cube face normals and per-vertex AO stay in
 the existing packed quad format; continuous natural-surface normals and
 cave skylight propagation need additional terrain data.
@@ -521,9 +552,10 @@ Andrew's dials live in three files, all tracked in git:
   writes the file back in its own style (one aligned line per block, ids
   and every other field kept); `blocks::colours_into_text` reproduces the
   shipped file byte for byte.
-- `assets/world.json`: the terrain dials (`roughness`, `landform`,
-  `vertical_scale`), written only by the panel's *Make this the default*,
-  which changes the three values in place and nothing else.
+- `assets/world.json`: `planet_size_half_heights` and the terrain dials
+  (`roughness`, `landform`, `vertical_scale`), written by *Save look*.
+  These four values change in place; `vertical_scale: null` keeps following
+  radius across a save and restart.
 
 `src/workshop.rs` is the panel. Per frame it applies changes (the look into
 the sky uniform, colours into the colour table, the LOD factor into the
@@ -1088,6 +1120,15 @@ flight measures wall-clock time, so run it alone: anything else rendering or
 compiling on the machine corrupts it. `--skip-flight` and `--only pose,pose`
 narrow the run.
 
+The planet-size matrix is `python scripts/t1_planet_check.py --bench`: the
+same full bench at 128, 256, 512, 832 and 1024 half-heights. Without
+`--bench` it captures ground, 2 km, orbit and map frames; `--exercise`
+walks, digs, pours water, saves/reloads and checks a replay at every size.
+`python scripts/t1_play_suite.py` runs the existing play scripts with their
+required flags and separate scratch saves. Both drivers stop before their
+next case if `out/t1/STOP` exists. T1's findings and curated evidence are in
+`docs/missions/T1-planet-findings.md` from the repository root.
+
 ## The play harness
 
 A script drives the real player, world and renderer headless on a fixed
@@ -1164,9 +1205,11 @@ a heap over a cube corner, a block waiting at the edge of the active region.
 `scripts/b4-film.play` drains a terraced bowl, leaves a film on a wide table,
 pours a block on a table and on real ground; it asserts only what holds under
 every rule, so run it with `--film MODE` and compare the frames and the
-printed levels. `b4-oldsave-make.play`, run on an older build, and
-`b4-oldsave-load.play`, run on this one, check that an old save loads and that
-nothing in it wakes until it is touched.
+printed levels. On this generator, run `b4-oldsave-make.play` with
+`--no-slide`, then `b4-oldsave-load.play` with normal rules and the same
+scratch `--save` directory: the old-flow fixture stays asleep until touched.
+For a genuinely historical binary use its matching script revision; saves
+from before the sea-level change are intentionally refused by this build.
 
 `scripts/b7-compare.play` runs the same tower, dropped cube, pit, cliff, beach
 and pool under whichever powder rule the command line says, so `--powder-angle
@@ -1350,7 +1393,7 @@ partial files, unknown and out-of-range fields refused, the shipped file
 is the M1 look), blocks.json's round trip (the shipped file rewritten from
 its own colours is byte-identical, idempotent, keeps comments and ids),
 the per-face colour table (grass, dry grass and snow undersides are dirt),
-world.json's terrain edit changing only its three values, the file watch,
+world.json's terrain and size edit preserving its other fields, the file watch,
 hot reload (a colour changed in blocks.json in a text editor reaches the
 GPU colour table on the next poll; a changed look.json reaches the look; a
 broken file is reported and not applied), Save look writing both files,
@@ -1380,11 +1423,12 @@ sites (`hydro_places`) and print the water model at a column
   need a cut-out drawing pass), and the water rules know one liquid, so the
   panel adds only solid blocks. Water has no texture.
 - The pixel editor has no line, rectangle or mirror tools, and no redo.
-- A terrain preview keeps the world's height and sea level. At 1/8 the
-  deepest ocean (about 1,380 m down) reaches below the bottom of the
-  default world (512 m below the sea); 1/8 is normally run with
-  `--height 4096 --sea-level 1536`, a restart setting the panel does not
-  expose. What the preview draws there was not checked.
+- A terrain preview keeps world height and block size. At size 1024 the
+  deepest trench reaches below the default world's bottom: bedrock clips
+  it at 1023 m below sea level. Ground-relative camera and teleport hints
+  use this actual floor (and the clipped ceiling). Extra relief needs a
+  taller world at restart; `--height 4096 --n 131072 --vscale 0.125` keeps
+  the original radius while allowing 2048 m above and below sea level.
 - The time of day and its speed are not part of the look; a screenshot's
   sidecar records them.
 - Resting water leans up to one level per cell, as the rule allows, and the
@@ -1402,12 +1446,14 @@ sites (`hydro_places`) and print the water model at a column
   one-voxel halo around them, across face edges too); one that gets edited
   appears under its coarser parent and refines down to LOD 0 over the next
   frames, so a deep shaft shows its walls coarsely for a moment.
-- Quads on the sea-level plane (and all water quads) have tangent edges of
-  at most 256 m (`mesh::SEA_EDGE_MAX_M`), so the sea's chords sag under
-  0.1 m against the sphere and the vertices of neighbouring LODs coincide
-  from LOD 5 up; a seam at the LOD 5/4 boundary and finer is below a
-  centimetre. Other coarse surfaces still sag (23 m mid-quad at LOD 9),
-  inside their own LOD's height quantisation.
+- Sea and water quads aim for 256 m edges (`mesh::SEA_EDGE_MAX_M`), but
+  cannot be smaller than one voxel. LOD 10 therefore has nominal 1024 m
+  edges: about 1.45 m of chord sag at the original radius, less on larger
+  planets. A 9×9 curvature grid reduces the sampled L10 warp error from
+  23.14 m to 2.14 m. Small differences between LOD edges remain; the
+  coarsest geometry is intended for distant views. Far sea surfaces use
+  water shading over an opaque virtual floor so their coarsened floor's
+  horizon cannot leave strips of sky showing through the water.
 - In coarse chunks' padding, an edit at the one diagonal column of a cube
   corner (three faces meet there) is left natural.
 - The corner policy for lattice coordinates past two sides of a face maps

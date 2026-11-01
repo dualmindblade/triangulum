@@ -21,7 +21,7 @@ recmode live
 # ---- A. one block over a plate's edge --------------------------------------
 # (the lower plate runs under the whole scene, so the landed block stays put;
 # the eye is 2 m from the block)
-atblock 2 107149 57531 606
+atblock 2 107149 57531 1118
 fill -6 -4 -2 2 4 -2 stone
 fill -6 -4 -5 10 4 -5 stone
 tick 2
@@ -76,7 +76,7 @@ state A_done
 assert motion_gaps_max == 0
 
 # ---- B. over a cube face edge ------------------------------------------------
-atblock 0 131071 65536 760
+atblock 0 131071 65536 1272
 fill -4 -4 -2 0 4 -2 stone
 fill -4 -4 -5 4 4 -5 stone
 tick 2
@@ -122,7 +122,7 @@ state B_done
 assert motion_gaps_max == 0
 
 # ---- C. a heap over a cube corner --------------------------------------------
-atblock 0 131071 131071 760
+atblock 0 131071 131071 1272
 fill -8 -8 -8 8 8 -8 stone
 tick 3
 assert queued == 0
@@ -143,7 +143,7 @@ state C_done
 assert motion_gaps_max == 0
 
 # ---- D. a save and a reload in the middle of a slide -------------------------
-atblock 2 107189 57531 606
+atblock 2 107189 57531 1118
 fill -6 -4 -2 2 4 -2 stone
 fill -6 -4 -5 10 4 -5 stone
 tick 2
@@ -177,7 +177,7 @@ shot D_landed
 state D_done
 
 # ---- E. a large collapse: the cost of the look -------------------------------
-atblock 2 107247 57531 606
+atblock 2 107247 57531 1118
 fill -20 -20 -2 20 20 -2 stone
 tick 2
 assert queued == 0

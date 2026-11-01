@@ -65,7 +65,8 @@ fn stats(v: &[f64]) -> (f64, f64, f64, f64) {
 impl Harness {
     pub fn new(engine: Arc<Engine>, width: u32, height: u32, out_dir: &str, backend: Option<&str>) -> Self {
         let instance = crate::render::make_instance(backend);
-        let gpu = Renderer::new(&instance, None, width, height, engine.quad_mb, engine.slot_capacity, &engine.colours);
+        let mut gpu = Renderer::new(&instance, None, width, height, engine.quad_mb, engine.slot_capacity, &engine.colours);
+        gpu.sky.set_ocean(&engine.registry);
         let egui_paint = EguiPaint::new(&gpu.device, gpu.format);
         let streamer = engine.streamer();
         let _ = std::fs::create_dir_all(out_dir);

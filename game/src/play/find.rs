@@ -216,17 +216,21 @@ fn seeds(s: &Session, kind: &str, here: DVec3) -> Result<Vec<(u8, i64, i64)>, St
         "river" | "waterfall" | "lake" => {
             let hy = g.hydro.as_ref().ok_or("this bake has no hydro.bin (no lakes or rivers)")?;
             let falls = kind == "waterfall";
-            for r in [300.0, 1200.0, 5000.0, 20000.0, 80000.0] {
-                let c = hy.cands(here, r);
+            // These are global candidate areas. Keep the same angular reach
+            // as on the original planet; the final bank search stays local.
+            let scale = (planet.radius / (131_072.0 * (6.0 / (4.0 * std::f64::consts::PI)).sqrt())).max(1.0);
+            for r in [300.0, 1200.0, 5000.0, 20000.0, 80000.0].map(|r| r * scale) {
                 let mut best: Vec<(f64, DVec3)> = Vec::new();
                 if kind == "lake" {
-                    for &k in &c.cells {
-                        let cell = &hy.field[k as usize];
-                        if cell.lake >= 0 {
+                    // At global distances, scanning the small baked field
+                    // avoids probing millions of empty spatial-index bins.
+                    for cell in &hy.field {
+                        if cell.lake >= 0 && (cell.pos - here).length() * planet.radius <= r + hy.lake_r_chord * planet.radius {
                             best.push(((cell.pos - here).length() * planet.radius, cell.pos));
                         }
                     }
                 } else {
+                    let c = hy.cands(here, r);
                     for &k in &c.segs {
                         let seg = &hy.segs[k as usize];
                         if falls {
@@ -286,7 +290,7 @@ fn seeds(s: &Session, kind: &str, here: DVec3) -> Result<Vec<(u8, i64, i64)>, St
                 }
                 return Ok(out);
             }
-            Err(format!("no {kind} within 80 km"))
+            Err(format!("no {kind} within {:.0} km", 80.0 * scale))
         }
         "shore" => {
             // The coastline in the bake: the first sample, ring by ring at a
