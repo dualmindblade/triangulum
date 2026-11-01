@@ -370,7 +370,6 @@ pub fn find(s: &mut Session, kind: &str) -> Result<Site, String> {
     // Look at the target cell's top centre (flat: along +i, level; a
     // fall: down at the water below its lip).
     let eye = s.player.eye();
-    let (north, east, up) = crate::camera::Camera::local_frame(eye);
     let aim = if kind == "flat" {
         let (f, wi, wj) = planet.wrap_cell(face, i + 4, j);
         planet.pos(f, wi as f64 + 0.5, wj as f64 + 0.5, stand.k as f64 + 1.0 + crate::player::EYE_M / planet.block_size)
@@ -382,8 +381,8 @@ pub fn find(s: &mut Session, kind: &str) -> Result<Site, String> {
         planet.pos(target.face, target.i as f64 + 0.5, target.j as f64 + 0.5, target.k as f64 + 1.0)
     };
     let d = (aim - eye).normalize();
-    s.player.heading = d.dot(east).atan2(d.dot(north));
-    s.player.pitch = d.dot(up).clamp(-1.0, 1.0).asin().clamp(-1.55, 1.55);
+    s.player.face(d);
+    s.player.pitch = d.dot(eye.normalize()).clamp(-1.0, 1.0).asin().clamp(-1.55, 1.55);
     let dist_m = (s.player.pos.normalize() - here).length() * planet.radius;
     Ok(Site { kind, stand, target, axis, gap, dist_m, columns, drop })
 }

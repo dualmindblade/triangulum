@@ -5,8 +5,8 @@
 use crate::camera::Camera;
 use crate::engine::{Engine, HILLS, MOUNTAINS, gnomonic_dir};
 use crate::render::{DrawRecord, Renderer};
-use crate::sim::Falling;
-use crate::sim::draw::FallingDraws;
+use crate::sim::Drawn;
+use crate::sim::draw::{FallingDraws, MotionStats};
 use crate::stream::Streamer;
 use crate::ui::{EguiPaint, draw_caption, paint_offscreen};
 use crate::worldgen::Marker;
@@ -25,7 +25,7 @@ pub struct Harness {
     egui_paint: EguiPaint,
     /// Blocks in flight to draw this frame (the play harness sets it from
     /// its session; the bench has none).
-    pub falling: Vec<Falling>,
+    pub falling: Vec<Drawn>,
     falling_draw: FallingDraws,
 }
 
@@ -98,6 +98,15 @@ impl Harness {
         let cpu_ms = t0.elapsed().as_secs_f64() * 1e3;
         let gpu_ms = self.gpu.wait_gpu_ms();
         FrameSample { cpu_ms, gpu_ms, wall_ms: t0.elapsed().as_secs_f64() * 1e3, tris: fs.triangles, water_tris: fs.water_triangles, draws: fs.draws + fs.water_draws }
+    }
+
+    /// What the falling-block draw found over the frames since `motion_reset`.
+    pub fn motion(&self) -> MotionStats {
+        self.falling_draw.stats
+    }
+
+    pub fn motion_reset(&mut self) {
+        self.falling_draw.stats = MotionStats::default();
     }
 
     /// Run frames until streaming is settled for 10 consecutive frames.

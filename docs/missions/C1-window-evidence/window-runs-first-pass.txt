@@ -1,0 +1,68 @@
+﻿=== minimise (idle 530.093 s): --no-save --captured --record-replay out/win/after-minimise.replay --no-sim
+up: alive True client 426x240 (points; the game sees pixels)
+visible: 4.75 CPU s in 5 s = 95 % of one core
+minimised: alive True iconic True
+minimised: 0.02 CPU s in 10 s = 0 % of one core
+restored: alive True iconic False client 426x240
+restored: 0.67 CPU s in 5 s = 13 % of one core
+minimised twice more: alive True
+end: alive True
+quiet: foreground 66620 (was 66620), clip 0,0,2560,1440
+closed
+--- err
+=== closed-while-minimised (idle 600.937 s): --no-save
+up: alive True client 426x240 (points; the game sees pixels)
+minimised: alive True
+closed
+WM_CLOSE while minimised: alive False
+end: alive False
+DIED. fg 66620; clip 0,0,2560,1440 was 0,0,2560,1440
+--- err
+=== tiny (idle 635.75 s): --no-save --no-sim
+up: alive True client 426x240 (points; the game sees pixels)
+size 1 x 1: alive True client 0x0
+size 120 x 1: alive True client 105x0
+size 1 x 120: alive True client 0x82
+size 137 x 40: alive True client 122x2
+size 160 x 28: alive True client 145x0
+size 300 x 200: alive True client 285x162
+back: alive True client 645x362
+end: alive True
+quiet: foreground 66620 (was 66620), clip 0,0,2560,1440
+closed
+--- err
+=== focus (idle 673.437 s): --no-save --no-sim --captured --exit-after 13 --screenshot out/win/after-focus.png
+up: alive True client 426x240 (points; the game sees pixels)
+gained: alive True
+lost: alive True
+back: alive True
+activate messages: alive False
+after exit-after: alive False
+end: alive False
+DIED. fg 66620; clip 0,0,2560,1440 was 0,0,2560,1440
+--- err
+=== focus-hold (idle 700.031 s): --no-save --no-sim --captured --exit-after 8 --screenshot out/win/after-still-captured.png
+up: alive True client 426x240 (points; the game sees pixels)
+control, no focus message: alive False
+end: alive False
+DIED. fg 66620; clip 0,0,2560,1440 was 0,0,2560,1440
+--- err
+=== crash-file (idle 713.812 s): --no-save --no-sim --crash-test
+up: alive False client 0x0 (points; the game sees pixels)
+with --crash-test: alive False
+file: panic-20261101-010257.txt 9087 bytes
+end: alive False
+DIED. fg 66620; clip 0,0,2560,1440 was 0,0,2560,1440
+--- err
+             at C:\Users\Austin\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\winit-0.30.13\src\platform_impl\windows\event_loop.rs:270
+  17: winit::platform_impl::windows::event_loop::EventLoop::run
+             at C:\Users\Austin\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\winit-0.30.13\src\platform_impl\windows\event_loop.rs:233
+  18: winit::event_loop::EventLoop::run_app
+             at C:\Users\Austin\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\winit-0.30.13\src\event_loop.rs:265
+  19: triangulum::app::run_with
+             at .\src\app.rs:1012
+  20: triangulum::main
+             at .\src\main.rs:677
+  21: core::ops::function::FnOnce::call_once
+             at /rustc/e408947bfd200af42db322daf0fadfe7e26d3bd1/library\core\src\ops\function.rs:250
+note: Some details are omitted, run with `RUST_BACKTRACE=full` for a verbose backtrace.

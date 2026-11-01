@@ -639,8 +639,10 @@ fn the_level_one_cell_at_a_ledge_goes_over_it() {
     assert_stays_still(&w, &mut sim, focus, 20);
 }
 
-/// The ledge cell, whatever its level, gets to the lower space, and when the
-/// water on a shelf has all gone over, nothing is left at the ledge.
+/// The ledge cell, whatever its level, gets to the lower space. Under rules
+/// 4 (C2) what the spread leaves on the shelf as a sheet of level-1 cells
+/// holds and dries where it lies instead of pumping itself over one unit at
+/// a time, so once the film has dried nothing is left at the ledge.
 #[test]
 fn water_on_a_shelf_runs_over_the_ledge_and_the_potential_strictly_falls() {
     for start in [1u8, 2, 3, 7, 40, 255] {
@@ -650,11 +652,21 @@ fn water_on_a_shelf_runs_over_the_ledge_and_the_potential_strictly_falls() {
         stair(&w, o, 9, 1, 3);
         let shelf = |dx: u32| BlockPos { i: o.i + dx, j: o.j + 1, k: o.k + 2, ..o };
         assert!(w.set_water(shelf(3), w.water_id(), start));
-        let mut sim = Sim::new(SimConfig::default());
+        let mut sim = Sim::new(SimConfig { flow: Flow { film_dry_ticks: 20, ..Flow::default() }, ..SimConfig::default() });
         let ticks = settle_water(&w, &mut sim, focus, 2000);
         assert_eq!(water_total(&w.edits), start as u64, "conserved");
+        let left = [w.water_level_at(shelf(1)), w.water_level_at(shelf(2)), w.water_level_at(shelf(3))];
+        assert!(left.iter().all(|&l| l <= 1), "starting at {start}: only film is left on the shelf: {left:?}");
+        for _ in 0..400 {
+            sim.step(&w, focus);
+            if sim.drying_count() == 0 && sim.queued() == 0 {
+                break;
+            }
+        }
+        assert_eq!(sim.drying_count(), 0);
         assert_eq!(w.water_level_at(shelf(3)), 0, "starting at {start}: the ledge cell ran dry");
-        println!("level {start} at the ledge: settled in {ticks} ticks, shelf left {:?}", [w.water_level_at(shelf(1)), w.water_level_at(shelf(2)), w.water_level_at(shelf(3))]);
+        assert_eq!(water_total(&w.edits) + sim.stats.water_dried, start as u64, "conserved, the dried film counted");
+        println!("level {start} at the ledge: settled in {ticks} ticks, shelf left {left:?} before the film dried, {} dried", sim.stats.water_dried);
         assert_stays_still(&w, &mut sim, focus, 20);
     }
 }

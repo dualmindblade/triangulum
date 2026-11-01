@@ -1,0 +1,16 @@
+rule      scene       ticks    wet  level1  units  dried
+keep      plateau         1     25      25     25      0
+keep      lake         2120    216      72    580      0
+keep      poured         17    101      30    255      0
+seek      plateau         1     25      25     25      0
+seek      lake         2130    216      72    580      0
+seek      poured         17    101      30    255      0
+merge     plateau         2      7       0     25      0
+merge     lake         2085    204       0   1421      0
+merge     poured         17     55       0    255      0
+dry       plateau       198      0       0      0     25
+dry       lake         3142      0       0      0    719
+dry       poured        758      0       0      0    255
+seek+dry  plateau       198      0       0      0     25
+seek+dry  lake         2833      0       0      0    600
+seek+dry  poured        758      0       0      0    255

@@ -1,0 +1,69 @@
+# C1, Andrew's #10: no limit on the wheel. From the ground out past the moon's
+# distance (13.9 radii) and the sun's (12,190), to the edge of everything, and
+# back down into the planet, and on past the moon's distance sideways. No panic,
+# no NaN, no lost pose, frames at every stage. No absolute layers.
+#   triangulum --play scripts/c1-far-flight.play --out out/c1/far-flight
+sun 40
+at 20 40 300
+mode fly
+look 0 -20
+shot far_0_start
+state s0
+speed 1000000
+hold space 0.5
+state s1
+shot far_1_500_km_up
+hold space 1.5
+state s2
+assert alt > 1900000
+shot far_2_past_the_moon
+speed 2000000000
+hold space 1
+state s3
+assert alt > 1900000000
+shot far_3_past_the_sun
+speed 1e12
+hold space 2
+state s4
+assert alt > 1.9e12
+shot far_4_two_tera_metres
+speed 1e15
+hold space 2
+state s5
+assert alt > 9.9e14
+shot far_5_the_edge
+hold space 2
+state s6
+assert alt > 9.9e14
+log ---- and straight back down, at that speed, in one step --------------------
+speed 1e18
+hold ctrl 0.1
+state s7
+assert alt < -500
+shot far_6_back_at_the_bottom
+assert lat ~ 20 0.001
+assert lon ~ 40 0.001
+log ---- out and sideways over the pole at a million metres a second ------------
+speed 1000
+hold space 2
+speed 1000000
+hold w 3
+state s8
+hold d 3
+state s9
+hold w,shift 3
+state s10
+shot far_7_round_the_planet
+log ---- a look down from the moon and the wheel all the way down ---------------
+mode walk
+state s11
+wait 1
+state s12
+mode fly
+speed 0.01
+hold w 1
+state s13
+speed 20
+at 20 40 300
+look 0 -20
+shot far_8_home_again

@@ -61,7 +61,7 @@ mod tests {
         for size in [128, 256, 512, 832, 1024, 128] {
             let p = crate::grid::Planet::new(1.0, 2048, 1024, size * 1024);
             sky.set_planet(&p);
-            let cam = crate::camera::Camera { pos: DVec3::X * (p.radius + 2000.0), heading: 0.0, pitch: 0.0, fov_y: 60.0_f64.to_radians() };
+            let cam = crate::camera::Camera::new(DVec3::X * (p.radius + 2000.0), 0.0, 0.0, 60.0_f64.to_radians());
             let camera = cam.uniform(16.0/9.0, DVec3::X, &p, 0.62);
             sky.set_observer(cam.pos, false);
             let u = sky.uniform(&camera);
@@ -107,7 +107,8 @@ impl Sky {
         let eye = eye_m / self.radius;
         let state = self.settings.at(self.clock.seconds);
         let to_sun = state.sun - eye;
-        let angular_radius = (109.0 / to_sun.length()).asin();
+        // Inside the sun, which a free camera can reach, the disc is the whole sky.
+        let angular_radius = (109.0 / to_sun.length()).min(1.0).asin();
         let look = &self.look;
         let atmosphere_m = look.sky.atmosphere_height_m;
         // The limb (the glow seen from space) keeps July's proportion to

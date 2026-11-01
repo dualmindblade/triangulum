@@ -88,8 +88,8 @@ Round 2, from Andrew's second list (`docs/missions/2026-10-31-round2.md`):
 
 | Task | What | Who | State |
 |---|---|---|---|
-| C1 | The crashes (minimising, powder launch), an unfocused test window, unbound fly speed, great-circle movement | Opus | running |
-| C2 | Powder that slides, no double copies, water that spreads without flicker, no film Z-fighting | Fable | running |
+| C1 | The crashes (minimising, powder launch), an unfocused test window, unbound fly speed, great-circle movement | Opus | done; a real focus change still to see |
+| C2 | Powder that slides, no double copies, water that spreads without flicker, no film Z-fighting | Fable | done; Andrew to OK `sim_rules` 4 |
 | T1 | Sea level in the middle, coarsest voxel H/2, planet size in half-heights, a slider up to an Earth analogue | Astra | running |
 | T2 | Real mountains, the split between local and global features, rivers and lakes carved down into the land | Fable | running |
 | T3 | Boundaries rough at every scale: lakes, biomes, snow, polar ice | Opus | running |

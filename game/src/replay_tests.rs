@@ -8,7 +8,7 @@
 use super::*;
 use crate::controls::Controls;
 use crate::engine::Engine;
-use crate::grid::WorldConfig;
+use crate::grid::{Planet, WorldConfig};
 use crate::mesh::MeshOptions;
 use crate::player::{Mode, Player};
 use crate::sim::{Sim, SimConfig};
@@ -311,6 +311,124 @@ fn a_replay_recorded_under_other_simulation_rules_is_refused() {
     assert!(err.contains(&format!("simulation rules version 2 vs {}", crate::sim::RULES_VERSION)), "{err}");
     assert!(err.contains("learned to slide") && err.contains("Your world and saves are fine") && err.contains("with simulation rules 2"), "{err}");
     let _ = std::fs::remove_file(&path);
+}
+
+/// Great circles took the same keys somewhere else, so a recording says how
+/// the player moved, and one from before (no such line) is refused with what
+/// happened and what to do, not played into a divergence.
+#[test]
+fn a_replay_recorded_under_other_movement_rules_is_refused() {
+    let mut s = fresh(None);
+    let path = temp("move-rules");
+    s.start_recording(&path, "move rules").unwrap();
+    drive(&mut s, &timeline()[..3], 30, |_| STEP);
+    s.stop_recording().unwrap();
+    let mut rep = read(&path).unwrap();
+    assert_eq!(rep.header.move_rules, crate::player::MOVE_RULES);
+    let (t, sha) = template();
+    let block = t.planet.block_size;
+    let template_session = Session::new(t, Player::new(DVec3::X * 1e7, 0.0, 0.0, Mode::Fly, block), None, sha, Sim::new(SimConfig::default()));
+    assert!(compatibility(&template_session, &rep.header).is_ok());
+    let text = serde_json::to_string(&rep.header).unwrap().replace(&format!("\"move_rules\":{},", crate::player::MOVE_RULES), "");
+    assert!(!text.contains("move_rules"));
+    rep.header = serde_json::from_str(&text).unwrap();
+    rep.header.build = "8134c61db".into();
+    assert_eq!(rep.header.move_rules, 1);
+    let err = compatibility(&template_session, &rep.header).unwrap_err();
+    assert!(err.contains(&format!("movement rules version 1 vs {}", crate::player::MOVE_RULES)), "{err}");
+    assert!(err.contains("before W followed great circles") && err.contains("Your world and saves are fine") && err.contains("8134c61db"), "{err}");
+    let _ = std::fs::remove_file(&path);
+}
+
+/// A recording of a flight straight over the pole and back, turning on the
+/// way, at every speed the wheel reached: the facing is a vector carried by
+/// plain arithmetic, and it comes back bit for bit, at 30 and 144 frames a second.
+#[test]
+fn a_flight_over_the_pole_replays_exactly() {
+    let flight = |tag: &str, frame: f64| {
+        let mut s = fresh(None);
+        s.sim.config.enabled = false;
+        s.player.mode = Mode::Fly;
+        s.player.place(Planet::dir_of_lat_lon_deg(89.97, 15.0) * (s.engine.planet.radius + 400.0));
+        s.player.set_heading(0.0);
+        s.player.pitch = -0.2;
+        s.player.fly_speed = 20.0;
+        let path = temp(tag);
+        s.start_recording(&path, tag).unwrap();
+        let (mut c, mut t) = (Controls::default(), 0.0);
+        let step = |c: &mut Controls, s: &mut Session, t: &mut f64| {
+            *t += frame;
+            c.frame_at(s, *t);
+        };
+        c.at(t);
+        c.key(KeyCode::KeyW, true);
+        for n in 0..240 {
+            if n % 40 == 20 {
+                c.at(t);
+                c.scroll(if n < 120 { 3.0 } else { -2.0 });
+            }
+            if n % 7 == 0 {
+                c.at(t);
+                c.motion(30.0, if n % 2 == 0 { 8.0 } else { -8.0 });
+            }
+            step(&mut c, &mut s, &mut t);
+        }
+        c.at(t);
+        c.key(KeyCode::KeyW, false);
+        for _ in 0..30 {
+            step(&mut c, &mut s, &mut t);
+        }
+        let summary = s.stop_recording().unwrap();
+        (summary, s)
+    };
+    let (fast, a) = flight("pole144", 1.0 / 144.0);
+    let (slow, b) = flight("pole30", 1.0 / 30.0);
+    let cross = |s: &Session| s.player.pos.normalize().dot(glam::DVec3::Z);
+    assert!(cross(&a) > 0.99, "it stayed by the pole");
+    for (summary, s, tag) in [(&fast, &a, "pole144"), (&slow, &b, "pole30")] {
+        let rep = read(&summary.path).unwrap();
+        let (report, back) = play(&rep, tag);
+        assert!(report.ok(), "{}", report.text());
+        assert_eq!(pose_text(&back.player), pose_text(&s.player), "it ends exactly where it did");
+        let _ = std::fs::remove_file(&summary.path);
+    }
+}
+
+/// The wheel: no ceiling, a floor above nothing, and the sprint on top.
+#[test]
+fn the_wheel_has_no_ceiling() {
+    let mut s = fresh(None);
+    s.player.mode = Mode::Fly;
+    s.player.fly_speed = 20.0;
+    s.apply(Action::Scroll(-1000.0)).unwrap();
+    assert_eq!(s.player.fly_speed, crate::player::MIN_FLY_SPEED);
+    for _ in 0..200 {
+        s.apply(Action::Scroll(1.0)).unwrap();
+    }
+    let top = s.player.fly_speed;
+    assert!(top > 1e15, "200 lines up from the floor: {top}");
+    s.apply(Action::Scroll(100_000.0)).unwrap();
+    assert_eq!(s.player.fly_speed, crate::player::MAX_FLY_SPEED, "the wheel saturates, it doesn't overflow");
+    s.apply(Action::Scroll(f64::NAN)).unwrap();
+    assert!(s.player.fly_speed.is_finite());
+    s.player.fly_speed = 1e6;
+    let at = s.player.pos;
+    s.step(&Input { sprint: true, jump: true, ..Default::default() }, STEP);
+    assert!((s.player.pos.length() - at.length() - 4e6 * STEP).abs() < 1e-3, "sprint is four times the wheel");
+}
+
+/// A photo keeps its pose for ever: the old form, with a heading, still goes
+/// to the same place, looking the same way.
+#[test]
+fn a_pose_from_before_great_circles_still_reads() {
+    let old = "1000.5,2000.5,90000.25,0.0,0.0,0.0,0.75,-0.25,walk,1,0,0,20.0,3";
+    let p = parse_pose(old, 1.0).unwrap();
+    assert_eq!(p.pos, DVec3::new(1000.5, 2000.5, 90000.25));
+    assert!((p.heading() - 0.75).abs() < 1e-12);
+    assert_eq!((p.pitch, p.selected), (-0.25, 3));
+    let back = parse_pose(&pose_text(&p), 1.0).unwrap();
+    assert_eq!(pose_text(&back), pose_text(&p), "the new form is exact");
+    assert!(parse_pose("1,2,3", 1.0).is_err());
 }
 
 #[test]
@@ -722,7 +840,7 @@ fn harness_pokes_are_recorded_as_poses_and_replay_exactly() {
     for _ in 0..30 {
         s.step(&input, STEP);
     }
-    s.player.heading += 1.0;
+    s.player.look(1.0, 0.0);
     s.teleport(s.player.pos.normalize(), Some(80.0));
     s.sky.seconds += 500.0;
     for _ in 0..90 {

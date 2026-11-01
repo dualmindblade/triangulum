@@ -156,6 +156,12 @@ pub struct Renderer {
     /// This frame's sloped powder: the streamer fills it, no draw list passes
     /// through a caller, and it stays empty unless `--powder levels` is on.
     pub slope_draws: Vec<DrawRecord>,
+    /// The edit revision each resident LOD-0 mesh was built from, by chunk
+    /// (C2): the streamer writes it on every install, and the falling-block
+    /// draw reads it to tell whether a chunk's mesh has caught up with a
+    /// block that left or landed in it (`sim/draw.rs`). A chunk never
+    /// meshed is absent.
+    pub meshed_at: crate::grid::FastMap<crate::grid::ChunkKey, u64>,
     water_pipeline: wgpu::RenderPipeline,
     sky_pipeline: wgpu::RenderPipeline,
     /// The mesh view (M and Shift+M in the game), off by default.
@@ -376,6 +382,7 @@ impl Renderer {
             terrain_pipeline,
             slope_pipeline,
             slope_draws: Vec::new(),
+            meshed_at: Default::default(),
             water_pipeline,
             sky_pipeline,
             mesh_view: MeshView::NORMAL,
