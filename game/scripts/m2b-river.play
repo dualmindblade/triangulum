@@ -27,7 +27,14 @@ assert block[3,127718,38665,1024] == grass
 assert block[3,127718,38665,1023] == dirt
 mode fly
 sim radius 1
-tick 40
+# The tick matters. What this scene does turns on where the first gravel block
+# slides, and that is a tie-break hashed from position and tick: one tick either
+# way, or another sea level, and the slide plugs the trench's near end, the reach
+# pays for the trench out of its own water by leaning back up (about 1 level per
+# cell, which Andrew's rule allows at rest), and nothing crosses the edge. Both
+# are right. This tick is the one where the bank unravels, so the scene exercises
+# the inflow below; m2b-boundary tests inflow without depending on a draw.
+tick 44
 assert water_updates_last == 0
 assert water_moved == 0
 assert queued == 0
