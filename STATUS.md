@@ -391,8 +391,11 @@ decisions, and underground darkness needs a lighting design.
      the 1,024 m above the sea, so the highest belts become rolling high country
      with about 190 m of relief, not 800 m peaks. See
      `docs/missions/T2-relief-evidence/sizes_832_after.jpg`. Without this they
-     were a flat cap with pits in it. A taller world would give them room:
-     `--height 4096 --n 851968` is the same planet with twice the height.
+     were a flat cap with pits in it. A taller world gives them room:
+     `--height 4096 --n 851968` is the same 589 km planet with twice the height,
+     and it has real ranges, with peaks standing over the valley floor
+     (`docs/missions/2026-10-31-round2-evidence/tall-world-832.jpg`). So far that
+     world has only been rendered: nobody has played it or timed it.
   2. Peak height (`MOUNT_M`, 640, peaks about 800 m), how sharp (`RIDGED_DOWN_TO`),
      hills, and valley shape. The names are in the findings.
   3. **Lakes lowered to their inflow:** 415 of 771 moved, mostly by about a metre,
