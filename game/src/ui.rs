@@ -72,23 +72,25 @@ fn srgb(c: [f32; 3]) -> egui::Color32 {
     egui::Color32::from_rgb(f(c[0]), f(c[1]), f(c[2]))
 }
 
-/// LOD-0 block corners, using the mesher/shader's eight-voxel curvature
+/// LOD-0 block corners, using the mesher/shader's curvature
 /// grid and f32 interpolation. Always evaluate in the block's own face;
 /// wrapping eight out-of-face corners independently folds a cube corner.
 pub(crate) fn outline_corners(planet: &Planet, block: BlockPos) -> [glam::DVec3; 8] {
     let (i0, j0, k0) = (block.i / 32 * 32, block.j / 32 * 32, block.k / 32 * 32);
     let r0 = planet.radius_at(k0 as f64);
     let origin = planet.dir(block.face, i0 as f64, j0 as f64) * r0;
+    let cell = (crate::grid::CHUNK / crate::mesh::GRID_CELLS) as u32;
+    let last = crate::mesh::GRID_CELLS as u32 - 1;
     std::array::from_fn(|c| {
         let i = block.i + (c & 1) as u32;
         let j = block.j + ((c >> 1) & 1) as u32;
         let k = block.k + ((c >> 2) & 1) as u32;
-        let gx = ((i - i0) / 8).min(3);
-        let gy = ((j - j0) / 8).min(3);
-        let fx = (i - i0 - gx * 8) as f32 / 8.0;
-        let fy = (j - j0 - gy * 8) as f32 / 8.0;
+        let gx = ((i - i0) / cell).min(last);
+        let gy = ((j - j0) / cell).min(last);
+        let fx = (i - i0 - gx * cell) as f32 / cell as f32;
+        let fy = (j - j0 - gy * cell) as f32 / cell as f32;
         let grid = |dx: u32, dy: u32| {
-            let dir = planet.dir(block.face, (i0 + (gx + dx) * 8) as f64, (j0 + (gy + dy) * 8) as f64);
+            let dir = planet.dir(block.face, (i0 + (gx + dx) * cell) as f64, (j0 + (gy + dy) * cell) as f64);
             ((dir * r0 - origin).as_vec3(), dir.as_vec3())
         };
         let (a, b, c, d) = (grid(0, 0), grid(1, 0), grid(0, 1), grid(1, 1));

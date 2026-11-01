@@ -1,7 +1,8 @@
 //! Binary greedy meshing of a padded chunk into 8-byte quads.
 //!
 //! Quad layout: lo = axis:2 | sign:1 | slice:5 | u:5 | v:5 | w-1:5 | h-1:5;
-//! hi = block id:16 | ao:8 (four 2-bit corner values, corner c = cu + 2 cv).
+//! hi = block id:16 | ao:8 (four 2-bit corner values) | far-ocean shading:1.
+//! AO corner c = cu + 2 cv; the ocean flag is bit 24.
 //! Opaque quads are emitted where a solid voxel meets a non-solid one; water
 //! quads where a liquid voxel meets air. Quads never cross a curvature-grid
 //! cell in the tangent directions, so the bilinear warp stays crack-free.
@@ -18,8 +19,8 @@
 //! the real cells at them, not the padded ids the terrain mesh uses, and a
 //! top face shows under a solid unless it lies in the solid's underside.
 //!
-//! Grid record: 25 offsets (vec4, xyz = corner position at the chunk's
-//! lattice floor relative to the chunk origin) then 25 unit directions
+//! Grid record: 81 offsets (vec4, xyz = corner position at the chunk's
+//! lattice floor relative to the chunk origin) then 81 unit directions
 //! (vec4). `off[0].w` carries `r0`, the radius of the lattice floor, so a
 //! vertex shader can place vertices at their exact radius `r0 + z` instead
 //! of on the bilinear chord (review #11: at LOD 9 the chord sags 23 m below
@@ -32,8 +33,9 @@ use crate::worldgen::{Generated, PAD, pidx};
 use glam::DVec3;
 use std::time::Instant;
 
-/// Curvature grid: 4x4 cells (5x5 corners) per chunk footprint.
-pub const GRID_CELLS: usize = 4;
+/// Curvature grid: 8x8 cells (9x9 corners). L10 needs two quartic spans
+/// per axis: one five-point span over 32 km misses the lattice by 23 m.
+pub const GRID_CELLS: usize = 8;
 pub const GRID_CORNERS: usize = GRID_CELLS + 1;
 /// Longest tangent edge of a sea-surface quad, in metres. Every vertex
 /// sits on its exact radius, but the edges between them are chords of the
@@ -47,7 +49,7 @@ pub const GRID_CORNERS: usize = GRID_CELLS + 1;
 /// edge vertices of neighbouring LODs coincide (the cap is a voxel
 /// multiple at both), so there is no T-junction to sag against at all.
 pub const SEA_EDGE_MAX_M: f64 = 256.0;
-/// f32s per grid record: 25 offsets (vec4) + 25 directions (vec4).
+/// f32s per grid record: 81 offsets (vec4) + 81 directions (vec4).
 pub const GRID_F32S: usize = GRID_CORNERS * GRID_CORNERS * 4 * 2;
 pub const GRID_BYTES: usize = GRID_F32S * 4;
 /// Index of `r0` (the lattice floor's radius) in the grid record.
@@ -306,10 +308,14 @@ pub fn mesh_chunk_slopes(generated: &Generated, water_cells: Option<&PaddedWater
     if any_solid {
         let blocking: Vec<u64> = masks.solid.clone();
         let cap = |axis: u32, sign: u32, slice: usize| if axis == 2 && sign == 1 && Some(slice) == sea_slice { sea_edge } else { CHUNK };
-        // Merge key: block id and the four corner AO values.
+        // Bit 24 marks opaque ocean: shade it as water over its floor,
+        // including view-dependent opacity/glint, without showing the sky.
+        let deep_ocean = registry.id("deep_ocean").ok().map(u32::from);
+        // Merge key: block id, AO and the ocean material flag.
         let face_key = |axis: u32, sign: u32, u: usize, v: usize, slice: usize| -> u32 {
             let (x, y, z) = voxel_of(axis, slice, u, v);
-            let id = ids[pidx(x, y, z)] as u32;
+            let block = ids[pidx(x, y, z)] as u32;
+            let id = block | if Some(block) == deep_ocean { 1 << 24 } else { 0 };
             if !opt.ao {
                 return id | (0xFF << 16);
             }
@@ -353,7 +359,11 @@ pub fn mesh_chunk_slopes(generated: &Generated, water_cells: Option<&PaddedWater
                 Some(p) if !registry.is_liquid(id) => p.water,
                 _ => id,
             };
-            let id = id as u32 | (0xFF << 16);
+            // Far sea needs a backing even where its coarsened floor's
+            // horizon ends before the water surface does. LODs 0-4 retain
+            // the real transparent water over the actual bed.
+            let far_sea = key.lod >= 5 && axis == 2 && sign == 1 && Some(slice) == sea_slice;
+            let id = id as u32 | (0xFF << 16) | if far_sea { 1 << 24 } else { 0 };
             let heights = surface.as_ref().map_or(WATER_FLAT, |s| s.heights(axis, sign, x, y, z));
             (id, heights)
         };
@@ -616,13 +626,13 @@ mod tests {
     }
 
     /// The shader's vertex transform, in f64 on the f32 grid record the
-    /// GPU gets: bilinear offset and direction over the 4x4 cells, or,
+    /// GPU gets: bilinear offset and direction over the 8x8 cells, or,
     /// with `exact` at voxels of 64 m and up, the quartic through the five
     /// corners per axis (review 2 #9). `exact` also adds the radial
     /// correction `r0 (1 - |m|)` along the normalised direction (review
     /// #11), which `grid[GRID_R0_INDEX]` is for.
     fn vertex_pos(grid: &[f32], origin: DVec3, lp: DVec3, voxel: f64, exact: bool) -> DVec3 {
-        let g = lp.truncate() * 0.125;
+        let g = lp.truncate() * (GRID_CELLS as f64 / CHUNK as f64);
         let off = |c: usize| DVec3::new(grid[c * 4] as f64, grid[c * 4 + 1] as f64, grid[c * 4 + 2] as f64);
         let dir = |c: usize| {
             let base = (GRID_CORNERS * GRID_CORNERS + c) * 4;
@@ -633,22 +643,24 @@ mod tests {
                 let (t0, t1, t2, t3, t4) = (t, t - 1.0, t - 2.0, t - 3.0, t - 4.0);
                 [t1 * t2 * t3 * t4 / 24.0, t0 * t2 * t3 * t4 / -6.0, t0 * t1 * t3 * t4 / 4.0, t0 * t1 * t2 * t4 / -6.0, t0 * t1 * t2 * t3 / 24.0]
             };
-            let (wx, wy) = (lagrange5(g.x), lagrange5(g.y));
+            let bx = ((g.x / 4.0) as usize * 4).min(GRID_CORNERS - 5);
+            let by = ((g.y / 4.0) as usize * 4).min(GRID_CORNERS - 5);
+            let (wx, wy) = (lagrange5(g.x - bx as f64), lagrange5(g.y - by as f64));
             let (mut o, mut m) = (DVec3::ZERO, DVec3::ZERO);
             for j in 0..5 {
                 for i in 0..5 {
                     let w = wx[i] * wy[j];
-                    o += off(j * 5 + i) * w;
-                    m += dir(j * 5 + i) * w;
+                    o += off((by+j) * GRID_CORNERS + bx+i) * w;
+                    m += dir((by+j) * GRID_CORNERS + bx+i) * w;
                 }
             }
             (o, m)
         } else {
-            let gi = (g.x.floor().min(3.0) as usize, g.y.floor().min(3.0) as usize);
+            let gi = (g.x.floor().min((GRID_CELLS-1) as f64) as usize, g.y.floor().min((GRID_CELLS-1) as f64) as usize);
             let gf = (g.x - gi.0 as f64, g.y - gi.1 as f64);
-            let b = gi.1 * 5 + gi.0;
+            let b = gi.1 * GRID_CORNERS + gi.0;
             let mix = |a: DVec3, b: DVec3, t: f64| a + (b - a) * t;
-            (mix(mix(off(b), off(b + 1), gf.0), mix(off(b + 5), off(b + 6), gf.0), gf.1), mix(mix(dir(b), dir(b + 1), gf.0), mix(dir(b + 5), dir(b + 6), gf.0), gf.1))
+            (mix(mix(off(b), off(b + 1), gf.0), mix(off(b + GRID_CORNERS), off(b + GRID_CORNERS + 1), gf.0), gf.1), mix(mix(dir(b), dir(b + 1), gf.0), mix(dir(b + GRID_CORNERS), dir(b + GRID_CORNERS + 1), gf.0), gf.1))
         };
         if !exact {
             return origin + o + m * (lp.z * voxel);
@@ -681,7 +693,7 @@ mod tests {
         let (mut worst_before, mut worst_after, mut worst_lateral) = (0.0f64, 0.0f64, 0.0f64);
         // Along the whole shared edge at the coarse cells' midpoints.
         for cell in 0..4 {
-            let along = (cell as f64 + 0.5) * 8.0;
+            let along = (cell as f64 + 0.5) * (CHUNK / GRID_CELLS) as f64;
             let lp_c = DVec3::new(lp_c.x, along, lp_c.z);
             let lp_f = DVec3::new(lp_f.x, along * 2.0, lp_f.z);
             if lp_f.y > 32.0 {
@@ -696,7 +708,7 @@ mod tests {
             worst_lateral = worst_lateral.max((pc - pf).length());
         }
         println!("L9/L8 sea surface radial mismatch: {worst_before:.2} m before, {worst_after:.4} m after; lateral {worst_lateral:.2} m");
-        assert!(worst_before > 20.0 && worst_before < 26.0, "the chord sags about 23 m mid-cell at LOD 9: {worst_before}");
+        assert!(worst_before > 4.0 && worst_before < 8.0, "the finer grid chord still sags about 6 m mid-cell at LOD 9: {worst_before}");
         assert!(worst_after < 0.05, "surfaces meet radially: {worst_after} m");
         // Both chunks' sea-level vertices land on the sea-level sphere.
         let pc = vertex_pos(&mc.grid, mc.origin, lp_c, vc, true);
@@ -802,6 +814,65 @@ mod tests {
         assert!(worst_radial < 0.7, "no chord sags more than one LOD-9 voxel's: {worst_radial:.3} m");
         // The cap in voxels per LOD: 1 at LOD 9 and 8, doubling down to the grid cell at LOD 5, the whole chunk at LOD 2 and below.
         assert_eq!([9u8, 8, 7, 6, 5, 4, 3, 2, 0].map(|l| sea_edge_voxels(&planet, l)), [1, 1, 2, 4, 8, 16, 32, 32, 32]);
+    }
+
+    #[test]
+    fn t1_coarsest_warp_stays_close_to_the_lattice() {
+        let (mut g, registry) = generator();
+        g.planet = Planet::new(1.0, 2048, 1024, 131072);
+        let p = g.planet;
+        let mut worst = 0.0_f64;
+        for (cx,cy) in [(0,0), (1,1), (2,2), (3,3)] {
+            let key = ChunkKey::neisor(0, 10, cx, cy, 0);
+            let m = mesh_chunk(&g.generate(key), &registry, &p, MeshOptions::default());
+            for x in 0..=64 {
+                for y in 0..=64 {
+                    let lp = DVec3::new(x as f64/2.0,y as f64/2.0,1.0);
+                    let actual = vertex_pos(&m.grid, m.origin, lp, 1024.0, true);
+                    let exact = p.dir(0, (cx as f64*32.0+lp.x)*1024.0, (cy as f64*32.0+lp.y)*1024.0)*p.radius;
+                    worst = worst.max(actual.distance(exact));
+                }
+            }
+        }
+        println!("T1 L10 sea warp vs exact lattice: {worst:.4} m worst");
+        assert!(worst < 3.0, "L10 should not open visible gaps against finer chunks: {worst} m");
+    }
+
+    #[test]
+    fn t1_coarse_ocean_material_keeps_water_shading() {
+        let (mut g, registry) = generator();
+        g.planet = Planet::new(1.0, 2048, 1024, 131072);
+        let mut checked = 0;
+        for cx in 0..4 {
+            let key = ChunkKey::neisor(0, 10, cx, 0, 0);
+            let m = mesh_chunk(&g.generate(key), &registry, &g.planet, MeshOptions::default());
+            for q in &m.opaque {
+                if q[1] & 0xffff == g.blocks.deep_ocean as u32 {
+                    assert_ne!(q[1] & (1 << 24), 0, "opaque sea must use the water's view-dependent opacity and glint, not a fixed colour");
+                    checked += 1;
+                }
+            }
+        }
+        assert!(checked > 100);
+    }
+
+    #[test]
+    fn t1_far_water_keeps_an_opaque_floor_at_the_horizon() {
+        let (mut g, registry) = generator();
+        g.planet = Planet::new(1.0, 2048, 1024, 131072);
+        let mut checked = 0;
+        for cx in 0..4 {
+            let key = ChunkKey::neisor(0, 9, cx, 0, 0);
+            let m = mesh_chunk(&g.generate(key), &registry, &g.planet, MeshOptions::default());
+            for q in &m.water {
+                let (axis, sign, slice, _, _, _, _) = unpack(&[q[0],q[1]]);
+                if axis == 2 && sign == 1 && (slice+1)*512 == 1024 {
+                    assert_ne!(q[1] & (1 << 24), 0, "at grazing angles the coarse floor's horizon ends before the water's: provide a virtual floor instead of showing sky through the sea");
+                    checked += 1;
+                }
+            }
+        }
+        assert!(checked > 100);
     }
 
     /// Every water top face of a mesh, by cell: (x, y, slice) -> the packed

@@ -25,6 +25,8 @@ pub struct SkyUniform {
     pub moon: [f32; 4],       // moonlight rgb (colour x strength), unused
     pub water: [f32; 4],      // opacity, edge opacity, glint, glint sharpness
     pub underwater: [f32; 4], // rgb, strength
+    pub ocean_water: [f32; 4], // water RGB, follow-water enabled
+    pub ocean_floor: [f32; 4], // the gravel floor below finer ocean water
     pub tex: [f32; 4],        // M3b: blocks per metre (textures tile once per block), unused x3
 }
 
@@ -34,6 +36,8 @@ pub struct Sky {
     /// Andrew's look (the panel writes it; the uniform reads it each frame).
     pub look: Look,
     radius: f64,
+    ocean_water: [f32; 3],
+    ocean_floor: [f32; 3],
     observer: Option<(DVec3, bool)>,
     /// Block size in metres (M3b: texture coordinates are in blocks).
     pub block_m: f64,
@@ -43,12 +47,52 @@ fn rgb(c: [f32; 3], w: f64) -> [f32; 4] {
     [c[0], c[1], c[2], w as f32]
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn t1_sky_uniform_changes_planet_without_a_renderer_restart() {
+        let radius = crate::grid::Planet::new(1.0, 2048, 1024, 131072).radius;
+        let settings = Settings::default();
+        let mut sky = Sky { look: Look::defaults(&settings, radius), settings,
+            clock: Clock { seconds: 0.0, speed: 0.0 }, radius, observer: None,
+            block_m: 1.0, ocean_water: [0.015, 0.090, 0.260], ocean_floor: [0.250, 0.235, 0.215] };
+        for size in [128, 256, 512, 832, 1024, 128] {
+            let p = crate::grid::Planet::new(1.0, 2048, 1024, size * 1024);
+            sky.set_planet(&p);
+            let cam = crate::camera::Camera { pos: DVec3::X * (p.radius + 2000.0), heading: 0.0, pitch: 0.0, fov_y: 60.0_f64.to_radians() };
+            let camera = cam.uniform(16.0/9.0, DVec3::X, &p, 0.62);
+            sky.set_observer(cam.pos, false);
+            let u = sky.uniform(&camera);
+            assert!((u.eye[3] as f64 / p.radius - 1.0).abs() < 1e-6);
+            assert!((u.eye[0] as f64 - (1.0+2000.0/p.radius)).abs() < 1e-6);
+            let density = (-2000.0 / sky.look.sky.atmosphere_height_m).exp();
+            assert!((u.atmosphere[0] as f64 - density).abs() < 1e-6);
+        }
+    }
+}
+
 impl Sky {
     pub fn new() -> Self {
         let initial = sky::startup();
         let look = crate::look::startup().map_or_else(|| Look::defaults(&initial.settings, initial.radius), |s| s.look.clone());
         let block_m = super::textures::installed().map_or(1.0, |t| t.block_m);
-        Self { settings: initial.settings, clock: initial.clock, look, radius: initial.radius, observer: None, block_m }
+        Self { settings: initial.settings, clock: initial.clock, look, radius: initial.radius, observer: None, block_m, ocean_water: [0.015, 0.090, 0.260], ocean_floor: [0.250, 0.235, 0.215] }
+    }
+
+    pub fn set_ocean(&mut self, registry: &crate::world::Registry) {
+        let table = registry.colour_table();
+        if let Ok(id) = registry.id("water") { self.ocean_water.copy_from_slice(&table[id as usize * 3][..3]); }
+        if let Ok(id) = registry.id("gravel") { self.ocean_floor.copy_from_slice(&table[id as usize * 3][..3]); }
+    }
+
+    /// A terrain preview can change the planet under the same renderer.
+    pub fn set_planet(&mut self, planet: &crate::grid::Planet) {
+        self.radius = planet.radius;
+        self.block_m = planet.block_size;
+        self.look.on_planet(planet.radius);
+        self.observer = None;
     }
 
     /// The app supplies the exact eye, including negative sea-level altitude.
@@ -90,6 +134,8 @@ impl Sky {
             moon: rgb(l.moon_colour.map(|c| c * l.moonlight as f32), 0.0),
             water: [w.opacity as f32, w.edge_opacity as f32, w.glint as f32, w.glint_sharpness as f32],
             underwater: rgb(w.underwater_colour, w.underwater_strength),
+            ocean_water: rgb(self.ocean_water, if w.far_ocean_follows_water { 1.0 } else { 0.0 }),
+            ocean_floor: rgb(self.ocean_floor, 0.0),
             tex: [(1.0 / self.block_m) as f32, 0.0, 0.0, 0.0],
         }
     }

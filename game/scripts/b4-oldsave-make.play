@@ -2,8 +2,11 @@
 # make a save that holds what the new rules would never leave standing:
 #   triangulum --save out/b4-oldsave --play scripts/b4-oldsave-make.play
 # Then load a copy of it with b4-oldsave-load.play on the new build.
+# This copy uses sea level 1024. For a historical binary, use its matching
+# script revision. On the current generator, --no-slide makes the old-flow
+# fixture; then run b4-oldsave-load with the normal rules on that same save.
 mode fly
-atblock 2 107155 57531 620
+atblock 2 107155 57531 1132
 fill -8 -8 -6 8 8 -6 stone
 tick 2
 # a sand tower six high, a level-1 film at a ledge, a wedge leaning on a wall

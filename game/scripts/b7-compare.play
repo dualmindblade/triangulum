@@ -23,7 +23,7 @@ sun 35
 speed 20
 
 # ---- A. a tower ---------------------------------------------------------------
-atblock 2 107147 57531 612
+atblock 2 107147 57531 1124
 fill -5 -20 -8 33 20 -8 stone
 tick 2
 assert queued == 0
@@ -44,17 +44,17 @@ state A_settled
 surface 2 -8 26 8 -8 8
 aim 14 0 -6
 photo A_tower_3_settled
-atblock 2 107152 57531 607
+atblock 2 107152 57531 1119
 aim 9 0 -1
 photo A_tower_4_settled_low
-atblock 2 107161 57521 610
+atblock 2 107161 57521 1122
 aim 0 10 -6
 photo A_tower_5_settled_above
 tick 40
 assert queued == 0
 
 # ---- B. a cube dropped ----------------------------------------------------------
-atblock 2 107207 57531 612
+atblock 2 107207 57531 1124
 fill -5 -20 -8 33 20 -8 stone
 tick 2
 assert queued == 0
@@ -75,17 +75,17 @@ state B_settled
 surface 0 -12 28 12 -8 4
 aim 14 0 -6
 photo B_cube_3_settled
-atblock 2 107212 57531 607
+atblock 2 107212 57531 1119
 aim 9 0 0
 photo B_cube_4_settled_low
-atblock 2 107221 57517 612
+atblock 2 107221 57517 1124
 aim 0 14 -7
 photo B_cube_5_settled_above
 tick 40
 assert queued == 0
 
 # ---- C. a pit in a bed of sand ----------------------------------------------------
-atblock 2 107267 57531 612
+atblock 2 107267 57531 1124
 fill -5 -20 -8 33 20 -8 stone
 fill 1 -15 -7 27 15 -2 stone
 fill 2 -14 -7 26 14 -2 sand
@@ -105,14 +105,14 @@ state C_settled
 surface 2 -13 26 13 -8 0
 aim 14 0 -4
 photo C_pit_2_settled
-atblock 2 107273 57531 613
+atblock 2 107273 57531 1125
 aim 8 0 -5
 photo C_pit_3_settled_edge
 tick 40
 assert queued == 0
 
 # ---- D. a cliff, its wall removed, a save in the middle ---------------------------
-atblock 2 107327 57531 612
+atblock 2 107327 57531 1124
 fill -5 -20 -8 33 20 -8 stone
 fill 14 -7 -7 21 -7 2 stone
 fill 14 7 -7 21 7 2 stone
@@ -139,7 +139,7 @@ assert vanished == 0
 state D_settled
 surface -2 -8 24 8 -8 3
 photo D_cliff_3_settled
-atblock 2 107334 57520 610
+atblock 2 107334 57520 1122
 aim 6 11 -5
 photo D_cliff_4_settled_above
 tick 40
@@ -147,13 +147,13 @@ assert queued == 0
 
 # ---- E. a pit in a real beach ------------------------------------------------------
 mode fly
-assert block[1,1998,59004,511] == sand
-assert block[1,1998,59004,512] == sand
-atblock 1 2003 59004 516
+assert block[1,1998,59004,1023] == sand
+assert block[1,1998,59004,1024] == sand
+atblock 1 2003 59004 1028
 lookaxis -i 0
 aim -5 0 -5
 photo E_beach_0_before
-atblock 1 1998 59004 513
+atblock 1 1998 59004 1025
 aim 0 0 -1.5
 assert crosshair == sand
 tap break
@@ -170,13 +170,13 @@ tick 120
 assert falling == 0
 assert queued == 0
 state E_pit
-atblock 1 2003 59004 516
+atblock 1 2003 59004 1028
 lookaxis -i 0
 aim -5 0 -5
 photo E_beach_1_after_digging_four_deep
 
 # ---- F. sand dumped in a pool --------------------------------------------------------
-atblock 2 107387 57531 612
+atblock 2 107387 57531 1124
 fill -5 -20 -8 33 20 -8 stone
 fill 4 -9 -7 24 -9 -4 stone
 fill 4 9 -7 24 9 -4 stone
@@ -198,7 +198,7 @@ state F_settled
 surface 5 -8 23 8 -7 4
 aim 14 0 -7
 photo F_pool_2_settled
-atblock 2 107395 57525 608
+atblock 2 107395 57525 1120
 aim 7 6 -2
 photo F_pool_3_settled_low
 

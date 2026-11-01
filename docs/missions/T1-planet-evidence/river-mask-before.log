@@ -1,0 +1,39 @@
+cargo :    Compiling triangulum v0.1.0 (E:\triangulum-work\T1\game)
+At line:2 char:1
++ cargo test --offline --release t1_large_river -- --nocapture > out/t1 ...
++ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (   Compiling tr...m-work\T1\game):String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+warning: variable does not need to be mutable
+    --> src\stream.rs:1792:13
+     |
+1792 |         let mut drain = |c: &mut Coverage, gpu: &mut FakeGpu, wants: &mut Vec<Want>| {
+     |             ----^^^^^
+     |             |
+     |             help: remove this `mut`
+     |
+     = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: `triangulum` (bin "triangulum" test) generated 1 warning (run `cargo fix --bin "triangulum" -p triangulum 
+--tests` to apply 1 suggestion)
+    Finished `release` profile [optimized + debuginfo] target(s) in 53.59s
+     Running unittests src\main.rs (target\release\deps\triangulum-7d877ee1b0401067.exe)
+
+running 1 test
+1024 half-heights: longest river 15897, 1277 pieces, 160 search runs; coarse query visits 1071612 bins; index has 9616541 river / 2178319 lake bins
+
+thread 'worldgen::hydro::planet_scale_tests::t1_large_river_search_covers_the_whole_course_with_bounded_index_work' 
+(2688) panicked at src\worldgen\hydro.rs:441:9:
+the u128 candidate mask loses the tail of long rivers
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test worldgen::hydro::planet_scale_tests::t1_large_river_search_covers_the_whole_course_with_bounded_index_work ... FAILED
+
+failures:
+
+failures:
+    worldgen::hydro::planet_scale_tests::t1_large_river_search_covers_the_whole_course_with_bounded_index_work
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 391 filtered out; finished in 14.91s
+
+error: test failed, to rerun pass `--bin triangulum`

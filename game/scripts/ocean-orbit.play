@@ -10,13 +10,17 @@
 # docs/missions/M1-terrain-evidence/review2_12_ocean.py OUT measures what
 # shows through the sea and builds the before/after sheet.
 mode fly
-# 150 km and 500 km: everything drawn is the coarsest LOD (L9).
+# At the default size, 300 km and 1000 km keep even the new L10 roots
+# coarse. The old 150 km pose now mixes L9 and L10; retain it below too.
+at -11 -170 300000
+look 0 -89.9
+shot orbit300
+at -11 -170 1000000
+look 0 -89.9
+shot orbit1000
 at -11 -170 150000
 look 0 -89.9
-shot orbit150
-at -11 -170 500000
-look 0 -89.9
-shot orbit500
+shot ocean150_mixed
 # 75 km: L8 around the nadir (within ~82 km of the camera), L9 outside it,
 # both near normal incidence.
 at -11 -170 75000

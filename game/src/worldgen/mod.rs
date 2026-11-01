@@ -433,7 +433,12 @@ impl Generator {
     /// its surface.
     pub fn ground_height_m(&self, dir: DVec3) -> f64 {
         let c = self.column(dir, self.planet.block_size);
-        if c.wet() && !self.hide_water { c.water_m } else { c.height_m as f64 }
+        let h = if c.wet() && !self.hide_water { c.water_m } else { c.height_m as f64 };
+        // Teleport, spawn and ground-relative cameras must use the surface
+        // that exists: layer 0 is bedrock and terrain is clipped at H.
+        let p = &self.planet;
+        h.clamp((1.0 - p.sea_level as f64) * p.block_size,
+            (p.height - p.sea_level) as f64 * p.block_size)
     }
 
     /// Conservative (min, max) of the bake elevation (km) over the columns a
@@ -751,7 +756,7 @@ impl Generator {
                     return (b.ice, 0);
                 }
                 // When it is also the world's bottom voxel (it spans everything
-                // below sea level: L9 at sea level 512), nothing opaque lies
+                // below sea level: L10 at sea level H/2 = 1024), nothing opaque lies
                 // under it and translucent water would show the sky through the
                 // planet (review 2 #12). It is opaque deep ocean instead, coloured
                 // like the next finer LOD's water over its gravel floor. Below this

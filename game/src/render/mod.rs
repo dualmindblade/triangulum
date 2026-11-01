@@ -221,6 +221,7 @@ impl Renderer {
 
         let quad_bytes = (quad_buffer_mb << 20).min(alimits.max_storage_buffer_binding_size as u64).min(alimits.max_buffer_size);
         let quad_capacity = (quad_bytes / QUAD_BYTES) as u32;
+        let slot_capacity = slot_capacity.min((alimits.max_storage_buffer_binding_size as usize / GRID_BYTES) as u32);
         println!("quad buffer: {} MB ({} M quads); grid slots {}", quad_bytes >> 20, quad_capacity / 1_000_000, slot_capacity);
         let mk = |label: &str, size: u64, usage: wgpu::BufferUsages| {
             device.create_buffer(&wgpu::BufferDescriptor { label: Some(label), size, usage, mapped_at_creation: false })

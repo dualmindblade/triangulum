@@ -1,6 +1,7 @@
 {
   "_comment": "Andrew's look: the render dials of the look panel (F1 in the game). Edit it here or in the panel; the game reloads it as soon as it changes. Colours are linear RGB 0..1. Block colours are in blocks.json, terrain in world.json. Missing fields take the default (the M1 look).",
   "sky": {
+    "reference_radius_m": 90569.21831901377,
     "atmosphere_height_m": 639.7,
     "fog_density_per_km": 0.2462,
     "fog_strength": 0.7,

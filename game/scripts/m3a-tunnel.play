@@ -11,7 +11,7 @@
 #   tunnel  from the shaft bottom along -i, three cells, two high: its
 #           ceiling is the underside of the grass layer
 
-atblock 2 107140 57519 2000
+atblock 2 107140 57519 2512
 lookaxis +i 0
 assert block_rel[0,0,-1] == grass
 assert block_rel[0,0,-2] == dirt
@@ -75,10 +75,10 @@ shot tunnel_ceiling
 lookaxis +i 70
 shot tunnel_ceiling_up
 # at the shaft's bottom, looking up its walls
-atblock 2 107140 57519 2000
+atblock 2 107140 57519 2512
 lookaxis +j 60
 shot shaft_walls
 # from outside, looking down into the shaft
-atblock 2 107143 57519 2000
+atblock 2 107143 57519 2512
 lookaxis -i -45
 shot shaft_from_above

@@ -328,17 +328,17 @@ fn b3_outline_uses_the_mesh_grid_on_all_faces() {
                         (block.k % 32 + ((c >> 2) & 1) as u32) as f32);
                     // Evaluate the real mesher's uploaded grid with the LOD-0
                     // shader equation (not planet.pos / a wrapped box).
-                    let grid = lp.truncate() * 0.125;
-                    let gx = (grid.x as usize).min(3);
-                    let gy = (grid.y as usize).min(3);
+                    let grid = lp.truncate() * (crate::mesh::GRID_CELLS as f32 / crate::grid::CHUNK as f32);
+                    let gx = (grid.x as usize).min(crate::mesh::GRID_CELLS - 1);
+                    let gy = (grid.y as usize).min(crate::mesh::GRID_CELLS - 1);
                     let (fx, fy) = (grid.x - gx as f32, grid.y - gy as f32);
                     let sample = |base: usize, dx: usize, dy: usize| {
-                        let off = (base + (gy + dy) * 5 + gx + dx) * 4;
+                        let off = (base + (gy + dy) * crate::mesh::GRID_CORNERS + gx + dx) * 4;
                         glam::Vec3::from_slice(&mesh.grid[off..off + 3])
                     };
                     let blend = |base| sample(base, 0, 0).lerp(sample(base, 1, 0), fx)
                         .lerp(sample(base, 0, 1).lerp(sample(base, 1, 1), fx), fy);
-                    let rendered = mesh.origin + (blend(0) + blend(25).normalize() * lp.z).as_dvec3();
+                    let rendered = mesh.origin + (blend(0) + blend(crate::mesh::GRID_CORNERS * crate::mesh::GRID_CORNERS).normalize() * lp.z).as_dvec3();
                     assert!(outlined.distance(rendered) < 1e-9, "{block:?} corner {c}");
                     compared += 1;
                 }
