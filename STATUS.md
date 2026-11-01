@@ -1,6 +1,6 @@
 # Status
 
-*Updated 2026-10-31 by Claude (Opus).*
+*Updated 2026-11-01 by Claude (Opus).*
 
 ## Where things stand
 
@@ -13,9 +13,12 @@
   file** that plays back exactly. Astra's third review found edge cases;
   all but two minor ones are fixed.
 - **The one number** (RTX 2060, 1080p, 60 s test flight, idle machine):
-  **1,188 fps average, 574 fps for the worst 1% of frames, worst frame
-  5.0 ms** (everything through the bug round, 2026-10-31). Through M3b it was
-  1,134 / 611 / 6.0. The target is 60 fps (16.7 ms).
+  **493-526 fps average, 263-272 fps for the worst 1% of frames, worst frame
+  7.5-9.5 ms** (everything through round 2, two runs, 2026-11-01). The target is
+  60 fps (16.7 ms). It was 1,188 / 574 / 5.0 after the bug round: the average
+  fell because mountains put far more on screen. Other sizes: 832 gives 427 / 196
+  / 16.8, a hair over budget on its single worst frame; 1024 gives 424 / 240 / 5.8;
+  the tall world gives 386 / 201 / 15.0.
 - **M3, Andrew's workshop: half done.** Press F1: the look panel (sky,
   light, fog, water, block colours, terrain dials) and the block and
   texture editor (add blocks, paint textures). *Save look* writes it all
@@ -284,11 +287,20 @@ detail (still about 500 fps).
 
 ## In progress
 
-**Round 2:** Andrew's second list, matched to his photos and recordings in
-`docs/missions/2026-10-31-round2.md`: the crashes, great-circle movement,
-sliding powder, water flicker, and the terrain work (real mountains, rivers
-carved into the land, boundaries rough at every scale, sea level in the middle
-and a planet-size slider). Tasks are in `PLAN.md`.
+Nothing is running.
+
+**Round 2, all merged:** Andrew's second list, matched to his photos and
+recordings in `docs/missions/2026-10-31-round2.md`: the crashes, great-circle
+movement, sliding powder, water flicker, and the terrain work (real mountains,
+rivers carved into the land, boundaries rough at every scale, sea level in the
+middle and a planet-size slider). Tasks are in `PLAN.md`. Nobody has played any of
+it in a real window yet.
+
+- **Last full test run:** 445 passed, 0 failed, all 50 scripts, and all five
+  planet sizes, one commit before the end. The run on the final commit was stopped
+  when the machine ran low on memory, so it hasn't happened. That commit only
+  changes `main()`, which no test runs: it was checked by the benches, `m1-done`,
+  `c2-slide` and a real window opened, minimised, restored and closed.
 
 - **C1, merged:** minimising no longer kills the game, the wheel has no ceiling
   (1 cm/s up, past the sun if you hold it), and WASD follows great circles over
@@ -324,6 +336,18 @@ and a planet-size slider). Tasks are in `PLAN.md`.
   to place. Local features stay in metres on any planet, and global ones stretch
   with it (`DESIGN.md`). Old saves are refused again: generator 6. Nobody has
   walked this in a real window. Findings: `docs/missions/T2-relief-findings.md`.
+- **T3, merged:** every boundary is now one rough line instead of scattered
+  blocks: coasts, lake outlines, snow, ice, dry grass, desert and bare rock.
+  Small stray pieces fell from 4.21 per km of line to 0.033, and the roughness
+  holds from 16 km down to a block. Lakes hold their water at every planet size
+  (92-141 million water cells checked, 0 leaks). Lines moved up to 3.9 km from
+  where you saw them, and old saves are refused again: generator 7. Nobody has
+  walked a line in a real window. Findings:
+  `docs/missions/T3-boundaries-findings.md`.
+- **Terrain workers, merged:** T2 and T3 cost the flight most of its smoothness:
+  its worst 1% fell from 474 fps to 83, and its worst frame reached 19 ms. Terrain
+  generation was taking every core from the drawing. Workers now run at low
+  priority, which gives 270 fps and 8 ms back, for about 10% longer loading.
 - **A rare crash on exit, not explained:** now and then the program dies with an
   access violation (`0xC0000005`) as it closes, after everything is finished and
   saved. It's been seen about four times across this round's hundreds of runs,
@@ -354,9 +378,9 @@ decisions, and underground darkness needs a lighting design.
 
 ## Waiting on you
 
-- **Your old save won't load.** The terrain changed, so `saves/Neisor` is
-  refused. It's untouched. Start a new world:
-  `cargo run --release -- --save saves/neisor2`.
+- **Your old saves and recordings won't load.** The terrain changed, so
+  `saves/Neisor` is refused. It's untouched. The build that made them still plays
+  them. Start a new world: `cargo run --release -- --save saves/neisor3`.
 - **Try the new keys in a real window.** T, P, Shift+P, M, Shift+M, F9, Esc,
   the mouse wheel on the map, the annotator's pen, and clicking at cube corners
   were all driven by test events, never by real hands. Tell me if any of them
@@ -404,6 +428,23 @@ decisions, and underground darkness needs a lighting design.
   4. Mesa steps are now 40 m at most, and stay out of the belts.
   5. High plateaus are frozen at every latitude. That's the bake's climate at
      that height, not a bug in the snow line.
+- **Andrew's calls from T3:**
+  1. How much of a range is bare rock: `ROCK_SLOPE` 0.85, about 28% on Neisor's
+     strongest ranges. At 832 rock is scarce, 0-6% of a window, so grey faces there
+     need a lower slope, or tying rock to height.
+  2. Rock from orbit now reads as blotches 1-3 km across, where the belt was white.
+  3. Brown ranges from a valley: on gentler ranges the dirt sides of the steps
+     show, most of all at 832.
+  4. How rough a line is: `STEP_AMP` 0.17. Lower is fine; at 0.19 a rare step can
+     fold, and stronger streaks like marble. These are constants, not panel dials,
+     because anything in `world.json` has to go into saves, replays and photos.
+  5. Pack ice has one clean rough edge. Real pack breaks into floes near its edge:
+     about ten lines of code, but it means small pieces on purpose.
+  6. Snow now lies on lake shores instead of sand (one line to undo), and lake
+     sand is a thin broken ring, mostly because the land now rises at the shore.
+- **Austin: one test run is still owed.** The final commit's full
+  `cargo test --release` was stopped when memory ran low. It needs several GB free.
+  qBittorrent was holding 4.9 GB at the time. Say the word, or run it yourself.
 - **Austin: Visual Studio needs repairing** when a restart suits you: restart,
   then tick *Desktop development with C++* in the Visual Studio Installer, then
   delete `game/.cargo/config.toml`. Until then the game builds from a linker
@@ -438,7 +479,7 @@ decisions, and underground darkness needs a lighting design.
      pit dug beside the sea keeps a 7 cm dip. That follows from his rule;
      flattening it would need a second rule.
   3. One poured block on flat ground spreads into a 4 mm sheet over up to
-     255 blocks. There's no evaporation or minimum depth.
+     255 blocks. Thin water now evaporates (`DESIGN.md`).
   4. Large bodies settle slowly: a 100 m dam break takes minutes.
   5. Rivers stay frozen at their generated levels (costing nothing) until
      disturbed; then that reach flows by his rule, and its steps and
